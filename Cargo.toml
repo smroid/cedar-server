@@ -1,0 +1,20 @@
+[package]
+name = "cedar"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]] # Bin to run the Cedar gRPC server
+name = "cedar-server"
+path = "src/server.rs"
+
+[[bin]] # Bin to run the Cedar gRPC client
+name = "cedar-client"
+path = "src/client.rs"
+
+[dependencies]
+tonic = "0.9"
+prost = "0.11"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+
+[build-dependencies]
+tonic-build = "0.9"
