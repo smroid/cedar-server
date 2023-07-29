@@ -23,3 +23,12 @@ Cargo.lock
 *.bmp
 *.jpg
 *~
+
+cedar_webapp/android
+cedar_webapp/build
+cedar_webapp/ios
+cedar_webapp/lib/generated
+cedar_webapp/linux
+cedar_webapp/macos
+cedar_webapp/pubspec.lock
+cedar_webapp/windows
