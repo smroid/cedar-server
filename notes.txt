@@ -1,0 +1,24 @@
+How to set the 'sigma' parameter for StarGate? Idea: acquire a test image, use
+StarGate with a "reasonable" sigma value to find stars, and run Tetra3 to plate
+solve it.
+
+Next, using the same test image, run a sweep of sigma values. For each sigma
+value evaluate each star candidate as follows:
+* Using the plate solution, convert the candidate's x/y to ra/dec and look
+  for a sufficiently nearby star in a suitably magnitude-limited catalogue.
+* Tally up the number of star candidates S that correspond to a catalogue star
+  vs the number of star candidates N that do not match the catalogue.
+* F = N / (S + N) is the fraction of StarGate candidates that are spurious
+  (noise) detections.
+
+When sigma is high, F (fraction of spurious candidates) will be low. As sigma
+is lowered, S + N will increase (overall more StarGate candidates) but the
+fraction F of bad candidates will also rise.
+
+We can define a maximum tolerable F value (say 0.01?) and use this to determine
+the minimum sigma value to be used when the slider is towards "fast". When the
+slider is moved to "quality" we can raise the sigma value along with the exposure
+times).
+
+We might want to repeat this sigma optimization process for a range of exposure
+times and gain values.
