@@ -62,7 +62,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   // Function to make gRPC request and get the greeting message.
   void getGreetingFromServer() async {
-    final client = GreeterClient(GrpcWebClientChannel.xhr(Uri.parse('http://192.168.1.134:50051')));
+    final client = GreeterClient(GrpcWebClientChannel.xhr(Uri.parse('http://192.168.1.134:8080')));
 
     // Replace 'HelloRequest' and 'HelloReply' with the actual types defined in your .proto file.
     final request = HelloRequest()..name = 'alan'; // Set the name you want to greet.

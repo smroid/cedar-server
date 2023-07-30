@@ -7,7 +7,7 @@ pub mod cedar {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = GreeterClient::connect("http://192.168.1.134:50051").await?;
+    let mut client = GreeterClient::connect("http://192.168.1.134:8080").await?;
 
     let request = tonic::Request::new(HelloRequest {
         name: "Tonic".into(),

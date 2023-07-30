@@ -1,24 +1,48 @@
-How to set the 'sigma' parameter for StarGate? Idea: acquire a test image, use
-StarGate with a "reasonable" sigma value to find stars, and run Tetra3 to plate
-solve it.
+Exposure control loop: Concept is based on setting a goal star brightness;
+excluding the brightest N stars, the histogram of the remaining stars'
+brightness (stars, not pixels, so we're excluding background from the histogram)
+should extend up to ~240 ADU. This could be adjusted downward (how far??) to
+permit faster exposures at the tradeoff of losing dimmer stars into the noise.
 
-Next, using the same test image, run a sweep of sigma values. For each sigma
-value evaluate each star candidate as follows:
+
+A high-level goal for Cedar is to minimize the number of user-set parameters. No
+exposure time setting, no camera gain value, no StarGate sigma value adjustment.
+
+The only thing the user should have to worry about is focusing the camera and
+(roughly) aligning the camera to the telescope. The only user interface "knob"
+will be a quality <---> speed slider. At the extremes, this will work as
+follows:
+
+Quality: operates camera at lowest gain setting, and raises the exposure target
+  value to 240 or so. This causes the exposure control loop to make longer
+  exposures. Perhaps we also raise the StarGate sigma param.
+
+Speed: operates camera at highest gain setting, and lowers the exposure target
+  value to 120 or so. This causes the exposure control loop to make shorter
+  exposures. Perhaps we also lower the StarGate sigma param.
+
+
+How to automatically set the 'sigma' parameter for StarGate? Idea: acquire a
+test image, use StarGate with a default sigma value to find stars, and run
+Tetra3 to plate solve it.
+
+Next, using the same test image, run StarGate using a sweep of sigma values. For
+each sigma value evaluate the star candidates as follows:
 * Using the plate solution, convert the candidate's x/y to ra/dec and look
   for a sufficiently nearby star in a suitably magnitude-limited catalogue.
 * Tally up the number of star candidates S that correspond to a catalogue star
   vs the number of star candidates N that do not match the catalogue.
 * F = N / (S + N) is the fraction of StarGate candidates that are spurious
-  (noise) detections.
+  (noise-induced) detections.
 
 When sigma is high, F (fraction of spurious candidates) will be low. As sigma
 is lowered, S + N will increase (overall more StarGate candidates) but the
 fraction F of bad candidates will also rise.
 
 We can define a maximum tolerable F value (say 0.01?) and use this to determine
-the minimum sigma value to be used when the slider is towards "fast". When the
-slider is moved to "quality" we can raise the sigma value along with the exposure
-times).
+the minimum sigma value to be used when the slider is towards "speed". When the
+slider is moved toward "quality" we can raise the sigma value along with the
+exposure times).
 
 We might want to repeat this sigma optimization process for a range of exposure
 times and gain values.
