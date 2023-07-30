@@ -9,7 +9,8 @@ use std::net::SocketAddr;
 use axum::Router;
 use env_logger;
 use log::info;
-use tower_http::services::ServeDir;
+use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
+use tonic_web::GrpcWebLayer;
 
 use crate::cedar::greeter_server::{Greeter, GreeterServer};
 use crate::cedar::{HelloReply, HelloRequest};
@@ -53,6 +54,9 @@ async fn main() {
 
     // Build the grpc service.
     let grpc = tonic::transport::Server::builder()
+        .accept_http1(true)
+        .layer(GrpcWebLayer::new())
+        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
         .add_service(GreeterServer::new(MyGreeter::default()))
         .into_service();
 
