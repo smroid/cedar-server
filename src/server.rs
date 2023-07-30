@@ -1,10 +1,20 @@
-use tonic::{transport::Server, Request, Response, Status};
-use tonic_web;
+// Adapted from
+// https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
+// https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 
+use self::multiplex_service::MultiplexService;
+
+use std::net::SocketAddr;
+
+use axum::Router;
 use env_logger;
+use log::info;
+use tower_http::services::ServeDir;
 
 use crate::cedar::greeter_server::{Greeter, GreeterServer};
 use crate::cedar::{HelloReply, HelloRequest};
+
+mod multiplex_service;
 
 pub mod cedar {
     // The string specified here must match the proto package name.
@@ -18,32 +28,40 @@ pub struct MyGreeter {}
 impl Greeter for MyGreeter {
     async fn say_hello(
         &self,
-        request: Request<HelloRequest>, // Accept request of type HelloRequest
-    ) -> Result<Response<HelloReply>, Status> { // Return an instance of type HelloReply
-        println!("Got a request: {:?}", request);
+        request: tonic::Request<HelloRequest>, // Accept request of type HelloRequest
+    ) -> Result<tonic::Response<HelloReply>,
+                tonic::Status> { // Return an instance of type HelloReply
+        info!("Got a request: {:?}", request);
 
         let reply = cedar::HelloReply {
-            message: format!("Hello {}!", request.into_inner().name).into(),
+            message: format!("Hello {}!", request.into_inner().name),
             // We must use .into_inner() as the fields of gRPC requests and responses are private
         };
 
-        Ok(Response::new(reply)) // Send back our formatted greeting
+        Ok(tonic::Response::new(reply)) // Send back our formatted greeting
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("debug")).init();
 
-    let addr = "192.168.1.134:50051".parse()?;
-    let greeter = GreeterServer::new(MyGreeter::default());
+    // Build the static content web service.
+    let rest = Router::new().nest_service(
+        "/", ServeDir::new("/home/pi/projects/cedar/cedar_webapp/build/web"));
 
-    Server::builder()
-        .accept_http1(true)
-        .add_service(tonic_web::enable(greeter))
-        .serve(addr)
-        .await?;
+    // Build the grpc service.
+    let grpc = tonic::transport::Server::builder()
+        .add_service(GreeterServer::new(MyGreeter::default()))
+        .into_service();
 
-    Ok(())
+    // Combine them into one service.
+    let service = MultiplexService::new(rest, grpc);
+
+    let addr = SocketAddr::from(([192, 168, 1, 134], 8080));
+    hyper::Server::bind(&addr)
+        .serve(tower::make::Shared::new(service))
+        .await
+        .unwrap();
 }
