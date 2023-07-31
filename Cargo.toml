@@ -12,11 +12,15 @@ name = "cedar-client"
 path = "src/client.rs"
 
 [dependencies]
+asi_camera2 = { version = "0.1.0", path = "../asi_camera2" }
+async-std = "1.12.0"
 axum = "0.6.19"
+camera_service = { version = "0.1.0", path = "../camera_service" }
 env_logger = "0.10.0"
 futures = "0.3.28"
 http-body = "0.4.5"
-hyper = "0.14.27"
+hyper = { version = "0.14.27", features = ["http1", "http2"] }
+image = "0.24.6"
 log = "0.4.19"
 prost = "0.11"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }

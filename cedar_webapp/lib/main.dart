@@ -1,7 +1,7 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:grpc/grpc_web.dart';
 import 'package:cedar_webapp/generated/cedar.pbgrpc.dart';
-
 
 void main() {
   runApp(const MyApp());
@@ -14,7 +14,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Cedar',
       theme: ThemeData(
         // This is the theme of your application.
         //
@@ -34,7 +34,7 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const MyHomePage(title: 'Cedar'),
     );
   }
 }
@@ -58,35 +58,25 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  String greetingMessage = '';
+  Uint8List imageBytes = Uint8List(1);
+  int width = 0;
+  int height = 0;
 
-  // Function to make gRPC request and get the greeting message.
-  void getGreetingFromServer() async {
-    final client = GreeterClient(GrpcWebClientChannel.xhr(Uri.parse('http://192.168.1.134:8080')));
+  // Function to make gRPC request and get the image.
+  void getImageFromServer() async {
+    final client = ImageClient(GrpcWebClientChannel.xhr(Uri.base));
 
-    // Replace 'HelloRequest' and 'HelloReply' with the actual types defined in your .proto file.
-    final request = HelloRequest()..name = 'alan'; // Set the name you want to greet.
+    final request = ImageRequest();
     try {
-      final response = await client.sayHello(request);
+      final response = await client.getImage(request);
       setState(() {
-        greetingMessage = response.message;
+        imageBytes = Uint8List.fromList(response.imageData);
+        width = response.width;
+        height = response.height;
       });
     } catch (e) {
       print('Error: $e');
     }
-  }
-
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
   }
 
   @override
@@ -126,27 +116,17 @@ class _MyHomePageState extends State<MyHomePage> {
           // wireframe for each widget.
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
             ElevatedButton(
-              onPressed: getGreetingFromServer,
-              child: Text('Get Greeting'),
+              onPressed: getImageFromServer,
+              child: Text('Get image'),
             ),
             SizedBox(height: 20),
-            Text(greetingMessage),
+            imageBytes != null
+               ? Image.memory(imageBytes, height: height.toDouble(), width: width.toDouble())
+               : SizedBox.shrink(),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
