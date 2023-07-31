@@ -1,17 +1,16 @@
 syntax = "proto3";
 package cedar;
 
-message HelloRequest {
-    // Request message contains the name to be greeted
-    string name = 1;
+message ImageRequest {
 }
 
-message HelloReply {
-    // Reply contains the greeting message
-    string message = 1;
+message ImageReply {
+    int32 width = 1;
+    int32 height = 2;
+    // Must be a recognized file format, e.g. BMP grayscale 8 bits per pixel.
+    bytes image_data = 3;
 }
 
-service Greeter {
-    // Our SayHello rpc accepts HelloRequests and returns HelloReplies
-    rpc SayHello (HelloRequest) returns (HelloReply);
+service Image {
+    rpc GetImage (ImageRequest) returns (ImageReply);
 }
