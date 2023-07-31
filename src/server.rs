@@ -42,10 +42,8 @@ struct MyImage {
 
 #[tonic::async_trait]
 impl Image for MyImage {
-    async fn get_image(
-        &self,
-        request: tonic::Request<ImageRequest>,
-    ) -> Result<tonic::Response<ImageReply>, tonic::Status> {
+    async fn get_image(&self, request: tonic::Request<ImageRequest>)
+                       -> Result<tonic::Response<ImageReply>, tonic::Status> {
         let req_start = Instant::now();
 
         let state = &mut self.state.lock().unwrap();
@@ -56,14 +54,12 @@ impl Image for MyImage {
         let captured_image = camera.capture_image(
             vec![0u8; (width*height) as usize]).unwrap();
 
-        let encode_start = Instant::now();
         // Encode to BMP.
         let image = GrayImage::from_raw(width as u32, height as u32,
                                         captured_image.image_data).unwrap();
         let mut bmp_buf = Vec::<u8>::new();
         bmp_buf.reserve((2 * width * height) as usize);
         image.write_to(&mut Cursor::new(&mut bmp_buf), ImageOutputFormat::Bmp).unwrap();
-        info!("BMP encoding done after {:?}", encode_start.elapsed());
 
         info!("Responding to request: {:?} after {:?}", request, req_start.elapsed());
         Ok(tonic::Response::new(cedar::ImageReply {
@@ -97,7 +93,6 @@ async fn main() {
     // Build the grpc service.
     let grpc = tonic::transport::Server::builder()
         .accept_http1(true)
-        .max_frame_size(2*1024*1024)
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
         .add_service(ImageServer::new(MyImage::new()))
@@ -106,10 +101,9 @@ async fn main() {
     // Combine them into one service.
     let service = MultiplexService::new(rest, grpc);
 
-    let addr = SocketAddr::from(([192, 168, 1, 134], 8080));
+    // Listen on any address for the given port.
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     hyper::Server::bind(&addr)
-        .http1_max_buf_size(2*1024*1024)
-        .http2_max_send_buf_size(2*1024*1024)
         .serve(tower::make::Shared::new(service))
         .await
         .unwrap();
