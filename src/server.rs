@@ -5,9 +5,7 @@
 use self::multiplex_service::MultiplexService;
 
 use camera_service::abstract_camera::AbstractCamera;
-use camera_service::asi_camera::ASICamera;
-use camera_service::asi_camera::create_asi_camera;
-use asi_camera2::asi_camera2_sdk;
+use camera_service::asi_camera;
 use image::{GrayImage, ImageOutputFormat};
 
 use std::io::Cursor;
@@ -33,7 +31,7 @@ pub mod cedar {
 }
 
 struct State {
-    camera: ASICamera,
+    camera: asi_camera::ASICamera,
 }
 
 struct MyImage {
@@ -72,8 +70,8 @@ impl Image for MyImage {
 
 impl MyImage {
     pub fn new() -> Self {
-        let mut camera = create_asi_camera(
-            asi_camera2_sdk::create_asi_camera(0)).unwrap();
+        let mut camera = asi_camera::ASICamera::new(
+            asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap();
         camera.set_exposure_duration(Duration::from_millis(5)).unwrap();
         MyImage {
             state: Mutex::new(State{camera: camera})
