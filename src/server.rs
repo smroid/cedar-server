@@ -48,11 +48,8 @@ impl Image for MyImage {
         let camera = &mut state.camera;
         let (width, height) = camera.dimensions();
 
-        // Allocate buffer and receive camera data.
-        let captured_image = camera.capture_image(
-            vec![0u8; (width*height) as usize]).unwrap();
-
-        // Encode to BMP.
+        // Receive camera data, encode to BMP.
+        let captured_image = camera.capture_image().unwrap();
         let image = GrayImage::from_raw(width as u32, height as u32,
                                         captured_image.image_data).unwrap();
         let mut bmp_buf = Vec::<u8>::new();
