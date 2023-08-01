@@ -122,7 +122,8 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
             SizedBox(height: 20),
             imageBytes != null
-               ? Image.memory(imageBytes, height: height.toDouble(), width: width.toDouble())
+               ? Image.memory(imageBytes, height: height.toDouble(), width: width.toDouble(),
+                              gaplessPlayback: true)
                : SizedBox.shrink(),
           ],
         ),
