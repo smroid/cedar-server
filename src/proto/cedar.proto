@@ -1,4 +1,7 @@
 syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
 package cedar;
 
 // TODO: delete
@@ -14,7 +17,7 @@ message ImageReply {
 }
 
 // TODO: delete
-service Image {
+service ImageOld {
   rpc GetImage (ImageRequest) returns (ImageReply);
 }
 
@@ -35,22 +38,209 @@ service Image {
 // visible to all clients.
 //
 // Finally, note Cedar's integration with SkySafari is a protocol separate from
-// the gRPC protocol defined in this proto file.
+// the gRPC protocol defined in this proto file. Similarly, Cedar's gRPC
+// integration with Tetra3 is described in a separate proto file.
+
+message OneTimeSettings {
+  // Focal length of lens, in millimeters. If provided, this is used as a hint
+  // during camera/sky calibration. 0 means unknown (or not updating when
+  // setting).
+  float lens_fl_mm = 1;
+
+  // Lat/long of observer location, in degrees.
+  float latitude = 2;
+  float longitude = 3;
+  // False when getting if not known; false when setting to not update.
+  bool have_observer_location = 4;
+}
+
+message OperationSettings {
+  // Camera number.
+
+  // Note that fields whose default value is meaningful are accompanied by a
+  // bool 'update_xxx' field to disambiguate whether field should be updated
+  // when the field in question has its default value.
+
+  // The camera's gain, [0..100]. Default is 100.
+  int32 camera_gain = 2;
+  bool update_camera_gain = 3;
+
+  // The camera's offset [0..20]. Default is 0.
+  int32 camera_offset = 4;
+  bool update_camera_offset = 5;
+
+  // Defaults to OPERATING_MODE_SETUP.
+  OperatingMode operating_mode = 6;
+
+  // The camera exposure time in milliseconds. -1 selects automatic exposure.
+  // Default is 50.
+  int32 exposure_time_ms = 7;
+
+  // The S/N factor used to determine if a background-subtracted pixel is bright
+  // enough relative to the noise measure to be considered part of a star. -1
+  // selects automatic determination. Default is 6.
+  float stargate_sigma = 8;
+
+  // The desired time interval (in seconds) at which Cedar should replace its
+  // current frame result. Default is -1, meaning go as fast as possible.
+  float update_interval = 9;
+
+  // When Cedar detects that the camera is dwelling (motionless) for more than
+  // some number of seconds, `dwell_update_interval` is used instead of
+  // `update_interval`. Default is 1.
+  int32 dwell_update_interval = 10;
+
+  // If true, the plate solving star catalogue is periodically scrolled to
+  // reflect the hemisphere of the sky that is currently above horizon.
+  bool catalog_tracks_sky = 11;
+  bool update_catalog_tracks_sky = 12;
+
+  // If true, when Cedar detects that the camera is dwelling (motionless) for
+  // more than some number of seconds, the RA/DEC is logged. Note that if the
+  // RA/DEC are changing during dwelling due to sidereal motion (non-tracked
+  // mount) or polar misalighment (tracked equatorial mount), only the RA/DEC
+  // at the onset of dwelling is logged.
+  bool log_dwelled_positions = 13;
+  bool update_log_dwelled_positions = 14;
+
+  // IMU?
+}
 
 enum OperatingMode {
-  MODE_UNSPECIFIED = 0;
+  OPERATING_MODE_UNSPECIFIED = 0;
 
   // Mode supporting establishment of camera focus and boresight alignment of
   // camera and telescope:
   // * Exposure metered based on central region (exposed to the right based on
   //   histogram).
-  MODE_SETUP = 1;
+  OPERATING_MODE_SETUP = 1;
 
   // Main operating mode. Continually updated RA/DEC sent to SkySafari.
   // Detection of tracking mount and accumulation of polar alignment advice
   // during dwells.
-  // * Exposure metered based on TBD
-  MODE_OPERATE = 2;
+  // * Exposure metered based on camera/sky calibration carried out in setup
+  //   mode.
+  OPERATING_MODE_OPERATE = 2;
+}
+
+message FrameRequest {
+  // This is the frame_id of the previous FrameResult obtained by the requesting
+  // client. If provided, GetFrame() will block until this is no longer the
+  // server's current FrameResult. If not provided, GetFrame() will return the
+  // server's current FrameResult.
+  int32 prev_frame_id = 1;
+
+  // Controls whether and how the camera's image is returned with the
+  // FrameResult.
+  ImageMode main_image_mode = 2;
+
+  // If true, the list of located centroids is returned along with the detected
+  // star count. If false, only the detected star count is returned.
+  bool include_centroid_list = 3;
+}
+
+// Used by FrameRequest to control inclusion of the main image in the
+// FrameResult.
+enum ImageMode {
+  // Full resolution image will be returned.
+  IMAGE_MODE_DEFAULT = 0;
+
+  // The image is omitted.
+  IMAGE_MODE_OMIT = 1;
+
+  // 2x2 binned image will be returned.
+  IMAGE_MODE_BINNED = 2;
+}
+
+message FrameResult {
+  // Identifies this FrameResult. A client can include this in its next
+  // FrameRequest to block until a new FrameResult is available.
+  int32 frame_id = 1;
+
+  // The current Cedar mode.
+  OperatingMode operating_mode = 2;
+
+  // Information returned regardless of `operating_mode`. Note that these fields
+  // are ommitted while a camera/sky calibration is underway (see below).
+
+  // The image. Can be omitted or binned according to the FrameRequest. Even if
+  // omitted `capture_time` and `temperature` will still be populated.
+  Image image = 3;
+
+  // The star candidates detected by StarGate; ordered by highest
+  // mean_brightness first. Can be omitted according to the FrameRequest.
+  repeated StarCentroid star_candidates = 4;
+
+  // The number of star candidates detected by StarGate. Always present,
+  // even if `star_candidates` is omitted.
+  int32 star_candidate_count = 5;
+
+  // The number of hot pixels detected by StarGate.
+  int32 hot_pixel_count = 6;
+
+  // The camera exposure time in milliseconds.
+  int32 exposure_time_ms = 7;
+
+  // The time interval (in seconds) at which Cedar replaces its current frame
+  // result. This is a moving average over recent results. Note that this is
+  // independent of the rate of client FrameRequests.
+  float result_update_interval = 8;
+
+  // The time at which `image` was captured.
+  google.protobuf.Timestamp capture_time = 9;
+
+  // The camera temperature when `image` was captured.
+  float camera_temperature_celsius = 10;
+
+  // Information returned when `operating_mode` is OPERATING_MODE_SETUP. Note
+  // that these fields are ommitted while a camera/sky calibration is underway
+  // (see below).
+
+  // Identifies the center region used for brightest-star detection for focusing
+  // support.
+  Rectangle center_region = 11;
+
+  // The estimated position of the peak brightness in `center_region`. In full
+  // resolution image coordinates.
+  ImageCoord center_peak_position = 12;
+
+  // A small full resolution crop of `image` centered at `center_peak_position`.
+  Image zoomed_center_peak = 13;
+
+  // An estimate of the center peak's size.
+  float center_peak_fwhm = 14;
+
+  // In OPERATING_MODE_SETUP, Cedar can be instructed to perform a camera/sky
+  // calibration. Most of the above fields are omitted while such a calibration
+  // is underway, and the following fields are present.
+
+  // Non-zero while a camera/sky calibration is underway.
+  CalibrationPhase calibration_phase = 15;
+
+  // Estimated completion fraction [0..1) of the calibration.
+  float calibration_progress = 16;
+
+  // Information returned when `operating_mode` is OPERATING_MODE_OPERATE.
+
+  // The current plate solution.
+  PlateSolution plate_solution = 17;
+
+  // Estimated camera motion.
+  MotionType camera_motion = 18;
+
+  // Estimated rate of RA boresight movement eastward (positive) or westward (negative).
+  // Unit is hours per second (full circle in RA is 24h).
+  float ra_rate = 19;
+
+  // Estimated rate of DEC boresight movement northward (positive) or southward
+  // (negative). Unit is degrees per second.
+  float dec_rate = 20;
+
+  // advice
+  // * polar alignment (operation mode only)
+
+  // alerts
+  // * prolonged loss of stars; need setup mode?
 }
 
 message Image {
@@ -59,63 +249,113 @@ message Image {
   // 2: 2x2 binning.
   int32 binning_factor = 1;
 
-  // If this image is a window within the camera's frame, gives the offset
-  // in full resolution units.
-  int32 origin_x = 2;
-  int32 origin_y = 3;
-
-  // The dimensions of this image in full resolution units. If binning_factor
-  // is 2, the image_data's dimensions are width/2, height/2 (floored).
-  int32 width = 4;
-  int32 height = 5;
+  // Specifies what part of the camera sensor this Image corresponds to. In full
+  // resolution units. If binning_factor is 2, the `image_data` dimensions are
+  // rectangle.width/2, rectangle.height/2 (floored).
+  Rectangle rectangle = 2;
 
   // Must be a recognized file format, e.g. BMP grayscale 8 bits per pixel.
-  bytes image_data = 6;
+  bytes image_data = 3;
 }
 
-message OneTimeSettings {
-  // Camera info (detector size auto-sensed; desire lens info for FOV prior)
-
-  // Geo location (from phone).
-
-  // UTC time (from phone).
+// Describes the position/size of an Image within the camera's sensor.
+message Rectangle {
+  int32 origin_x = 1;
+  int32 origin_y = 2;
+  int32 width = 3;
+  int32 height = 4;
 }
 
-message OperationSettings {
-  // Camera number.
+// Summarizes a star-like spot found by the StarGate algorithm.
+message StarCentroid {
+  // Location of star centroid in full resolution image coordinates. (0.5, 0.5)
+  // corresponds to the center of the image's upper left pixel.
+  ImageCoord centroid_position = 1;
 
-  // Camera gain. This is the speed (gain=100) vs. quality (gain=0) slider.
-  // Black offset. Auto, or user-specified value?
+  // Characterizes the extent or spread of the star in each direction, in pixel
+  // size units.
+  float stddev_x = 2;
+  float stddev_y = 3;
 
-  // Operating mode.
+  // Mean of the uint8 pixel values of the star's region (core plus immediate
+  // neighbors). The estimated background is subtracted.
+  float mean_brightness = 4;
 
-  // Exposure: auto, or user-specified value?
+  // The estimated sky background near the star.
+  float background = 5;
 
-  // Sigma: auto, or user-specified value?
+  // Count of saturated pixel values.
+  int32 num_saturated = 6;
+}
 
-  // Update frequency (server side). Auto-reduce when dwelling?
+message ImageCoord {
+  // A location in full resolution image coordinates. (0.5, 0.5) corresponds to
+  // the center of the image's upper left pixel.
+  float x = 1;
+  float y = 2;
+}
 
-  // Whether catalogue tracks visible sky hemisphere.
+enum CalibrationPhase {
+  CALIBRATION_PHASE_NONE = 0;  // Calibration not underway.
+  // Identify calibration activities that require more than a trivial amount
+  // of time to complete.
+  CALIBRATION_PHASE_EXPOSURE_SWEEP = 1;
+  CALIBRATION_PHASE_ANALYZE_EXPOSURE = 2;
+  CALIBRATION_PHASE_ANALYZE_STAR_THRESHOLD = 3;
+  CALIBRATION_PHASE_ANALYZE_LENS_DISTORTION = 4;
+}
 
-  // Logging? RA/DEC timeseries.
+message PlateSolution {
+  // Plate solution: ra/dec, scale, rotation.
+  // Quality assessment (failed (reason?); low confidence; high confidence).
+}
+
+enum MotionType {
+  // Motion unknown. This is possible either when there are no star detections
+  // and thus no plate solutions, and there is no IMU to sense motion independent
+  // of plate solutions.
+  MOTION_TYPE_UNKNOWN = 0;
+
+  // Recent plate solutions are consistent with signficant movement of the
+  // boresight in RA/DEC.
+  MOTION_TYPE_MOVING = 1;
+
+  // Recent plate solutions are consistent with sidereal movement of the
+  // boresight in RA/DEC, such as would be seen when the camera's orientation is
+  // fixed relative to the earth.
+  MOTION_TYPE_DWELL_UNTRACKED = 2;
+
+  // Recent plate solutions are consistent with little to no movement of the
+  // boresight in RA/DEC, such as would be seen when the camera is mounted on
+  // a motorized equatorial mount.
+  MOTION_TYPE_DWELL_TRACKED = 3;
+}
+
+message PolarAlignmentAdvice {
+  // Estimate of alt/az error of polar axis. Not available for non-tracking
+  // mount (auto-detected).
+
+  // Suggestion of sky region to dwell at for updated solution.
 }
 
 message ActionRequest {
   // Capture boresight offset (focus mode only) based on current location of
   // brightest peak in central region.
 
-  // Analyze camera/sky (focus mode only).
+  // Calibrate camera/sky (focus mode only).
   // * Exposure level from exposure time and gain setting
   // * Offset level to avoid black crush
   // * Sigma level vs. true/false detections w.r.t. catalogue
   // * Lens distortion model?
+  // * FOV.
 
-  // Optimize catalogue (requires camera analysis).
+  // Optimize catalogue (requires camera/sky calibration).
 
   // Save image.
 }
 
 message InformationRequest {
+  // Empty.
 }
 
 message InformationResult {
@@ -131,65 +371,26 @@ message InformationResult {
 
   // Network info (hosted network, or access point?)
 
+  // Current time (UTC) on Cedar server.
+
   // listing of detected cameras; for each:
   // * Camera make/model
   // * Resolution
 }
 
-message FrameRequest {
-  // information selectors:
-  // * identifier of previous frame (so we can block until next
-  //   FrameResult is available)
-  // * main image? Maybe we don't always refresh it.
-  // * main image binned? This might be auto-selected by client
-  //   logic based on the client refresh rate (binned at high rate,
-  //   full-res at low rate).
-  // * centroids? or just count of centroids?
-
-}
-
-message PolarAlignmentAdvice {
-  // Estimate of alt/az error of polar axis. Not available for non-tracking
-  // mount (auto-detected).
-
-  // Suggestion of sky region to dwell at for updated solution.
-}
-
-message FrameResult {
-  // identifier
-
-  // operating mode (could change behind client's back)
-
-  // Mode-independent info (pre-empted during camera analysis)
-  // * full image (can be omitted)
-  // * star centroids (with image)
-  // * star count, hot pixel count
-  // * exposure time
-  // * result update frequency (server side; client requests can be at lower
-  //   rate)
-  // * capture timestamp of image on which result is based.
-  // * camera temperature
-
-  // Setup-mode info (pre-empted during camera analysis)
-  // * Central region rectangle
-  // * Image coords of brightest peak located in central region
-  // * Magnified view of brightest peak in central region
-  // * FWHM of brightest peak in central region
-
-  // Camera analysis (sub-activity of setup mode)
-  // * progress
-
-  // Operate-mode info
-  // * plate solution and quality assessment (failed; low confidence;
-  //   high confidence)
-  // * motion detected; dwelling with tracking/non-tracking mount
-
-  // advice
-  // * polar alignment (operation mode only)
-
-  // alerts
-  // * prolonged loss of stars; need setup mode?
-}
-
 service Cedar {
+  // TODO: UpdateOneTimeSettings().
+
+  // Changes zero or more of Cedar's operation settings. If a field is absent
+  // from the supplied OperationSettings, that setting is not updated. Returns
+  // the OperationSettings after any updates have been applied. To get the
+  // current settings without making any changes, pass an empty
+  // OperationSettings request.
+  rpc UpdateOperationSettings(OperationSettings) returns (OperationSettings);
+
+  // Obtains the most recent Cedar computation result. Blocks if necessary to
+  // wait for a new result (see FrameRequest's `prev_frame_id` field).
+  rpc GetFrame(FrameRequest) returns (FrameResult);
+
+
 }
