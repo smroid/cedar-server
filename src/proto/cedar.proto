@@ -1,16 +1,195 @@
 syntax = "proto3";
 package cedar;
 
+// TODO: delete
 message ImageRequest {
 }
 
+// TODO: delete
 message ImageReply {
-    int32 width = 1;
-    int32 height = 2;
-    // Must be a recognized file format, e.g. BMP grayscale 8 bits per pixel.
-    bytes image_data = 3;
+  int32 width = 1;
+  int32 height = 2;
+  // Must be a recognized file format, e.g. BMP grayscale 8 bits per pixel.
+  bytes image_data = 3;
 }
 
+// TODO: delete
 service Image {
-    rpc GetImage (ImageRequest) returns (ImageReply);
+  rpc GetImage (ImageRequest) returns (ImageReply);
+}
+
+// General note: in the Cedar gRPC protocol, the client is a user interface
+// realized as a web app or a mobile app. The client interacts with the
+// server via gRPC, using the messages and RPCs defined in this proto file.
+//
+// The server runs independently of the client. In particular, image
+// acquisitions, star extractions, plate solving, and updates of SkySafari occur
+// in the server even if no user interface app is connected. A client can obtain
+// FrameResults at a rate equal to or slower than the rate at which the server
+// is producing results.
+//
+// Note also that multiple clients can be connected to the same server, in which
+// case each client can independenly obtain its own sequence of FrameResults
+// without affecting the FrameResults seen by other clients. However, if any
+// client updates the operating mode or parameters of the server, this will be
+// visible to all clients.
+//
+// Finally, note Cedar's integration with SkySafari is a protocol separate from
+// the gRPC protocol defined in this proto file.
+
+enum OperatingMode {
+  MODE_UNSPECIFIED = 0;
+
+  // Mode supporting establishment of camera focus and boresight alignment of
+  // camera and telescope:
+  // * Exposure metered based on central region (exposed to the right based on
+  //   histogram).
+  MODE_SETUP = 1;
+
+  // Main operating mode. Continually updated RA/DEC sent to SkySafari.
+  // Detection of tracking mount and accumulation of polar alignment advice
+  // during dwells.
+  // * Exposure metered based on TBD
+  MODE_OPERATE = 2;
+}
+
+message Image {
+  // Whether the image is binned or full resolution. Values:
+  // 1 (or omitted): full resolution
+  // 2: 2x2 binning.
+  int32 binning_factor = 1;
+
+  // If this image is a window within the camera's frame, gives the offset
+  // in full resolution units.
+  int32 origin_x = 2;
+  int32 origin_y = 3;
+
+  // The dimensions of this image in full resolution units. If binning_factor
+  // is 2, the image_data's dimensions are width/2, height/2 (floored).
+  int32 width = 4;
+  int32 height = 5;
+
+  // Must be a recognized file format, e.g. BMP grayscale 8 bits per pixel.
+  bytes image_data = 6;
+}
+
+message OneTimeSettings {
+  // Camera info (detector size auto-sensed; desire lens info for FOV prior)
+
+  // Geo location (from phone).
+
+  // UTC time (from phone).
+}
+
+message OperationSettings {
+  // Camera number.
+
+  // Camera gain. This is the speed (gain=100) vs. quality (gain=0) slider.
+  // Black offset. Auto, or user-specified value?
+
+  // Operating mode.
+
+  // Exposure: auto, or user-specified value?
+
+  // Sigma: auto, or user-specified value?
+
+  // Update frequency (server side). Auto-reduce when dwelling?
+
+  // Whether catalogue tracks visible sky hemisphere.
+
+  // Logging? RA/DEC timeseries.
+}
+
+message ActionRequest {
+  // Capture boresight offset (focus mode only) based on current location of
+  // brightest peak in central region.
+
+  // Analyze camera/sky (focus mode only).
+  // * Exposure level from exposure time and gain setting
+  // * Offset level to avoid black crush
+  // * Sigma level vs. true/false detections w.r.t. catalogue
+  // * Lens distortion model?
+
+  // Optimize catalogue (requires camera analysis).
+
+  // Save image.
+}
+
+message InformationRequest {
+}
+
+message InformationResult {
+  // Cedar version. Server host/port.
+
+  // Tetra3 version.
+
+  // Processor info.
+  // * model: RPi or other board model
+  // * OS version, etc.
+  // * Ram
+  // * Free disk space
+
+  // Network info (hosted network, or access point?)
+
+  // listing of detected cameras; for each:
+  // * Camera make/model
+  // * Resolution
+}
+
+message FrameRequest {
+  // information selectors:
+  // * identifier of previous frame (so we can block until next
+  //   FrameResult is available)
+  // * main image? Maybe we don't always refresh it.
+  // * main image binned? This might be auto-selected by client
+  //   logic based on the client refresh rate (binned at high rate,
+  //   full-res at low rate).
+  // * centroids? or just count of centroids?
+
+}
+
+message PolarAlignmentAdvice {
+  // Estimate of alt/az error of polar axis. Not available for non-tracking
+  // mount (auto-detected).
+
+  // Suggestion of sky region to dwell at for updated solution.
+}
+
+message FrameResult {
+  // identifier
+
+  // operating mode (could change behind client's back)
+
+  // Mode-independent info (pre-empted during camera analysis)
+  // * full image (can be omitted)
+  // * star centroids (with image)
+  // * star count, hot pixel count
+  // * exposure time
+  // * result update frequency (server side; client requests can be at lower
+  //   rate)
+  // * capture timestamp of image on which result is based.
+  // * camera temperature
+
+  // Setup-mode info (pre-empted during camera analysis)
+  // * Central region rectangle
+  // * Image coords of brightest peak located in central region
+  // * Magnified view of brightest peak in central region
+  // * FWHM of brightest peak in central region
+
+  // Camera analysis (sub-activity of setup mode)
+  // * progress
+
+  // Operate-mode info
+  // * plate solution and quality assessment (failed; low confidence;
+  //   high confidence)
+  // * motion detected; dwelling with tracking/non-tracking mount
+
+  // advice
+  // * polar alignment (operation mode only)
+
+  // alerts
+  // * prolonged loss of stars; need setup mode?
+}
+
+service Cedar {
 }
