@@ -20,7 +20,7 @@ use log::info;
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
 
-use crate::cedar::image_server::{Image, ImageServer};
+use crate::cedar::image_old_server::{ImageOld, ImageOldServer};
 use crate::cedar::{ImageReply, ImageRequest};
 
 mod multiplex_service;
@@ -39,7 +39,7 @@ struct MyImage {
 }
 
 #[tonic::async_trait]
-impl Image for MyImage {
+impl ImageOld for MyImage {
     async fn get_image(&self, request: tonic::Request<ImageRequest>)
                        -> Result<tonic::Response<ImageReply>, tonic::Status> {
         let req_start = Instant::now();
@@ -90,7 +90,7 @@ async fn main() {
         .accept_http1(true)
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
-        .add_service(ImageServer::new(MyImage::new()))
+        .add_service(ImageOldServer::new(MyImage::new()))
         .into_service();
 
     // Combine them into one service.

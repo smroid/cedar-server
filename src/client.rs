@@ -1,4 +1,4 @@
-use crate::cedar::image_client::ImageClient;
+use crate::cedar::image_old_client::ImageOldClient;
 use crate::cedar::ImageRequest;
 
 pub mod cedar {
@@ -7,7 +7,7 @@ pub mod cedar {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = ImageClient::connect("http://192.168.1.134:8080").await?;
+    let mut client = ImageOldClient::connect("http://192.168.1.134:8080").await?;
 
     let request = tonic::Request::new(ImageRequest {});
 
