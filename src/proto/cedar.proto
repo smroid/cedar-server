@@ -33,9 +33,10 @@ service ImageOld {
 //
 // Note also that multiple clients can be connected to the same server, in which
 // case each client can independenly obtain its own sequence of FrameResults
-// without affecting the FrameResults seen by other clients. However, if any
-// client updates the operating mode or parameters of the server, this will be
-// visible to all clients.
+// without affecting the FrameResults seen by other clients (in other words, if
+// client A obtains a FrameResult X, it is not "consumed", so client B can
+// obtain the same FrameResult X). However, if any client updates the operating
+// mode or settings of the server, this will be visible to all clients.
 //
 // Finally, note Cedar's integration with SkySafari is a protocol separate from
 // the gRPC protocol defined in this proto file. Similarly, Cedar's gRPC
@@ -342,14 +343,17 @@ message ActionRequest {
   // Capture boresight offset (focus mode only) based on current location of
   // brightest peak in central region.
 
-  // Calibrate camera/sky (focus mode only).
+  // Calibrate camera/sky (focus mode only). Pre-empts focus mode operation until
+  // completed or canceled.
   // * Exposure level from exposure time and gain setting
   // * Offset level to avoid black crush
   // * Sigma level vs. true/false detections w.r.t. catalogue
   // * Lens distortion model?
   // * FOV.
 
-  // Optimize catalogue (requires camera/sky calibration).
+  // Cancel camera/sky calibration.
+
+  // Optimize catalogue (requires camera/sky calibration). Proceeds in background.
 
   // Save image.
 }
@@ -376,6 +380,8 @@ message InformationResult {
   // listing of detected cameras; for each:
   // * Camera make/model
   // * Resolution
+
+  // Status of SkySafari integration.
 }
 
 service Cedar {
@@ -392,5 +398,5 @@ service Cedar {
   // wait for a new result (see FrameRequest's `prev_frame_id` field).
   rpc GetFrame(FrameRequest) returns (FrameResult);
 
-
+  // TODO: InitiateAction(ActionRequest) returns (EmptyMessage);
 }
