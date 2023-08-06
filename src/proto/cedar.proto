@@ -92,9 +92,10 @@ message OperationSettings {
   int32 dwell_update_interval = 10;
 
   // If true, the plate solving star catalogue is periodically scrolled to
-  // reflect the hemisphere of the sky that is currently above horizon.
-  bool catalog_tracks_sky = 11;
-  bool update_catalog_tracks_sky = 12;
+  // reflect the hemisphere of the sky that is currently visible (above the
+  // horizon).
+  bool catalog_tracks_visible_sky = 11;
+  bool update_catalog_tracks_visible_sky = 12;
 
   // If true, when Cedar detects that the camera is dwelling (motionless) for
   // more than some number of seconds, the RA/DEC is logged. Note that if the
