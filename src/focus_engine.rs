@@ -1,36 +1,273 @@
-use camera_service::abstract_camera::AbstractCamera;
+use camera_service::abstract_camera::{AbstractCamera, CapturedImage};
 
-use image::GrayImage;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use image::{GenericImageView, GrayImage};
+use imageproc::contrast;
 use imageproc::rect::Rect;
+use log::{error, info};
+use star_gate::{estimate_noise_from_image, summarize_region_of_interest};
 
-struct FocusEngine<'a> {
-    // Note: camera settings can be adjusted behind our back.
-    camera: &'a mut dyn AbstractCamera,
+pub struct FocusEngine {
+    // Our state, shared between ASICamera methods and the video capture thread.
+    state: Arc<Mutex<SharedState>>,
 
-    update_interval: f32,  // -1 means go fast as possible.
-
-    // TODO: update interval
-
-    // optional exposure time; if None use auto exposure
-    // TODO: current exposure duration;
-
-    // TODO: worker thread.
+    // Condition variable signalled whenever `state.focus_result` is populated.
+    // Also signalled when the worker thread exits.
+    focus_result_available: Arc<Condvar>,
 }
 
-struct FocusResult {
-    image: GrayImage,
+// State shared between worker thread and the FocusEngine methods.
+struct SharedState {
+    // Note: camera settings can be adjusted behind our back.
+    camera: Arc<Mutex<dyn AbstractCamera>>,
 
-    exposure_time_ms: i32,
+    // If true, use auto exposure. If false, the caller is expected to have set
+    // the camera's exposure integration time. TODO: allow it to be updated via
+    // FocusEngine method.
+    auto_expose: bool,
 
-    center_region: Rect,
+    // Zero means go fast as images can be captured. TODO: allow it to be
+    // updated via FocusEngine method.
+    update_interval: Duration,
 
-    peak_position: (u32, u32),
+    // The `frame_id` to use for the next posted `focus_result`.
+    next_frame_id: i32,
 
-    zoomed_peak_image: GrayImage,
+    focus_result: Option<FocusResult>,
 
-    center_peak_fwhm: f32,
+    // Set by stop(); the video capture thread exits when it sees this.
+    stop_request: bool,
 
-    // TODO: capture time, camera temperature.
+    worker_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for FocusEngine {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+impl FocusEngine {
+    pub fn new(camera: Arc<Mutex<dyn AbstractCamera>>,
+               update_interval: Duration, auto_expose: bool) -> FocusEngine {
+        let focus_engine = FocusEngine{
+            state: Arc::new(Mutex::new(SharedState{
+                camera: camera.clone(),
+                auto_expose,
+                update_interval,
+                next_frame_id: 0,
+                focus_result: None,
+                stop_request: false,
+                worker_thread: None,
+            })),
+            focus_result_available: Arc::new(Condvar::new()),
+        };
+        {
+            let cloned_state = focus_engine.state.clone();
+            let cloned_condvar = focus_engine.focus_result_available.clone();
+            let mut state = focus_engine.state.lock().unwrap();
+            state.worker_thread = Some(thread::spawn(|| {
+                FocusEngine::worker(cloned_state, cloned_condvar);
+            }));
+        }
+        focus_engine
+    }
+
+    // operation methods...
+    pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> FocusResult {
+        let mut state = self.state.lock().unwrap();
+        // Get the most recently posted result.
+        loop {
+            if state.focus_result.is_none() {
+                state = self.focus_result_available.wait(state).unwrap();
+                continue;
+            }
+            // Wait if the posted result is the same as the one the caller has
+            // already obtained.
+            if prev_frame_id.is_some() &&
+                state.focus_result.as_ref().unwrap().frame_id == prev_frame_id.unwrap()
+            {
+                state = self.focus_result_available.wait(state).unwrap();
+                continue;
+            }
+            break;
+        }
+        // Don't consume it, other clients may want it.
+        state.focus_result.clone().unwrap()
+    }
+
+    pub fn stop(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        if state.worker_thread.is_none() {
+            return;
+        }
+        state.stop_request = true;
+        while state.worker_thread.is_some() {
+            state = self.focus_result_available.wait(state).unwrap();
+        }
+    }
+
+    fn worker(state: Arc<Mutex<SharedState>>,
+              focus_result_available: Arc<Condvar>) {
+        // Keep track of when we started the focus cycle.
+        let mut last_result_time: Option<Instant> = None;
+        loop {
+            let auto_expose: bool;
+            let update_interval: Duration;
+            {
+                let mut locked_state = state.lock().unwrap();
+                auto_expose = locked_state.auto_expose;
+                update_interval = locked_state.update_interval;
+                if locked_state.stop_request {
+                    info!("Stopping focus engine");
+                    locked_state.stop_request = false;
+                    break;
+                }
+            }
+            // Is it time to generate the next FocusResult?
+            let now = Instant::now();
+            if last_result_time.is_some() {
+                let next_update_time = last_result_time.unwrap() + update_interval;
+                if next_update_time > now {
+                    thread::sleep(next_update_time - now);
+                    continue;
+                }
+            }
+
+            // Time to do a focus processing cycle.
+            last_result_time = Some(now);
+
+            let captured_image: Arc<CapturedImage>;
+            {
+                let locked_state = state.lock().unwrap();
+                let mut locked_camera = locked_state.camera.lock().unwrap();
+                match locked_camera.capture_image() {
+                    Ok(img) => captured_image = img,
+                    Err(e) => {
+                        error!("Error capturing image: {}", &e.to_string());
+                        break;  // Abandon thread execution!
+                    }
+                }
+            }
+            // Process the just-acquired image.
+            let image: &GrayImage = &captured_image.image;
+            let (width, height) = image.dimensions();
+            let center_size = std::cmp::min(width, height) / 3;
+            let center_region = Rect::at(((width - center_size) / 2) as i32,
+                                         ((height - center_size) / 2) as i32)
+                .of_size(center_size, center_size);
+
+            let noise_estimate = estimate_noise_from_image(image);
+            // TODO: allow sigma to be passed in.
+            let roi_summary = summarize_region_of_interest(
+                image, &center_region, noise_estimate, /*sigma=*/6.0);
+            let mut peak_value = 1;  // Avoid div0 below.
+            let histogram = &roi_summary.histogram;
+            for bin in 2..256 {
+                if histogram[bin] > 0 {
+                    peak_value = bin;
+                }
+            }
+            let peak_value_goal = 64;
+            if auto_expose {
+                // Adjust exposure time based on histogram of center_region. We
+                // aim for a peak brightness of 64 instead of 255 for a shorter
+                // exposure integration time. We'll scale up the pixel values in
+                // the zoomed_peak_image for good display visibility.
+                // Compute how much to scale the previous exposure integration
+                // time to move towards the goal.
+                let correction_factor = peak_value_goal as f32 / peak_value as f32;
+                if correction_factor < 0.9 || correction_factor > 1.1 {
+                    let new_exposure_duration =
+                        captured_image.capture_params.exposure_duration.mul_f32(
+                            correction_factor);
+                    let locked_state = state.lock().unwrap();
+                    let mut locked_camera = locked_state.camera.lock().unwrap();
+                    match locked_camera.set_exposure_duration(new_exposure_duration) {
+                        Ok(()) => (),
+                        Err(e) => {
+                            error!("Error updating exposure duration: {}",
+                                   &e.to_string());
+                            break;  // Abandon thread execution!
+                        }
+                    }
+                }
+            }
+            // Use the projections of the center_region to identify the
+            // brightest point of the center_region.
+            // TODO: why not just grab the peak pixel value within
+            // center_region? Can find it while computing histogram in
+            // summarize_region_of_interest().
+            // TODO: also consider doing a 1d/2d identification of the brightest
+            // star candidate, using an approach that allows for severe defocus.
+            let mut peak_val = 0.0_f32;
+            let mut peak_y = 0;
+            for (y, val) in roi_summary.horizontal_projection.iter().enumerate() {
+                if *val > peak_val {
+                    peak_y = y;
+                }
+            }
+            peak_val = 0.0;
+            let mut peak_x = 0;
+            for (x, val) in roi_summary.vertical_projection.iter().enumerate() {
+                if *val > peak_val {
+                    peak_x = x;
+                }
+            }
+            // Convert to image coordinates.
+            let peak_position = (center_region.left() as u32 + peak_x as u32,
+                                 center_region.top() as u32 + peak_y as u32);
+            // Get a small sub-image centered on the peak coordinates.
+            let sub_image_size = 30_u32;
+            let peak_region = Rect::at((peak_position.0 - sub_image_size/2) as i32,
+                                       (peak_position.1 - sub_image_size/2) as i32)
+                .of_size(sub_image_size, sub_image_size);
+
+            let mut peak_image = image.view(peak_region.left() as u32,
+                                            peak_region.top() as u32,
+                                            sub_image_size, sub_image_size).to_image();
+            contrast::stretch_contrast_mut(&mut peak_image, 0, peak_val as u8);
+
+            // Post the result.
+            let mut locked_state = state.lock().unwrap();
+            locked_state.focus_result = Some(FocusResult{
+                frame_id: locked_state.next_frame_id,
+                captured_image: captured_image.clone(),
+                center_region,
+                peak_position,
+                peak_image,
+                peak_image_region: peak_region,
+                processing_duration: last_result_time.unwrap().elapsed(),
+            });
+            locked_state.next_frame_id += 1;
+            focus_result_available.notify_all();
+        }  // loop.
+        let mut locked_state = state.lock().unwrap();
+        locked_state.worker_thread = None;
+        focus_result_available.notify_all();
+    }
+}
+
+#[derive(Clone)]
+pub struct FocusResult {
+    pub frame_id: i32,
+
+    pub captured_image: Arc<CapturedImage>,
+
+    pub center_region: Rect,
+
+    pub peak_position: (u32, u32),
+
+    pub peak_image: GrayImage,
+
+    pub peak_image_region: Rect,
+
+    // Time taken to produce this FocusResult, excluding the time taken to
+    // acquire the image.
+    pub processing_duration: std::time::Duration,
 
     // TODO: candidates, hot pixel count, etc. from StarGate (which we run
     // alongside the focusing logic)

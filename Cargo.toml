@@ -3,13 +3,9 @@ name = "cedar"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]] # Bin to run the Cedar gRPC server
-name = "cedar-server"
-path = "src/server.rs"
-
-[[bin]] # Bin to run the Cedar gRPC client
-name = "cedar-client"
-path = "src/client.rs"
+[[bin]] # Bin to run the Cedar gRPC server; focus engine functional subset.
+name = "cedar-focus-server"
+path = "src/focus_server.rs"
 
 [dependencies]
 asi_camera2 = { version = "0.1.0", path = "../asi_camera2" }
@@ -24,7 +20,9 @@ image = "0.24.6"
 imageproc = "0.23.0"
 log = "0.4.19"
 prost = "0.11"
+prost-build = "0.11.9"
 prost-types = "0.11.9"
+star_gate = { version = "0.1.0", path = "../star_gate" }
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 tonic = "0.9"
 tonic-web = "0.9.2"
@@ -33,3 +31,4 @@ tower-http = { version = "0.4.3", features = ["fs", "cors"] }
 
 [build-dependencies]
 tonic-build = "0.9"
+prost-build = "0.11.9"

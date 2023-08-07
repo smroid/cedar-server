@@ -6,7 +6,7 @@ use self::multiplex_service::MultiplexService;
 
 use camera_service::abstract_camera::AbstractCamera;
 use camera_service::asi_camera;
-use image::{GrayImage, ImageOutputFormat};
+use image::ImageOutputFormat;
 
 use std::io::Cursor;
 use std::net::SocketAddr;
@@ -50,8 +50,7 @@ impl ImageOld for MyImage {
 
         // Receive camera data, encode to BMP.
         let captured_image = camera.capture_image().unwrap();
-        let image = GrayImage::from_raw(width as u32, height as u32,
-                                        captured_image.image_data).unwrap();
+        let image = &captured_image.image;
         let mut bmp_buf = Vec::<u8>::new();
         bmp_buf.reserve((2 * width * height) as usize);
         image.write_to(&mut Cursor::new(&mut bmp_buf), ImageOutputFormat::Bmp).unwrap();
