@@ -1,4 +1,14 @@
+use prost_build;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::compile_protos("src/proto/cedar.proto")?;
+    let mut config = prost_build::Config::new();
+    config.protoc_arg("--experimental_allow_proto3_optional");
+
+    tonic_build::configure().compile_with_config(
+        config,
+        &["src/proto/cedar.proto"], &["src/proto"])?;
     Ok(())
+
+    // tonic_build::compile_protos("src/proto/cedar.proto")?;
+    // Ok(())
 }
