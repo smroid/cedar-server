@@ -33,18 +33,13 @@ pub mod cedar {
     tonic::include_proto!("cedar");
 }
 
-struct State {
-    camera: Arc<Mutex<asi_camera::ASICamera>>,
-    focus_engine: FocusEngine,
-}
-
 struct MyCedar {
-    state: Mutex<State>,
+    focus_engine: Mutex<FocusEngine>,
 }
 
 #[tonic::async_trait]
 impl Cedar for MyCedar {
-    async fn update_operation_settings(&self, request: tonic::Request<OperationSettings>)
+    async fn update_operation_settings(&self, _request: tonic::Request<OperationSettings>)
                                        -> Result<tonic::Response<OperationSettings>,
                                                  tonic::Status>
     {
@@ -54,14 +49,15 @@ impl Cedar for MyCedar {
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let req_start = Instant::now();
-        let prev_frame_id = request.into_inner().prev_frame_id;
-        let main_image_mode = request.into_inner().main_image_mode;
+        let req = request.into_inner();
+        let prev_frame_id = req.prev_frame_id;
+        let main_image_mode = req.main_image_mode;
 
-        let state = &mut self.state.lock().unwrap();
-        let focus_result = state.focus_engine.get_next_result(prev_frame_id);
+        let focus_engine = &mut self.focus_engine.lock().unwrap();
+        let focus_result = focus_engine.get_next_result(prev_frame_id);
         let captured_image = &focus_result.captured_image;
 
-        info!("Responding to request: {:?} after {:?}", request, req_start.elapsed());
+        info!("Responding to request: {:?} after {:?}", req, req_start.elapsed());
         // let exp_dur = prost_types::Duration::try_from(
         //     captured_image.capture_params.exposure_duration
         // );
@@ -143,15 +139,15 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
-
-
     pub fn new() -> Self {
         let mut camera = asi_camera::ASICamera::new(
             asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap();
+
         camera.set_exposure_duration(Duration::from_millis(5)).unwrap();
-        MyCedar {
-            state: Mutex::new(State{camera: camera})
-        }
+        let camera = Arc::new(Mutex::new(camera));
+        let focus_engine = FocusEngine::new(camera.clone(),
+                                            Duration::from_secs(0), true);
+        MyCedar { focus_engine: Mutex::new(focus_engine) }
     }
 }
 
