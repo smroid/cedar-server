@@ -257,8 +257,7 @@ message Rectangle {
 
 // Summarizes a star-like spot found by the StarGate algorithm.
 message StarCentroid {
-  // Location of star centroid in full resolution image coordinates. (0.5, 0.5)
-  // corresponds to the center of the image's upper left pixel.
+  // Location of star centroid in full resolution image coordinates.
   ImageCoord centroid_position = 1;
 
   // Characterizes the extent or spread of the star in each direction, in pixel
