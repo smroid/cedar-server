@@ -8,7 +8,8 @@ use image::{GenericImageView, GrayImage};
 use imageproc::contrast;
 use imageproc::rect::Rect;
 use log::{error, info};
-use star_gate::{estimate_noise_from_image, summarize_region_of_interest};
+use star_gate::algorithm::{estimate_noise_from_image,
+                           summarize_region_of_interest};
 
 pub struct FocusEngine {
     // Our state, shared between ASICamera methods and the video capture thread.

@@ -8,7 +8,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config,
         &["src/proto/cedar.proto"], &["src/proto"])?;
     Ok(())
-
-    // tonic_build::compile_protos("src/proto/cedar.proto")?;
-    // Ok(())
 }
