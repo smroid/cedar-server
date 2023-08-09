@@ -4,7 +4,7 @@
 
 use self::multiplex_service::MultiplexService;
 
-use camera_service::abstract_camera::AbstractCamera;
+use camera_service::abstract_camera::{AbstractCamera, Gain};
 use camera_service::asi_camera;
 use image::ImageOutputFormat;
 
@@ -150,7 +150,7 @@ impl MyCedar {
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("debug")).init();
+        env_logger::Env::default().default_filter_or("info")).init();
 
     // Build the static content web service.
     let rest = Router::new().nest_service(
@@ -159,6 +159,7 @@ async fn main() {
     let mut camera = asi_camera::ASICamera::new(
         asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap();
     camera.set_exposure_duration(Duration::from_millis(5)).unwrap();
+    camera.set_gain(Gain::new(100)).unwrap();
     let shared_camera = Arc::new(Mutex::new(camera));
 
     // Build the grpc service.
@@ -185,7 +186,6 @@ async fn main() {
 // TODO: delete this.
 struct MyImage {
     camera: Arc<Mutex<asi_camera::ASICamera>>,
-    frame_id: Mutex<Option<i32>>,
 }
 
 #[tonic::async_trait]
@@ -195,13 +195,11 @@ impl ImageOld for MyImage {
         let req_start = Instant::now();
 
         let mut locked_camera = self.camera.lock().unwrap();
-        let mut locked_frame_id = self.frame_id.lock().unwrap();
         let (width, height) = locked_camera.dimensions();
 
         // Receive camera data, encode to BMP.
-        let (captured_image, id) = locked_camera.capture_image(*locked_frame_id).unwrap();
+        let (captured_image, _id) = locked_camera.capture_image(None).unwrap();
         let image = &captured_image.image;
-        *locked_frame_id = Some(id);
         let mut bmp_buf = Vec::<u8>::new();
         bmp_buf.reserve((2 * width * height) as usize);
         image.write_to(&mut Cursor::new(&mut bmp_buf), ImageOutputFormat::Bmp).unwrap();
@@ -217,7 +215,7 @@ impl ImageOld for MyImage {
 
 impl MyImage {
     pub fn new(camera: Arc<Mutex<asi_camera::ASICamera>>) -> Self {
-        MyImage { camera: camera.clone(), frame_id: Mutex::new(None) }
+        MyImage { camera: camera.clone() }
     }
 }
 

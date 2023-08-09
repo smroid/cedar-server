@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart' as dart_widgets;
 import 'package:grpc/grpc_web.dart';
 import 'package:cedar_webapp/generated/cedar.pbgrpc.dart';
 
@@ -64,7 +65,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   // Function to make gRPC request and get the image.
   void getImageFromServer() async {
-    final client = ImageClient(GrpcWebClientChannel.xhr(Uri.base));
+    final client = ImageOldClient(GrpcWebClientChannel.xhr(Uri.base));
 
     final request = ImageRequest();
     try {
@@ -122,7 +123,8 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
             SizedBox(height: 20),
             imageBytes != null
-               ? Image.memory(imageBytes, height: height.toDouble(), width: width.toDouble(),
+               ? dart_widgets.Image.memory(
+                              imageBytes, height: height.toDouble(), width: width.toDouble(),
                               gaplessPlayback: true)
                : SizedBox.shrink(),
           ],
