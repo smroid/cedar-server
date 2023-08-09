@@ -1,5 +1,6 @@
 use camera_service::abstract_camera::{AbstractCamera, CapturedImage};
 
+use std::ops::DerefMut;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,6 +25,7 @@ pub struct FocusEngine {
 struct SharedState {
     // Note: camera settings can be adjusted behind our back.
     camera: Arc<Mutex<dyn AbstractCamera>>,
+    frame_id: Option<i32>,
 
     // If true, use auto exposure. If false, the caller is expected to have set
     // the camera's exposure integration time. TODO: allow it to be updated via
@@ -35,7 +37,7 @@ struct SharedState {
     update_interval: Duration,
 
     // The `frame_id` to use for the next posted `focus_result`.
-    next_frame_id: i32,
+    next_focus_result_id: i32,
 
     focus_result: Option<FocusResult>,
 
@@ -57,9 +59,10 @@ impl FocusEngine {
         let focus_engine = FocusEngine{
             state: Arc::new(Mutex::new(SharedState{
                 camera: camera.clone(),
+                frame_id: None,
                 auto_expose,
                 update_interval,
-                next_frame_id: 0,
+                next_focus_result_id: 0,
                 focus_result: None,
                 stop_request: false,
                 worker_thread: None,
@@ -78,6 +81,7 @@ impl FocusEngine {
     }
 
     // operation methods...
+    // TODO: doc this.
     pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> FocusResult {
         let mut state = self.state.lock().unwrap();
         // Get the most recently posted result.
@@ -100,6 +104,7 @@ impl FocusEngine {
         state.focus_result.clone().unwrap()
     }
 
+    // TODO: doc this.
     pub fn stop(&mut self) {
         let mut state = self.state.lock().unwrap();
         if state.worker_thread.is_none() {
@@ -143,10 +148,14 @@ impl FocusEngine {
 
             let captured_image: Arc<CapturedImage>;
             {
-                let locked_state = state.lock().unwrap();
-                let mut locked_camera = locked_state.camera.lock().unwrap();
-                match locked_camera.capture_image() {
-                    Ok(img) => captured_image = img,
+                let mut locked_state = state.lock().unwrap();
+                let locked_state_mut = locked_state.deref_mut();
+                let mut locked_camera = locked_state_mut.camera.lock().unwrap();
+                match locked_camera.capture_image(locked_state_mut.frame_id) {
+                    Ok((img, id)) => {
+                        captured_image = img;
+                        locked_state_mut.frame_id = Some(id);
+                    }
                     Err(e) => {
                         error!("Error capturing image: {}", &e.to_string());
                         break;  // Abandon thread execution!
@@ -235,7 +244,7 @@ impl FocusEngine {
             // Post the result.
             let mut locked_state = state.lock().unwrap();
             locked_state.focus_result = Some(FocusResult{
-                frame_id: locked_state.next_frame_id,
+                frame_id: locked_state.next_focus_result_id,
                 captured_image: captured_image.clone(),
                 center_region,
                 peak_position,
@@ -243,7 +252,7 @@ impl FocusEngine {
                 peak_image_region: peak_region,
                 processing_duration: last_result_time.unwrap().elapsed(),
             });
-            locked_state.next_frame_id += 1;
+            locked_state.next_focus_result_id += 1;
             focus_result_available.notify_all();
         }  // loop.
         let mut locked_state = state.lock().unwrap();

@@ -185,6 +185,7 @@ async fn main() {
 // TODO: delete this.
 struct MyImage {
     camera: Arc<Mutex<asi_camera::ASICamera>>,
+    frame_id: Mutex<Option<i32>>,
 }
 
 #[tonic::async_trait]
@@ -194,11 +195,13 @@ impl ImageOld for MyImage {
         let req_start = Instant::now();
 
         let mut locked_camera = self.camera.lock().unwrap();
+        let mut locked_frame_id = self.frame_id.lock().unwrap();
         let (width, height) = locked_camera.dimensions();
 
         // Receive camera data, encode to BMP.
-        let captured_image = locked_camera.capture_image().unwrap();
+        let (captured_image, id) = locked_camera.capture_image(*locked_frame_id).unwrap();
         let image = &captured_image.image;
+        *locked_frame_id = Some(id);
         let mut bmp_buf = Vec::<u8>::new();
         bmp_buf.reserve((2 * width * height) as usize);
         image.write_to(&mut Cursor::new(&mut bmp_buf), ImageOutputFormat::Bmp).unwrap();
@@ -214,7 +217,7 @@ impl ImageOld for MyImage {
 
 impl MyImage {
     pub fn new(camera: Arc<Mutex<asi_camera::ASICamera>>) -> Self {
-        MyImage { camera: camera.clone() }
+        MyImage { camera: camera.clone(), frame_id: Mutex::new(None) }
     }
 }
 
