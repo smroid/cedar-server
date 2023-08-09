@@ -218,6 +218,7 @@ impl FocusEngine {
             for (y, val) in roi_summary.horizontal_projection.iter().enumerate() {
                 if *val > peak_val {
                     peak_y = y;
+                    peak_val = *val;
                 }
             }
             peak_val = 0.0;
@@ -225,11 +226,13 @@ impl FocusEngine {
             for (x, val) in roi_summary.vertical_projection.iter().enumerate() {
                 if *val > peak_val {
                     peak_x = x;
+                    peak_val = *val;
                 }
             }
             // Convert to image coordinates.
             let peak_position = (center_region.left() as u32 + peak_x as u32,
                                  center_region.top() as u32 + peak_y as u32);
+            let peak = image.get_pixel(peak_position.0, peak_position.1).0[0];
             // Get a small sub-image centered on the peak coordinates.
             let sub_image_size = 30_u32;
             let peak_region = Rect::at((peak_position.0 - sub_image_size/2) as i32,
@@ -239,7 +242,7 @@ impl FocusEngine {
             let mut peak_image = image.view(peak_region.left() as u32,
                                             peak_region.top() as u32,
                                             sub_image_size, sub_image_size).to_image();
-            contrast::stretch_contrast_mut(&mut peak_image, 0, peak_val as u8);
+            contrast::stretch_contrast_mut(&mut peak_image, 0, peak);
 
             // Post the result.
             let mut locked_state = state.lock().unwrap();
