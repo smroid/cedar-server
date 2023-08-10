@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use image::{GenericImageView, GrayImage};
 use imageproc::contrast;
 use imageproc::rect::Rect;
-use log::{error, info};
+use log::{debug, error, info};
 use star_gate::algorithm::{estimate_noise_from_image,
                            summarize_region_of_interest};
 
@@ -174,11 +174,11 @@ impl FocusEngine {
             // TODO: allow sigma to be passed in.
             let roi_summary = summarize_region_of_interest(
                 image, &center_region, noise_estimate, /*sigma=*/6.0);
-            let mut peak_value = 1;  // Avoid div0 below.
+            let mut peak_value = 1_u8;  // Avoid div0 below.
             let histogram = &roi_summary.histogram;
             for bin in 2..256 {
                 if histogram[bin] > 0 {
-                    peak_value = bin;
+                    peak_value = bin as u8;
                 }
             }
             let peak_value_goal = 64;
@@ -190,18 +190,31 @@ impl FocusEngine {
                 // Compute how much to scale the previous exposure integration
                 // time to move towards the goal.
                 let correction_factor = peak_value_goal as f32 / peak_value as f32;
-                if correction_factor < 0.9 || correction_factor > 1.1 {
-                    let new_exposure_duration =
-                        captured_image.capture_params.exposure_duration.mul_f32(
-                            correction_factor);
-                    let locked_state = state.lock().unwrap();
-                    let mut locked_camera = locked_state.camera.lock().unwrap();
-                    match locked_camera.set_exposure_duration(new_exposure_duration) {
-                        Ok(()) => (),
-                        Err(e) => {
-                            error!("Error updating exposure duration: {}",
-                                   &e.to_string());
-                            break;  // Abandon thread execution!
+                if peak_value >= 255 ||
+                    correction_factor < 0.8 || correction_factor > 1.2
+                {
+                    let prev_exposure_duration_secs =
+                        captured_image.capture_params.exposure_duration.as_secs_f32();
+                    let mut new_exposure_duration_secs =
+                        prev_exposure_duration_secs * correction_factor;
+                    // Bound exposure duration to 0.01ms..2s.
+                    new_exposure_duration_secs = f32::max(
+                        new_exposure_duration_secs, 0.00001);
+                    new_exposure_duration_secs = f32::min(
+                        new_exposure_duration_secs, 2.0);
+                    if prev_exposure_duration_secs != new_exposure_duration_secs {
+                        debug!("Setting new exposure duration {}s",
+                               new_exposure_duration_secs);
+                        let locked_state = state.lock().unwrap();
+                        let mut locked_camera = locked_state.camera.lock().unwrap();
+                        match locked_camera.set_exposure_duration(
+                            Duration::from_secs_f32(new_exposure_duration_secs)) {
+                            Ok(()) => (),
+                            Err(e) => {
+                                error!("Error updating exposure duration: {}",
+                                       &e.to_string());
+                                break;  // Abandon thread execution!
+                            }
                         }
                     }
                 }
@@ -213,36 +226,36 @@ impl FocusEngine {
             // summarize_region_of_interest().
             // TODO: also consider doing a 1d/2d identification of the brightest
             // star candidate, using an approach that allows for severe defocus.
-            let mut peak_val = 0.0_f32;
+            let mut peak_projected = 0.0_f32;
             let mut peak_y = 0;
             for (y, val) in roi_summary.horizontal_projection.iter().enumerate() {
-                if *val > peak_val {
+                if *val > peak_projected {
                     peak_y = y;
-                    peak_val = *val;
+                    peak_projected = *val;
                 }
             }
-            peak_val = 0.0;
+            peak_projected = 0.0;
             let mut peak_x = 0;
             for (x, val) in roi_summary.vertical_projection.iter().enumerate() {
-                if *val > peak_val {
+                if *val > peak_projected {
                     peak_x = x;
-                    peak_val = *val;
+                    peak_projected = *val;
                 }
             }
             // Convert to image coordinates.
             let peak_position = (center_region.left() as u32 + peak_x as u32,
                                  center_region.top() as u32 + peak_y as u32);
-            let peak = image.get_pixel(peak_position.0, peak_position.1).0[0];
             // Get a small sub-image centered on the peak coordinates.
             let sub_image_size = 30_u32;
             let peak_region = Rect::at((peak_position.0 - sub_image_size/2) as i32,
                                        (peak_position.1 - sub_image_size/2) as i32)
                 .of_size(sub_image_size, sub_image_size);
 
+            info!("peak {} at x/y {}/{}", peak_value, peak_region.left(), peak_region.top());
             let mut peak_image = image.view(peak_region.left() as u32,
                                             peak_region.top() as u32,
                                             sub_image_size, sub_image_size).to_image();
-            contrast::stretch_contrast_mut(&mut peak_image, 0, peak);
+            contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
 
             // Post the result.
             let mut locked_state = state.lock().unwrap();

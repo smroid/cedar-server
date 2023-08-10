@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use axum::Router;
 use env_logger;
-use log::info;
+use log::{debug, info};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
 
@@ -59,7 +59,7 @@ impl Cedar for MyCedar {
         let focus_result = focus_engine.get_next_result(prev_frame_id);
         let captured_image = &focus_result.captured_image;
 
-        info!("Responding to request: {:?} after {:?}", req, req_start.elapsed());
+        debug!("Responding to request: {:?} after {:?}", req, req_start.elapsed());
         // let exp_dur = prost_types::Duration::try_from(
         //     captured_image.capture_params.exposure_duration
         // );
