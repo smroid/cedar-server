@@ -1,3 +1,4 @@
+import 'dart:developer';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
@@ -63,21 +64,45 @@ class _MyHomePageState extends State<MyHomePage> {
   int width = 0;
   int height = 0;
 
-  // Function to make gRPC request and get the image.
-  void getImageFromServer() async {
-    final client = ImageOldClient(GrpcWebClientChannel.xhr(Uri.base));
+  Uint8List centerPeakImageBytes = Uint8List(1);
+  int centerPeakWidth = 0;
+  int centerPeakHeight = 0;
 
-    final request = ImageRequest();
+  bool doRefreshes = false;
+  int prevFrameId = -1;
+
+  Future<void> getFocusFrameFromServer() async {
+    final client = CedarClient(GrpcWebClientChannel.xhr(Uri.base));
+
+    final imageMode = (prevFrameId % 20) == 0 ?
+          ImageMode.IMAGE_MODE_DEFAULT : ImageMode.IMAGE_MODE_OMIT;
+
+    final request = FrameRequest()
+      ..prevFrameId = prevFrameId
+      ..mainImageMode = imageMode;
     try {
-      final response = await client.getImage(request);
+      final response = await client.getFrame(request);
       setState(() {
-        imageBytes = Uint8List.fromList(response.imageData);
-        width = response.width;
-        height = response.height;
+        prevFrameId = response.frameId;
+        if (response.hasImage()) {
+          imageBytes = Uint8List.fromList(response.image.imageData);
+          width = response.image.rectangle.width;
+          height = response.image.rectangle.height;
+        }
+        centerPeakImageBytes = Uint8List.fromList(response.centerPeakImage.imageData);
+        centerPeakWidth = response.centerPeakImage.rectangle.width;
+        centerPeakHeight = response.centerPeakImage.rectangle.height;
       });
     } catch (e) {
-      print('Error: $e');
+      log('Error: $e');
     }
+  }
+
+  void refreshStateFromServer() async {
+    await Future.doWhile(() async {
+      await getFocusFrameFromServer();
+      return doRefreshes;
+    });
   }
 
   @override
@@ -117,16 +142,26 @@ class _MyHomePageState extends State<MyHomePage> {
           // wireframe for each widget.
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            ElevatedButton(
-              onPressed: getImageFromServer,
-              child: Text('Get image'),
+            Switch(
+                value: doRefreshes,
+                onChanged: (bool value) {
+                    setState(() {
+                      doRefreshes = value;
+                      if (doRefreshes) {
+                        refreshStateFromServer();
+                      }
+                    });
+                }
             ),
             SizedBox(height: 20),
-            imageBytes != null
-               ? dart_widgets.Image.memory(
-                              imageBytes, height: height.toDouble(), width: width.toDouble(),
-                              gaplessPlayback: true)
-               : SizedBox.shrink(),
+            dart_widgets.Image.memory(
+                imageBytes, height: height.toDouble(), width: width.toDouble(),
+                gaplessPlayback: true),
+            dart_widgets.Image.memory(centerPeakImageBytes,
+                                      height: centerPeakHeight.toDouble() * 4,
+                                      width: centerPeakWidth.toDouble() * 4,
+                                      fit: BoxFit.fill,
+                                      gaplessPlayback: true),
           ],
         ),
       ),
