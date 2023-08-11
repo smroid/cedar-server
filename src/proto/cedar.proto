@@ -207,6 +207,9 @@ message FrameResult {
   // Estimated completion fraction [0..1) of the calibration.
   optional float calibration_progress = 16;
 
+  // TODO: calibration result? E.g. no stars detected; too much movement during
+  // capture; other inconsistencies.
+
   // Information returned when `operating_mode` is OPERATING_MODE_OPERATE.
 
   // The current plate solution.
@@ -283,13 +286,31 @@ message ImageCoord {
   float y = 2;
 }
 
+// Identify calibration activities that require more than a trivial amount of
+// time to complete.
 enum CalibrationPhase {
-  CALIBRATION_PHASE_NONE = 0;  // Calibration not underway.
-  // Identify calibration activities that require more than a trivial amount
-  // of time to complete.
+  // Calibration not underway.
+  CALIBRATION_PHASE_NONE = 0;
+
+  // Capturing a set of images over a range of exposure times, gain values, and
+  // offset values.
   CALIBRATION_PHASE_EXPOSURE_SWEEP = 1;
+
+  // Analyzing the captured image set to determine:
+  // * Minimum offset value that avoids crushing too many pixels to 0 value.
+  // * Optimum gain value for best signal to noise.
+  // * At optimum gain value, minimum and maximum exposure integration times for
+  //   obtaining good star counts and avoiding too many overexposed stars.
   CALIBRATION_PHASE_ANALYZE_EXPOSURE = 2;
+
+  // Determining the StarGate "sigma" levels to use to maximize true star
+  // detections and minimize false star detections, using catalogue as ground
+  // (sky) truth.
   CALIBRATION_PHASE_ANALYZE_STAR_THRESHOLD = 3;
+
+  // Use central crop to obtain plate solution, and do astrometry on peripheral
+  // stars w.r.t. the catalogue to obtain the lens distortion and true field of
+  // view.
   CALIBRATION_PHASE_ANALYZE_LENS_DISTORTION = 4;
 }
 
@@ -332,11 +353,6 @@ message ActionRequest {
 
   // Calibrate camera/sky (focus mode only). Pre-empts focus mode operation until
   // completed or canceled.
-  // * Exposure level from exposure time and gain setting
-  // * Offset level to avoid black crush
-  // * Sigma level vs. true/false detections w.r.t. catalogue
-  // * Lens distortion model?
-  // * FOV.
 
   // Cancel camera/sky calibration.
 
