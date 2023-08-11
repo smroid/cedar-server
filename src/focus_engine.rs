@@ -181,18 +181,23 @@ impl FocusEngine {
                     peak_value = bin as u8;
                 }
             }
-            let peak_value_goal = 64;
+            let peak_value_goal = 200;
             if auto_expose {
                 // Adjust exposure time based on histogram of center_region. We
-                // aim for a peak brightness of 64 instead of 255 for a shorter
-                // exposure integration time. We'll scale up the pixel values in
-                // the zoomed_peak_image for good display visibility.
+                // scale up the pixel values in the zoomed_peak_image for good
+                // display visibility.
                 // Compute how much to scale the previous exposure integration
                 // time to move towards the goal.
-                let correction_factor = peak_value_goal as f32 / peak_value as f32;
-                if peak_value >= 255 ||
-                    correction_factor < 0.8 || correction_factor > 1.2
-                {
+                let correction_factor =
+                    if peak_value == 255 {
+                        // We don't know how overexposed we are. Cut the
+                        // exposure time in half.
+                        0.5
+                    } else {
+                        // Move proportionally towards the goal.
+                        peak_value_goal as f32 / peak_value as f32
+                    };
+                if correction_factor < 0.8 || correction_factor > 1.2 {
                     let prev_exposure_duration_secs =
                         captured_image.capture_params.exposure_duration.as_secs_f32();
                     let mut new_exposure_duration_secs =
@@ -219,42 +224,19 @@ impl FocusEngine {
                     }
                 }
             }
-            // Use the projections of the center_region to identify the
-            // brightest point of the center_region.
-            // TODO: why not just grab the peak pixel value within
-            // center_region? Can find it while computing histogram in
-            // summarize_region_of_interest().
-            // TODO: also consider doing a 1d/2d identification of the brightest
-            // star candidate, using an approach that allows for severe defocus.
-            let mut peak_projected = 0.0_f32;
-            let mut peak_y = 0;
-            for (y, val) in roi_summary.horizontal_projection.iter().enumerate() {
-                if *val > peak_projected {
-                    peak_y = y;
-                    peak_projected = *val;
-                }
-            }
-            peak_projected = 0.0;
-            let mut peak_x = 0;
-            for (x, val) in roi_summary.vertical_projection.iter().enumerate() {
-                if *val > peak_projected {
-                    peak_x = x;
-                    peak_projected = *val;
-                }
-            }
-            // Convert to image coordinates.
-            let peak_position = (center_region.left() as u32 + peak_x as u32,
-                                 center_region.top() as u32 + peak_y as u32);
             // Get a small sub-image centered on the peak coordinates.
-            let sub_image_size = 30_u32;
+            let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
+            let sub_image_size = 30;
             let peak_region = Rect::at((peak_position.0 - sub_image_size/2) as i32,
                                        (peak_position.1 - sub_image_size/2) as i32)
-                .of_size(sub_image_size, sub_image_size);
+                .of_size(sub_image_size as u32, sub_image_size as u32);
 
-            info!("peak {} at x/y {}/{}", peak_value, peak_region.left(), peak_region.top());
+            debug!("peak {} at x/y {}/{}",
+                   peak_value, peak_region.left(), peak_region.top());
             let mut peak_image = image.view(peak_region.left() as u32,
                                             peak_region.top() as u32,
-                                            sub_image_size, sub_image_size).to_image();
+                                            sub_image_size as u32,
+                                            sub_image_size as u32).to_image();
             contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
 
             // Post the result.
@@ -285,7 +267,7 @@ pub struct FocusResult {
 
     pub center_region: Rect,
 
-    pub peak_position: (u32, u32),
+    pub peak_position: (i32, i32),
 
     pub peak_image: GrayImage,
 
