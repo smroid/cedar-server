@@ -153,15 +153,16 @@ class _MyHomePageState extends State<MyHomePage> {
                     });
                 }
             ),
-            SizedBox(height: 20),
-            dart_widgets.Image.memory(
-                imageBytes, height: height.toDouble(), width: width.toDouble(),
-                gaplessPlayback: true),
+            SizedBox(height: 2),
             dart_widgets.Image.memory(centerPeakImageBytes,
                                       height: centerPeakHeight.toDouble() * 4,
                                       width: centerPeakWidth.toDouble() * 4,
                                       fit: BoxFit.fill,
                                       gaplessPlayback: true),
+            dart_widgets.Image.memory(
+                imageBytes, height: height.toDouble() / 2, width: width.toDouble() / 2,
+                fit: BoxFit.fill,
+                gaplessPlayback: true),
           ],
         ),
       ),
