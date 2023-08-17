@@ -12,6 +12,7 @@ asi_camera2 = { version = "0.1.0", path = "../asi_camera2" }
 async-std = "1.12.0"
 axum = "0.6.19"
 camera_service = { version = "0.1.0", path = "../camera_service" }
+canonical-error = "0.1.0"
 env_logger = "0.10.0"
 futures = "0.3.28"
 http-body = "0.4.5"

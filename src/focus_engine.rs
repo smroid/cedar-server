@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use canonical_error::CanonicalError;
 use image::{GenericImageView, GrayImage};
 use imageproc::contrast;
 use imageproc::rect::Rect;
@@ -27,10 +28,9 @@ struct SharedState {
     camera: Arc<Mutex<dyn AbstractCamera>>,
     frame_id: Option<i32>,
 
-    // If true, use auto exposure. If false, the caller is expected to have set
-    // the camera's exposure integration time. TODO: allow it to be updated via
-    // FocusEngine method.
-    auto_expose: bool,
+    // If omitted, use auto exposure. If given, this is the camera's exposure
+    // integration time.
+    exposure_time: Option<Duration>,
 
     // Zero means go fast as images can be captured. TODO: allow it to be
     // updated via FocusEngine method.
@@ -55,12 +55,13 @@ impl Drop for FocusEngine {
 
 impl FocusEngine {
     pub fn new(camera: Arc<Mutex<dyn AbstractCamera>>,
-               update_interval: Duration, auto_expose: bool) -> FocusEngine {
+               update_interval: Duration, exposure_time: Option<Duration>)
+               -> FocusEngine {
         let focus_engine = FocusEngine{
             state: Arc::new(Mutex::new(SharedState{
                 camera: camera.clone(),
                 frame_id: None,
-                auto_expose,
+                exposure_time,
                 update_interval,
                 next_focus_result_id: 0,
                 focus_result: None,
@@ -80,7 +81,31 @@ impl FocusEngine {
         focus_engine
     }
 
-    // operation methods...
+    pub fn set_exposure_time(&mut self, exp_time: Option<Duration>)
+                             -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        if exp_time != locked_state.exposure_time {
+            locked_state.exposure_time = exp_time;
+            if exp_time.is_some() {
+                let mut locked_camera = locked_state.camera.lock().unwrap();
+                locked_camera.set_exposure_duration(exp_time.unwrap())?
+            }
+            // Don't need to invalidate `focus_result` state.
+        }
+        Ok(())
+    }
+
+    pub fn set_update_interval(&mut self, update_interval: Duration)
+                             -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        if update_interval != locked_state.update_interval {
+            locked_state.update_interval = update_interval;
+            // Don't need to do anything, worker thread will pick up the
+            // change when it finishes the current interval.
+        }
+        Ok(())
+    }
+
     // TODO: doc this.
     pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> FocusResult {
         let mut state = self.state.lock().unwrap();
@@ -121,11 +146,11 @@ impl FocusEngine {
         // Keep track of when we started the focus cycle.
         let mut last_result_time: Option<Instant> = None;
         loop {
-            let auto_expose: bool;
+            let exp_time: Option<Duration>;
             let update_interval: Duration;
             {
                 let mut locked_state = state.lock().unwrap();
-                auto_expose = locked_state.auto_expose;
+                exp_time = locked_state.exposure_time;
                 update_interval = locked_state.update_interval;
                 if locked_state.stop_request {
                     info!("Stopping focus engine");
@@ -182,7 +207,7 @@ impl FocusEngine {
                 }
             }
             let peak_value_goal = 200;
-            if auto_expose {
+            if exp_time.is_none() {
                 // Adjust exposure time based on histogram of center_region. We
                 // scale up the pixel values in the zoomed_peak_image for good
                 // display visibility.

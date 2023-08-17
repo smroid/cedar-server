@@ -71,7 +71,7 @@ message OperationSettings {
 
   // The S/N factor used to determine if a background-subtracted pixel is bright
   // enough relative to the noise measure to be considered part of a star. Zero
-  // selects automatic determination. Default is 6.
+  // selects automatic determination. Default is 8.
   optional float stargate_sigma = 6;
 
   // The desired time interval at which Cedar should replace its current frame

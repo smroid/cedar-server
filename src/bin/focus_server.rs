@@ -45,6 +45,7 @@ impl Cedar for MyCedar {
                                        -> Result<tonic::Response<OperationSettings>,
                                                  tonic::Status>
     {
+        // TODO: update OperationSettings, propagate change to focus_engine.
         Err(tonic::Status::unimplemented("rpc UpdateOperationSettings not implemented."))
     }
 
@@ -143,7 +144,9 @@ impl Cedar for MyCedar {
 impl MyCedar {
     pub fn new(camera: Arc<Mutex<asi_camera::ASICamera>>) -> Self {
         MyCedar { focus_engine: Mutex::new(FocusEngine::new(
-            camera.clone(), Duration::from_secs(0), true)) }
+            camera.clone(),
+            /*update_interval=*/Duration::from_secs(0),
+            /*exposure_time=*/None)) }
     }
 }
 
