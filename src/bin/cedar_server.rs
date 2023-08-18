@@ -2,21 +2,20 @@
 // https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
 // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 
-use self::multiplex_service::MultiplexService;
-
-use camera_service::abstract_camera::{AbstractCamera, Gain};
-use camera_service::asi_camera;
-use image::ImageOutputFormat;
-
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
+use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
+use camera_service::asi_camera;
+use canonical_error::{CanonicalError, CanonicalErrorCode};
+use image::ImageOutputFormat;
+
 use axum::Router;
 use env_logger;
-use log::{debug, info};
+use log::{debug};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
 
@@ -26,9 +25,30 @@ use crate::cedar::{CalibrationPhase, FrameRequest, FrameResult, Image, ImageMode
                    StarCentroid};
 use ::cedar::focus_engine::FocusEngine;
 
-// TODO: delete these.
-use crate::cedar::image_old_server::{ImageOld, ImageOldServer};
-use crate::cedar::{ImageRequest, ImageReply};
+use self::multiplex_service::MultiplexService;
+
+fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
+    tonic::Status::new(
+        match canonical_error.code {
+            CanonicalErrorCode::Unknown => tonic::Code::Unknown,
+            CanonicalErrorCode::InvalidArgument => tonic::Code::InvalidArgument,
+            CanonicalErrorCode::DeadlineExceeded => tonic::Code::DeadlineExceeded,
+            CanonicalErrorCode::NotFound => tonic::Code::NotFound,
+            CanonicalErrorCode::AlreadyExists => tonic::Code::AlreadyExists,
+            CanonicalErrorCode::PermissionDenied => tonic::Code::PermissionDenied,
+            CanonicalErrorCode::Unauthenticated => tonic::Code::Unauthenticated,
+            CanonicalErrorCode::ResourceExhausted => tonic::Code::ResourceExhausted,
+            CanonicalErrorCode::FailedPrecondition => tonic::Code::FailedPrecondition,
+            CanonicalErrorCode::Aborted => tonic::Code::Aborted,
+            CanonicalErrorCode::OutOfRange => tonic::Code::OutOfRange,
+            CanonicalErrorCode::Unimplemented => tonic::Code::Unimplemented,
+            CanonicalErrorCode::Internal => tonic::Code::Internal,
+            CanonicalErrorCode::Unavailable => tonic::Code::Unavailable,
+            CanonicalErrorCode::DataLoss => tonic::Code::DataLoss,
+            // canonical_error module does not model Ok or Cancelled.
+        },
+        canonical_error.message)
+}
 
 pub mod cedar {
     // The string specified here must match the proto package name.
@@ -36,23 +56,70 @@ pub mod cedar {
 }
 
 struct MyCedar {
+    camera: Arc<Mutex<asi_camera::ASICamera>>,
+    operation_settings: Mutex<OperationSettings>,
     focus_engine: Mutex<FocusEngine>,
 }
 
 #[tonic::async_trait]
 impl Cedar for MyCedar {
-    async fn update_operation_settings(&self, _request: tonic::Request<OperationSettings>)
-                                       -> Result<tonic::Response<OperationSettings>,
-                                                 tonic::Status>
+    async fn update_operation_settings(
+        &self, request: tonic::Request<OperationSettings>)
+        -> Result<tonic::Response<OperationSettings>, tonic::Status>
     {
-        // TODO: update OperationSettings, propagate change to focus_engine.
-        Err(tonic::Status::unimplemented("rpc UpdateOperationSettings not implemented."))
+        let req: OperationSettings = request.into_inner();
+        if req.camera_gain.is_some() {
+            let mut locked_camera = self.camera.lock().unwrap();
+            match locked_camera.set_gain(Gain::new(req.camera_gain.unwrap())) {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+            self.operation_settings.lock().unwrap().camera_gain = req.camera_gain;
+        }
+        if req.camera_offset.is_some() {
+            let mut locked_camera = self.camera.lock().unwrap();
+            match locked_camera.set_offset(Offset::new(req.camera_offset.unwrap())) {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+            self.operation_settings.lock().unwrap().camera_offset = req.camera_offset;
+        }
+        if req.operating_mode.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for operating_mode."));
+        }
+        if req.exposure_time.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for exposure_time."));
+        }
+        if req.stargate_sigma.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for stargate_sigma."));
+        }
+        if req.update_interval.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for update_interval."));
+        }
+        if req.dwell_update_interval.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for dwell_update_interval."));
+        }
+        if req.catalog_tracks_visible_sky.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for catalog_tracks_visible_sky."));
+        }
+        if req.log_dwelled_positions.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
+        }
+
+        Ok(tonic::Response::new(self.operation_settings.lock().unwrap().clone()))
     }
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let req_start = Instant::now();
-        let req = request.into_inner();
+        let req: FrameRequest = request.into_inner();
         let prev_frame_id = req.prev_frame_id;
         let main_image_mode = req.main_image_mode;
 
@@ -60,10 +127,6 @@ impl Cedar for MyCedar {
         let focus_result = focus_engine.get_next_result(prev_frame_id);
         let captured_image = &focus_result.captured_image;
 
-        debug!("Responding to request: {:?} after {:?}", req, req_start.elapsed());
-        // let exp_dur = prost_types::Duration::try_from(
-        //     captured_image.capture_params.exposure_duration
-        // );
         let mut frame_result = cedar::FrameResult {
             frame_id: focus_result.frame_id,
             operating_mode: OperatingMode::Setup as i32,
@@ -137,16 +200,37 @@ impl Cedar for MyCedar {
             image_data: center_peak_bmp_buf,
         });
 
+        debug!("Responding to request: {:?} after {:?}", req, req_start.elapsed());
         Ok(tonic::Response::new(frame_result))
     }  // get_frame().
 }
 
 impl MyCedar {
     pub fn new(camera: Arc<Mutex<asi_camera::ASICamera>>) -> Self {
-        MyCedar { focus_engine: Mutex::new(FocusEngine::new(
-            camera.clone(),
-            /*update_interval=*/Duration::from_secs(0),
-            /*exposure_time=*/None)) }
+        MyCedar {
+            camera: camera.clone(),
+            operation_settings: Mutex::new(OperationSettings {
+                camera_gain: Some(100),
+                camera_offset: Some(0),
+                operating_mode: Some(OperatingMode::Setup as i32),
+                exposure_time: Some(prost_types::Duration {
+                    seconds: 0, nanos: 0,
+                }),
+                stargate_sigma: Some(8.0),
+                update_interval: Some(prost_types::Duration {
+                    seconds: 0, nanos: 0,
+                }),
+                dwell_update_interval: Some(prost_types::Duration {
+                    seconds: 1, nanos: 0,
+                }),
+                catalog_tracks_visible_sky: Some(false),
+                log_dwelled_positions: Some(false),
+            }),
+            focus_engine: Mutex::new(FocusEngine::new(
+                camera.clone(),
+                /*update_interval=*/Duration::from_secs(0),
+                /*exposure_time=*/None))
+        }
     }
 }
 
@@ -171,8 +255,6 @@ async fn main() {
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
         .add_service(CedarServer::new(MyCedar::new(shared_camera.clone())))
-        // TODO: delete this.
-        .add_service(ImageOldServer::new(MyImage::new(shared_camera.clone())))
         .into_service();
 
     // Combine them into one service.
@@ -184,42 +266,6 @@ async fn main() {
         .serve(tower::make::Shared::new(service))
         .await
         .unwrap();
-}
-
-// TODO: delete this.
-struct MyImage {
-    camera: Arc<Mutex<asi_camera::ASICamera>>,
-}
-
-#[tonic::async_trait]
-impl ImageOld for MyImage {
-    async fn get_image(&self, request: tonic::Request<ImageRequest>)
-                       -> Result<tonic::Response<ImageReply>, tonic::Status> {
-        let req_start = Instant::now();
-
-        let mut locked_camera = self.camera.lock().unwrap();
-        let (width, height) = locked_camera.dimensions();
-
-        // Receive camera data, encode to BMP.
-        let (captured_image, _id) = locked_camera.capture_image(None).unwrap();
-        let image = &captured_image.image;
-        let mut bmp_buf = Vec::<u8>::new();
-        bmp_buf.reserve((2 * width * height) as usize);
-        image.write_to(&mut Cursor::new(&mut bmp_buf), ImageOutputFormat::Bmp).unwrap();
-
-        info!("Responding to request: {:?} after {:?}", request, req_start.elapsed());
-        Ok(tonic::Response::new(cedar::ImageReply {
-            width: width,
-            height: height,
-            image_data: bmp_buf,
-        }))
-    }
-}
-
-impl MyImage {
-    pub fn new(camera: Arc<Mutex<asi_camera::ASICamera>>) -> Self {
-        MyImage { camera: camera.clone() }
-    }
 }
 
 mod multiplex_service {
