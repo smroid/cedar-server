@@ -5,23 +5,6 @@ import "google/protobuf/timestamp.proto";
 
 package cedar;
 
-// TODO: delete
-message ImageRequest {
-}
-
-// TODO: delete
-message ImageReply {
-  int32 width = 1;
-  int32 height = 2;
-  // Must be a recognized file format, e.g. BMP grayscale 8 bits per pixel.
-  bytes image_data = 3;
-}
-
-// TODO: delete
-service ImageOld {
-  rpc GetImage (ImageRequest) returns (ImageReply);
-}
-
 // General note: in the Cedar gRPC protocol, the client is a user interface
 // realized as a web app or a mobile app. The client interacts with the
 // server via gRPC, using the messages and RPCs defined in this proto file.
