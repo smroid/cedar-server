@@ -3,7 +3,7 @@ name = "cedar"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]] # Bin to run the Cedar gRPC server; focus engine functional subset.
+[[bin]] # Bin to run the Cedar gRPC server.
 name = "cedar-server"
 path = "src/bin/cedar_server.rs"
 
