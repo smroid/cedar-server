@@ -132,7 +132,6 @@ impl Cedar for MyCedar {
             operating_mode: OperatingMode::Setup as i32,
             image: None,
             star_candidates: Vec::<StarCentroid>::new(),
-            star_candidate_count: 0,
             hot_pixel_count: 0,
             exposure_time: Some(prost_types::Duration::try_from(
                 captured_image.capture_params.exposure_duration).unwrap()),
@@ -151,6 +150,7 @@ impl Cedar for MyCedar {
                 y: focus_result.peak_position.1 as f32,
             }),
             center_peak_image: None,
+            binned_star_candidate_count: 0,
             calibration_phase: CalibrationPhase::None as i32,
             calibration_progress: None,
             plate_solution: None,
@@ -220,6 +220,7 @@ impl MyCedar {
                 update_interval: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
+                binning: Some(0),
                 dwell_update_interval: Some(prost_types::Duration {
                     seconds: 1, nanos: 0,
                 }),
