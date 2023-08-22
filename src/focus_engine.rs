@@ -32,8 +32,11 @@ struct SharedState {
     // integration time.
     exposure_time: Option<Duration>,
 
-    // Zero means go fast as images can be captured. TODO: allow it to be
-    // updated via FocusEngine method.
+    // The S/N factor used in StarGate for star thresholding and hot pixel
+    // rejection.
+    stargate_sigma: f32,
+
+    // Zero means go fast as images can be captured.
     update_interval: Duration,
 
     // The `frame_id` to use for the next posted `focus_result`.
@@ -62,6 +65,7 @@ impl FocusEngine {
                 camera: camera.clone(),
                 frame_id: None,
                 exposure_time,
+                stargate_sigma: 8.0,
                 update_interval,
                 next_focus_result_id: 0,
                 focus_result: None,
@@ -95,14 +99,21 @@ impl FocusEngine {
         Ok(())
     }
 
+    pub fn set_stargate_sigma(&mut self, stargate_sigma: f32)
+                              -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.stargate_sigma = stargate_sigma;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
     pub fn set_update_interval(&mut self, update_interval: Duration)
                              -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();
-        if update_interval != locked_state.update_interval {
-            locked_state.update_interval = update_interval;
-            // Don't need to do anything, worker thread will pick up the
-            // change when it finishes the current interval.
-        }
+        locked_state.update_interval = update_interval;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
         Ok(())
     }
 
@@ -147,10 +158,12 @@ impl FocusEngine {
         let mut last_result_time: Option<Instant> = None;
         loop {
             let exp_time: Option<Duration>;
+            let sigma: f32;
             let update_interval: Duration;
             {
                 let mut locked_state = state.lock().unwrap();
                 exp_time = locked_state.exposure_time;
+                sigma = locked_state.stargate_sigma;
                 update_interval = locked_state.update_interval;
                 if locked_state.stop_request {
                     info!("Stopping focus engine");
@@ -196,9 +209,8 @@ impl FocusEngine {
                 .of_size(center_size, center_size);
 
             let noise_estimate = estimate_noise_from_image(image);
-            // TODO: allow sigma to be passed in.
             let roi_summary = summarize_region_of_interest(
-                image, &center_region, noise_estimate, /*sigma=*/6.0);
+                image, &center_region, noise_estimate, sigma);
             let mut peak_value = 1_u8;  // Avoid div0 below.
             let histogram = &roi_summary.histogram;
             for bin in 2..256 {
