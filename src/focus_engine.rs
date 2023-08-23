@@ -10,7 +10,7 @@ use image::{GenericImageView, GrayImage};
 use imageproc::contrast;
 use imageproc::rect::Rect;
 use log::{debug, error, info};
-use star_gate::algorithm::{estimate_noise_from_image,
+use star_gate::algorithm::{StarDescription, estimate_noise_from_image,
                            summarize_region_of_interest};
 
 pub struct FocusEngine {
@@ -60,7 +60,7 @@ impl FocusEngine {
     pub fn new(camera: Arc<Mutex<dyn AbstractCamera>>,
                update_interval: Duration, exposure_time: Option<Duration>)
                -> FocusEngine {
-        let focus_engine = FocusEngine{
+        FocusEngine{
             state: Arc::new(Mutex::new(SharedState{
                 camera: camera.clone(),
                 frame_id: None,
@@ -73,16 +73,7 @@ impl FocusEngine {
                 worker_thread: None,
             })),
             focus_result_available: Arc::new(Condvar::new()),
-        };
-        {
-            let cloned_state = focus_engine.state.clone();
-            let cloned_condvar = focus_engine.focus_result_available.clone();
-            let mut state = focus_engine.state.lock().unwrap();
-            state.worker_thread = Some(thread::spawn(|| {
-                FocusEngine::worker(cloned_state, cloned_condvar);
-            }));
         }
-        focus_engine
     }
 
     pub fn set_exposure_time(&mut self, exp_time: Option<Duration>)
@@ -117,9 +108,25 @@ impl FocusEngine {
         Ok(())
     }
 
-    // TODO: doc this.
+    /// Obtains a result bundle, as configured above. The returned result is
+    /// "fresh" in that we either wait to process a new exposure or return the
+    /// result of processing the most recently completed exposure.
+    /// This function does not "consume" the information that it returns;
+    /// multiple callers will receive the current result bundle (or next result,
+    /// if there is not yet a current result) if `prev_frame_id` is omitted. If
+    /// `prev_frame_id` is supplied, the call blocks while the current result
+    /// has the same id value.
+    /// Returns: the processed result along with its frame_id value.
     pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> FocusResult {
         let mut state = self.state.lock().unwrap();
+        // Start worker thread if not yet started.
+        if state.worker_thread.is_none() {
+            let cloned_state = self.state.clone();
+            let cloned_condvar = self.focus_result_available.clone();
+            state.worker_thread = Some(thread::spawn(|| {
+                FocusEngine::worker(cloned_state, cloned_condvar);
+            }));
+        }
         // Get the most recently posted result.
         loop {
             if state.focus_result.is_none() {
@@ -140,7 +147,10 @@ impl FocusEngine {
         state.focus_result.clone().unwrap()
     }
 
-    // TODO: doc this.
+    /// Shuts down the worker thread; this can save power if get_next_result()
+    /// will not be called soon. A subsequent call to get_next_result() will
+    /// re-start processing, at the expense of that first get_next_result() call
+    /// taking longer than usual.
     pub fn stop(&mut self) {
         let mut state = self.state.lock().unwrap();
         if state.worker_thread.is_none() {
@@ -276,15 +286,24 @@ impl FocusEngine {
                                             sub_image_size as u32).to_image();
             contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
 
+            // Run StarGate to obtain star centroids; also obtain binned image.
+            // TODO
+
+            // Run StarGate again on the binned image.
+            // TODO
+
             // Post the result.
             let mut locked_state = state.lock().unwrap();
             locked_state.focus_result = Some(FocusResult{
                 frame_id: locked_state.next_focus_result_id,
                 captured_image: captured_image.clone(),
+                star_candidates: TBD,
+                hot_pixel_count: TBD,
                 center_region,
                 peak_position,
                 peak_image,
                 peak_image_region: peak_region,
+                binned_star_candidate_count: TBD,
                 processing_duration: last_result_time.unwrap().elapsed(),
             });
             locked_state.next_focus_result_id += 1;
@@ -302,6 +321,13 @@ pub struct FocusResult {
 
     pub captured_image: Arc<CapturedImage>,
 
+    // The star candidates detected by StarGate; ordered by highest
+    // mean_brightness first. From full resolution image.
+    pub star_candidates: Vec<StarDescription>,
+
+    // The number of hot pixels detected by StarGate.
+    pub hot_pixel_count: i32,
+
     pub center_region: Rect,
 
     pub peak_position: (i32, i32),
@@ -310,10 +336,13 @@ pub struct FocusResult {
 
     pub peak_image_region: Rect,
 
+    // In setup mode (focusing), star detection is run twice: once at full
+    // resolution, where 'star_candidates' above has the result; and a second
+    // run on the 2x2 binned image, where the number of binned-image centroids
+    // is returned here.
+    pub binned_star_candidate_count: i32,
+
     // Time taken to produce this FocusResult, excluding the time taken to
     // acquire the image.
     pub processing_duration: std::time::Duration,
-
-    // TODO: candidates, hot pixel count, etc. from StarGate (which we run
-    // alongside the focusing logic)
 }
