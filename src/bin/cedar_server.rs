@@ -59,6 +59,7 @@ struct MyCedar {
     camera: Arc<Mutex<asi_camera::ASICamera>>,
     operation_settings: Mutex<OperationSettings>,
     focus_engine: Mutex<FocusEngine>,
+    // TODO: operation_engine, calibration_engine.
 }
 
 #[tonic::async_trait]
@@ -89,16 +90,40 @@ impl Cedar for MyCedar {
                 "rpc UpdateOperationSettings not implemented for operating_mode."));
         }
         if req.exposure_time.is_some() {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateOperationSettings not implemented for exposure_time."));
+            let exp_time = req.exposure_time.unwrap();
+            if exp_time.seconds < 0 || exp_time.nanos < 0 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got negative exposure_time: {}.", exp_time)));
+            }
+            let focus_engine = &mut self.focus_engine.lock().unwrap();
+            let std_duration = std::time::Duration::try_from(exp_time).unwrap();
+            match focus_engine.set_exposure_time(std_duration) {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+            // TODO: also set in operation_engine.
         }
         if req.stargate_sigma.is_some() {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateOperationSettings not implemented for stargate_sigma."));
         }
-        if req.update_interval.is_some() {
+        if req.stargate_max_size.is_some() {
             return Err(tonic::Status::unimplemented(
-                "rpc UpdateOperationSettings not implemented for update_interval."));
+                "rpc UpdateOperationSettings not implemented for stargate_max_size."));
+        }
+        if req.update_interval.is_some() {
+            let update_interval = req.update_interval.unwrap();
+            if update_interval.seconds < 0 || update_interval.nanos < 0 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got negative update_interval: {}.", update_interval)));
+            }
+            let focus_engine = &mut self.focus_engine.lock().unwrap();
+            let std_interval = std::time::Duration::try_from(update_interval).unwrap();
+            match focus_engine.set_update_interval(std_interval) {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+            // TODO: also set in operation_engine.
         }
         if req.dwell_update_interval.is_some() {
             return Err(tonic::Status::unimplemented(
@@ -123,19 +148,42 @@ impl Cedar for MyCedar {
         let prev_frame_id = req.prev_frame_id;
         let main_image_mode = req.main_image_mode;
 
-        let focus_engine = &mut self.focus_engine.lock().unwrap();
-        let focus_result = focus_engine.get_next_result(prev_frame_id);
+        let focus_result;
+        {
+            let focus_engine = &mut self.focus_engine.lock().unwrap();
+            focus_result = focus_engine.get_next_result(prev_frame_id);
+        }
+
         let captured_image = &focus_result.captured_image;
+        let (width, height) = captured_image.image.dimensions();
+        let image_rectangle = Rectangle{
+            origin_x: 0, origin_y: 0,
+            width: width as i32,
+            height: height as i32,
+        };
+
+        let mut centroids = Vec::<StarCentroid>::new();
+        for star in focus_result.star_candidates {
+            centroids.push(StarCentroid{
+                centroid_position: Some(ImageCoord {
+                    x: star.centroid_x, y: star.centroid_y,
+                }),
+                stddev_x: star.stddev_x, stddev_y: star.stddev_y,
+                mean_brightness: star.mean_brightness,
+                background: star.background,
+                num_saturated: star.num_saturated as i32,
+            });
+        }
 
         let mut frame_result = cedar::FrameResult {
             frame_id: focus_result.frame_id,
-            operating_mode: OperatingMode::Setup as i32,
-            image: None,
-            star_candidates: Vec::<StarCentroid>::new(),
-            hot_pixel_count: 0,
+            operating_mode: OperatingMode::Setup as i32,  // TODO: update this
+            image: None,  // Is set below.
+            star_candidates: centroids,
+            hot_pixel_count: focus_result.hot_pixel_count,
             exposure_time: Some(prost_types::Duration::try_from(
                 captured_image.capture_params.exposure_duration).unwrap()),
-            result_update_interval: None,  // TODO.
+            result_update_interval: None,  // TODO: compute this as moving average.
             capture_time: Some(prost_types::Timestamp::try_from(
                 captured_image.readout_time).unwrap()),
             camera_temperature_celsius: captured_image.temperature.0 as f32,
@@ -146,11 +194,11 @@ impl Cedar for MyCedar {
                 height: focus_result.center_region.height() as i32,
             }),
             center_peak_position: Some(ImageCoord{
-                x: focus_result.peak_position.0 as f32,
-                y: focus_result.peak_position.1 as f32,
+                x: focus_result.center_peak_position.0 as f32,
+                y: focus_result.center_peak_position.1 as f32,
             }),
-            center_peak_image: None,
-            binned_star_candidate_count: 0,
+            center_peak_image: None,  // Is set below.
+            binned_star_candidate_count: focus_result.binned_star_candidate_count,
             calibration_phase: CalibrationPhase::None as i32,
             calibration_progress: None,
             plate_solution: None,
@@ -161,23 +209,28 @@ impl Cedar for MyCedar {
         // Populate `image` if requested.
         if main_image_mode == ImageMode::Default as i32 {
             let mut main_bmp_buf = Vec::<u8>::new();
-            if main_image_mode == ImageMode::Default as i32 {
-                let image = &captured_image.image;
-                let (width, height) = image.dimensions();
-                main_bmp_buf.reserve((2 * width * height) as usize);
-                image.write_to(&mut Cursor::new(&mut main_bmp_buf),
-                               ImageOutputFormat::Bmp).unwrap();
-                frame_result.image = Some(Image{
-                    binning_factor: 1,
-                    rectangle: Some(Rectangle{
-                        origin_x: 0,
-                        origin_y: 0,
-                        width: width as i32,
-                        height: height as i32,
-                    }),
-                    image_data: main_bmp_buf,
-                });
-            }
+            let image = &captured_image.image;
+            main_bmp_buf.reserve((2 * width * height) as usize);
+            image.write_to(&mut Cursor::new(&mut main_bmp_buf),
+                           ImageOutputFormat::Bmp).unwrap();
+            frame_result.image = Some(Image{
+                binning_factor: 1,
+                rectangle: Some(image_rectangle),
+                image_data: main_bmp_buf,
+            });
+        } else if main_image_mode == ImageMode::Binned as i32 {
+            let mut binned_bmp_buf = Vec::<u8>::new();
+            let binned_image = &focus_result.binned_image;
+            let (binned_width, binned_height) = binned_image.dimensions();
+            binned_bmp_buf.reserve((2 * binned_width * binned_height) as usize);
+            binned_image.write_to(&mut Cursor::new(&mut binned_bmp_buf),
+                                  ImageOutputFormat::Bmp).unwrap();
+            frame_result.image = Some(Image{
+                binning_factor: 2,
+                // Rectangle is always in full resolution coordinates.
+                rectangle: Some(image_rectangle),
+                image_data: binned_bmp_buf,
+            });
         }
         // Populate `center_peak_image`.
         let mut center_peak_bmp_buf = Vec::<u8>::new();
@@ -217,6 +270,7 @@ impl MyCedar {
                     seconds: 0, nanos: 0,
                 }),
                 stargate_sigma: Some(8.0),
+                stargate_max_size: Some(5),
                 update_interval: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
@@ -229,8 +283,8 @@ impl MyCedar {
             }),
             focus_engine: Mutex::new(FocusEngine::new(
                 camera.clone(),
-                /*update_interval=*/Duration::from_secs(0),
-                /*exposure_time=*/None))
+                /*update_interval=*/Duration::ZERO,
+                /*exposure_time=*/Duration::ZERO))
         }
     }
 }

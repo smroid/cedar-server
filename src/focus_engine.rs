@@ -11,7 +11,7 @@ use imageproc::contrast;
 use imageproc::rect::Rect;
 use log::{debug, error, info};
 use star_gate::algorithm::{StarDescription, estimate_noise_from_image,
-                           summarize_region_of_interest};
+                           get_stars_from_image, summarize_region_of_interest};
 
 pub struct FocusEngine {
     // Our state, shared between ASICamera methods and the video capture thread.
@@ -28,15 +28,11 @@ struct SharedState {
     camera: Arc<Mutex<dyn AbstractCamera>>,
     frame_id: Option<i32>,
 
-    // If omitted, use auto exposure. If given, this is the camera's exposure
+    // If zero, use auto exposure. If positive, this is the camera's exposure
     // integration time.
-    exposure_time: Option<Duration>,
+    exposure_time: Duration,
 
-    // The S/N factor used in StarGate for star thresholding and hot pixel
-    // rejection.
-    stargate_sigma: f32,
-
-    // Zero means go fast as images can be captured.
+    // Zero means go fast as images are captured.
     update_interval: Duration,
 
     // The `frame_id` to use for the next posted `focus_result`.
@@ -58,14 +54,13 @@ impl Drop for FocusEngine {
 
 impl FocusEngine {
     pub fn new(camera: Arc<Mutex<dyn AbstractCamera>>,
-               update_interval: Duration, exposure_time: Option<Duration>)
+               update_interval: Duration, exposure_time: Duration)
                -> FocusEngine {
         FocusEngine{
             state: Arc::new(Mutex::new(SharedState{
                 camera: camera.clone(),
                 frame_id: None,
                 exposure_time,
-                stargate_sigma: 8.0,
                 update_interval,
                 next_focus_result_id: 0,
                 focus_result: None,
@@ -76,26 +71,17 @@ impl FocusEngine {
         }
     }
 
-    pub fn set_exposure_time(&mut self, exp_time: Option<Duration>)
+    pub fn set_exposure_time(&mut self, exp_time: Duration)
                              -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();
         if exp_time != locked_state.exposure_time {
             locked_state.exposure_time = exp_time;
-            if exp_time.is_some() {
+            if !exp_time.is_zero() {
                 let mut locked_camera = locked_state.camera.lock().unwrap();
-                locked_camera.set_exposure_duration(exp_time.unwrap())?
+                locked_camera.set_exposure_duration(exp_time)?
             }
             // Don't need to invalidate `focus_result` state.
         }
-        Ok(())
-    }
-
-    pub fn set_stargate_sigma(&mut self, stargate_sigma: f32)
-                              -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
-        locked_state.stargate_sigma = stargate_sigma;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
         Ok(())
     }
 
@@ -167,19 +153,24 @@ impl FocusEngine {
         // Keep track of when we started the focus cycle.
         let mut last_result_time: Option<Instant> = None;
         loop {
-            let exp_time: Option<Duration>;
-            let sigma: f32;
+            let exp_time: Duration;
             let update_interval: Duration;
+            // In focus engine, we use hardwired values for StarGate parameters.
+            let sigma = 8.0;
+            let max_size = 5;
             {
                 let mut locked_state = state.lock().unwrap();
                 exp_time = locked_state.exposure_time;
-                sigma = locked_state.stargate_sigma;
                 update_interval = locked_state.update_interval;
                 if locked_state.stop_request {
                     info!("Stopping focus engine");
                     locked_state.stop_request = false;
                     break;
                 }
+                // TODO: another stopping condition can be: if no
+                // get_next_result() calls are seen for more than N seconds,
+                // stop. The next get_next_result() call will restart the worker
+                // thread.
             }
             // Is it time to generate the next FocusResult?
             let now = Instant::now();
@@ -229,7 +220,7 @@ impl FocusEngine {
                 }
             }
             let peak_value_goal = 200;
-            if exp_time.is_none() {
+            if exp_time.is_zero() {
                 // Adjust exposure time based on histogram of center_region. We
                 // scale up the pixel values in the zoomed_peak_image for good
                 // display visibility.
@@ -287,23 +278,36 @@ impl FocusEngine {
             contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
 
             // Run StarGate to obtain star centroids; also obtain binned image.
-            // TODO
-
-            // Run StarGate again on the binned image.
-            // TODO
-
+            let noise_estimate = estimate_noise_from_image(&image);
+            let (mut stars, hot_pixel_count, binned_image) =
+                get_stars_from_image(&image, noise_estimate,
+                                     sigma, max_size as u32,
+                                     /*detect_hot_pixels=*/true,
+                                     /*create_binned_image=*/true);
+            // Sort by brightness estimate, brightest first.
+            stars.sort_by(|a, b| b.mean_brightness.partial_cmp(&a.mean_brightness).unwrap());
+            // Run StarGate a second time on the binned image.
+            let binned_noise_estimate = estimate_noise_from_image(
+                &binned_image.as_ref().unwrap());
+            let (binned_stars, _, _) =
+                get_stars_from_image(&binned_image.as_ref().unwrap(),
+                                     binned_noise_estimate,
+                                     sigma, max_size as u32,
+                                     /*detect_hot_pixels=*/false,
+                                     /*create_binned_image=*/false);
             // Post the result.
             let mut locked_state = state.lock().unwrap();
             locked_state.focus_result = Some(FocusResult{
                 frame_id: locked_state.next_focus_result_id,
                 captured_image: captured_image.clone(),
-                star_candidates: TBD,
-                hot_pixel_count: TBD,
+                binned_image: Arc::new(binned_image.unwrap()),
+                star_candidates: stars,
+                hot_pixel_count: hot_pixel_count as i32,
                 center_region,
-                peak_position,
+                center_peak_position: peak_position,
                 peak_image,
                 peak_image_region: peak_region,
-                binned_star_candidate_count: TBD,
+                binned_star_candidate_count: binned_stars.len() as i32,
                 processing_duration: last_result_time.unwrap().elapsed(),
             });
             locked_state.next_focus_result_id += 1;
@@ -317,9 +321,16 @@ impl FocusEngine {
 
 #[derive(Clone)]
 pub struct FocusResult {
+    // See the corresponding field in FrameResult.
     pub frame_id: i32,
 
+    // The full resolution camera image used to produce the information in this
+    // result.
     pub captured_image: Arc<CapturedImage>,
+
+    // The 2x2 binned image computed (with hot pixel removal) from
+    // 'captured_image'.
+    pub binned_image: Arc<GrayImage>,
 
     // The star candidates detected by StarGate; ordered by highest
     // mean_brightness first. From full resolution image.
@@ -328,12 +339,17 @@ pub struct FocusResult {
     // The number of hot pixels detected by StarGate.
     pub hot_pixel_count: i32,
 
+    // See the corresponding field in FrameResult.
     pub center_region: Rect,
 
-    pub peak_position: (i32, i32),
+    // See the corresponding field in FrameResult.
+    pub center_peak_position: (i32, i32),
 
+    // A small full resolution crop of `captured_image` centered at
+    // `center_peak_position`.
     pub peak_image: GrayImage,
 
+    // The location of 'peak_image'.
     pub peak_image_region: Rect,
 
     // In setup mode (focusing), star detection is run twice: once at full
