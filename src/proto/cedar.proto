@@ -49,13 +49,21 @@ message OperationSettings {
   optional OperatingMode operating_mode = 4;
 
   // The camera exposure integration time. Zero selects automatic exposure.
-  // Default is 50ms.
+  // Default is zero (auto).
   optional google.protobuf.Duration exposure_time = 5;
 
   // The S/N factor used to determine if a background-subtracted pixel is bright
   // enough relative to the noise measure to be considered part of a star. Zero
-  // selects automatic determination. Default is 8.
+  // selects automatic determination based on camera/sky calibration. Default is
+  // 8.
   optional float stargate_sigma = 6;
+
+  // StarGate clumps adjacent bright pixels to form a single star candidate. The
+  // `stargate_max_size` argument governs how large a clump can be before it is
+  // rejected. Note that making `max_size` small can eliminate very bright stars
+  // that "bleed" to many surrounding pixels.
+  // Default is 5.
+  optional int32 stargate_max_size = 12;
 
   // The desired time interval at which Cedar should replace its current frame
   // result. Default is zero, meaning go as fast as possible.
@@ -95,6 +103,8 @@ enum OperatingMode {
   // camera and telescope:
   // * Exposure metered based on brightest point in central region.
   OPERATING_MODE_SETUP = 1;
+
+  // TODO: sky/camera calibration is a top-level operating mode?
 
   // Main operating mode. Continually updated RA/DEC sent to SkySafari.
   // Detection of tracking mount and accumulation of polar alignment advice
@@ -230,7 +240,7 @@ message Image {
   // 2: 2x2 binning.
   int32 binning_factor = 1;
 
-  // Specifies what part of the camera sensor this Image corresponds to. In full
+  // Specifies what part of the camera sensor this Image corresponds to, in full
   // resolution units. If binning_factor is 2, the `image_data` dimensions are
   // rectangle.width/2, rectangle.height/2 (floored).
   Rectangle rectangle = 2;
