@@ -74,12 +74,9 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> getFocusFrameFromServer() async {
     final client = CedarClient(GrpcWebClientChannel.xhr(Uri.base));
 
-    final imageMode = (prevFrameId % 20) == 0 ?
-          ImageMode.IMAGE_MODE_DEFAULT : ImageMode.IMAGE_MODE_OMIT;
-
     final request = FrameRequest()
       ..prevFrameId = prevFrameId
-      ..mainImageMode = imageMode;
+      ..mainImageMode = ImageMode.IMAGE_MODE_BINNED;
     try {
       final response = await client.getFrame(request);
       setState(() {
