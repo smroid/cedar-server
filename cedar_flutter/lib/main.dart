@@ -4,7 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
 import 'cedar.pbgrpc.dart';
-import 'get_channel_for_web.dart' if (dart.library.io) 'get_channel.dart';
+import 'get_cedar_client_for_web.dart'
+    if (dart.library.io) 'get_cedar_client.dart';
 
 void main() {
   runApp(const MyApp());
@@ -73,7 +74,7 @@ class _MyHomePageState extends State<MyHomePage> {
   int prevFrameId = -1;
 
   Future<void> getFocusFrameFromServer() async {
-    final CedarClient client = CedarClient(getChannel());
+    final CedarClient client = getClient();
 
     final request = FrameRequest()
       ..prevFrameId = prevFrameId
