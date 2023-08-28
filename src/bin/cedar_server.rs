@@ -296,7 +296,7 @@ async fn main() {
 
     // Build the static content web service.
     let rest = Router::new().nest_service(
-        "/", ServeDir::new("/home/pi/projects/cedar/cedar_webapp/build/web"));
+        "/", ServeDir::new("/home/pi/projects/cedar/cedar_flutter/build/web"));
 
     let mut camera = asi_camera::ASICamera::new(
         asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap();
