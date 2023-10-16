@@ -73,6 +73,10 @@ class _MyHomePageState extends State<MyHomePage> {
   bool doRefreshes = false;
   int prevFrameId = -1;
 
+  int numStarCandidates = 0;
+  int numBinnedStarCandidates = 0;
+  int numHotPixels = 0;
+
   Future<void> getFocusFrameFromServer() async {
     final CedarClient client = getClient();
 
@@ -83,6 +87,9 @@ class _MyHomePageState extends State<MyHomePage> {
       final response = await client.getFrame(request);
       setState(() {
         prevFrameId = response.frameId;
+        numStarCandidates = response.starCandidates.length;
+        numBinnedStarCandidates = response.binnedStarCandidateCount;
+        numHotPixels = response.hotPixelCount;
         if (response.hasImage()) {
           imageBytes = Uint8List.fromList(response.image.imageData);
           width = response.image.rectangle.width;
@@ -103,6 +110,19 @@ class _MyHomePageState extends State<MyHomePage> {
       await getFocusFrameFromServer();
       return doRefreshes;
     });
+  }
+
+  Widget runSwitch() {
+    return Switch(
+        value: doRefreshes,
+        onChanged: (bool value) {
+          setState(() {
+            doRefreshes = value;
+            if (doRefreshes) {
+              refreshStateFromServer();
+            }
+          });
+        }); // Switch
   }
 
   @override
@@ -142,31 +162,64 @@ class _MyHomePageState extends State<MyHomePage> {
           // wireframe for each widget.
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Switch(
-                value: doRefreshes,
-                onChanged: (bool value) {
-                  setState(() {
-                    doRefreshes = value;
-                    if (doRefreshes) {
-                      refreshStateFromServer();
-                    }
-                  });
-                }),
+            Row(
+              children: <Widget>[
+                Column(
+                  children: <Widget>[
+                    runSwitch(),
+                    const Text("Run"),
+                  ],
+                ), // Column
+                Column(
+                  children: <Widget>[
+                    Text("$numStarCandidates"),
+                    Container(
+                      margin: const EdgeInsets.all(10),
+                      child: const Text("Stars"),
+                    ),
+                  ],
+                ), // Column
+                Column(
+                  children: <Widget>[
+                    Text("$numBinnedStarCandidates"),
+                    Container(
+                      margin: const EdgeInsets.all(10),
+                      child: const Text("Binned stars"),
+                    ),
+                  ],
+                ), // Column
+                Column(
+                  children: <Widget>[
+                    Text("$numHotPixels"),
+                    Container(
+                      margin: const EdgeInsets.all(10),
+                      child: const Text("Hot pixels"),
+                    ),
+                  ],
+                ), // Column
+                // TODO(smr): exposure time slider and auto switch.
+              ],
+            ),
             const SizedBox(height: 2),
-            prevFrameId != -1
-                ? dart_widgets.Image.memory(centerPeakImageBytes,
-                    height: centerPeakHeight.toDouble() * 3,
-                    width: centerPeakWidth.toDouble() * 3,
-                    fit: BoxFit.fill,
-                    gaplessPlayback: true)
-                : const SizedBox(height: 2),
-            prevFrameId != -1
-                ? dart_widgets.Image.memory(imageBytes,
-                    height: height.toDouble() / 2,
-                    width: width.toDouble() / 2,
-                    fit: BoxFit.fill,
-                    gaplessPlayback: true)
-                : const SizedBox(height: 2),
+            Stack(
+              alignment: Alignment.topRight,
+              children: <Widget>[
+                prevFrameId != -1
+                    ? dart_widgets.Image.memory(imageBytes,
+                        height: height.toDouble() / 2,
+                        width: width.toDouble() / 2,
+                        fit: BoxFit.fill,
+                        gaplessPlayback: true)
+                    : const SizedBox(height: 2),
+                prevFrameId != -1
+                    ? dart_widgets.Image.memory(centerPeakImageBytes,
+                        height: centerPeakHeight.toDouble() * 3,
+                        width: centerPeakWidth.toDouble() * 3,
+                        fit: BoxFit.fill,
+                        gaplessPlayback: true)
+                    : const SizedBox(height: 2),
+              ],
+            ),
           ],
         ),
       ),
