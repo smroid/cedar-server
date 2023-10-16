@@ -26,23 +26,35 @@ package cedar;
 // the gRPC protocol defined in this proto file. Similarly, Cedar's gRPC
 // integration with Tetra3 is described in a separate proto file.
 
-message OneTimeSettings {
+message FixedSettings {
   // Focal length of lens, in millimeters. If provided, this is used as a hint
-  // during camera/sky calibration.
+  // during camera/sky calibration. Note that the camera sensor's parameters
+  // (resolution and size) are obtained by the server from the camera interface.
   optional float lens_fl_mm = 1;
 
   // Lat/long of observer location, in degrees.
   optional float latitude = 2;
   optional float longitude = 3;
+
+  // The current time on the client. The server's current time is updated to
+  // match.
+  optional google.protobuf.Timestamp client_time = 4;
+
+  // A name for the current observing session. If not supplied, one is generated
+  // from the current time and the supplied latitude/longitude (converted to a
+  // nearby location name).
+  optional string session_name = 5;
 }
 
 message OperationSettings {
   // TODO: Camera number.
 
-  // The camera's gain, [0..100]. Default is 100.
+  // The camera's gain, [0..100]. Default is determined by camera/sky calibration,
+  // or 100 if no calibration has been done.
   optional int32 camera_gain = 2;
 
-  // The camera's offset [0..20]. Default is 0.
+  // The camera's offset [0..20]. Default is determined by camera/sky calibration,
+  // or 0 if no calibration has been done.
   optional int32 camera_offset = 3;
 
   // Defaults to OPERATING_MODE_SETUP.
@@ -54,8 +66,8 @@ message OperationSettings {
 
   // The S/N factor used to determine if a background-subtracted pixel is bright
   // enough relative to the noise measure to be considered part of a star. Zero
-  // selects automatic determination based on camera/sky calibration. Default is
-  // 8.
+  // selects automatic determination based on camera/sky calibration; if no
+  // calibration has been done 8 is used.
   optional float stargate_sigma = 6;
 
   // StarGate clumps adjacent bright pixels to form a single star candidate. The
@@ -206,8 +218,8 @@ message FrameResult {
   // Estimated completion fraction [0..1) of the calibration.
   optional float calibration_progress = 16;
 
-  // TODO: calibration result? E.g. no stars detected; too much movement during
-  // capture; other inconsistencies.
+  // TODO: calibration operation result? E.g. none performed; no stars detected;
+  // too much movement during capture; other inconsistencies.
 
   // Information returned when `operating_mode` is OPERATING_MODE_OPERATE.
 
@@ -313,6 +325,63 @@ enum CalibrationPhase {
   CALIBRATION_PHASE_ANALYZE_LENS_DISTORTION = 4;
 }
 
+message CalibrationData {
+  // Omitted if a sky/camera calibration has not been done.
+  optional google.protobuf.Timestamp calibration_start_time = 1;
+  optional google.protobuf.Timestamp calibration_end_time = 2;
+  optional float calibration_temperature_celsius = 3;
+
+  // If no calibration has been done, these will have reasonable default values.
+  optional google.protobuf.Duration min_exposure_time = 4;
+  optional google.protobuf.Duration max_exposure_time = 5;
+
+  // The camera gain value [0..100] at which S/N is maximized.
+  // Omitted if a sky/camera calibration has not been done.
+  optional int32 optimal_camera_gain = 6;
+
+  // The camera offset value [0..20] found to be needed to avoid black crush.
+  // Omitted if a sky/camera calibration has not been done.
+  optional int32 camera_offset = 7;
+
+  // The optimal S/N factor used to determine if a background-subtracted pixel
+  // is bright enough relative to the noise measure to be considered part of a
+  // star.
+  // Omitted if a sky/camera calibration has not been done.
+  optional float stargate_sigma = 8;
+
+  // Optimal binning mode (1 for full resolution, 2 for 2x2 binned image).
+  // Omitted if a sky/camera calibration has not been done.
+  optional int32 binning = 9;
+
+  // Omitted if a sky/camera calibration has not been done.
+  optional float min_exposure_limiting_magnitude = 10;
+  optional float max_exposure_limiting_magnitude = 11;
+
+  // If sky/camera calibration has not been done, this will be the FixedSettings
+  // `lens_fl_mm` value.
+  optional float lens_fl_mm = 12;
+
+  // * estimated lens distortion parameters (TBD)
+
+  // The angular size of a pixel, in radians. This is for the field center, as
+  // the "pinhole" projection of sky angles onto a planar detector causes the
+  // pixel/angle scale to vary as you move away from the center.
+  // If sky/camera calibration has not been done, this will be derived from the
+  // FixedSettings `lens_fl_mm` value and the camera's sensor size and pixel
+  // count.
+  optional float pixel_angular_size = 13;
+
+  // The angular size (radians) of the camera's diagonal projected onto the sky.
+  // For narrow camera field of view (e.g. less than 1 degree), this will be
+  // directly related to `pixel_angular_size`. For wide-field cameras (e.g. more
+  // than 5 degrees) this will properly take into account the "pinhole"
+  // projection of the planar detector onto the sky.
+  // If sky/camera calibration has not been done, this will be derived from the
+  // FixedSettings `lens_fl_mm` value and the camera's sensor size and pixel
+  // count.
+  optional float fov_diagonal = 14;
+}
+
 message PlateSolution {
   // Plate solution: ra/dec, scale, rotation.
   // Quality assessment (failed (reason?); low confidence; high confidence).
@@ -360,14 +429,16 @@ message ActionRequest {
   // Save image.
 }
 
-message InformationRequest {
+message ServerInformationRequest {
   // Empty.
 }
 
-message InformationResult {
-  // Cedar version. Server host/port.
+message ServerInformationResult {
+  // Cedar version.
 
   // Tetra3 version.
+
+  // Star catalog information.
 
   // Processor info.
   // * model: RPi or other board model
@@ -379,15 +450,22 @@ message InformationResult {
 
   // Current time (UTC) on Cedar server.
 
-  // listing of detected cameras; for each:
+  // ordered list of detected cameras; for each:
   // * Camera make/model
   // * Resolution
 
-  // Status of SkySafari integration.
+  // Status of SkySafari integration; SkySafari version.
 }
 
 service Cedar {
-  // TODO: UpdateOneTimeSettings().
+  // Returns information about the Cedar server.
+  rpc GetServerInformation(ServerInformationRequest) returns (ServerInformationResult);
+
+  // Changes zero or more of Cedar's "fixed" settings. If a field is omitted
+  // from the supplied FixedSettings, that setting is not updated. Returns the
+  // FixedSettings after any updates have been applied. To get the current
+  // settings without making any changes, pass an empty FixedSettings request.
+  rpc UpdateFixedSettings(FixedSettings) returns (FixedSettings);
 
   // Changes zero or more of Cedar's operation settings. If a field is omitted
   // from the supplied OperationSettings, that setting is not updated. Returns
@@ -401,4 +479,10 @@ service Cedar {
   rpc GetFrame(FrameRequest) returns (FrameResult);
 
   // TODO: InitiateAction(ActionRequest) returns (EmptyMessage);
+
+  // TODO: list/get available sky/camera calibration data (by name). Calibration
+  // names are based on the session name, suffixed by an integer (in case
+  // multiple calibrations are performed during a session).
+
+  // TODO: use the calibration data for a given calibration name.
 }
