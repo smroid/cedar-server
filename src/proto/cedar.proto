@@ -43,6 +43,8 @@ message FixedSettings {
   // A name for the current observing session. If not supplied, one is generated
   // from the current time and the supplied latitude/longitude (converted to a
   // nearby location name).
+  // The session name is used when storing calibration data and when logging
+  // dwell positions.
   optional string session_name = 5;
 }
 
@@ -95,7 +97,7 @@ message OperationSettings {
 
   // If true, the plate solving star catalogue is periodically scrolled to
   // reflect the hemisphere of the sky that is currently visible (above the
-  // horizon).
+  // horizon). TODO(smr): drop this, likely we'll always do this.
   optional bool catalog_tracks_visible_sky = 9;
 
   // If true, when Cedar detects that the camera is dwelling (motionless) for
