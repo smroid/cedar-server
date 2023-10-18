@@ -158,8 +158,8 @@ message FrameResult {
   // FrameRequest to block until a new FrameResult is available.
   int32 frame_id = 1;
 
-  // The current Cedar mode.
-  OperatingMode operating_mode = 2;
+  // The Cedar settings in effect for this frame.
+  optional OperationSettings operation_settings = 2;
 
   // Information returned regardless of `operating_mode`. Note that these fields
   // are ommitted while a camera/sky calibration is underway (see below).
@@ -382,6 +382,8 @@ message CalibrationData {
   // FixedSettings `lens_fl_mm` value and the camera's sensor size and pixel
   // count.
   optional float fov_diagonal = 14;
+
+  // TODO(smr): image flipped?
 }
 
 message PlateSolution {
@@ -461,13 +463,13 @@ message ServerInformationResult {
 
 service Cedar {
   // Returns information about the Cedar server.
-  rpc GetServerInformation(ServerInformationRequest) returns (ServerInformationResult);
+  // rpc GetServerInformation(ServerInformationRequest) returns (ServerInformationResult);
 
   // Changes zero or more of Cedar's "fixed" settings. If a field is omitted
   // from the supplied FixedSettings, that setting is not updated. Returns the
   // FixedSettings after any updates have been applied. To get the current
   // settings without making any changes, pass an empty FixedSettings request.
-  rpc UpdateFixedSettings(FixedSettings) returns (FixedSettings);
+  // rpc UpdateFixedSettings(FixedSettings) returns (FixedSettings);
 
   // Changes zero or more of Cedar's operation settings. If a field is omitted
   // from the supplied OperationSettings, that setting is not updated. Returns

@@ -64,6 +64,9 @@ struct MyCedar {
 
 #[tonic::async_trait]
 impl Cedar for MyCedar {
+    // TODO: get_server_information RPC.
+    // TODO: update_fixed_settings RPC.
+
     async fn update_operation_settings(
         &self, request: tonic::Request<OperationSettings>)
         -> Result<tonic::Response<OperationSettings>, tonic::Status>
@@ -90,7 +93,7 @@ impl Cedar for MyCedar {
                 "rpc UpdateOperationSettings not implemented for operating_mode."));
         }
         if req.exposure_time.is_some() {
-            let exp_time = req.exposure_time.unwrap();
+            let exp_time = req.exposure_time.clone().unwrap();
             if exp_time.seconds < 0 || exp_time.nanos < 0 {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got negative exposure_time: {}.", exp_time)));
@@ -102,6 +105,8 @@ impl Cedar for MyCedar {
                 Err(x) => { return Err(tonic_status(x)); }
             }
             // TODO: also set in operation_engine.
+            self.operation_settings.lock().unwrap().exposure_time =
+                Some(req.exposure_time.unwrap());
         }
         if req.stargate_sigma.is_some() {
             return Err(tonic::Status::unimplemented(
@@ -112,7 +117,7 @@ impl Cedar for MyCedar {
                 "rpc UpdateOperationSettings not implemented for stargate_max_size."));
         }
         if req.update_interval.is_some() {
-            let update_interval = req.update_interval.unwrap();
+            let update_interval = req.update_interval.clone().unwrap();
             if update_interval.seconds < 0 || update_interval.nanos < 0 {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got negative update_interval: {}.", update_interval)));
@@ -124,6 +129,12 @@ impl Cedar for MyCedar {
                 Err(x) => { return Err(tonic_status(x)); }
             }
             // TODO: also set in operation_engine.
+            self.operation_settings.lock().unwrap().update_interval =
+                Some(req.update_interval.unwrap());
+        }
+        if req.binning.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for binning."));
         }
         if req.dwell_update_interval.is_some() {
             return Err(tonic::Status::unimplemented(
@@ -177,7 +188,7 @@ impl Cedar for MyCedar {
 
         let mut frame_result = cedar::FrameResult {
             frame_id: focus_result.frame_id,
-            operating_mode: OperatingMode::Setup as i32,  // TODO: update this
+            operation_settings: Some(self.operation_settings.lock().unwrap().clone()),
             image: None,  // Is set below.
             star_candidates: centroids,
             hot_pixel_count: focus_result.hot_pixel_count,
