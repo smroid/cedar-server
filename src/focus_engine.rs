@@ -244,7 +244,7 @@ impl FocusEngine {
                     new_exposure_duration_secs = f32::max(
                         new_exposure_duration_secs, 0.00001);
                     new_exposure_duration_secs = f32::min(
-                        new_exposure_duration_secs, 2.0);
+                        new_exposure_duration_secs, 1.0);
                     if prev_exposure_duration_secs != new_exposure_duration_secs {
                         debug!("Setting new exposure duration {}s",
                                new_exposure_duration_secs);
