@@ -1,4 +1,5 @@
 import 'dart:developer';
+//import 'dart:ffi';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -61,21 +62,45 @@ class MyHomePage extends StatefulWidget {
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
+// The various exposure times (ms) selected by the exposure time slider.
+// TODO: build from the min/max exposure times in the CalibrationData.
+var expValuesMs = [10, 20, 50, 100, 200, 500, 1000];
+
+// Return the largest index in expValuesMs array that is <= the given value.
+// If the given value is too small returns 0.
+int expValueIndex(double value) {
+  if (value <= expValuesMs[0]) {
+    return 0;
+  }
+  int index = 0;
+  while (++index < expValuesMs.length) {
+    if (expValuesMs[index] > value) {
+      return index - 1;
+    }
+  }
+  return expValuesMs.length - 1;
+}
+
 class _MyHomePageState extends State<MyHomePage> {
+  // Information from most recent FrameResult.
   Uint8List imageBytes = Uint8List(1);
   int width = 0;
   int height = 0;
 
-  Uint8List centerPeakImageBytes = Uint8List(1);
   int centerPeakWidth = 0;
   int centerPeakHeight = 0;
+  Uint8List centerPeakImageBytes = Uint8List(1);
 
-  bool doRefreshes = false;
   int prevFrameId = -1;
-
   int numStarCandidates = 0;
   int numBinnedStarCandidates = 0;
   int numHotPixels = 0;
+  double exposureTimeMs = 0.0;
+
+  // Values set from on-screen controls.
+  bool doRefreshes = false;
+  bool expAuto = true;
+  int expSliderValue = 0;
 
   Future<void> getFocusFrameFromServer() async {
     final CedarClient client = getClient();
@@ -86,6 +111,8 @@ class _MyHomePageState extends State<MyHomePage> {
     try {
       final response = await client.getFrame(request);
       setState(() {
+        // TODO(smr): check response.operatingMode and extract information
+        // accordingly. Also render widgets according to the operatingMode.
         prevFrameId = response.frameId;
         numStarCandidates = response.starCandidates.length;
         numBinnedStarCandidates = response.binnedStarCandidateCount;
@@ -94,6 +121,10 @@ class _MyHomePageState extends State<MyHomePage> {
           imageBytes = Uint8List.fromList(response.image.imageData);
           width = response.image.rectangle.width;
           height = response.image.rectangle.height;
+        }
+        if (response.hasExposureTime()) {
+          exposureTimeMs = (response.exposureTime.seconds.toDouble() * 1000 +
+              (response.exposureTime.nanos.toDouble()) / 1000000);
         }
         centerPeakImageBytes =
             Uint8List.fromList(response.centerPeakImage.imageData);
@@ -123,6 +154,33 @@ class _MyHomePageState extends State<MyHomePage> {
             }
           });
         }); // Switch
+  }
+
+  Widget expControl() {
+    return Column(children: <Widget>[
+      Slider(
+          min: 0,
+          max: expValuesMs.length - 1,
+          divisions: expValuesMs.length - 1,
+          value: expValueIndex(exposureTimeMs).toDouble(),
+          onChanged: (double value) => {setState(() {})}),
+      Row(
+        children: <Widget>[
+          Switch(
+              value: expAuto,
+              onChanged: (bool value) {
+                setState(() {
+                  expAuto = value;
+                  if (expAuto) {
+                    // refreshStateFromServer();
+                  }
+                });
+              }),
+          const Text("Auto"),
+        ],
+      ),
+      Text("$exposureTimeMs"),
+    ]);
   }
 
   @override
@@ -169,7 +227,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     runSwitch(),
                     const Text("Run"),
                   ],
-                ), // Column
+                ),
                 Column(
                   children: <Widget>[
                     Text("$numStarCandidates"),
@@ -178,7 +236,7 @@ class _MyHomePageState extends State<MyHomePage> {
                       child: const Text("Stars"),
                     ),
                   ],
-                ), // Column
+                ),
                 Column(
                   children: <Widget>[
                     Text("$numBinnedStarCandidates"),
@@ -187,7 +245,7 @@ class _MyHomePageState extends State<MyHomePage> {
                       child: const Text("Binned stars"),
                     ),
                   ],
-                ), // Column
+                ),
                 Column(
                   children: <Widget>[
                     Text("$numHotPixels"),
@@ -196,8 +254,13 @@ class _MyHomePageState extends State<MyHomePage> {
                       child: const Text("Hot pixels"),
                     ),
                   ],
-                ), // Column
-                // TODO(smr): exposure time slider and auto switch.
+                ),
+                Column(
+                  children: <Widget>[
+                    expControl(),
+                    const Text("Exp time (ms)"),
+                  ],
+                ),
               ],
             ),
             const SizedBox(height: 2),
