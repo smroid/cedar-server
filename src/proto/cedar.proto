@@ -161,6 +161,8 @@ message FrameResult {
   // The Cedar settings in effect for this frame.
   optional OperationSettings operation_settings = 2;
 
+  // TODO: CalibrationData in effect for this frame.
+
   // Information returned regardless of `operating_mode`. Note that these fields
   // are ommitted while a camera/sky calibration is underway (see below).
 
