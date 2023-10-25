@@ -44,7 +44,7 @@ message FixedSettings {
   // from the current time and the supplied latitude/longitude (converted to a
   // nearby location name).
   // The session name is used when storing calibration data and when logging
-  // dwell positions.
+  // dwell positions. A processed catalog can also be associated with the session.
   optional string session_name = 5;
 }
 
@@ -430,7 +430,11 @@ message ActionRequest {
 
   // Cancel camera/sky calibration.
 
-  // Optimize catalogue (requires camera/sky calibration). Proceeds in background.
+  // Optimize catalogue (requires camera/sky calibration). Uses calibration's limiting
+  // magnitude (at calibration's determined maximum exposure) to trim the catalog.
+  // Resulting catalog is associated with the session.
+  // What else?
+  // Proceeds in background.
 
   // Save image.
 }
