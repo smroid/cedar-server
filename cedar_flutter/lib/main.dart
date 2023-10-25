@@ -1,10 +1,12 @@
 import 'dart:developer';
 //import 'dart:ffi';
 import 'dart:typed_data';
+import 'package:fixnum/src/int64.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
 import 'cedar.pbgrpc.dart';
+import 'google/protobuf/duration.pb.dart';
 import 'get_cedar_client_for_web.dart'
     if (dart.library.io) 'get_cedar_client.dart';
 
@@ -60,6 +62,18 @@ class MyHomePage extends StatefulWidget {
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
+}
+
+double durationToMs(Duration duration) {
+  return duration.seconds.toDouble() * 1000 +
+      (duration.nanos.toDouble()) / 1000000;
+}
+
+Duration msToDuration(int ms) {
+  var duration = Duration();
+  duration.seconds = Int64(ms ~/ 1000);
+  duration.nanos = (ms * 1000000) % 1000000000;
+  return duration;
 }
 
 // The various exposure times (ms) selected by the exposure time slider.
@@ -123,9 +137,9 @@ class _MyHomePageState extends State<MyHomePage> {
           height = response.image.rectangle.height;
         }
         if (response.hasExposureTime()) {
-          exposureTimeMs = (response.exposureTime.seconds.toDouble() * 1000 +
-              (response.exposureTime.nanos.toDouble()) / 1000000);
+          exposureTimeMs = durationToMs(response.exposureTime);
         }
+        expAuto = durationToMs(response.operationSettings.exposureTime) == 0.0;
         centerPeakImageBytes =
             Uint8List.fromList(response.centerPeakImage.imageData);
         centerPeakWidth = response.centerPeakImage.rectangle.width;
@@ -136,11 +150,26 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
-  void refreshStateFromServer() async {
+  Future<void> refreshStateFromServer() async {
     await Future.doWhile(() async {
       await getFocusFrameFromServer();
       return doRefreshes;
     });
+  }
+
+  Future<void> updateOperationSettings(OperationSettings request) async {
+    final CedarClient client = getClient();
+    try {
+      await client.updateOperationSettings(request);
+    } catch (e) {
+      log('Error: $e');
+    }
+  }
+
+  Future<void> setExpTimeFromSlider() async {
+    var request = OperationSettings();
+    request.exposureTime = msToDuration(expValuesMs[expSliderValue]);
+    await updateOperationSettings(request);
   }
 
   Widget runSwitch() {
@@ -158,24 +187,37 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Widget expControl() {
     return Column(children: <Widget>[
-      Slider(
-          min: 0,
-          max: expValuesMs.length - 1,
-          divisions: expValuesMs.length - 1,
-          value: expValueIndex(exposureTimeMs).toDouble(),
-          onChanged: (double value) => {setState(() {})}),
+      expAuto
+          ? const SizedBox(height: 48)
+          : Slider(
+              min: 0,
+              max: expValuesMs.length - 1,
+              divisions: expValuesMs.length - 1,
+              value: expValueIndex(exposureTimeMs).toDouble(),
+              onChanged: (double value) => {
+                    setState(() {
+                      expSliderValue = value.toInt();
+                      if (!expAuto) {
+                        setExpTimeFromSlider();
+                      }
+                    })
+                  }),
       Row(
         children: <Widget>[
           Switch(
               value: expAuto,
-              onChanged: (bool value) {
-                setState(() {
-                  expAuto = value;
-                  if (expAuto) {
-                    // refreshStateFromServer();
-                  }
-                });
-              }),
+              onChanged: (bool value) => {
+                    setState(() {
+                      expAuto = value;
+                      if (expAuto) {
+                        var request = OperationSettings();
+                        request.exposureTime = msToDuration(0);
+                        updateOperationSettings(request);
+                      } else {
+                        setExpTimeFromSlider();
+                      }
+                    })
+                  }),
           const Text("Auto"),
         ],
       ),
@@ -185,8 +227,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
+    // This method is rerun every time setState() is called.
     //
     // The Flutter framework has been optimized to make rerunning build methods
     // fast, so that you can just rebuild anything that needs updating rather
