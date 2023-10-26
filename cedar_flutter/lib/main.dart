@@ -95,11 +95,63 @@ int expValueIndex(double value) {
   return expValuesMs.length - 1;
 }
 
+class _MainImagePainter extends CustomPainter {
+  final _MyHomePageState state;
+
+  _MainImagePainter(this.state);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const double hairline = 0.5;
+    const double thin = 1;
+    const double thick = 2;
+    const double crossRadius = 4;
+    // Draw search box within which we search for the brightest star for
+    // focusing.
+    canvas.drawRect(
+        state.centerRegion,
+        Paint()
+          ..color = Colors.red
+          ..strokeWidth = thick
+          ..style = PaintingStyle.stroke);
+    // Make a cross at the center of the search box (which is overall image
+    // center.
+    var center = state.centerRegion.center;
+    canvas.drawLine(
+        center.translate(-crossRadius, 0),
+        center.translate(crossRadius, 0),
+        Paint()
+          ..color = Colors.red
+          ..strokeWidth = hairline);
+    canvas.drawLine(
+        center.translate(0, -crossRadius),
+        center.translate(0, crossRadius),
+        Paint()
+          ..color = Colors.red
+          ..strokeWidth = hairline);
+    // Draw box around location of the brightest star in search box.
+    canvas.drawRect(
+        state.centerPeakRegion,
+        Paint()
+          ..color = Colors.red
+          ..strokeWidth = thin
+          ..style = PaintingStyle.stroke);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) {
+    return true;
+  }
+}
+
 class _MyHomePageState extends State<MyHomePage> {
   // Information from most recent FrameResult.
   Uint8List imageBytes = Uint8List(1);
   int width = 0;
   int height = 0;
+
+  late Rect centerRegion; // Scaled by main image's binning.
+  late Rect centerPeakRegion; // Scaled by binning.
 
   int centerPeakWidth = 0;
   int centerPeakHeight = 0;
@@ -131,10 +183,20 @@ class _MyHomePageState extends State<MyHomePage> {
         numStarCandidates = response.starCandidates.length;
         numBinnedStarCandidates = response.binnedStarCandidateCount;
         numHotPixels = response.hotPixelCount;
+        int binFactor = 1;
         if (response.hasImage()) {
           imageBytes = Uint8List.fromList(response.image.imageData);
           width = response.image.rectangle.width;
           height = response.image.rectangle.height;
+          binFactor = response.image.binningFactor;
+        }
+        if (response.hasCenterRegion()) {
+          var cr = response.centerRegion;
+          centerRegion = Rect.fromLTWH(
+              cr.originX.toDouble() / binFactor,
+              cr.originY.toDouble() / binFactor,
+              cr.width.toDouble() / binFactor,
+              cr.height.toDouble() / binFactor);
         }
         if (response.hasExposureTime()) {
           exposureTimeMs = durationToMs(response.exposureTime);
@@ -144,6 +206,13 @@ class _MyHomePageState extends State<MyHomePage> {
             Uint8List.fromList(response.centerPeakImage.imageData);
         centerPeakWidth = response.centerPeakImage.rectangle.width;
         centerPeakHeight = response.centerPeakImage.rectangle.height;
+        if (response.hasCenterPeakPosition()) {
+          var cp = response.centerPeakPosition;
+          centerPeakRegion = Rect.fromCenter(
+              center: Offset(cp.x / binFactor, cp.y / binFactor),
+              width: centerPeakWidth.toDouble() / binFactor,
+              height: centerPeakHeight.toDouble() / binFactor);
+        }
       });
     } catch (e) {
       log('Error: $e');
@@ -225,6 +294,63 @@ class _MyHomePageState extends State<MyHomePage> {
     ]);
   }
 
+  Widget topControls() {
+    return Row(
+      children: <Widget>[
+        Column(
+          children: <Widget>[
+            runSwitch(),
+            const Text("Run"),
+          ],
+        ),
+        Column(
+          children: <Widget>[
+            Text("$numStarCandidates"),
+            Container(
+              margin: const EdgeInsets.all(10),
+              child: const Text("Stars"),
+            ),
+          ],
+        ),
+        Column(
+          children: <Widget>[
+            Text("$numBinnedStarCandidates"),
+            Container(
+              margin: const EdgeInsets.all(10),
+              child: const Text("Binned stars"),
+            ),
+          ],
+        ),
+        Column(
+          children: <Widget>[
+            Text("$numHotPixels"),
+            Container(
+              margin: const EdgeInsets.all(10),
+              child: const Text("Hot pixels"),
+            ),
+          ],
+        ),
+        Column(
+          children: <Widget>[
+            expControl(),
+            const Text("Exp time (ms)"),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget mainImage() {
+    return CustomPaint(
+      foregroundPainter: _MainImagePainter(this),
+      child: dart_widgets.Image.memory(imageBytes,
+          height: height.toDouble() / 2,
+          width: width.toDouble() / 2,
+          fit: BoxFit.fill,
+          gaplessPlayback: true),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // This method is rerun every time setState() is called.
@@ -234,9 +360,6 @@ class _MyHomePageState extends State<MyHomePage> {
     // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         // Here we take the value from the MyHomePage object that was created by
         // the App.build method, and use it to set our appbar title.
@@ -246,75 +369,14 @@ class _MyHomePageState extends State<MyHomePage> {
         // Center is a layout widget. It takes a single child and positions it
         // in the middle of the parent.
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Row(
-              children: <Widget>[
-                Column(
-                  children: <Widget>[
-                    runSwitch(),
-                    const Text("Run"),
-                  ],
-                ),
-                Column(
-                  children: <Widget>[
-                    Text("$numStarCandidates"),
-                    Container(
-                      margin: const EdgeInsets.all(10),
-                      child: const Text("Stars"),
-                    ),
-                  ],
-                ),
-                Column(
-                  children: <Widget>[
-                    Text("$numBinnedStarCandidates"),
-                    Container(
-                      margin: const EdgeInsets.all(10),
-                      child: const Text("Binned stars"),
-                    ),
-                  ],
-                ),
-                Column(
-                  children: <Widget>[
-                    Text("$numHotPixels"),
-                    Container(
-                      margin: const EdgeInsets.all(10),
-                      child: const Text("Hot pixels"),
-                    ),
-                  ],
-                ),
-                Column(
-                  children: <Widget>[
-                    expControl(),
-                    const Text("Exp time (ms)"),
-                  ],
-                ),
-              ],
-            ),
+            topControls(),
             const SizedBox(height: 2),
             Stack(
               alignment: Alignment.topRight,
               children: <Widget>[
-                prevFrameId != -1
-                    ? dart_widgets.Image.memory(imageBytes,
-                        height: height.toDouble() / 2,
-                        width: width.toDouble() / 2,
-                        fit: BoxFit.fill,
-                        gaplessPlayback: true)
-                    : const SizedBox(height: 2),
+                prevFrameId != -1 ? mainImage() : const SizedBox(height: 2),
                 prevFrameId != -1
                     ? dart_widgets.Image.memory(centerPeakImageBytes,
                         height: centerPeakHeight.toDouble() * 3,
