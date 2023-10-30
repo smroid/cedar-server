@@ -346,7 +346,7 @@ class _MyHomePageState extends State<MyHomePage> {
       child: dart_widgets.Image.memory(imageBytes,
           height: height.toDouble() / 2,
           width: width.toDouble() / 2,
-          fit: BoxFit.fill,
+          fit: BoxFit.none,
           gaplessPlayback: true),
     );
   }
