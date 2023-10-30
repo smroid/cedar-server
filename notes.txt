@@ -46,3 +46,13 @@ exposure times).
 
 We might want to repeat this sigma optimization process for a range of exposure
 times and gain values.
+
+
+Feedback in focus mode: we display the number of detected stars (in both original
+and 2x binned image with hot pixels removed). Improvements to consider:
+
+1. Display little graphs instead of numbers.
+2. Over a window of the most recent N frames, determine which stars are detected
+   in (nearly) all of the frames (based on x/y proximity between frames). Display
+   the count of these "robustly detected" stars. This count will not include stars
+   at the edge of detectability nor false positives (noise).
