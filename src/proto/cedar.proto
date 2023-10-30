@@ -43,8 +43,11 @@ message FixedSettings {
   // A name for the current observing session. If not supplied, one is generated
   // from the current time and the supplied latitude/longitude (converted to a
   // nearby location name).
-  // The session name is used when storing calibration data and when logging
-  // dwell positions. A processed catalog can also be associated with the session.
+
+  // The session name is used when storing calibration data, boresight offset,
+  // when logging dwell positions, and when logging debugging captures (the
+  // latter should go elsewhere?). A processed catalog can also be associated
+  // with the session.
   optional string session_name = 5;
 }
 
