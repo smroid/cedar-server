@@ -14,7 +14,7 @@ use star_gate::algorithm::{StarDescription, estimate_noise_from_image,
                            get_stars_from_image, summarize_region_of_interest};
 
 pub struct FocusEngine {
-    // Our state, shared between ASICamera methods and the video capture thread.
+    // Our state, shared between FocusEngine methods and the worker thread.
     state: Arc<Mutex<SharedState>>,
 
     // Condition variable signalled whenever `state.focus_result` is populated.
@@ -40,7 +40,7 @@ struct SharedState {
 
     focus_result: Option<FocusResult>,
 
-    // Set by stop(); the video capture thread exits when it sees this.
+    // Set by stop(); the worker thread exits when it sees this.
     stop_request: bool,
 
     worker_thread: Option<thread::JoinHandle<()>>,
@@ -156,6 +156,7 @@ impl FocusEngine {
             let exp_time: Duration;
             let update_interval: Duration;
             // In focus engine, we use hardwired values for StarGate parameters.
+            // TODO(smr): revise.
             let sigma = 8.0;
             let max_size = 5;
             {
@@ -209,6 +210,7 @@ impl FocusEngine {
                                          ((height - center_size) / 2) as i32)
                 .of_size(center_size, center_size);
 
+            // TODO(smr): move histogram computation into autoexp conditional block.
             let noise_estimate = estimate_noise_from_image(image);
             let roi_summary = summarize_region_of_interest(
                 image, &center_region, noise_estimate, sigma);
@@ -240,7 +242,7 @@ impl FocusEngine {
                         captured_image.capture_params.exposure_duration.as_secs_f32();
                     let mut new_exposure_duration_secs =
                         prev_exposure_duration_secs * correction_factor;
-                    // Bound exposure duration to 0.01ms..2s.
+                    // Bound exposure duration to 0.01ms..1s.
                     new_exposure_duration_secs = f32::max(
                         new_exposure_duration_secs, 0.00001);
                     new_exposure_duration_secs = f32::min(
