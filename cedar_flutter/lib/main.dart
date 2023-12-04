@@ -181,7 +181,6 @@ class _MyHomePageState extends State<MyHomePage> {
         // accordingly. Also render widgets according to the operatingMode.
         prevFrameId = response.frameId;
         numStarCandidates = response.starCandidates.length;
-        numBinnedStarCandidates = response.binnedStarCandidateCount;
         numHotPixels = response.hotPixelCount;
         int binFactor = 1;
         if (response.hasImage()) {
@@ -309,15 +308,6 @@ class _MyHomePageState extends State<MyHomePage> {
             Container(
               margin: const EdgeInsets.all(10),
               child: const Text("Stars"),
-            ),
-          ],
-        ),
-        Column(
-          children: <Widget>[
-            Text("$numBinnedStarCandidates"),
-            Container(
-              margin: const EdgeInsets.all(10),
-              child: const Text("Binned stars"),
             ),
           ],
         ),
