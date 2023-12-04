@@ -10,7 +10,7 @@ package cedar;
 // server via gRPC, using the messages and RPCs defined in this proto file.
 //
 // The server runs independently of the client. In particular, image
-// acquisitions, star extractions, plate solving, and updates of SkySafari occur
+// acquisitions, star detection, plate solving, and updates of SkySafari occur
 // in the server even if no user interface app is connected. A client can obtain
 // FrameResults at a rate equal to or slower than the rate at which the server
 // is producing results.
@@ -20,7 +20,8 @@ package cedar;
 // without affecting the FrameResults seen by other clients (in other words, if
 // client A obtains a FrameResult X, it is not "consumed", so client B can
 // obtain the same FrameResult X). However, if any client updates the operating
-// mode or settings of the server, this will be visible to all clients.
+// mode or settings of the server, the result of this will be visible to all
+// clients.
 //
 // Finally, note Cedar's integration with SkySafari is a protocol separate from
 // the gRPC protocol defined in this proto file. Similarly, Cedar's gRPC
@@ -86,22 +87,10 @@ message OperationSettings {
   // result. Default is zero, meaning go as fast as possible.
   optional google.protobuf.Duration update_interval = 7;
 
-  // In OPERATING_MODE_OPERATE, star detection and centroiding is done either
-  // on the full resolution image or a 2x2 binned image.
-  // Supported values are 1 (full resolution), 2 (2x2 binned image), and 0
-  // (auto, chosen as part of camera/sky calibration). Default is zero, meaning
-  // auto.
-  optional int32 binning = 11;
-
   // In OPERATING_MODE_OPERATE, when Cedar detects that the camera is dwelling
   // (motionless) for more than some number of seconds, `dwell_update_interval`
   // is used instead of `update_interval`. Default is 1sec.
   optional google.protobuf.Duration dwell_update_interval = 8;
-
-  // If true, the plate solving star catalogue is periodically scrolled to
-  // reflect the hemisphere of the sky that is currently visible (above the
-  // horizon). TODO(smr): drop this, likely we'll always do this.
-  optional bool catalog_tracks_visible_sky = 9;
 
   // If true, when Cedar detects that the camera is dwelling (motionless) for
   // more than some number of seconds, the RA/DEC is logged. Note that if the
@@ -208,12 +197,6 @@ message FrameResult {
 
   // A small full resolution crop of `image` centered at `center_peak_position`.
   optional Image center_peak_image = 13;
-
-  // In OPERATING_MODE_SETUP, star detection is run twice: once at full
-  // resolution, where 'star_candidates' above has the result; and a second run
-  // on the 2x2 binned image, where the number of binned-image centroids is
-  // returned in `binned_star_candidate_count`.
-  int32 binned_star_candidate_count = 5;
 
   // In OPERATING_MODE_SETUP, Cedar can be instructed to perform a camera/sky
   // calibration. Most of the above fields are omitted while such a calibration
@@ -392,7 +375,7 @@ message CalibrationData {
 }
 
 message PlateSolution {
-  // Plate solution: ra/dec, scale, rotation.
+  // Plate solution: ra/dec, scale, rotation, accuracy estimate, matched stars.
   // Quality assessment (failed (reason?); low confidence; high confidence).
 }
 
