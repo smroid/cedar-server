@@ -18,12 +18,14 @@ use env_logger;
 use log::{debug};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
+use tonic::transport::Uri;
 
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{CalibrationPhase, FrameRequest, FrameResult, Image, ImageMode,
                    ImageCoord, OperatingMode, OperationSettings, Rectangle,
                    StarCentroid};
 use ::cedar::detect_engine::DetectEngine;
+use ::cedar::solve_engine::SolveEngine;
 
 use self::multiplex_service::MultiplexService;
 
@@ -58,8 +60,9 @@ pub mod cedar {
 struct MyCedar {
     camera: Arc<Mutex<asi_camera::ASICamera>>,
     operation_settings: Mutex<OperationSettings>,
-    detect_engine: Mutex<DetectEngine>,
-    // TODO: solve_engine, calibration_engine.
+    detect_engine: Arc<Mutex<DetectEngine>>,
+    solve_engine: Arc<Mutex<SolveEngine>>,
+    // TODO: calibration_engine.
 }
 
 #[tonic::async_trait]
@@ -155,6 +158,11 @@ impl Cedar for MyCedar {
         {
             let detect_engine = &mut self.detect_engine.lock().unwrap();
             detect_result = detect_engine.get_next_result(prev_frame_id);
+        }
+        let _solve_result;
+        {
+            let solve_engine = &mut self.solve_engine.lock().unwrap();
+            _solve_result = solve_engine.get_next_result(prev_frame_id);
         }
 
         let captured_image = &detect_result.captured_image;
@@ -270,6 +278,15 @@ impl Cedar for MyCedar {
 
 impl MyCedar {
     pub fn new(camera: Arc<Mutex<asi_camera::ASICamera>>) -> Self {
+        let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
+            camera.clone(),
+            /*update_interval=*/Duration::ZERO,
+            /*exposure_time=*/Duration::ZERO,
+            /*focus_mode_enabled=*/true)));
+        let solve_engine = Arc::new(Mutex::new(SolveEngine::new(
+            detect_engine.clone(),
+            "http://[::1]:50051".parse::<Uri>().unwrap(),
+            /*update_interval=*/Duration::ZERO)));
         MyCedar {
             camera: camera.clone(),
             operation_settings: Mutex::new(OperationSettings {
@@ -289,11 +306,8 @@ impl MyCedar {
                 }),
                 log_dwelled_positions: Some(false),
             }),
-            detect_engine: Mutex::new(DetectEngine::new(
-                camera.clone(),
-                /*update_interval=*/Duration::ZERO,
-                /*exposure_time=*/Duration::ZERO,
-                /*focus_mode_enabled=*/true))
+            detect_engine: detect_engine.clone(),
+            solve_engine: solve_engine.clone(),
         }
     }
 }
