@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package tetra3_server;
+
+import "google/protobuf/duration.proto";
+
+// This is a copy of tetra3.proto from the smroid/tetra3_server project on
+// github. TODO(smr): avoid this copy.
+
+// See documentation for Tetra3's solve_from_centroids() function for a
+// description of the request and response fields.
+
+message SolveRequest {
+  repeated ImageCoord star_centroids = 1;
+  // The 'size' parameter, in pixels.
+  int32 image_width = 2;
+  int32 image_height = 3;
+  optional float fov_estimate = 4;
+  optional float fov_max_error = 5;
+  optional int32 pattern_checking_stars = 6;
+  optional float match_radius = 7;
+  optional float match_threshold = 8;
+  repeated ImageCoord target_pixels = 9;
+  optional float distortion = 10;  // We don't support min/max.
+  optional bool return_matches = 11;
+  optional float match_max_error = 12;
+}
+
+message SolveResult {
+  optional CelestialCoord image_center_coords = 1;
+  optional float roll = 2;
+  optional float fov = 3;
+  optional float distortion = 4;
+  optional float rmse = 5;
+  optional int32 matches = 6;
+  optional float prob = 7;
+  optional float epoch_equinox = 8;
+  optional float epoch_proper_motion = 9;
+  google.protobuf.Duration solve_time = 10;
+  optional float cache_hit_fraction = 11;
+  repeated CelestialCoord target_coords = 12;
+  repeated MatchedStar matched_stars = 13;
+}
+
+message ImageCoord {
+  float x = 1;
+  float y = 2;
+}
+
+message CelestialCoord {
+  float ra = 1;  // Degrees, 0..360.
+  float dec = 2;  // Degrees, -90..90.
+}
+
+message MatchedStar {
+  CelestialCoord celestial_coord = 1;
+  float magnitude = 2;
+  ImageCoord image_coord = 3;
+  optional string cat_id = 4;
+}
+
+service Tetra3 {
+  // The gRPC deadline is used to set the Tetra3 solve timeout.
+  rpc SolveFromCentroids(SolveRequest) returns (SolveResult);
+}

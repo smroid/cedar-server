@@ -15,7 +15,7 @@ use star_gate::algorithm::{StarDescription, bin_image, estimate_noise_from_image
 
 pub struct DetectEngine {
     // Our state, shared between DetectEngine methods and the worker thread.
-    state: Arc<Mutex<SharedState>>,
+    state: Arc<Mutex<DetectState>>,
 
     // Condition variable signalled whenever `state.detect_result` is populated.
     // Also signalled when the worker thread exits.
@@ -23,7 +23,7 @@ pub struct DetectEngine {
 }
 
 // State shared between worker thread and the DetectEngine methods.
-struct SharedState {
+struct DetectState {
     // Note: camera settings can be adjusted behind our back.
     camera: Arc<Mutex<dyn AbstractCamera>>,
     frame_id: Option<i32>,
@@ -41,9 +41,6 @@ struct SharedState {
 
     // True means populate `DetectResult.focus_aid` info.
     focus_mode_enabled: bool,
-
-    // The `frame_id` to use for the next posted `detect_result`.
-    next_detect_result_id: i32,
 
     detect_result: Option<DetectResult>,
 
@@ -65,7 +62,7 @@ impl DetectEngine {
                focus_mode_enabled: bool)
                -> DetectEngine {
         DetectEngine{
-            state: Arc::new(Mutex::new(SharedState{
+            state: Arc::new(Mutex::new(DetectState{
                 camera: camera.clone(),
                 frame_id: None,
                 exposure_time,
@@ -73,7 +70,6 @@ impl DetectEngine {
                 detection_sigma: 8.0,
                 detection_max_size: 3,
                 focus_mode_enabled,
-                next_detect_result_id: 0,
                 detect_result: None,
                 stop_request: false,
                 worker_thread: None,
@@ -179,7 +175,7 @@ impl DetectEngine {
         }
     }
 
-    fn worker(state: Arc<Mutex<SharedState>>,
+    fn worker(state: Arc<Mutex<DetectState>>,
               detect_result_available: Arc<Condvar>) {
         // Keep track of when we started the detect cycle.
         let mut last_result_time: Option<Instant> = None;
@@ -339,7 +335,7 @@ impl DetectEngine {
             // Post the result.
             let mut locked_state = state.lock().unwrap();
             locked_state.detect_result = Some(DetectResult{
-                frame_id: locked_state.next_detect_result_id,
+                frame_id: locked_state.frame_id.unwrap(),
                 captured_image: captured_image.clone(),
                 binned_image: Arc::new(binned_image),
                 star_candidates: stars,
@@ -347,7 +343,6 @@ impl DetectEngine {
                 focus_aid,
                 processing_duration: last_result_time.unwrap().elapsed(),
             });
-            locked_state.next_detect_result_id += 1;
             detect_result_available.notify_all();
         }  // loop.
         let mut locked_state = state.lock().unwrap();
@@ -362,7 +357,7 @@ pub struct DetectResult {
     pub frame_id: i32,
 
     // The full resolution camera image used to produce the information in this
-    // result.
+    // detect result.
     pub captured_image: Arc<CapturedImage>,
 
     // The 2x2 binned image computed (with hot pixel removal) from
