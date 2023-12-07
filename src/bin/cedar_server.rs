@@ -18,7 +18,6 @@ use env_logger;
 use log::{debug};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
-use tonic::transport::Uri;
 
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{CalibrationPhase, FrameRequest, FrameResult, Image, ImageMode,
@@ -285,7 +284,8 @@ impl MyCedar {
             /*focus_mode_enabled=*/true)));
         let solve_engine = Arc::new(Mutex::new(SolveEngine::new(
             detect_engine.clone(),
-            "http://[::1]:50051".parse::<Uri>().unwrap(),
+            // TODO(smr): where to get this from?
+            "/home/pi/tetra3.sock".to_string(),
             /*update_interval=*/Duration::ZERO)));
         MyCedar {
             camera: camera.clone(),

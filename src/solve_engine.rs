@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use image::GrayImage;
 //use log::{debug, error, info};
 use log::{info};
-use tonic::transport::Uri;
+use tonic::transport::{Endpoint, Uri};
+use tokio::net::UnixStream;
+use tower::service_fn;
 
 pub mod tetra3 {
     tonic::include_proto!("tetra3_server");
@@ -26,7 +28,7 @@ pub struct SolveEngine {
     solve_result_available: Arc<Condvar>,
 
     // The Tetra3 server we invoke for plate solving.
-    tetra3_server_address: Uri,
+    tetra3_server_address: String,
 }
 
 // State shared between worker thread and the SolveEngine methods.
@@ -57,7 +59,7 @@ impl Drop for SolveEngine {
 
 impl SolveEngine {
     pub fn new(detect_engine: Arc<Mutex<DetectEngine>>,
-               tetra3_server_address: Uri,
+               tetra3_server_address: String,
                update_interval: Duration) -> SolveEngine {
         SolveEngine{
             state: Arc::new(Mutex::new(SolveState{
@@ -129,11 +131,15 @@ impl SolveEngine {
         }
     }
 
-    async fn worker(tetra3_server_address: Uri,
+    async fn worker(tetra3_server_address: String,
               state: Arc<Mutex<SolveState>>,
               solve_result_available: Arc<Condvar>) {
-        // Set up gRPC client.
-        let mut client = Tetra3Client::connect(tetra3_server_address).await.unwrap();
+        // Set up gRPC client, connect to a UDS socket. URL is ignored.
+        let channel = Endpoint::try_from("http://[::]:50051").unwrap()
+            .connect_with_connector(service_fn(move |_: Uri| {
+                UnixStream::connect(tetra3_server_address.clone())
+            })).await.unwrap();
+        let mut client = Tetra3Client::new(channel);
 
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
