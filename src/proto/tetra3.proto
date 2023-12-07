@@ -40,6 +40,11 @@ message SolveResult {
   optional float cache_hit_fraction = 11;
   repeated CelestialCoord target_coords = 12;
   repeated MatchedStar matched_stars = 13;
+
+  // If SolveFromCentroids() fails, all of the SolveResult fields
+  // will be omitted except for 'solve_time', and the reason for
+  // the failure will be given here.
+  optional string failure_reason = 14;
 }
 
 message ImageCoord {
