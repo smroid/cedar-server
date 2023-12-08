@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use canonical_error::{CanonicalError, invalid_argument_error};
 use image::GrayImage;
 //use log::{debug, error, info};
 use log::{info};
@@ -40,8 +41,18 @@ struct SolveState {
     // Zero means go fast as star detections are computed.
     update_interval: Duration,
 
-    // Parameters for plate solver.
-    // TBD.
+    // Parameters for plate solver. See documentation of Tetra3's
+    // solve_from_centroids() function for a description of these items.
+    fov_estimate: Option<f32>,
+    fov_max_error: Option<f32>,
+    pattern_checking_stars: i32,
+    match_radius: f32,
+    match_threshold: f32,
+    solve_timeout: Duration,
+    target_pixel: Option<ImageCoord>,
+    distortion: f32,
+    return_matches: bool,
+    match_max_error: f32,
 
     solve_result: Option<SolveResult>,
 
@@ -66,6 +77,16 @@ impl SolveEngine {
                 detect_engine: detect_engine.clone(),
                 frame_id: None,
                 update_interval,
+                fov_estimate: None,
+                fov_max_error: None,
+                pattern_checking_stars: 8,
+                match_radius: 0.01,
+                match_threshold: 0.001,
+                solve_timeout: Duration::from_secs(1),
+                target_pixel: None,
+                distortion: 0.0,
+                return_matches: true,
+                match_max_error: 0.005,
                 solve_result: None,
                 stop_request: false,
                 worker_thread: None,
@@ -75,13 +96,89 @@ impl SolveEngine {
         }
     }
 
+    pub fn set_update_interval(&mut self, update_interval: Duration)
+                               -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.update_interval = update_interval;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    pub fn set_fov_estimate(&mut self, fov_estimate: Option<f32>,
+                            fov_max_error: Option<f32>)
+                               -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        if fov_estimate.is_some() && fov_estimate.unwrap() <= 0.0 {
+            return Err(invalid_argument_error(
+                format!("fov_estimate must be positive; got {}",
+                        fov_estimate.unwrap()).as_str()));
+        }
+        if fov_max_error.is_some() && fov_max_error.unwrap() <= 0.0 {
+            return Err(invalid_argument_error(
+                format!("fov_max_error must be positive; got {}",
+                        fov_max_error.unwrap()).as_str()));
+        }
+        if fov_estimate.is_none() && fov_max_error.is_some() {
+            return Err(invalid_argument_error(
+                "Cannot provide fov_max_error without fov_estimate"));
+        }
+        locked_state.fov_estimate = fov_estimate;
+        locked_state.fov_max_error = fov_max_error;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    pub fn set_target_pixel(&mut self, target_pixel: Option<ImageCoord>)
+                               -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.target_pixel = target_pixel;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    pub fn set_distortion(&mut self, distortion: f32)
+                               -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        if distortion < -0.2 || distortion > 0.2 {
+            return Err(invalid_argument_error(
+                format!("distortion must be in [-0.2, 0.2]; got {}",
+                        distortion).as_str()));
+        }
+        locked_state.distortion = distortion;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    pub fn set_match_max_error(&mut self, match_max_error: f32)
+                               -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        if match_max_error < 0.0 || match_max_error >= 0.1 {
+            return Err(invalid_argument_error(
+                format!("match_max_error must be in [0, 0.1); got {}",
+                        match_max_error).as_str()));
+        }
+        locked_state.match_max_error = match_max_error;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    // Note: we don't currently provide methods to change pattern_checking_stars,
+    // match_radius, match_threshold, solve_timeout, or return_matches. The
+    // defaults for these should be fine.
+
     /// Obtains a result bundle, as configured above. The returned result is
-    /// "fresh" in that we either wait to process a new detect result or return
-    /// the result of processing the most recently completed star detection.
+    /// "fresh" in that we either wait to solve a new detect result or return
+    /// the result of solving the most recently completed star detection.
     /// This function does not "consume" the information that it returns;
-    /// multiple callers will receive the current result bundle (or next result,
-    /// if there is not yet a current result) if `prev_frame_id` is omitted. If
-    /// `prev_frame_id` is supplied, the call blocks while the current result
+    /// multiple callers will receive the current solve result (or next solve
+    /// result, if there is not yet a current result) if `prev_frame_id` is
+    /// omitted.
+    /// If `prev_frame_id` is supplied, the call blocks while the current result
     /// has the same id value.
     /// Returns: the processed result along with its frame_id value.
     pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> SolveResult {
@@ -132,8 +229,8 @@ impl SolveEngine {
     }
 
     async fn worker(tetra3_server_address: String,
-              state: Arc<Mutex<SolveState>>,
-              solve_result_available: Arc<Condvar>) {
+                    state: Arc<Mutex<SolveState>>,
+                    solve_result_available: Arc<Condvar>) {
         // Set up gRPC client, connect to a UDS socket. URL is ignored.
         let channel = Endpoint::try_from("http://[::]:50051").unwrap()
             .connect_with_connector(service_fn(move |_: Uri| {
@@ -144,18 +241,10 @@ impl SolveEngine {
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
         loop {
-    //         let exp_time: Duration;
             let update_interval: Duration;
-    //         let sigma: f32;
-    //         let max_size: i32;
-    //         let focus_mode_enabled: bool;
             {
                 let mut locked_state = state.lock().unwrap();
-                // exp_time = locked_state.exposure_time;
                 update_interval = locked_state.update_interval;
-                // sigma = locked_state.detection_sigma;
-                // max_size = locked_state.detection_max_size;
-                // focus_mode_enabled = locked_state.focus_mode_enabled;
                 if locked_state.stop_request {
                     info!("Stopping solve engine");
                     locked_state.stop_request = false;
@@ -180,29 +269,45 @@ impl SolveEngine {
             last_result_time = Some(now);
 
             let detect_result: DetectResult;
+            let mut solve_request = SolveRequest::default();
             {
                 let mut locked_state = state.lock().unwrap();
+
+                // Set up SolveRequest.
+                solve_request.fov_estimate = locked_state.fov_estimate;
+                solve_request.fov_max_error = locked_state.fov_max_error;
+                solve_request.pattern_checking_stars = Some(locked_state.pattern_checking_stars);
+                solve_request.match_radius = Some(locked_state.match_radius);
+                solve_request.match_threshold = Some(locked_state.match_threshold);
+                if locked_state.target_pixel.is_some() {
+                    solve_request.target_pixels.push(
+                        locked_state.target_pixel.as_ref().unwrap().clone());
+                }
+                solve_request.distortion = Some(locked_state.distortion);
+                solve_request.return_matches = locked_state.return_matches;
+                solve_request.match_max_error = Some(locked_state.match_max_error);
+
+                // Get the most recent star detection result.
                 let locked_state_mut = locked_state.deref_mut();
                 let mut locked_detect_engine = locked_state_mut.detect_engine.lock().unwrap();
                 detect_result = locked_detect_engine.get_next_result(
                     locked_state_mut.frame_id);
-                locked_state_mut.frame_id = Some(detect_result.frame_id);
+                // TODO(smr): do this later, when publishing solve result.
+                // locked_state_mut.frame_id = Some(detect_result.frame_id);
             }
             let image: &GrayImage = &detect_result.captured_image.image;
             let (width, height) = image.dimensions();
 
             // Plate-solve using the just-acquired detected stars.
-            let mut request = SolveRequest::default();
             for sc in detect_result.star_candidates {
-                request.star_centroids.push(ImageCoord{x: sc.centroid_x,
-                                                       y: sc.centroid_y});
+                solve_request.star_centroids.push(ImageCoord{x: sc.centroid_x,
+                                                             y: sc.centroid_y});
             }
-            request.image_width = width as i32;
-            request.image_height = height as i32;
-            request.fov_estimate = Some(11.0);  // TODO(smr): get this from somewhere
+            solve_request.image_width = width as i32;
+            solve_request.image_height = height as i32;
 
-            let response = client.solve_from_centroids(request).await;
-            println!("response={:?}", response);
+            let solve_response = client.solve_from_centroids(solve_request).await;
+            // println!("response={:?}", response);
 
 
     //         let center_size = std::cmp::min(width, height) / 3;

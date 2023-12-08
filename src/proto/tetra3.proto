@@ -22,7 +22,7 @@ message SolveRequest {
   optional float match_threshold = 8;
   repeated ImageCoord target_pixels = 9;
   optional float distortion = 10;  // We don't support min/max.
-  optional bool return_matches = 11;
+  bool return_matches = 11;
   optional float match_max_error = 12;
 }
 
