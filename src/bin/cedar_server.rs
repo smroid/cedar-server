@@ -20,9 +20,9 @@ use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
 
 use crate::cedar::cedar_server::{Cedar, CedarServer};
-use crate::cedar::{CalibrationPhase, FrameRequest, FrameResult, Image, ImageMode,
-                   ImageCoord, OperatingMode, OperationSettings, Rectangle,
-                   StarCentroid};
+use crate::cedar::{CalibrationData, CalibrationPhase, FixedSettings,
+                   FrameRequest, FrameResult, Image, ImageMode, ImageCoord,
+                   OperatingMode, OperationSettings, Rectangle, StarCentroid};
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::solve_engine::SolveEngine;
 
@@ -55,10 +55,16 @@ pub mod cedar {
     // The string specified here must match the proto package name.
     tonic::include_proto!("cedar");
 }
+pub mod tetra3_server {
+    // The string specified here must match the proto package name.
+    tonic::include_proto!("tetra3_server");
+}
 
 struct MyCedar {
     camera: Arc<Mutex<asi_camera::ASICamera>>,
+    fixed_settings: Mutex<FixedSettings>,
     operation_settings: Mutex<OperationSettings>,
+    calibration_data: Mutex<CalibrationData>,
     detect_engine: Arc<Mutex<DetectEngine>>,
     solve_engine: Arc<Mutex<SolveEngine>>,
     // TODO: calibration_engine.
@@ -67,7 +73,33 @@ struct MyCedar {
 #[tonic::async_trait]
 impl Cedar for MyCedar {
     // TODO: get_server_information RPC.
-    // TODO: update_fixed_settings RPC.
+
+    async fn update_fixed_settings(
+        &self, request: tonic::Request<FixedSettings>)
+        -> Result<tonic::Response<FixedSettings>, tonic::Status>
+    {
+        let req: FixedSettings = request.into_inner();
+        if req.lens_fl_mm.is_some() {
+            self.fixed_settings.lock().unwrap().lens_fl_mm = req.lens_fl_mm;
+        }
+        if req.latitude.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateFixedSettings not implemented for latitude."));
+        }
+        if req.longitude.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateFixedSettings not implemented for longitude."));
+        }
+        if req.client_time.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateFixedSettings not implemented for client_time."));
+        }
+        if req.session_name.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateFixedSettings not implemented for session_name."));
+        }
+        Ok(tonic::Response::new(self.fixed_settings.lock().unwrap().clone()))
+    }
 
     async fn update_operation_settings(
         &self, request: tonic::Request<OperationSettings>)
@@ -125,12 +157,16 @@ impl Cedar for MyCedar {
                     format!("Got negative update_interval: {}.", update_interval)));
             }
             let detect_engine = &mut self.detect_engine.lock().unwrap();
+            let solve_engine = &mut self.solve_engine.lock().unwrap();
             let std_interval = std::time::Duration::try_from(update_interval).unwrap();
             match detect_engine.set_update_interval(std_interval) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            // TODO: also set in operation_engine.
+            match solve_engine.set_update_interval(std_interval) {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
             self.operation_settings.lock().unwrap().update_interval =
                 Some(req.update_interval.unwrap());
         }
@@ -162,6 +198,7 @@ impl Cedar for MyCedar {
         {
             let solve_engine = &mut self.solve_engine.lock().unwrap();
             _solve_result = solve_engine.get_next_result(prev_frame_id);
+            // TODO(smr): update this
         }
 
         let captured_image = &detect_result.captured_image;
@@ -289,9 +326,16 @@ impl MyCedar {
             /*update_interval=*/Duration::ZERO)));
         MyCedar {
             camera: camera.clone(),
+            fixed_settings: Mutex::new(FixedSettings {
+                lens_fl_mm: Some(25.0),  // Should be None, populated from UI.
+                latitude: None,
+                longitude: None,
+                client_time: None,
+                session_name: None,
+            }),
             operation_settings: Mutex::new(OperationSettings {
                 camera_gain: Some(100),
-                camera_offset: Some(0),
+                camera_offset: Some(3),
                 operating_mode: Some(OperatingMode::Setup as i32),
                 exposure_time: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
@@ -306,6 +350,7 @@ impl MyCedar {
                 }),
                 log_dwelled_positions: Some(false),
             }),
+            calibration_data: Mutex::new(CalibrationData::default()),
             detect_engine: detect_engine.clone(),
             solve_engine: solve_engine.clone(),
         }

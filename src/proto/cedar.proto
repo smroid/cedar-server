@@ -3,6 +3,8 @@ syntax = "proto3";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
+import "tetra3.proto";
+
 package cedar;
 
 // In cedar_flutter/lib:
@@ -217,7 +219,7 @@ message FrameResult {
   // Information returned when `operating_mode` is OPERATING_MODE_OPERATE.
 
   // The current plate solution.
-  optional PlateSolution plate_solution = 17;
+  optional tetra3_server.SolveResult plate_solution = 17;
 
   // Detected camera motion.
   optional MotionType camera_motion = 18;
@@ -307,15 +309,14 @@ enum CalibrationPhase {
   //   obtaining good star counts and avoiding too many overexposed stars.
   CALIBRATION_PHASE_ANALYZE_EXPOSURE = 2;
 
+  // Obtain initial plate solution with loose constraints to obtain the true
+  // field of view and lens distortion.
+  CALIBRATION_PHASE_ANALYZE_FIELD_OF_VIEW = 3;
+
   // Determining the StarGate "sigma" levels to use to maximize true star
   // detections and minimize false star detections, using catalogue as ground
   // (sky) truth.
-  CALIBRATION_PHASE_ANALYZE_STAR_THRESHOLD = 3;
-
-  // Use central crop to obtain plate solution, and do astrometry on peripheral
-  // stars w.r.t. the catalogue to obtain the lens distortion and true field of
-  // view.
-  CALIBRATION_PHASE_ANALYZE_LENS_DISTORTION = 4;
+  CALIBRATION_PHASE_ANALYZE_STAR_THRESHOLD = 4;
 }
 
 message CalibrationData {
@@ -354,7 +355,8 @@ message CalibrationData {
   // `lens_fl_mm` value.
   optional float lens_fl_mm = 12;
 
-  // * estimated lens distortion parameters (TBD)
+  // Omitted if a sky/camera calibration has not been done.
+  optional float lens_distortion = 13;
 
   // The angular size of a pixel, in radians. This is for the field center, as
   // the "pinhole" projection of sky angles onto a planar detector causes the
@@ -362,24 +364,13 @@ message CalibrationData {
   // If sky/camera calibration has not been done, this will be derived from the
   // FixedSettings `lens_fl_mm` value and the camera's sensor size and pixel
   // count.
-  optional float pixel_angular_size = 13;
+  optional float pixel_angular_size = 14;
 
-  // The angular size (radians) of the camera's diagonal projected onto the sky.
-  // For narrow camera field of view (e.g. less than 1 degree), this will be
-  // directly related to `pixel_angular_size`. For wide-field cameras (e.g. more
-  // than 5 degrees) this will properly take into account the "pinhole"
-  // projection of the planar detector onto the sky.
+  // The angular size (radians) of the camera's width projected onto the sky.
   // If sky/camera calibration has not been done, this will be derived from the
   // FixedSettings `lens_fl_mm` value and the camera's sensor size and pixel
   // count.
-  optional float fov_diagonal = 14;
-
-  // TODO(smr): image flipped?
-}
-
-message PlateSolution {
-  // Plate solution: ra/dec, scale, rotation, accuracy estimate, matched stars.
-  // Quality assessment (failed (reason?); low confidence; high confidence).
+  optional float fov_horizontal = 15;
 }
 
 enum MotionType {
@@ -464,7 +455,7 @@ service Cedar {
   // from the supplied FixedSettings, that setting is not updated. Returns the
   // FixedSettings after any updates have been applied. To get the current
   // settings without making any changes, pass an empty FixedSettings request.
-  // rpc UpdateFixedSettings(FixedSettings) returns (FixedSettings);
+  rpc UpdateFixedSettings(FixedSettings) returns (FixedSettings);
 
   // Changes zero or more of Cedar's operation settings. If a field is omitted
   // from the supplied OperationSettings, that setting is not updated. Returns
