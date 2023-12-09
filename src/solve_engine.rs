@@ -7,17 +7,17 @@ use std::time::{Duration, Instant};
 
 use canonical_error::{CanonicalError, invalid_argument_error};
 use image::GrayImage;
-//use log::{debug, error, info};
-use log::{info};
+use log::{error, info};
 use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
 use tower::service_fn;
+use tower::timeout::Timeout;
 
 pub mod tetra3 {
     tonic::include_proto!("tetra3_server");
 }
 
-use tetra3::{ImageCoord, SolveRequest};
+use tetra3::{ImageCoord, SolveRequest, SolveResult as SolveResultProto};
 use tetra3::tetra3_client::Tetra3Client;
 
 pub struct SolveEngine {
@@ -202,7 +202,8 @@ impl SolveEngine {
             // Wait if the posted result is the same as the one the caller has
             // already obtained.
             if prev_frame_id.is_some() &&
-                state.solve_result.as_ref().unwrap().frame_id == prev_frame_id.unwrap()
+                (state.solve_result.as_ref().unwrap().detect_result.frame_id ==
+                 prev_frame_id.unwrap())
             {
                 state = self.solve_result_available.wait(state).unwrap();
                 continue;
@@ -236,7 +237,8 @@ impl SolveEngine {
             .connect_with_connector(service_fn(move |_: Uri| {
                 UnixStream::connect(tetra3_server_address.clone())
             })).await.unwrap();
-        let mut client = Tetra3Client::new(channel);
+        let timeout_channel = Timeout::new(channel, state.lock().unwrap().solve_timeout);
+        let mut client = Tetra3Client::new(timeout_channel);
 
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
@@ -292,133 +294,37 @@ impl SolveEngine {
                 let mut locked_detect_engine = locked_state_mut.detect_engine.lock().unwrap();
                 detect_result = locked_detect_engine.get_next_result(
                     locked_state_mut.frame_id);
-                // TODO(smr): do this later, when publishing solve result.
-                // locked_state_mut.frame_id = Some(detect_result.frame_id);
             }
             let image: &GrayImage = &detect_result.captured_image.image;
             let (width, height) = image.dimensions();
 
-            // Plate-solve using the just-acquired detected stars.
-            for sc in detect_result.star_candidates {
+            // Plate-solve using the recently detected stars.
+            for sc in &detect_result.star_candidates {
                 solve_request.star_centroids.push(ImageCoord{x: sc.centroid_x,
                                                              y: sc.centroid_y});
             }
             solve_request.image_width = width as i32;
             solve_request.image_height = height as i32;
 
-            let solve_response = client.solve_from_centroids(solve_request).await;
-            // println!("response={:?}", response);
+            let resp;
+            match client.solve_from_centroids(solve_request).await {
+                Err(e) => {
+                    error!("Unexpected error {:?}", e);
+                    break;  // Exit the worker thread.
+                },
+                Ok(response) => {
+                    resp = response.into_inner();
+                }
+            }
+            // TODO(smr): examine resp: if solution failed because of too few
+            // stars detected, adjust exposure within limits.
 
-
-    //         let center_size = std::cmp::min(width, height) / 3;
-    //         let center_region = Rect::at(((width - center_size) / 2) as i32,
-    //                                      ((height - center_size) / 2) as i32)
-    //             .of_size(center_size, center_size);
-    //         let noise_estimate = estimate_noise_from_image(&image);
-
-    //         let mut focus_aid: Option<FocusAid> = None;
-    //         if focus_mode_enabled || exp_time.is_zero() {
-    //             let roi_summary = summarize_region_of_interest(
-    //                 &image, &center_region, noise_estimate, sigma);
-    //             let mut peak_value = 1_u8;  // Avoid div0 below.
-    //             let histogram = &roi_summary.histogram;
-    //             for bin in 2..256 {
-    //                 if histogram[bin] > 0 {
-    //                     peak_value = bin as u8;
-    //                 }
-    //             }
-    //             if exp_time.is_zero() {
-    //                 // Adjust exposure time based on histogram of center_region.
-    //                 let peak_value_goal = 200;
-    //                 // Compute how much to scale the previous exposure
-    //                 // integration time to move towards the goal.
-    //                 let correction_factor =
-    //                     if peak_value == 255 {
-    //                         // We don't know how overexposed we are. Cut the
-    //                         // exposure time in half.
-    //                         0.5
-    //                     } else {
-    //                         // Move proportionally towards the goal.
-    //                         peak_value_goal as f32 / peak_value as f32
-    //                     };
-    //                 if correction_factor < 0.8 || correction_factor > 1.2 {
-    //                     let prev_exposure_duration_secs =
-    //                         captured_image.capture_params.exposure_duration.as_secs_f32();
-    //                     let mut new_exposure_duration_secs =
-    //                         prev_exposure_duration_secs * correction_factor;
-    //                     // Bound exposure duration to 0.01ms..1s.
-    //                     new_exposure_duration_secs = f32::max(
-    //                         new_exposure_duration_secs, 0.00001);
-    //                     new_exposure_duration_secs = f32::min(
-    //                         new_exposure_duration_secs, 1.0);
-    //                     if prev_exposure_duration_secs != new_exposure_duration_secs {
-    //                         debug!("Setting new exposure duration {}s",
-    //                                new_exposure_duration_secs);
-    //                         let locked_state = state.lock().unwrap();
-    //                         let mut locked_camera = locked_state.camera.lock().unwrap();
-    //                         match locked_camera.set_exposure_duration(
-    //                             Duration::from_secs_f32(new_exposure_duration_secs)) {
-    //                             Ok(()) => (),
-    //                             Err(e) => {
-    //                                 error!("Error updating exposure duration: {}",
-    //                                        &e.to_string());
-    //                                 break;  // Abandon thread execution!
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //             if focus_mode_enabled {
-    //                 // Get a small sub-image centered on the peak coordinates.
-    //                 let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
-    //                 let sub_image_size = 30;
-    //                 let peak_region = Rect::at((peak_position.0 - sub_image_size/2) as i32,
-    //                                            (peak_position.1 - sub_image_size/2) as i32)
-    //                     .of_size(sub_image_size as u32, sub_image_size as u32);
-    //                 debug!("peak {} at x/y {}/{}",
-    //                        peak_value, peak_region.left(), peak_region.top());
-    //                 // We scale up the pixel values in the peak_image for good
-    //                 // display visibility.
-    //                 let mut peak_image = image.view(peak_region.left() as u32,
-    //                                                 peak_region.top() as u32,
-    //                                                 sub_image_size as u32,
-    //                                                 sub_image_size as u32).to_image();
-    //                 contrast::stretch_contrast_mut(&mut peak_image, 0, 255);
-    //                 // contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
-    //                 focus_aid = Some(FocusAid{
-    //                     center_region,
-    //                     center_peak_position: peak_position,
-    //                     peak_image,
-    //                     peak_image_region: peak_region,
-    //                 });
-    //             }
-    //         }
-
-    //         // Get 2x2 binned image with hot pixels removed.
-    //         let (binned_image, hot_pixel_count) =
-    //             bin_image(&image, noise_estimate, sigma);
-    //         // Run StarGate on the binned image.
-    //         let binned_noise_estimate = estimate_noise_from_image(&binned_image);
-    //         let (mut stars, _, _) =
-    //             get_stars_from_image(&binned_image, Some(&image),
-    //                                  binned_noise_estimate,
-    //                                  sigma, max_size as u32,
-    //                                  /*detect_hot_pixels=*/false,
-    //                                  /*create_binned_image=*/false);
-    //         // Sort by brightness estimate, brightest first.
-    //         stars.sort_by(|a, b| b.mean_brightness.partial_cmp(&a.mean_brightness).unwrap());
-
-    //         // Post the result.
-    //         let mut locked_state = state.lock().unwrap();
-    //         locked_state.detect_result = Some(DetectResult{
-    //             frame_id: locked_state.frame_id.unwrap(),
-    //             captured_image: captured_image.clone(),
-    //             binned_image: Arc::new(binned_image),
-    //             star_candidates: stars,
-    //             hot_pixel_count: hot_pixel_count as i32,
-    //             focus_aid,
-    //             processing_duration: last_result_time.unwrap().elapsed(),
-    //         });
+            // Post the result.
+            let mut locked_state = state.lock().unwrap();
+            locked_state.solve_result = Some(SolveResult{
+                detect_result: detect_result.into(),
+                tetra3_solve_result: resp.into(),
+            });
             solve_result_available.notify_all();
         }  // loop.
         let mut locked_state = state.lock().unwrap();
@@ -429,11 +335,9 @@ impl SolveEngine {
 
 #[derive(Clone)]
 pub struct SolveResult {
-    // See the corresponding field in cedar.FrameResult proto message.
-    pub frame_id: i32,
-
     // The detect result used to produce the information in this solve result.
     pub detect_result: Arc<DetectResult>,
 
-    // TBD: solve result info
+    // The plate solution for `detect_result`.
+    pub tetra3_solve_result: Arc<SolveResultProto>,
 }
