@@ -16,7 +16,7 @@ use image::ImageOutputFormat;
 use clap::Parser;
 use axum::Router;
 use env_logger;
-use log::{debug};
+use log::{debug, info};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
 
@@ -425,9 +425,15 @@ impl MyCedar {
         // Set pre-calibration defaults on camera.
         assert!(cedar.set_camera_gain(100).is_ok());
         assert!(cedar.set_camera_offset(3).is_ok());
+        let sigma;
+        let max_size;
+        {
+            let op_settings = cedar.operation_settings.lock().unwrap();
+            sigma = op_settings.detection_sigma.unwrap();
+            max_size = op_settings.detection_max_size.unwrap();
+        }
         assert!(detect_engine.lock().unwrap().set_detection_params(
-            cedar.operation_settings.lock().unwrap().detection_sigma.unwrap(),
-            cedar.operation_settings.lock().unwrap().detection_max_size.unwrap()).is_ok());
+            sigma, max_size).is_ok());
         cedar
     }
 }
@@ -445,13 +451,14 @@ async fn main() {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+    info!("Using Tetra3 server at {:?}", args.tetra3);
 
     // Build the static content web service.
     let rest = Router::new().nest_service(
         "/", ServeDir::new("/home/pi/projects/cedar/cedar_flutter/build/web"));
 
     // TODO(smr): discovery/enumeration mechanism for cameras.
-    let mut camera = asi_camera::ASICamera::new(
+    let camera = asi_camera::ASICamera::new(
         asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap();
     let shared_camera = Arc::new(Mutex::new(camera));
 
@@ -468,6 +475,7 @@ async fn main() {
 
     // Listen on any address for the given port.
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    info!("Listening at {:?}", addr);
     hyper::Server::bind(&addr)
         .serve(tower::make::Shared::new(service))
         .await

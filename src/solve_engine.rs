@@ -232,13 +232,23 @@ impl SolveEngine {
     async fn worker(tetra3_server_address: String,
                     state: Arc<Mutex<SolveState>>,
                     plate_solution_available: Arc<Condvar>) {
+        let addr = tetra3_server_address.clone();
         // Set up gRPC client, connect to a UDS socket. URL is ignored.
         let channel = Endpoint::try_from("http://[::]:50051").unwrap()
             .connect_with_connector(service_fn(move |_: Uri| {
                 UnixStream::connect(tetra3_server_address.clone())
-            })).await.unwrap();
-        let timeout_channel = Timeout::new(channel, state.lock().unwrap().solve_timeout);
-        let mut client = Tetra3Client::new(timeout_channel);
+            })).await;
+        let mut client;
+        match channel {
+            Ok(ch) => {
+                let timeout_channel = Timeout::new(ch, state.lock().unwrap().solve_timeout);
+                client = Tetra3Client::new(timeout_channel);
+            },
+            Err(e) => {
+                error!("Error connecting to Tetra server at {:?}: {:?}", addr, e);
+                return
+            }
+        }
 
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
