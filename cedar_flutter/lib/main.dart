@@ -5,7 +5,9 @@ import 'package:fixnum/src/int64.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
+import 'package:sprintf/sprintf.dart';
 import 'cedar.pbgrpc.dart';
+import 'tetra3.pb.dart';
 import 'google/protobuf/duration.pb.dart';
 import 'get_cedar_client_for_web.dart'
     if (dart.library.io) 'get_cedar_client.dart';
@@ -23,21 +25,6 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Cedar',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a blue toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
@@ -48,18 +35,7 @@ class MyApp extends StatelessWidget {
 
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
   final String title;
-
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
@@ -159,9 +135,12 @@ class _MyHomePageState extends State<MyHomePage> {
 
   int prevFrameId = -1;
   int numStarCandidates = 0;
-  int numBinnedStarCandidates = 0;
   int numHotPixels = 0;
   double exposureTimeMs = 0.0;
+  String solveFailureReason = "";
+  double solutionRA = 0.0;
+  double solutionDec = 0.0;
+  double solutionRMSE = 0.0;
 
   // Values set from on-screen controls.
   bool doRefreshes = false;
@@ -183,6 +162,17 @@ class _MyHomePageState extends State<MyHomePage> {
         numStarCandidates = response.starCandidates.length;
         numHotPixels = response.hotPixelCount;
         int binFactor = 1;
+        if (response.hasPlateSolution()) {
+          SolveResult plateSolution = response.plateSolution;
+          if (plateSolution.hasFailureReason()) {
+            solveFailureReason = plateSolution.failureReason;
+          } else {
+            solveFailureReason = "";
+            solutionRA = plateSolution.imageCenterCoords.ra;
+            solutionDec = plateSolution.imageCenterCoords.dec;
+            solutionRMSE = plateSolution.rmse;
+          }
+        }
         if (response.hasImage()) {
           imageBytes = Uint8List.fromList(response.image.imageData);
           width = response.image.rectangle.width;
@@ -317,6 +307,42 @@ class _MyHomePageState extends State<MyHomePage> {
             Container(
               margin: const EdgeInsets.all(10),
               child: const Text("Hot pixels"),
+            ),
+          ],
+        ),
+        Column(
+          children: <Widget>[
+            Text(solveFailureReason),
+            Container(
+              margin: const EdgeInsets.all(10),
+              child: const Text("Failure reason"),
+            ),
+          ],
+        ),
+        Column(
+          children: <Widget>[
+            Text(sprintf("%.4f", [solutionRA])),
+            Container(
+              margin: const EdgeInsets.all(10),
+              child: const Text("     RA     "),
+            ),
+          ],
+        ),
+        Column(
+          children: <Widget>[
+            Text(sprintf("%.4f", [solutionDec])),
+            Container(
+              margin: const EdgeInsets.all(10),
+              child: const Text("    DEC    "),
+            ),
+          ],
+        ),
+        Column(
+          children: <Widget>[
+            Text(sprintf("%.2f", [solutionRMSE])),
+            Container(
+              margin: const EdgeInsets.all(10),
+              child: const Text("RMSE"),
             ),
           ],
         ),
