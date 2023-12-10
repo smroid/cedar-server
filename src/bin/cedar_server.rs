@@ -13,6 +13,7 @@ use camera_service::asi_camera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use image::ImageOutputFormat;
 
+use clap::Parser;
 use axum::Router;
 use env_logger;
 use log::{debug};
@@ -24,7 +25,7 @@ use crate::cedar::{CalibrationData, CalibrationPhase, FixedSettings,
                    FrameRequest, FrameResult, Image, ImageMode, ImageCoord,
                    OperatingMode, OperationSettings, Rectangle, StarCentroid};
 use ::cedar::detect_engine::DetectEngine;
-use ::cedar::solve_engine::SolveEngine;
+use ::cedar::solve_engine::{tetra3_server, SolveEngine};
 
 use self::multiplex_service::MultiplexService;
 
@@ -55,10 +56,6 @@ pub mod cedar {
     // The string specified here must match the proto package name.
     tonic::include_proto!("cedar");
 }
-pub mod tetra3_server {
-    // The string specified here must match the proto package name.
-    tonic::include_proto!("tetra3_server");
-}
 
 struct MyCedar {
     camera: Arc<Mutex<asi_camera::ASICamera>>,
@@ -80,7 +77,11 @@ impl Cedar for MyCedar {
     {
         let req: FixedSettings = request.into_inner();
         if req.lens_fl_mm.is_some() {
-            self.fixed_settings.lock().unwrap().lens_fl_mm = req.lens_fl_mm;
+            if req.lens_fl_mm.unwrap() <= 0.0 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got non-positive lens_fl_mm: {}.", req.lens_fl_mm.unwrap())));
+            }
+            self.set_lens_fl(req.lens_fl_mm.unwrap());
         }
         if req.latitude.is_some() {
             return Err(tonic::Status::unimplemented(
@@ -107,68 +108,82 @@ impl Cedar for MyCedar {
     {
         let req: OperationSettings = request.into_inner();
         if req.camera_gain.is_some() {
-            let mut locked_camera = self.camera.lock().unwrap();
-            match locked_camera.set_gain(Gain::new(req.camera_gain.unwrap())) {
+            let gain = req.camera_gain.unwrap();
+            if gain < 0 || gain > 100 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got invalid gain: {}.", gain)));
+            }
+            match self.set_camera_gain(gain) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            self.operation_settings.lock().unwrap().camera_gain = req.camera_gain;
+            self.operation_settings.lock().unwrap().camera_gain = Some(gain);
         }
         if req.camera_offset.is_some() {
-            let mut locked_camera = self.camera.lock().unwrap();
-            match locked_camera.set_offset(Offset::new(req.camera_offset.unwrap())) {
+            let offset = req.camera_offset.unwrap();
+            if offset < 0 || offset > 20 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got invalid offset: {}.", offset)));
+            }
+            match self.set_camera_offset(offset) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            self.operation_settings.lock().unwrap().camera_offset = req.camera_offset;
+            self.operation_settings.lock().unwrap().camera_offset = Some(offset);
         }
         if req.operating_mode.is_some() {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateOperationSettings not implemented for operating_mode."));
         }
         if req.exposure_time.is_some() {
-            let exp_time = req.exposure_time.clone().unwrap();
+            let exp_time = req.exposure_time.unwrap();
             if exp_time.seconds < 0 || exp_time.nanos < 0 {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got negative exposure_time: {}.", exp_time)));
             }
-            let detect_engine = &mut self.detect_engine.lock().unwrap();
-            let std_duration = std::time::Duration::try_from(exp_time).unwrap();
-            match detect_engine.set_exposure_time(std_duration) {
+            let std_duration = std::time::Duration::try_from(exp_time.clone()).unwrap();
+            match self.set_exposure_time(std_duration) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            // TODO: also set in solve_engine?
-            self.operation_settings.lock().unwrap().exposure_time =
-                Some(req.exposure_time.unwrap());
+            self.operation_settings.lock().unwrap().exposure_time = Some(exp_time);
         }
-        if req.stargate_sigma.is_some() {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateOperationSettings not implemented for stargate_sigma."));
+        if req.detection_sigma.is_some() {
+            let sigma = req.detection_sigma.unwrap();
+            if sigma < 0.0 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got negative detection_sigma: {}.", sigma)));
+            }
+            match self.set_detection_sigma(sigma) {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+            self.operation_settings.lock().unwrap().detection_sigma = Some(sigma);
         }
-        if req.stargate_max_size.is_some() {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateOperationSettings not implemented for stargate_max_size."));
+        if req.detection_max_size.is_some() {
+            let max_size = req.detection_max_size.unwrap();
+            if max_size <= 0 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got non-positive detection_max_size: {}.", max_size)));
+            }
+            match self.set_detection_max_size(max_size) {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+            self.operation_settings.lock().unwrap().detection_max_size = Some(max_size);
         }
         if req.update_interval.is_some() {
-            let update_interval = req.update_interval.clone().unwrap();
+            let update_interval = req.update_interval.unwrap();
             if update_interval.seconds < 0 || update_interval.nanos < 0 {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got negative update_interval: {}.", update_interval)));
             }
-            let detect_engine = &mut self.detect_engine.lock().unwrap();
-            let solve_engine = &mut self.solve_engine.lock().unwrap();
-            let std_interval = std::time::Duration::try_from(update_interval).unwrap();
-            match detect_engine.set_update_interval(std_interval) {
+            let std_duration = std::time::Duration::try_from(update_interval.clone()).unwrap();
+            match self.set_update_interval(std_duration) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            match solve_engine.set_update_interval(std_interval) {
-                Ok(()) => (),
-                Err(x) => { return Err(tonic_status(x)); }
-            }
-            self.operation_settings.lock().unwrap().update_interval =
-                Some(req.update_interval.unwrap());
+            self.operation_settings.lock().unwrap().update_interval = Some(update_interval);
         }
         if req.dwell_update_interval.is_some() {
             return Err(tonic::Status::unimplemented(
@@ -189,16 +204,16 @@ impl Cedar for MyCedar {
         let prev_frame_id = req.prev_frame_id;
         let main_image_mode = req.main_image_mode;
 
+        // TODO(smr): do according to operating mode.
         let detect_result;
         {
             let detect_engine = &mut self.detect_engine.lock().unwrap();
             detect_result = detect_engine.get_next_result(prev_frame_id);
         }
-        let _solve_result;
+        let plate_solution;
         {
             let solve_engine = &mut self.solve_engine.lock().unwrap();
-            _solve_result = solve_engine.get_next_result(prev_frame_id);
-            // TODO(smr): update this
+            plate_solution = solve_engine.get_next_result(prev_frame_id);
         }
 
         let captured_image = &detect_result.captured_image;
@@ -306,6 +321,7 @@ impl Cedar for MyCedar {
                 image_data: center_peak_bmp_buf,
             });
         }
+        frame_result.plate_solution = Arc::into_inner(plate_solution.tetra3_solve_result);
 
         debug!("Responding to request: {:?} after {:?}", req, req_start.elapsed());
         Ok(tonic::Response::new(frame_result))
@@ -313,7 +329,59 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
-    pub fn new(camera: Arc<Mutex<asi_camera::ASICamera>>) -> Self {
+    fn set_lens_fl(&self, lens_fl_mm: f32) {
+        self.fixed_settings.lock().unwrap().lens_fl_mm = Some(lens_fl_mm);
+        let calibration_data = self.calibration_data.lock().unwrap();
+        if calibration_data.lens_fl_mm.is_none() {
+            // We're not yet calibrated, so use the `lens_fl_mm` value being set
+            // here to determine the solver's field of view estimate.
+            let sensor_width_mm = self.camera.lock().unwrap().sensor_size().0;
+            let fov = 2.0 * (sensor_width_mm / (2.0 * lens_fl_mm)).atan();
+            assert!(self.solve_engine.lock().unwrap().set_fov_estimate(
+                /*fov_estimate=*/Some(fov), /*fov_max_error=*/None).is_ok());
+        }
+    }
+
+    fn set_camera_gain(&self, gain: i32) -> Result<(), CanonicalError> {
+        let mut locked_camera = self.camera.lock().unwrap();
+        return locked_camera.set_gain(Gain::new(gain));
+    }
+    fn set_camera_offset(&self, offset: i32) -> Result<(), CanonicalError> {
+        let mut locked_camera = self.camera.lock().unwrap();
+        return locked_camera.set_offset(Offset::new(offset));
+    }
+
+    fn set_exposure_time(&self, exposure_time: std::time::Duration)
+                         -> Result<(), CanonicalError> {
+        let detect_engine = &mut self.detect_engine.lock().unwrap();
+        detect_engine.set_exposure_time(exposure_time)
+        // TODO: also set in solve_engine?
+    }
+
+    fn set_detection_sigma(&self, detection_sigma: f32)
+                           -> Result<(), CanonicalError> {
+        let detect_engine = &mut self.detect_engine.lock().unwrap();
+        // TODO(smr): if `detection_sigma` is 0, we use calibration_data's `detection_sigma`
+        // value.
+        detect_engine.set_detection_params(detection_sigma,
+                                           self.operation_settings.lock().unwrap().detection_max_size.unwrap())
+    }
+    fn set_detection_max_size(&self, max_size: i32)
+                              -> Result<(), CanonicalError> {
+        let detect_engine = &mut self.detect_engine.lock().unwrap();
+        detect_engine.set_detection_params(self.operation_settings.lock().unwrap().detection_sigma.unwrap(),
+                                           max_size)
+    }
+
+    fn set_update_interval(&self, update_interval: std::time::Duration)
+                         -> Result<(), CanonicalError> {
+        let detect_engine = &mut self.detect_engine.lock().unwrap();
+        let solve_engine = &mut self.solve_engine.lock().unwrap();
+        detect_engine.set_update_interval(update_interval)?;
+        solve_engine.set_update_interval(update_interval)
+    }
+
+    pub fn new(tetra3_uds: String, camera: Arc<Mutex<asi_camera::ASICamera>>) -> Self {
         let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
             camera.clone(),
             /*update_interval=*/Duration::ZERO,
@@ -321,27 +389,26 @@ impl MyCedar {
             /*focus_mode_enabled=*/true)));
         let solve_engine = Arc::new(Mutex::new(SolveEngine::new(
             detect_engine.clone(),
-            // TODO(smr): where to get this from?
-            "/home/pi/tetra3.sock".to_string(),
+            tetra3_uds,
             /*update_interval=*/Duration::ZERO)));
-        MyCedar {
+        let cedar = MyCedar {
             camera: camera.clone(),
             fixed_settings: Mutex::new(FixedSettings {
-                lens_fl_mm: Some(25.0),  // Should be None, populated from UI.
+                lens_fl_mm: None,
                 latitude: None,
                 longitude: None,
                 client_time: None,
                 session_name: None,
             }),
             operation_settings: Mutex::new(OperationSettings {
-                camera_gain: Some(100),
-                camera_offset: Some(3),
+                camera_gain: None,
+                camera_offset: None,
                 operating_mode: Some(OperatingMode::Setup as i32),
                 exposure_time: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
-                stargate_sigma: Some(8.0),
-                stargate_max_size: Some(5),
+                detection_sigma: Some(8.0),
+                detection_max_size: Some(5),
                 update_interval: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
@@ -353,23 +420,39 @@ impl MyCedar {
             calibration_data: Mutex::new(CalibrationData::default()),
             detect_engine: detect_engine.clone(),
             solve_engine: solve_engine.clone(),
-        }
+        };
+        cedar.set_lens_fl(25.0);  // TODO(smr): this should come from UI.
+        // Set pre-calibration defaults on camera.
+        assert!(cedar.set_camera_gain(100).is_ok());
+        assert!(cedar.set_camera_offset(3).is_ok());
+        assert!(detect_engine.lock().unwrap().set_detection_params(
+            cedar.operation_settings.lock().unwrap().detection_sigma.unwrap(),
+            cedar.operation_settings.lock().unwrap().detection_max_size.unwrap()).is_ok());
+        cedar
     }
+}
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about=None)]
+struct Args {
+    /// Unix domain socket file for Tetra3 gRPC server.
+    #[arg(short, long, default_value = "/home/pi/tetra3.sock")]
+    tetra3: String,
 }
 
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info")).init();
+    let args = Args::parse();
 
     // Build the static content web service.
     let rest = Router::new().nest_service(
         "/", ServeDir::new("/home/pi/projects/cedar/cedar_flutter/build/web"));
 
+    // TODO(smr): discovery/enumeration mechanism for cameras.
     let mut camera = asi_camera::ASICamera::new(
         asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap();
-    camera.set_exposure_duration(Duration::from_millis(5)).unwrap();
-    camera.set_gain(Gain::new(100)).unwrap();
     let shared_camera = Arc::new(Mutex::new(camera));
 
     // Build the grpc service.
@@ -377,7 +460,7 @@ async fn main() {
         .accept_http1(true)
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
-        .add_service(CedarServer::new(MyCedar::new(shared_camera.clone())))
+        .add_service(CedarServer::new(MyCedar::new(args.tetra3, shared_camera.clone())))
         .into_service();
 
     // Combine them into one service.

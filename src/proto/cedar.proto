@@ -79,14 +79,14 @@ message OperationSettings {
   // enough relative to the noise measure to be considered part of a star. Zero
   // selects automatic determination based on camera/sky calibration; if no
   // calibration has been done 8 is used.
-  optional float stargate_sigma = 6;
+  optional float detection_sigma = 6;
 
   // StarGate clumps adjacent bright pixels to form a single star candidate. The
-  // `stargate_max_size` argument governs how large a clump can be before it is
+  // `detection_max_size` argument governs how large a clump can be before it is
   // rejected. Note that making `max_size` small can eliminate very bright stars
   // that "bleed" to many surrounding pixels.
   // Default is 5.
-  optional int32 stargate_max_size = 12;
+  optional int32 detection_max_size = 12;
 
   // The desired time interval at which Cedar should replace its current frame
   // result. Default is zero, meaning go as fast as possible.
@@ -341,7 +341,7 @@ message CalibrationData {
   // is bright enough relative to the noise measure to be considered part of a
   // star.
   // Omitted if a sky/camera calibration has not been done.
-  optional float stargate_sigma = 8;
+  optional float detection_sigma = 8;
 
   // Optimal binning mode (1 for full resolution, 2 for 2x2 binned image).
   // Omitted if a sky/camera calibration has not been done.

@@ -13,20 +13,20 @@ use tokio::net::UnixStream;
 use tower::service_fn;
 use tower::timeout::Timeout;
 
-pub mod tetra3 {
+pub mod tetra3_server {
     tonic::include_proto!("tetra3_server");
 }
 
-use tetra3::{ImageCoord, SolveRequest, SolveResult as SolveResultProto};
-use tetra3::tetra3_client::Tetra3Client;
+use tetra3_server::{ImageCoord, SolveRequest, SolveResult as SolveResultProto};
+use tetra3_server::tetra3_client::Tetra3Client;
 
 pub struct SolveEngine {
     // Our state, shared between SolveEngine methods and the worker thread.
     state: Arc<Mutex<SolveState>>,
 
-    // Condition variable signalled whenever `state.solve_result` is populated.
+    // Condition variable signalled whenever `state.plate_solution` is populated.
     // Also signalled when the worker thread exits.
-    solve_result_available: Arc<Condvar>,
+    plate_solution_available: Arc<Condvar>,
 
     // The Tetra3 server we invoke for plate solving.
     tetra3_server_address: String,
@@ -54,7 +54,7 @@ struct SolveState {
     return_matches: bool,
     match_max_error: f32,
 
-    solve_result: Option<SolveResult>,
+    plate_solution: Option<PlateSolution>,
 
     // Set by stop(); the worker thread exits when it sees this.
     stop_request: bool,
@@ -87,11 +87,11 @@ impl SolveEngine {
                 distortion: 0.0,
                 return_matches: true,
                 match_max_error: 0.005,
-                solve_result: None,
+                plate_solution: None,
                 stop_request: false,
                 worker_thread: None,
             })),
-            solve_result_available: Arc::new(Condvar::new()),
+            plate_solution_available: Arc::new(Condvar::new()),
             tetra3_server_address,
         }
     }
@@ -181,13 +181,13 @@ impl SolveEngine {
     /// If `prev_frame_id` is supplied, the call blocks while the current result
     /// has the same id value.
     /// Returns: the processed result along with its frame_id value.
-    pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> SolveResult {
+    pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> PlateSolution {
         let mut state = self.state.lock().unwrap();
         // Start worker thread if not yet started.
         if state.worker_thread.is_none() {
             let cloned_addr = self.tetra3_server_address.clone();
             let cloned_state = self.state.clone();
-            let cloned_condvar = self.solve_result_available.clone();
+            let cloned_condvar = self.plate_solution_available.clone();
             state.worker_thread = Some(thread::spawn(|| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(SolveEngine::worker(cloned_addr, cloned_state, cloned_condvar));
@@ -195,23 +195,23 @@ impl SolveEngine {
         }
         // Get the most recently posted result.
         loop {
-            if state.solve_result.is_none() {
-                state = self.solve_result_available.wait(state).unwrap();
+            if state.plate_solution.is_none() {
+                state = self.plate_solution_available.wait(state).unwrap();
                 continue;
             }
             // Wait if the posted result is the same as the one the caller has
             // already obtained.
             if prev_frame_id.is_some() &&
-                (state.solve_result.as_ref().unwrap().detect_result.frame_id ==
+                (state.plate_solution.as_ref().unwrap().detect_result.frame_id ==
                  prev_frame_id.unwrap())
             {
-                state = self.solve_result_available.wait(state).unwrap();
+                state = self.plate_solution_available.wait(state).unwrap();
                 continue;
             }
             break;
         }
         // Don't consume it, other clients may want it.
-        state.solve_result.clone().unwrap()
+        state.plate_solution.clone().unwrap()
     }
 
     /// Shuts down the worker thread; this can save power if get_next_result()
@@ -225,13 +225,13 @@ impl SolveEngine {
         }
         state.stop_request = true;
         while state.worker_thread.is_some() {
-            state = self.solve_result_available.wait(state).unwrap();
+            state = self.plate_solution_available.wait(state).unwrap();
         }
     }
 
     async fn worker(tetra3_server_address: String,
                     state: Arc<Mutex<SolveState>>,
-                    solve_result_available: Arc<Condvar>) {
+                    plate_solution_available: Arc<Condvar>) {
         // Set up gRPC client, connect to a UDS socket. URL is ignored.
         let channel = Endpoint::try_from("http://[::]:50051").unwrap()
             .connect_with_connector(service_fn(move |_: Uri| {
@@ -257,7 +257,7 @@ impl SolveEngine {
                 // stop. The next get_next_result() call will restart the worker
                 // thread.
             }
-            // Is it time to generate the next SolveResult?
+            // Is it time to generate the next PlateSolution?
             let now = Instant::now();
             if last_result_time.is_some() {
                 let next_update_time = last_result_time.unwrap() + update_interval;
@@ -321,20 +321,20 @@ impl SolveEngine {
 
             // Post the result.
             let mut locked_state = state.lock().unwrap();
-            locked_state.solve_result = Some(SolveResult{
+            locked_state.plate_solution = Some(PlateSolution{
                 detect_result: detect_result.into(),
                 tetra3_solve_result: resp.into(),
             });
-            solve_result_available.notify_all();
+            plate_solution_available.notify_all();
         }  // loop.
         let mut locked_state = state.lock().unwrap();
         locked_state.worker_thread = None;
-        solve_result_available.notify_all();
+        plate_solution_available.notify_all();
     }
 }
 
 #[derive(Clone)]
-pub struct SolveResult {
+pub struct PlateSolution {
     // The detect result used to produce the information in this solve result.
     pub detect_result: Arc<DetectResult>,
 
