@@ -343,10 +343,6 @@ message CalibrationData {
   // Omitted if a sky/camera calibration has not been done.
   optional float detection_sigma = 8;
 
-  // Optimal binning mode (1 for full resolution, 2 for 2x2 binned image).
-  // Omitted if a sky/camera calibration has not been done.
-  optional int32 binning = 9;
-
   // Omitted if a sky/camera calibration has not been done.
   optional float min_exposure_limiting_magnitude = 10;
   optional float max_exposure_limiting_magnitude = 11;
