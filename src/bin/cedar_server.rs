@@ -236,7 +236,6 @@ impl Cedar for MyCedar {
                 }),
                 stddev_x: star.stddev_x, stddev_y: star.stddev_y,
                 mean_brightness: star.mean_brightness,
-                background: star.background,
                 num_saturated: star.num_saturated as i32,
             });
         }
