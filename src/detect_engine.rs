@@ -323,14 +323,12 @@ impl DetectEngine {
                 bin_image(&image, noise_estimate, sigma);
             // Run StarGate on the binned image.
             let binned_noise_estimate = estimate_noise_from_image(&binned_image);
-            let (mut stars, _, _) =
+            let (stars, _, _) =
                 get_stars_from_image(&binned_image, Some(&image),
                                      binned_noise_estimate,
                                      sigma, max_size as u32,
                                      /*detect_hot_pixels=*/false,
                                      /*create_binned_image=*/false);
-            // Sort by brightness estimate, brightest first.
-            stars.sort_by(|a, b| b.mean_brightness.partial_cmp(&a.mean_brightness).unwrap());
 
             // Post the result.
             let mut locked_state = state.lock().unwrap();
