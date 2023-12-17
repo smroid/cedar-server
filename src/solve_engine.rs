@@ -309,6 +309,8 @@ impl SolveEngine {
             let (width, height) = image.dimensions();
 
             // Plate-solve using the recently detected stars.
+            let process_start_time = Instant::now();
+
             for sc in &detect_result.star_candidates {
                 solve_request.star_centroids.push(ImageCoord{x: sc.centroid_x,
                                                              y: sc.centroid_y});
@@ -334,6 +336,7 @@ impl SolveEngine {
             locked_state.plate_solution = Some(PlateSolution{
                 detect_result: detect_result.into(),
                 tetra3_solve_result: resp.into(),
+                processing_duration: process_start_time.elapsed(),
             });
             plate_solution_available.notify_all();
         }  // loop.
@@ -350,4 +353,8 @@ pub struct PlateSolution {
 
     // The plate solution for `detect_result`.
     pub tetra3_solve_result: Arc<SolveResultProto>,
+
+    // Time taken to produce this PlateSolution, excluding the time taken to
+    // detect stars.
+    pub processing_duration: std::time::Duration,
 }
