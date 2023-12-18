@@ -168,7 +168,7 @@ message FrameResult {
   optional Image image = 3;
 
   // The star candidates detected by StarGate; ordered by highest
-  // mean_brightness first.
+  // brightness first.
   repeated StarCentroid star_candidates = 4;
 
   // The number of hot pixels detected by StarGate.
