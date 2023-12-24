@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Child, Stdio, ChildStdout, ChildStderr};
 use std::sync::{Arc, Mutex};
@@ -9,6 +9,7 @@ use log::{error, info, warn};
 use canonical_error::{CanonicalError, failed_precondition_error};
 
 pub struct Tetra3Subprocess {
+    tetra3_database: OsString,
     state: Arc<Mutex<State>>,
     stopping: Arc<Mutex<bool>>,
 }
@@ -26,7 +27,7 @@ impl Drop for Tetra3Subprocess {
 }
 
 impl Tetra3Subprocess {
-    fn make_child(tetra3_database: impl AsRef<OsStr>)
+    fn make_child(tetra3_database: &OsString)
                   -> Result<Child, CanonicalError> {
         match Command::new("python")
             .arg("tetra3_server")
@@ -77,6 +78,7 @@ impl Tetra3Subprocess {
     fn make_wait_worker(&mut self) {
         let state = self.state.clone();
         let stopping = self.stopping.clone();
+        let tetra3_database = self.tetra3_database.clone();
         thread::spawn(move || {
             loop {
                 let mut locked_state = state.lock().unwrap();
@@ -90,21 +92,29 @@ impl Tetra3Subprocess {
                 }
                 error!("Tetra3 subprocess unexpectedly exited with status={:?}",
                        status);
-                // TODO: re-spawn subprocess
+                // Re-spawn subprocess.
+                let state = Self::make_state(&tetra3_database).unwrap();
+                locked_state.child = state.child;
+                locked_state.stdout_worker = state.stdout_worker;
+                locked_state.stderr_worker = state.stderr_worker;
             }
         });
     }
 
-    pub fn new(tetra3_database: impl AsRef<OsStr>) -> Result<Self, CanonicalError> {
-        let mut child = Self::make_child(tetra3_database)?;
+    fn make_state(tetra3_database: &OsString) -> Result<State, CanonicalError> {
+        let mut child = Self::make_child(&tetra3_database)?;
         let stdout_worker = Self::make_stdout_worker(child.stdout.take().unwrap());
         let stderr_worker = Self::make_stderr_worker(child.stderr.take().unwrap());
-        let state = State{
-            child,
-            stdout_worker: Some(stdout_worker),
-            stderr_worker: Some(stderr_worker),
-        };
+        Ok(State{child,
+                 stdout_worker: Some(stdout_worker),
+                 stderr_worker: Some(stderr_worker)})
+    }
+
+    pub fn new(tetra3_database: impl AsRef<OsStr>) -> Result<Self, CanonicalError> {
+        let tetra3_database: OsString = tetra3_database.as_ref().to_os_string();
+        let state = Self::make_state(&tetra3_database)?;
         let mut t3_subprocess = Tetra3Subprocess{
+            tetra3_database,
             state: Arc::new(Mutex::new(state)),
             stopping: Arc::new(Mutex::new(false)),
         };
