@@ -4,11 +4,25 @@ use ascom_alpaca::{ASCOMResult, Server};
 use ascom_alpaca::api::{AlignmentMode, CargoServerInfo, Device, EquatorialSystem, Telescope};
 use async_trait::async_trait;
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct CelestialPosition {
     // Both in degrees.
     pub ra: f64,  // 0..360
     pub dec: f64, // -90..90
+
+    // If true, ra/dec are current. If false, ra/dec are stale.
+    pub valid: bool,
+
+    // SkySafari does not provide a way to signal that the ra/dec values are
+    // not valid. We instead "animate" the reported ra/dec position during
+    // times of invalidity.
+    updates_while_invalid: i32,
+}
+
+impl CelestialPosition {
+    pub fn new() -> Self {
+        CelestialPosition{..Default::default()}
+    }
 }
 
 #[derive(Debug)]
@@ -43,8 +57,23 @@ impl Telescope for MyTelescope {
 
     // Degrees.
     async fn declination(&self) -> ASCOMResult<f64> {
-        let locked_position = self.position.lock().unwrap();
-        Ok(locked_position.dec)
+        let mut locked_position = self.position.lock().unwrap();
+        if locked_position.valid {
+            Ok(locked_position.dec)
+        } else {
+            // Sky Safari does not respond to error returns. To indicate
+            // the position data is stale, we "wiggle" the position.
+            locked_position.updates_while_invalid += 1;
+            if locked_position.updates_while_invalid & 1 == 0 {
+                if locked_position.dec > 0.0 {
+                    Ok(locked_position.dec - 1.0)
+                } else {
+                    Ok(locked_position.dec + 1.0)
+                }
+            } else {
+                Ok(locked_position.dec)
+            }
+        }
     }
 
     // Hours.

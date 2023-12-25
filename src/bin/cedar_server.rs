@@ -326,12 +326,15 @@ impl Cedar for MyCedar {
                 image_data: center_peak_bmp_buf,
             });
         }
+        let mut position = self.position.lock().unwrap();
         if plate_solution.tetra3_solve_result.image_center_coords.is_some() {
             let coords = plate_solution.tetra3_solve_result.image_center_coords.as_ref()
                 .unwrap();
-            let mut position = self.position.lock().unwrap();
             position.ra = coords.ra as f64;
             position.dec = coords.dec as f64;
+            position.valid = true;
+        } else {
+            position.valid = false;
         }
         frame_result.plate_solution = Arc::into_inner(plate_solution.tetra3_solve_result);
 
@@ -492,7 +495,7 @@ async fn main() {
     let camera = asi_camera::ASICamera::new(
         asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap();
     let shared_camera = Arc::new(Mutex::new(camera));
-    let shared_position = Arc::new(Mutex::new(CelestialPosition{ra: 0.0, dec: 0.0}));
+    let shared_position = Arc::new(Mutex::new(CelestialPosition::new()));
 
     // Build the gRPC service.
     let grpc = tonic::transport::Server::builder()
