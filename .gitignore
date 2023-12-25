@@ -32,3 +32,6 @@ cedar_webapp/linux
 cedar_webapp/macos
 cedar_webapp/pubspec.lock
 cedar_webapp/windows
+
+# Symlink
+src/tetra3_server.py

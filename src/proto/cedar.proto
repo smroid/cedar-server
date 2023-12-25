@@ -125,6 +125,9 @@ enum OperatingMode {
   OPERATING_MODE_OPERATE = 2;
 }
 
+// TODO: this should go away. Instead, the GetFrame() RPC should be replaced
+// with a GetResults() streaming RPC. The `main_image_mode` field can go away,
+// with main images returned (or not) based on the operating mode.
 message FrameRequest {
   // This is the frame_id of the previous FrameResult obtained by the requesting
   // client. If provided, GetFrame() will block until this is no longer the
@@ -168,7 +171,7 @@ message FrameResult {
   optional Image image = 3;
 
   // The star candidates detected by StarGate; ordered by highest
-  // mean_brightness first.
+  // brightness first.
   repeated StarCentroid star_candidates = 4;
 
   // The number of hot pixels detected by StarGate.
@@ -274,12 +277,9 @@ message StarCentroid {
   float stddev_x = 2;
   float stddev_y = 3;
 
-  // Mean of the uint8 pixel values of the star's region (core plus immediate
-  // neighbors). The estimated background is subtracted.
-  float mean_brightness = 4;
-
-  // The estimated sky background near the star.
-  float background = 5;
+  // Sum of the uint8 pixel values of the star's region. The estimated
+  // background is subtracted.
+  float brightness = 4;
 
   // Count of saturated pixel values.
   int32 num_saturated = 6;
@@ -342,10 +342,6 @@ message CalibrationData {
   // star.
   // Omitted if a sky/camera calibration has not been done.
   optional float detection_sigma = 8;
-
-  // Optimal binning mode (1 for full resolution, 2 for 2x2 binned image).
-  // Omitted if a sky/camera calibration has not been done.
-  optional int32 binning = 9;
 
   // Omitted if a sky/camera calibration has not been done.
   optional float min_exposure_limiting_magnitude = 10;
