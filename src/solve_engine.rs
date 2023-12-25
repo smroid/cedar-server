@@ -183,18 +183,19 @@ impl SolveEngine {
     /// Returns: the processed result along with its frame_id value.
     pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> PlateSolution {
         let mut state = self.state.lock().unwrap();
-        // Start worker thread if not yet started.
-        if state.worker_thread.is_none() {
-            let cloned_addr = self.tetra3_server_address.clone();
-            let cloned_state = self.state.clone();
-            let cloned_condvar = self.plate_solution_available.clone();
-            state.worker_thread = Some(thread::spawn(|| {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(SolveEngine::worker(cloned_addr, cloned_state, cloned_condvar));
-            }));
-        }
         // Get the most recently posted result.
         loop {
+            // Start worker thread if not yet started (or exited).
+            if state.worker_thread.is_none() {
+                thread::sleep(Duration::from_secs(1));
+                let cloned_addr = self.tetra3_server_address.clone();
+                let cloned_state = self.state.clone();
+                let cloned_condvar = self.plate_solution_available.clone();
+                state.worker_thread = Some(thread::spawn(|| {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(SolveEngine::worker(cloned_addr, cloned_state, cloned_condvar));
+                }));
+            }
             if state.plate_solution.is_none() {
                 state = self.plate_solution_available.wait(state).unwrap();
                 continue;
@@ -241,11 +242,15 @@ impl SolveEngine {
         let mut client;
         match channel {
             Ok(ch) => {
+                info!("Starting solve engine");
                 let timeout_channel = Timeout::new(ch, state.lock().unwrap().solve_timeout);
                 client = Tetra3Client::new(timeout_channel);
             },
             Err(e) => {
                 error!("Error connecting to Tetra server at {:?}: {:?}", addr, e);
+                let mut locked_state = state.lock().unwrap();
+                locked_state.worker_thread = None;
+                plate_solution_available.notify_all();
                 return
             }
         }

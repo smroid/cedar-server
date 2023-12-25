@@ -29,6 +29,7 @@ use crate::cedar::{CalibrationData, CalibrationPhase, FixedSettings,
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::solve_engine::{tetra3_server, SolveEngine};
 use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
+use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 
 use self::multiplex_service::MultiplexService;
 
@@ -68,6 +69,7 @@ struct MyCedar {
     detect_engine: Arc<Mutex<DetectEngine>>,
     solve_engine: Arc<Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
+    _tetra3_subprocess: Tetra3Subprocess,
     // TODO: calibration_engine.
 }
 
@@ -393,7 +395,9 @@ impl MyCedar {
         solve_engine.set_update_interval(update_interval)
     }
 
-    pub fn new(tetra3_uds: String, camera: Arc<Mutex<asi_camera::ASICamera>>,
+    pub fn new(tetra3_script: String,
+               tetra3_database: String,
+               tetra3_uds: String, camera: Arc<Mutex<asi_camera::ASICamera>>,
                position: Arc<Mutex<CelestialPosition>>) -> Self {
         let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
             camera.clone(),
@@ -434,6 +438,8 @@ impl MyCedar {
             detect_engine: detect_engine.clone(),
             solve_engine: solve_engine.clone(),
             position,
+            _tetra3_subprocess: Tetra3Subprocess::new(
+                tetra3_script, tetra3_database).unwrap(),
         };
         cedar.set_lens_fl(25.0);  // TODO(smr): this should come from UI.
         // Set pre-calibration defaults on camera.
@@ -455,19 +461,27 @@ impl MyCedar {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about=None)]
 struct Args {
-    /// Unix domain socket file for Tetra3 gRPC server.
-    #[arg(short, long, default_value = "/home/pi/tetra3.sock")]
-    tetra3: String,
-}
+    /// Path to tetra3_server.py script. Either set this on
+    /// command line or set up a symlink. Note that PYPATH must
+    /// be set to include the tetra3.py library location.
+    #[arg(long, default_value = "./tetra3_server.py")]
+    script: String,
 
-// TODO: ^C handler.
+    /// Star catalog database for Tetra3 to load.
+    #[arg(long, default_value = "default_database")]
+    database: String,
+
+    /// Unix domain socket file for Tetra3 gRPC server.
+    #[arg(long, default_value = "/home/pi/tetra3.sock")]
+    socket: String,
+}
 
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
-    info!("Using Tetra3 server at {:?}", args.tetra3);
+    info!("Using Tetra3 server {:?} listening at {:?}", args.script, args.socket);
 
     // Build the static content web service.
     let rest = Router::new().nest_service(
@@ -485,7 +499,10 @@ async fn main() {
         .accept_http1(true)
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
-        .add_service(CedarServer::new(MyCedar::new(args.tetra3, shared_camera.clone(),
+        .add_service(CedarServer::new(MyCedar::new(args.script,
+                                                   args.database,
+                                                   args.socket,
+                                                   shared_camera.clone(),
                                                    shared_position.clone())))
         .into_service();
 
