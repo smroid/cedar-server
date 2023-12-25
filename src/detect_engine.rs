@@ -10,7 +10,7 @@ use image::{GenericImageView, GrayImage};
 use imageproc::contrast;
 use imageproc::rect::Rect;
 use log::{debug, error, info};
-use star_gate::algorithm::{StarDescription, bin_image, estimate_noise_from_image,
+use star_gate::algorithm::{StarDescription, estimate_noise_from_image,
                            get_stars_from_image, summarize_region_of_interest};
 
 pub struct DetectEngine {
@@ -232,6 +232,7 @@ impl DetectEngine {
                 }
             }
             // Process the just-acquired image.
+            let process_start_time = Instant::now();
             let image: &GrayImage = &captured_image.image;
             let (width, height) = image.dimensions();
             let center_size = std::cmp::min(width, height) / 3;
@@ -296,8 +297,8 @@ impl DetectEngine {
                     // Get a small sub-image centered on the peak coordinates.
                     let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
                     let sub_image_size = 30;
-                    let peak_region = Rect::at((peak_position.0 - sub_image_size/2) as i32,
-                                               (peak_position.1 - sub_image_size/2) as i32)
+                    let peak_region = Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
+                                               (peak_position.1 as i32 - sub_image_size/2) as i32)
                         .of_size(sub_image_size as u32, sub_image_size as u32);
                     debug!("peak {} at x/y {}/{}",
                            peak_value, peak_region.left(), peak_region.top());
@@ -318,30 +319,22 @@ impl DetectEngine {
                 }
             }
 
-            // Get 2x2 binned image with hot pixels removed.
-            let (binned_image, hot_pixel_count) =
-                bin_image(&image, noise_estimate, sigma);
-            // Run StarGate on the binned image.
-            let binned_noise_estimate = estimate_noise_from_image(&binned_image);
-            let (mut stars, _, _) =
-                get_stars_from_image(&binned_image, Some(&image),
-                                     binned_noise_estimate,
+            // Run StarGate on the image.
+            let (stars, hot_pixel_count, binned_image) =
+                get_stars_from_image(&image, noise_estimate,
                                      sigma, max_size as u32,
-                                     /*detect_hot_pixels=*/false,
-                                     /*create_binned_image=*/false);
-            // Sort by brightness estimate, brightest first.
-            stars.sort_by(|a, b| b.mean_brightness.partial_cmp(&a.mean_brightness).unwrap());
-
+                                     /*use_binned_image=*/true,
+                                     /*return_binned_image=*/true);
             // Post the result.
             let mut locked_state = state.lock().unwrap();
             locked_state.detect_result = Some(DetectResult{
                 frame_id: locked_state.frame_id.unwrap(),
                 captured_image: captured_image.clone(),
-                binned_image: Arc::new(binned_image),
+                binned_image: Arc::new(binned_image.unwrap()),
                 star_candidates: stars,
                 hot_pixel_count: hot_pixel_count as i32,
                 focus_aid,
-                processing_duration: last_result_time.unwrap().elapsed(),
+                processing_duration: process_start_time.elapsed(),
             });
             detect_result_available.notify_all();
         }  // loop.
@@ -385,7 +378,7 @@ pub struct FocusAid {
     pub center_region: Rect,
 
     // See the corresponding field in FrameResult.
-    pub center_peak_position: (i32, i32),
+    pub center_peak_position: (f32, f32),
 
     // A small full resolution crop of `captured_image` centered at
     // `center_peak_position`.

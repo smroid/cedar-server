@@ -183,18 +183,19 @@ impl SolveEngine {
     /// Returns: the processed result along with its frame_id value.
     pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> PlateSolution {
         let mut state = self.state.lock().unwrap();
-        // Start worker thread if not yet started.
-        if state.worker_thread.is_none() {
-            let cloned_addr = self.tetra3_server_address.clone();
-            let cloned_state = self.state.clone();
-            let cloned_condvar = self.plate_solution_available.clone();
-            state.worker_thread = Some(thread::spawn(|| {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(SolveEngine::worker(cloned_addr, cloned_state, cloned_condvar));
-            }));
-        }
         // Get the most recently posted result.
         loop {
+            // Start worker thread if not yet started (or exited).
+            if state.worker_thread.is_none() {
+                thread::sleep(Duration::from_secs(1));
+                let cloned_addr = self.tetra3_server_address.clone();
+                let cloned_state = self.state.clone();
+                let cloned_condvar = self.plate_solution_available.clone();
+                state.worker_thread = Some(thread::spawn(|| {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(SolveEngine::worker(cloned_addr, cloned_state, cloned_condvar));
+                }));
+            }
             if state.plate_solution.is_none() {
                 state = self.plate_solution_available.wait(state).unwrap();
                 continue;
@@ -241,11 +242,15 @@ impl SolveEngine {
         let mut client;
         match channel {
             Ok(ch) => {
+                info!("Starting solve engine");
                 let timeout_channel = Timeout::new(ch, state.lock().unwrap().solve_timeout);
                 client = Tetra3Client::new(timeout_channel);
             },
             Err(e) => {
                 error!("Error connecting to Tetra server at {:?}: {:?}", addr, e);
+                let mut locked_state = state.lock().unwrap();
+                locked_state.worker_thread = None;
+                plate_solution_available.notify_all();
                 return
             }
         }
@@ -309,6 +314,8 @@ impl SolveEngine {
             let (width, height) = image.dimensions();
 
             // Plate-solve using the recently detected stars.
+            let process_start_time = Instant::now();
+
             for sc in &detect_result.star_candidates {
                 solve_request.star_centroids.push(ImageCoord{x: sc.centroid_x,
                                                              y: sc.centroid_y});
@@ -334,6 +341,7 @@ impl SolveEngine {
             locked_state.plate_solution = Some(PlateSolution{
                 detect_result: detect_result.into(),
                 tetra3_solve_result: resp.into(),
+                processing_duration: process_start_time.elapsed(),
             });
             plate_solution_available.notify_all();
         }  // loop.
@@ -350,4 +358,8 @@ pub struct PlateSolution {
 
     // The plate solution for `detect_result`.
     pub tetra3_solve_result: Arc<SolveResultProto>,
+
+    // Time taken to produce this PlateSolution, excluding the time taken to
+    // detect stars.
+    pub processing_duration: std::time::Duration,
 }

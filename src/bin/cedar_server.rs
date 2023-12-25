@@ -20,12 +20,16 @@ use log::{debug, info};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
 
+use futures::join;
+
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{CalibrationData, CalibrationPhase, FixedSettings,
                    FrameRequest, FrameResult, Image, ImageMode, ImageCoord,
                    OperatingMode, OperationSettings, Rectangle, StarCentroid};
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::solve_engine::{tetra3_server, SolveEngine};
+use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
+use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 
 use self::multiplex_service::MultiplexService;
 
@@ -64,6 +68,8 @@ struct MyCedar {
     calibration_data: Mutex<CalibrationData>,
     detect_engine: Arc<Mutex<DetectEngine>>,
     solve_engine: Arc<Mutex<SolveEngine>>,
+    position: Arc<Mutex<CelestialPosition>>,
+    _tetra3_subprocess: Tetra3Subprocess,
     // TODO: calibration_engine.
 }
 
@@ -231,8 +237,7 @@ impl Cedar for MyCedar {
                     x: star.centroid_x, y: star.centroid_y,
                 }),
                 stddev_x: star.stddev_x, stddev_y: star.stddev_y,
-                mean_brightness: star.mean_brightness,
-                background: star.background,
+                brightness: star.brightness,
                 num_saturated: star.num_saturated as i32,
             });
         }
@@ -321,6 +326,16 @@ impl Cedar for MyCedar {
                 image_data: center_peak_bmp_buf,
             });
         }
+        let mut position = self.position.lock().unwrap();
+        if plate_solution.tetra3_solve_result.image_center_coords.is_some() {
+            let coords = plate_solution.tetra3_solve_result.image_center_coords.as_ref()
+                .unwrap();
+            position.ra = coords.ra as f64;
+            position.dec = coords.dec as f64;
+            position.valid = true;
+        } else {
+            position.valid = false;
+        }
         frame_result.plate_solution = Arc::into_inner(plate_solution.tetra3_solve_result);
 
         debug!("Responding to request: {:?} after {:?}", req, req_start.elapsed());
@@ -336,7 +351,7 @@ impl MyCedar {
             // We're not yet calibrated, so use the `lens_fl_mm` value being set
             // here to determine the solver's field of view estimate.
             let sensor_width_mm = self.camera.lock().unwrap().sensor_size().0;
-            let fov = 2.0 * (sensor_width_mm / (2.0 * lens_fl_mm)).atan();
+            let fov = 2.0 * (sensor_width_mm / (2.0 * lens_fl_mm)).atan().to_degrees();
             assert!(self.solve_engine.lock().unwrap().set_fov_estimate(
                 /*fov_estimate=*/Some(fov), /*fov_max_error=*/None).is_ok());
         }
@@ -363,14 +378,16 @@ impl MyCedar {
         let detect_engine = &mut self.detect_engine.lock().unwrap();
         // TODO(smr): if `detection_sigma` is 0, we use calibration_data's `detection_sigma`
         // value.
-        detect_engine.set_detection_params(detection_sigma,
-                                           self.operation_settings.lock().unwrap().detection_max_size.unwrap())
+        detect_engine.set_detection_params(
+            detection_sigma,
+            self.operation_settings.lock().unwrap().detection_max_size.unwrap())
     }
     fn set_detection_max_size(&self, max_size: i32)
                               -> Result<(), CanonicalError> {
         let detect_engine = &mut self.detect_engine.lock().unwrap();
-        detect_engine.set_detection_params(self.operation_settings.lock().unwrap().detection_sigma.unwrap(),
-                                           max_size)
+        detect_engine.set_detection_params(
+            self.operation_settings.lock().unwrap().detection_sigma.unwrap(),
+            max_size)
     }
 
     fn set_update_interval(&self, update_interval: std::time::Duration)
@@ -381,7 +398,10 @@ impl MyCedar {
         solve_engine.set_update_interval(update_interval)
     }
 
-    pub fn new(tetra3_uds: String, camera: Arc<Mutex<asi_camera::ASICamera>>) -> Self {
+    pub fn new(tetra3_script: String,
+               tetra3_database: String,
+               tetra3_uds: String, camera: Arc<Mutex<asi_camera::ASICamera>>,
+               position: Arc<Mutex<CelestialPosition>>) -> Self {
         let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
             camera.clone(),
             /*update_interval=*/Duration::ZERO,
@@ -420,6 +440,9 @@ impl MyCedar {
             calibration_data: Mutex::new(CalibrationData::default()),
             detect_engine: detect_engine.clone(),
             solve_engine: solve_engine.clone(),
+            position,
+            _tetra3_subprocess: Tetra3Subprocess::new(
+                tetra3_script, tetra3_database).unwrap(),
         };
         cedar.set_lens_fl(25.0);  // TODO(smr): this should come from UI.
         // Set pre-calibration defaults on camera.
@@ -441,9 +464,19 @@ impl MyCedar {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about=None)]
 struct Args {
+    /// Path to tetra3_server.py script. Either set this on
+    /// command line or set up a symlink. Note that PYPATH must
+    /// be set to include the tetra3.py library location.
+    #[arg(long, default_value = "./tetra3_server.py")]
+    script: String,
+
+    /// Star catalog database for Tetra3 to load.
+    #[arg(long, default_value = "default_database")]
+    database: String,
+
     /// Unix domain socket file for Tetra3 gRPC server.
-    #[arg(short, long, default_value = "/home/pi/tetra3.sock")]
-    tetra3: String,
+    #[arg(long, default_value = "/home/pi/tetra3.sock")]
+    socket: String,
 }
 
 #[tokio::main]
@@ -451,35 +484,49 @@ async fn main() {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
-    info!("Using Tetra3 server at {:?}", args.tetra3);
+    info!("Using Tetra3 server {:?} listening at {:?}", args.script, args.socket);
 
     // Build the static content web service.
     let rest = Router::new().nest_service(
         "/", ServeDir::new("/home/pi/projects/cedar/cedar_flutter/build/web"));
 
-    // TODO(smr): discovery/enumeration mechanism for cameras.
+    // TODO(smr): discovery/enumeration mechanism for cameras. Or command
+    // line arg?
     let camera = asi_camera::ASICamera::new(
         asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap();
     let shared_camera = Arc::new(Mutex::new(camera));
+    let shared_position = Arc::new(Mutex::new(CelestialPosition::new()));
 
-    // Build the grpc service.
+    // Build the gRPC service.
     let grpc = tonic::transport::Server::builder()
         .accept_http1(true)
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
-        .add_service(CedarServer::new(MyCedar::new(args.tetra3, shared_camera.clone())))
+        .add_service(CedarServer::new(MyCedar::new(args.script,
+                                                   args.database,
+                                                   args.socket,
+                                                   shared_camera.clone(),
+                                                   shared_position.clone())))
         .into_service();
 
-    // Combine them into one service.
+    // Combine static content (flutter app) server and gRPC server into one service.
     let service = MultiplexService::new(rest, grpc);
 
     // Listen on any address for the given port.
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     info!("Listening at {:?}", addr);
-    hyper::Server::bind(&addr)
-        .serve(tower::make::Shared::new(service))
-        .await
-        .unwrap();
+
+    let service_future =
+        hyper::Server::bind(&addr).serve(tower::make::Shared::new(service));
+
+    // Spin up ASCOM Alpaca server for reporting our RA/Dec solution as the
+    // telescope position.
+    let alpaca_server = create_alpaca_server(shared_position.clone());
+    let alpaca_server_future = alpaca_server.start();
+
+    let (service_result, alpaca_result) = join!(service_future, alpaca_server_future);
+    service_result.unwrap();
+    alpaca_result.unwrap();
 }
 
 mod multiplex_service {
