@@ -1,7 +1,7 @@
 import 'dart:developer';
-//import 'dart:ffi';
+import 'dart:math' as math;
 import 'dart:typed_data';
-import 'package:fixnum/src/int64.dart';
+import 'package:fixnum/fixnum.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
@@ -91,7 +91,7 @@ class _MainImagePainter extends CustomPainter {
           ..strokeWidth = thick
           ..style = PaintingStyle.stroke);
     // Make a cross at the center of the search box (which is overall image
-    // center.
+    // center. TODO: draw the cross at the boresight center, if present.
     var center = state.centerRegion.center;
     canvas.drawLine(
         center.translate(-crossRadius, 0),
@@ -135,7 +135,6 @@ class _MyHomePageState extends State<MyHomePage> {
 
   int prevFrameId = -1;
   int numStarCandidates = 0;
-  int numHotPixels = 0;
   double exposureTimeMs = 0.0;
   String solveFailureReason = "";
   double solutionRA = 0.0;
@@ -146,6 +145,10 @@ class _MyHomePageState extends State<MyHomePage> {
   bool doRefreshes = false;
   bool expAuto = true;
   int expSliderValue = 0;
+
+  bool hasSolution() {
+    return solveFailureReason == "";
+  }
 
   Future<void> getFocusFrameFromServer() async {
     final CedarClient client = getClient();
@@ -160,7 +163,6 @@ class _MyHomePageState extends State<MyHomePage> {
         // accordingly. Also render widgets according to the operatingMode.
         prevFrameId = response.frameId;
         numStarCandidates = response.starCandidates.length;
-        numHotPixels = response.hotPixelCount;
         int binFactor = 1;
         if (response.hasPlateSolution()) {
           SolveResult plateSolution = response.plateSolution;
@@ -294,29 +296,16 @@ class _MyHomePageState extends State<MyHomePage> {
         ),
         Column(
           children: <Widget>[
-            Text("$numStarCandidates"),
-            Container(
-              margin: const EdgeInsets.all(10),
-              child: const Text("Stars"),
+            const Text(" 0       6      25     55    100"),
+            Slider(
+              min: 0,
+              max: 10,
+              value: math.min(10, math.sqrt(numStarCandidates)),
+              onChanged: (double value) {},
+              activeColor: hasSolution() ? Colors.green : Colors.grey,
+              thumbColor: hasSolution() ? Colors.green : Colors.grey,
             ),
-          ],
-        ),
-        Column(
-          children: <Widget>[
-            Text("$numHotPixels"),
-            Container(
-              margin: const EdgeInsets.all(10),
-              child: const Text("Hot pixels"),
-            ),
-          ],
-        ),
-        Column(
-          children: <Widget>[
-            Text(solveFailureReason),
-            Container(
-              margin: const EdgeInsets.all(10),
-              child: const Text("Failure reason"),
-            ),
+            const Text("Stars detected"),
           ],
         ),
         Column(
