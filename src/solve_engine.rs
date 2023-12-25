@@ -82,7 +82,7 @@ impl SolveEngine {
                 pattern_checking_stars: 8,
                 match_radius: 0.01,
                 match_threshold: 0.001,
-                solve_timeout: Duration::from_secs(1),
+                solve_timeout: Duration::from_secs(2),
                 target_pixel: None,
                 distortion: 0.0,
                 return_matches: true,
