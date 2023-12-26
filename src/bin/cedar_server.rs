@@ -23,9 +23,10 @@ use tonic_web::GrpcWebLayer;
 use futures::join;
 
 use crate::cedar::cedar_server::{Cedar, CedarServer};
-use crate::cedar::{CalibrationData, CalibrationPhase, FixedSettings,
-                   FrameRequest, FrameResult, Image, ImageMode, ImageCoord,
-                   OperatingMode, OperationSettings, Rectangle, StarCentroid};
+use crate::cedar::{ActionRequest, CalibrationData, CalibrationPhase,
+                   EmptyMessage, FixedSettings, FrameRequest, FrameResult,
+                   Image, ImageMode, OperatingMode,
+                   OperationSettings, Rectangle, StarCentroid};
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::solve_engine::{tetra3_server, SolveEngine};
 use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
@@ -71,6 +72,9 @@ struct MyCedar {
     position: Arc<Mutex<CelestialPosition>>,
     _tetra3_subprocess: Tetra3Subprocess,
     // TODO: calibration_engine.
+
+    // For boresight capturing.
+    center_peak_position: Arc<Mutex<Option<cedar::ImageCoord>>>,
 }
 
 #[tonic::async_trait]
@@ -217,9 +221,12 @@ impl Cedar for MyCedar {
             detect_result = detect_engine.get_next_result(prev_frame_id);
         }
         let plate_solution;
+        let boresight_position;
         {
             let solve_engine = &mut self.solve_engine.lock().unwrap();
             plate_solution = solve_engine.get_next_result(prev_frame_id);
+            boresight_position = solve_engine.target_pixel().expect(
+                "solve_engine.target_pixel() should not fail");
         }
 
         let captured_image = &detect_result.captured_image;
@@ -233,7 +240,7 @@ impl Cedar for MyCedar {
         let mut centroids = Vec::<StarCentroid>::new();
         for star in detect_result.star_candidates {
             centroids.push(StarCentroid{
-                centroid_position: Some(ImageCoord {
+                centroid_position: Some(cedar::ImageCoord {
                     x: star.centroid_x, y: star.centroid_y,
                 }),
                 stddev_x: star.stddev_x, stddev_y: star.stddev_y,
@@ -254,6 +261,10 @@ impl Cedar for MyCedar {
             capture_time: Some(prost_types::Timestamp::try_from(
                 captured_image.readout_time).unwrap()),
             camera_temperature_celsius: captured_image.temperature.0 as f32,
+            boresight_position: match boresight_position {
+                Some(bs) => Some(cedar::ImageCoord{x: bs.x, y: bs.y}),
+                None => None,
+            },
             center_region: match &detect_result.focus_aid {
                 Some(fa) => Some(Rectangle {
                     origin_x: fa.center_region.left(),
@@ -264,11 +275,18 @@ impl Cedar for MyCedar {
                 None => None,
             },
             center_peak_position: match &detect_result.focus_aid {
-                Some(fa) => Some(ImageCoord {
-                    x: fa.center_peak_position.0 as f32,
-                    y: fa.center_peak_position.1 as f32,
-                }),
-                None => None,
+                Some(fa) => {
+                    let ic = cedar::ImageCoord {
+                        x: fa.center_peak_position.0 as f32,
+                        y: fa.center_peak_position.1 as f32,
+                    };
+                    *self.center_peak_position.lock().unwrap() = Some(ic.clone());
+                    Some(ic)
+                },
+                None => {
+                    *self.center_peak_position.lock().unwrap() = None;
+                    None
+                },
             },
             center_peak_image: None,  // Is set below.
             calibration_phase: CalibrationPhase::None as i32,
@@ -341,6 +359,41 @@ impl Cedar for MyCedar {
         debug!("Responding to request: {:?} after {:?}", req, req_start.elapsed());
         Ok(tonic::Response::new(frame_result))
     }  // get_frame().
+
+    async fn initiate_action(&self, request: tonic::Request<ActionRequest>)
+                             -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
+        let req: ActionRequest = request.into_inner();
+        if req.capture_boresight.is_some() {
+            let operating_mode =
+                self.operation_settings.lock().unwrap().operating_mode.or(
+                    Some(OperatingMode::Setup as i32)).unwrap();
+            if operating_mode != OperatingMode::Setup as i32 {
+                return Err(tonic::Status::failed_precondition(
+                    format!("Not in Setup mode: {:?}.", operating_mode)));
+            }
+            let solve_engine = &mut self.solve_engine.lock().unwrap();
+            let cpp = self.center_peak_position.lock().unwrap();
+            match solve_engine.set_target_pixel(
+                match cpp.as_ref() {
+                    Some(pos) => Some(tetra3_server::ImageCoord{
+                        x: pos.x,
+                        y: pos.y,
+                    }),
+                    None => None,
+                }) {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+        }
+        if req.delete_boresight.is_some() {
+            let solve_engine = &mut self.solve_engine.lock().unwrap();
+            match solve_engine.set_target_pixel(None) {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+        }
+        Ok(tonic::Response::new(EmptyMessage{}))
+    }
 }
 
 impl MyCedar {
@@ -443,6 +496,7 @@ impl MyCedar {
             position,
             _tetra3_subprocess: Tetra3Subprocess::new(
                 tetra3_script, tetra3_database).unwrap(),
+            center_peak_position: Arc::new(Mutex::new(None)),
         };
         cedar.set_lens_fl(25.0);  // TODO(smr): this should come from UI.
         // Set pre-calibration defaults on camera.
