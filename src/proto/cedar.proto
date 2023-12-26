@@ -153,6 +153,7 @@ enum ImageMode {
   IMAGE_MODE_BINNED = 2;
 }
 
+// Next tag: 22.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
@@ -191,6 +192,10 @@ message FrameResult {
   // The camera temperature when `image` was captured.
   float camera_temperature_celsius = 10;
 
+  // The position in image coordinates of the captured boresight. Absent if
+  // no boresight has been captured. See ActionRequest.capture_boresight.
+  optional ImageCoord boresight_position = 21;
+
   // Information returned when `operating_mode` is OPERATING_MODE_SETUP. Note
   // that these fields are ommitted while a camera/sky calibration is underway
   // (see below).
@@ -227,9 +232,9 @@ message FrameResult {
   // Detected camera motion.
   optional MotionType camera_motion = 18;
 
-  // Estimated rate of RA boresight movement eastward (positive) or westward (negative).
-  // Unit is hours per second (full circle in RA is 24h). Omitted if `camera_motion` is
-  // MOTION_TYPE_UNKNOWN.
+  // Estimated rate of RA boresight movement eastward (positive) or westward
+  // (negative). Unit is degrees per second (full circle in RA is 24h). Omitted
+  // if `camera_motion` is MOTION_TYPE_UNKNOWN.
   optional float ra_rate = 19;
 
   // Estimated rate of DEC boresight movement northward (positive) or southward
@@ -399,7 +404,23 @@ message PolarAlignmentAdvice {
 
 message ActionRequest {
   // Capture boresight offset (focus mode only) based on current location of
-  // brightest peak in central region.
+  // brightest peak in central region. Context:
+  // 1. Cedar is in focus mode.
+  // 2. User focuses on bright star.
+  // 3. User centers the same star in the telescope's field of view.
+  // 4. User adjusts aim of the Cedar camera to have the bright star near the
+  //    center of the image.
+  // 5. User invokes the capture_boresight function.
+  // At this point, the captured boresight position will be returned in each
+  // FrameResult's `boresight_position` field, and will cause a single
+  // `target_coords` entry to be included with each FrameResult
+  // `plate_solution`.
+  optional bool capture_boresight = 1;
+
+  // Drops the captured boresight, if any. The FrameResult `boresight_position`
+  // field is omitted, and the `plate_solution` field `target_coords` will be
+  // empty.
+  optional bool delete_boresight = 2;
 
   // Calibrate camera/sky (focus mode only). Pre-empts focus mode operation until
   // completed or canceled.
@@ -443,6 +464,8 @@ message ServerInformationResult {
   // Status of SkySafari integration; SkySafari version.
 }
 
+message EmptyMessage {}
+
 service Cedar {
   // Returns information about the Cedar server.
   // rpc GetServerInformation(ServerInformationRequest) returns (ServerInformationResult);
@@ -464,7 +487,8 @@ service Cedar {
   // wait for a new result (see FrameRequest's `prev_frame_id` field).
   rpc GetFrame(FrameRequest) returns (FrameResult);
 
-  // TODO: InitiateAction(ActionRequest) returns (EmptyMessage);
+  // Performs the requested action(s).
+  rpc InitiateAction(ActionRequest) returns (EmptyMessage);
 
   // TODO: list/get available sky/camera calibration data (by name). Calibration
   // names are based on the session name, suffixed by an integer (in case

@@ -138,6 +138,10 @@ impl SolveEngine {
         // it finishes the current interval.
         Ok(())
     }
+    pub fn target_pixel(&self) -> Result<Option<ImageCoord>, CanonicalError> {
+        let locked_state = self.state.lock().unwrap();
+        Ok(locked_state.target_pixel.clone())
+    }
 
     pub fn set_distortion(&mut self, distortion: f32)
                                -> Result<(), CanonicalError> {
