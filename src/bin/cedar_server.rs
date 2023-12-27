@@ -15,10 +15,10 @@ use image::ImageOutputFormat;
 
 use clap::Parser;
 use axum::Router;
-use env_logger;
 use log::{debug, info};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
+use tracing_subscriber;
 
 use futures::join;
 
@@ -535,8 +535,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info")).init();
+    tracing_subscriber::fmt::init();
     let args = Args::parse();
     info!("Using Tetra3 server {:?} listening at {:?}", args.script, args.socket);
 

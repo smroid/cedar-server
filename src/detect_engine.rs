@@ -294,12 +294,14 @@ impl DetectEngine {
                     }
                 }
                 if focus_mode_enabled {
+                    let image_rect = Rect::at(0, 0).of_size(width, height);
                     // Get a small sub-image centered on the peak coordinates.
                     let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
                     let sub_image_size = 30;
                     let peak_region = Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
                                                (peak_position.1 as i32 - sub_image_size/2) as i32)
                         .of_size(sub_image_size as u32, sub_image_size as u32);
+                    let peak_region = peak_region.intersect(image_rect).unwrap();
                     debug!("peak {} at x/y {}/{}",
                            peak_value, peak_region.left(), peak_region.top());
                     // We scale up the pixel values in the peak_image for good
