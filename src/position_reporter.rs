@@ -21,7 +21,8 @@ pub struct CelestialPosition {
 
 impl CelestialPosition {
     pub fn new() -> Self {
-        CelestialPosition{..Default::default()}
+        // Sky Safari doesn't display (0.0, 0.0).
+        CelestialPosition{ra: 180.0, dec: 0.0, ..Default::default()}
     }
 }
 
