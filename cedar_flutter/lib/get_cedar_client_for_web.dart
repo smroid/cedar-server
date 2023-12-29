@@ -2,5 +2,8 @@ import 'package:cedar_flutter/cedar.pbgrpc.dart';
 import 'package:grpc/grpc_web.dart';
 
 CedarClient getClient() {
-  return CedarClient(GrpcWebClientChannel.xhr(Uri.base));
+  return CedarClient(
+    GrpcWebClientChannel.xhr(Uri.base),
+    options: CallOptions(timeout: const Duration(seconds: 1)),
+  );
 }
