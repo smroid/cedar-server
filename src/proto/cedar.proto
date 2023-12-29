@@ -125,9 +125,6 @@ enum OperatingMode {
   OPERATING_MODE_OPERATE = 2;
 }
 
-// TODO: this should go away. Instead, the GetFrame() RPC should be replaced
-// with a GetResults() streaming RPC. The `main_image_mode` field can go away,
-// with main images returned (or not) based on the operating mode.
 message FrameRequest {
   // This is the frame_id of the previous FrameResult obtained by the requesting
   // client. If provided, GetFrame() will block until this is no longer the
@@ -486,6 +483,11 @@ service Cedar {
   // Obtains the most recent Cedar computation result. Blocks if necessary to
   // wait for a new result (see FrameRequest's `prev_frame_id` field).
   rpc GetFrame(FrameRequest) returns (FrameResult);
+
+  // Streaming variant of GetFrame().
+  // TODO: figure out how this RPC knows when to end. In principle it could
+  // stream back FrameResults on an open-ended basis. Client cancels?
+  rpc GetFrames(FrameRequest) returns (stream FrameResult);
 
   // Performs the requested action(s).
   rpc InitiateAction(ActionRequest) returns (EmptyMessage);
