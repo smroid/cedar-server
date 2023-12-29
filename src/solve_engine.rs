@@ -82,7 +82,7 @@ impl SolveEngine {
                 pattern_checking_stars: 8,
                 match_radius: 0.01,
                 match_threshold: 0.001,
-                solve_timeout: Duration::from_secs(1),
+                solve_timeout: Duration::from_secs(2),
                 target_pixel: None,
                 distortion: 0.0,
                 return_matches: true,
@@ -137,6 +137,10 @@ impl SolveEngine {
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
+    }
+    pub fn target_pixel(&self) -> Result<Option<ImageCoord>, CanonicalError> {
+        let locked_state = self.state.lock().unwrap();
+        Ok(locked_state.target_pixel.clone())
     }
 
     pub fn set_distortion(&mut self, distortion: f32)
