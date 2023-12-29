@@ -121,6 +121,8 @@ class _MainImagePainter extends CustomPainter {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
+  late CedarClient client;
+
   // Information from most recent FrameResult.
   Uint8List imageBytes = Uint8List(1);
   int width = 0;
@@ -199,8 +201,6 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> getFocusFrameFromServer() async {
-    final CedarClient client = getClient();
-
     final request = FrameRequest()
       ..prevFrameId = prevFrameId
       ..mainImageMode = ImageMode.IMAGE_MODE_BINNED;
@@ -222,7 +222,6 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> updateOperationSettings(OperationSettings request) async {
-    final CedarClient client = getClient();
     try {
       await client.updateOperationSettings(request);
     } catch (e) {
@@ -241,6 +240,9 @@ class _MyHomePageState extends State<MyHomePage> {
         value: doRefreshes,
         onChanged: (bool value) {
           setState(() {
+            if (!doRefreshes && value) {
+              client = getClient();
+            }
             doRefreshes = value;
             if (doRefreshes) {
               refreshStateFromServer();
