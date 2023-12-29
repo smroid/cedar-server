@@ -150,6 +150,54 @@ class _MyHomePageState extends State<MyHomePage> {
     return solveFailureReason == "";
   }
 
+  void setStateFromFrameResult(FrameResult response) {
+    // TODO(smr): check response.operatingMode and extract information
+    // accordingly. Also render widgets according to the operatingMode.
+    prevFrameId = response.frameId;
+    numStarCandidates = response.starCandidates.length;
+    int binFactor = 1;
+    if (response.hasPlateSolution()) {
+      SolveResult plateSolution = response.plateSolution;
+      if (plateSolution.hasFailureReason()) {
+        solveFailureReason = plateSolution.failureReason;
+      } else {
+        solveFailureReason = "";
+        solutionRA = plateSolution.imageCenterCoords.ra;
+        solutionDec = plateSolution.imageCenterCoords.dec;
+        solutionRMSE = plateSolution.rmse;
+      }
+    }
+    if (response.hasImage()) {
+      imageBytes = Uint8List.fromList(response.image.imageData);
+      width = response.image.rectangle.width;
+      height = response.image.rectangle.height;
+      binFactor = response.image.binningFactor;
+    }
+    if (response.hasCenterRegion()) {
+      var cr = response.centerRegion;
+      centerRegion = Rect.fromLTWH(
+          cr.originX.toDouble() / binFactor,
+          cr.originY.toDouble() / binFactor,
+          cr.width.toDouble() / binFactor,
+          cr.height.toDouble() / binFactor);
+    }
+    if (response.hasExposureTime()) {
+      exposureTimeMs = durationToMs(response.exposureTime);
+    }
+    expAuto = durationToMs(response.operationSettings.exposureTime) == 0.0;
+    centerPeakImageBytes =
+        Uint8List.fromList(response.centerPeakImage.imageData);
+    centerPeakWidth = response.centerPeakImage.rectangle.width;
+    centerPeakHeight = response.centerPeakImage.rectangle.height;
+    if (response.hasCenterPeakPosition()) {
+      var cp = response.centerPeakPosition;
+      centerPeakRegion = Rect.fromCenter(
+          center: Offset(cp.x / binFactor, cp.y / binFactor),
+          width: centerPeakWidth.toDouble() / binFactor,
+          height: centerPeakHeight.toDouble() / binFactor);
+    }
+  }
+
   Future<void> getFocusFrameFromServer() async {
     final CedarClient client = getClient();
 
@@ -159,51 +207,7 @@ class _MyHomePageState extends State<MyHomePage> {
     try {
       final response = await client.getFrame(request);
       setState(() {
-        // TODO(smr): check response.operatingMode and extract information
-        // accordingly. Also render widgets according to the operatingMode.
-        prevFrameId = response.frameId;
-        numStarCandidates = response.starCandidates.length;
-        int binFactor = 1;
-        if (response.hasPlateSolution()) {
-          SolveResult plateSolution = response.plateSolution;
-          if (plateSolution.hasFailureReason()) {
-            solveFailureReason = plateSolution.failureReason;
-          } else {
-            solveFailureReason = "";
-            solutionRA = plateSolution.imageCenterCoords.ra;
-            solutionDec = plateSolution.imageCenterCoords.dec;
-            solutionRMSE = plateSolution.rmse;
-          }
-        }
-        if (response.hasImage()) {
-          imageBytes = Uint8List.fromList(response.image.imageData);
-          width = response.image.rectangle.width;
-          height = response.image.rectangle.height;
-          binFactor = response.image.binningFactor;
-        }
-        if (response.hasCenterRegion()) {
-          var cr = response.centerRegion;
-          centerRegion = Rect.fromLTWH(
-              cr.originX.toDouble() / binFactor,
-              cr.originY.toDouble() / binFactor,
-              cr.width.toDouble() / binFactor,
-              cr.height.toDouble() / binFactor);
-        }
-        if (response.hasExposureTime()) {
-          exposureTimeMs = durationToMs(response.exposureTime);
-        }
-        expAuto = durationToMs(response.operationSettings.exposureTime) == 0.0;
-        centerPeakImageBytes =
-            Uint8List.fromList(response.centerPeakImage.imageData);
-        centerPeakWidth = response.centerPeakImage.rectangle.width;
-        centerPeakHeight = response.centerPeakImage.rectangle.height;
-        if (response.hasCenterPeakPosition()) {
-          var cp = response.centerPeakPosition;
-          centerPeakRegion = Rect.fromCenter(
-              center: Offset(cp.x / binFactor, cp.y / binFactor),
-              width: centerPeakWidth.toDouble() / binFactor,
-              height: centerPeakHeight.toDouble() / binFactor);
-        }
+        setStateFromFrameResult(response);
       });
     } catch (e) {
       log('Error: $e');
