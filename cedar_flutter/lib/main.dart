@@ -85,14 +85,14 @@ class _MainImagePainter extends CustomPainter {
     // Draw search box within which we search for the brightest star for
     // focusing.
     canvas.drawRect(
-        state.centerRegion,
+        state._centerRegion,
         Paint()
           ..color = Colors.red
           ..strokeWidth = thick
           ..style = PaintingStyle.stroke);
     // Make a cross at the center of the search box (which is overall image
     // center. TODO: draw the cross at the boresight center, if present.
-    var center = state.centerRegion.center;
+    var center = state._centerRegion.center;
     canvas.drawLine(
         center.translate(-crossRadius, 0),
         center.translate(crossRadius, 0),
@@ -107,7 +107,7 @@ class _MainImagePainter extends CustomPainter {
           ..strokeWidth = hairline);
     // Draw box around location of the brightest star in search box.
     canvas.drawRect(
-        state.centerPeakRegion,
+        state._centerPeakRegion,
         Paint()
           ..color = Colors.red
           ..strokeWidth = thin
@@ -121,91 +121,95 @@ class _MainImagePainter extends CustomPainter {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  late CedarClient client;
-
   // Information from most recent FrameResult.
-  Uint8List imageBytes = Uint8List(1);
-  int width = 0;
-  int height = 0;
+  Uint8List _imageBytes = Uint8List(1);
+  int _width = 0;
+  int _height = 0;
 
-  late Rect centerRegion; // Scaled by main image's binning.
-  late Rect centerPeakRegion; // Scaled by binning.
+  late Rect _centerRegion; // Scaled by main image's binning.
+  late Rect _centerPeakRegion; // Scaled by binning.
 
-  int centerPeakWidth = 0;
-  int centerPeakHeight = 0;
-  Uint8List centerPeakImageBytes = Uint8List(1);
+  int _centerPeakWidth = 0;
+  int _centerPeakHeight = 0;
+  Uint8List _centerPeakImageBytes = Uint8List(1);
 
-  int prevFrameId = -1;
-  int numStarCandidates = 0;
-  double exposureTimeMs = 0.0;
-  String solveFailureReason = "";
-  double solutionRA = 0.0;
-  double solutionDec = 0.0;
-  double solutionRMSE = 0.0;
+  int _prevFrameId = -1;
+  int _numStarCandidates = 0;
+  double _exposureTimeMs = 0.0;
+  String _solveFailureReason = "";
+  double _solutionRA = 0.0;
+  double _solutionDec = 0.0;
+  double _solutionRMSE = 0.0;
 
   // Values set from on-screen controls.
-  bool doRefreshes = false;
-  bool expAuto = true;
-  int expSliderValue = 0;
+  bool _doRefreshes = false;
+  bool _expAuto = true;
+  int _expSliderValue = 0;
+
+  CedarClient? _client;
+  CedarClient client() {
+    _client ??= getClient(); // Initialize if null.
+    return _client!;
+  }
 
   bool hasSolution() {
-    return solveFailureReason == "";
+    return _solveFailureReason == "";
   }
 
   void setStateFromFrameResult(FrameResult response) {
     // TODO(smr): check response.operatingMode and extract information
     // accordingly. Also render widgets according to the operatingMode.
-    prevFrameId = response.frameId;
-    numStarCandidates = response.starCandidates.length;
+    _prevFrameId = response.frameId;
+    _numStarCandidates = response.starCandidates.length;
     int binFactor = 1;
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
       if (plateSolution.hasFailureReason()) {
-        solveFailureReason = plateSolution.failureReason;
+        _solveFailureReason = plateSolution.failureReason;
       } else {
-        solveFailureReason = "";
-        solutionRA = plateSolution.imageCenterCoords.ra;
-        solutionDec = plateSolution.imageCenterCoords.dec;
-        solutionRMSE = plateSolution.rmse;
+        _solveFailureReason = "";
+        _solutionRA = plateSolution.imageCenterCoords.ra;
+        _solutionDec = plateSolution.imageCenterCoords.dec;
+        _solutionRMSE = plateSolution.rmse;
       }
     }
     if (response.hasImage()) {
-      imageBytes = Uint8List.fromList(response.image.imageData);
-      width = response.image.rectangle.width;
-      height = response.image.rectangle.height;
+      _imageBytes = Uint8List.fromList(response.image.imageData);
+      _width = response.image.rectangle.width;
+      _height = response.image.rectangle.height;
       binFactor = response.image.binningFactor;
     }
     if (response.hasCenterRegion()) {
       var cr = response.centerRegion;
-      centerRegion = Rect.fromLTWH(
+      _centerRegion = Rect.fromLTWH(
           cr.originX.toDouble() / binFactor,
           cr.originY.toDouble() / binFactor,
           cr.width.toDouble() / binFactor,
           cr.height.toDouble() / binFactor);
     }
     if (response.hasExposureTime()) {
-      exposureTimeMs = durationToMs(response.exposureTime);
+      _exposureTimeMs = durationToMs(response.exposureTime);
     }
-    expAuto = durationToMs(response.operationSettings.exposureTime) == 0.0;
-    centerPeakImageBytes =
+    _expAuto = durationToMs(response.operationSettings.exposureTime) == 0.0;
+    _centerPeakImageBytes =
         Uint8List.fromList(response.centerPeakImage.imageData);
-    centerPeakWidth = response.centerPeakImage.rectangle.width;
-    centerPeakHeight = response.centerPeakImage.rectangle.height;
+    _centerPeakWidth = response.centerPeakImage.rectangle.width;
+    _centerPeakHeight = response.centerPeakImage.rectangle.height;
     if (response.hasCenterPeakPosition()) {
       var cp = response.centerPeakPosition;
-      centerPeakRegion = Rect.fromCenter(
+      _centerPeakRegion = Rect.fromCenter(
           center: Offset(cp.x / binFactor, cp.y / binFactor),
-          width: centerPeakWidth.toDouble() / binFactor,
-          height: centerPeakHeight.toDouble() / binFactor);
+          width: _centerPeakWidth.toDouble() / binFactor,
+          height: _centerPeakHeight.toDouble() / binFactor);
     }
   }
 
   Future<void> getFocusFrameFromServer() async {
     final request = FrameRequest()
-      ..prevFrameId = prevFrameId
+      ..prevFrameId = _prevFrameId
       ..mainImageMode = ImageMode.IMAGE_MODE_BINNED;
     try {
-      final response = await client.getFrame(request);
+      final response = await client().getFrame(request);
       setState(() {
         setStateFromFrameResult(response);
       });
@@ -217,13 +221,13 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> refreshStateFromServer() async {
     await Future.doWhile(() async {
       await getFocusFrameFromServer();
-      return doRefreshes;
+      return _doRefreshes;
     });
   }
 
   Future<void> updateOperationSettings(OperationSettings request) async {
     try {
-      await client.updateOperationSettings(request);
+      await client().updateOperationSettings(request);
     } catch (e) {
       log('Error: $e');
     }
@@ -231,20 +235,17 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> setExpTimeFromSlider() async {
     var request = OperationSettings();
-    request.exposureTime = msToDuration(expValuesMs[expSliderValue]);
+    request.exposureTime = msToDuration(expValuesMs[_expSliderValue]);
     await updateOperationSettings(request);
   }
 
   Widget runSwitch() {
     return Switch(
-        value: doRefreshes,
+        value: _doRefreshes,
         onChanged: (bool value) {
           setState(() {
-            if (!doRefreshes && value) {
-              client = getClient();
-            }
-            doRefreshes = value;
-            if (doRefreshes) {
+            _doRefreshes = value;
+            if (_doRefreshes) {
               refreshStateFromServer();
             }
           });
@@ -253,17 +254,17 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Widget expControl() {
     return Column(children: <Widget>[
-      expAuto
+      _expAuto
           ? const SizedBox(height: 48)
           : Slider(
               min: 0,
               max: expValuesMs.length - 1,
               divisions: expValuesMs.length - 1,
-              value: expValueIndex(exposureTimeMs).toDouble(),
+              value: expValueIndex(_exposureTimeMs).toDouble(),
               onChanged: (double value) => {
                     setState(() {
-                      expSliderValue = value.toInt();
-                      if (!expAuto) {
+                      _expSliderValue = value.toInt();
+                      if (!_expAuto) {
                         setExpTimeFromSlider();
                       }
                     })
@@ -271,11 +272,11 @@ class _MyHomePageState extends State<MyHomePage> {
       Row(
         children: <Widget>[
           Switch(
-              value: expAuto,
+              value: _expAuto,
               onChanged: (bool value) => {
                     setState(() {
-                      expAuto = value;
-                      if (expAuto) {
+                      _expAuto = value;
+                      if (_expAuto) {
                         var request = OperationSettings();
                         request.exposureTime = msToDuration(0);
                         updateOperationSettings(request);
@@ -287,7 +288,7 @@ class _MyHomePageState extends State<MyHomePage> {
           const Text("Auto"),
         ],
       ),
-      Text("$exposureTimeMs"),
+      Text("$_exposureTimeMs"),
     ]);
   }
 
@@ -306,7 +307,7 @@ class _MyHomePageState extends State<MyHomePage> {
             Slider(
               min: 0,
               max: 10,
-              value: math.min(10, math.sqrt(numStarCandidates)),
+              value: math.min(10, math.sqrt(_numStarCandidates)),
               onChanged: (double value) {},
               activeColor: hasSolution() ? Colors.green : Colors.grey,
               thumbColor: hasSolution() ? Colors.green : Colors.grey,
@@ -316,7 +317,7 @@ class _MyHomePageState extends State<MyHomePage> {
         ),
         Column(
           children: <Widget>[
-            Text(sprintf("%.4f", [solutionRA])),
+            Text(sprintf("%.4f", [_solutionRA])),
             Container(
               margin: const EdgeInsets.all(10),
               child: const Text("     RA     "),
@@ -325,7 +326,7 @@ class _MyHomePageState extends State<MyHomePage> {
         ),
         Column(
           children: <Widget>[
-            Text(sprintf("%.4f", [solutionDec])),
+            Text(sprintf("%.4f", [_solutionDec])),
             Container(
               margin: const EdgeInsets.all(10),
               child: const Text("    DEC    "),
@@ -334,7 +335,7 @@ class _MyHomePageState extends State<MyHomePage> {
         ),
         Column(
           children: <Widget>[
-            Text(sprintf("%.2f", [solutionRMSE])),
+            Text(sprintf("%.2f", [_solutionRMSE])),
             Container(
               margin: const EdgeInsets.all(10),
               child: const Text("RMSE"),
@@ -354,9 +355,9 @@ class _MyHomePageState extends State<MyHomePage> {
   Widget mainImage() {
     return CustomPaint(
       foregroundPainter: _MainImagePainter(this),
-      child: dart_widgets.Image.memory(imageBytes,
-          height: height.toDouble() / 2,
-          width: width.toDouble() / 2,
+      child: dart_widgets.Image.memory(_imageBytes,
+          height: _height.toDouble() / 2,
+          width: _width.toDouble() / 2,
           fit: BoxFit.none,
           gaplessPlayback: true),
     );
@@ -387,11 +388,11 @@ class _MyHomePageState extends State<MyHomePage> {
             Stack(
               alignment: Alignment.topRight,
               children: <Widget>[
-                prevFrameId != -1 ? mainImage() : const SizedBox(height: 2),
-                prevFrameId != -1
-                    ? dart_widgets.Image.memory(centerPeakImageBytes,
-                        height: centerPeakHeight.toDouble() * 3,
-                        width: centerPeakWidth.toDouble() * 3,
+                _prevFrameId != -1 ? mainImage() : const SizedBox(height: 2),
+                _prevFrameId != -1
+                    ? dart_widgets.Image.memory(_centerPeakImageBytes,
+                        height: _centerPeakHeight.toDouble() * 3,
+                        width: _centerPeakWidth.toDouble() * 3,
                         fit: BoxFit.fill,
                         gaplessPlayback: true)
                     : const SizedBox(height: 2),
