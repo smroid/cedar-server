@@ -205,6 +205,7 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  // Use request/response style of RPC.
   Future<void> getFocusFrameFromServer() async {
     final request = FrameRequest()
       ..prevFrameId = _prevFrameId
@@ -220,9 +221,34 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  // Issue repeated request/response RPCs.
   Future<void> refreshStateFromServer() async {
     await Future.doWhile(() async {
       await getFocusFrameFromServer();
+      return _doRefreshes;
+    });
+  }
+
+  // Issue streaming RPC. Alternative to refreshStateFromServer().
+  Future<void> refreshStateFromStreamingServer() async {
+    final request = FrameRequest()
+      ..prevFrameId = _prevFrameId
+      ..mainImageMode = ImageMode.IMAGE_MODE_BINNED;
+    // We wrap the getFrames() streaming RPC call in a loop because it can
+    // fail for various spurious causes; we just restart it.
+    await Future.doWhile(() async {
+      try {
+        await for (var response in client().getFrames(request)) {
+          setState(() {
+            setStateFromFrameResult(response);
+          });
+          if (!_doRefreshes) {
+            break;
+          }
+        }
+      } catch (e) {
+        log('Error: $e');
+      }
       return _doRefreshes;
     });
   }
@@ -249,7 +275,12 @@ class _MyHomePageState extends State<MyHomePage> {
           setState(() {
             _doRefreshes = value;
             if (_doRefreshes) {
+              // We prefer the request/response style of RPC. The streaming
+              // RPC sometimes seems to introduce more lag (buffering?), but
+              // not really sure. The request/response style seems fine, so
+              // we'll stick with it.
               refreshStateFromServer();
+              // refreshStateFromStreamingServer();
             }
           });
         }); // Switch
