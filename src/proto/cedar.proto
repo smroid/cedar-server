@@ -103,8 +103,6 @@ message OperationSettings {
   // mount) or polar misalighment (tracked equatorial mount), only the RA/DEC
   // at the onset of dwelling is logged.
   optional bool log_dwelled_positions = 10;
-
-  // TODO: IMU?
 }
 
 enum OperatingMode {
