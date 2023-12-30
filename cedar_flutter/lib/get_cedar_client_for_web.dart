@@ -3,7 +3,5 @@ import 'package:grpc/grpc_web.dart';
 
 CedarClient getClient() {
   return CedarClient(
-    GrpcWebClientChannel.xhr(Uri.base),
-    options: CallOptions(timeout: const Duration(seconds: 1)),
-  );
+    GrpcWebClientChannel.xhr(Uri.base));
 }

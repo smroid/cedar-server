@@ -5,10 +5,11 @@ import 'package:fixnum/fixnum.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
+import 'package:grpc/service_api.dart';
 import 'package:sprintf/sprintf.dart';
 import 'cedar.pbgrpc.dart';
 import 'tetra3.pb.dart';
-import 'google/protobuf/duration.pb.dart';
+import 'google/protobuf/duration.pb.dart' as proto_duration;
 import 'get_cedar_client_for_web.dart'
     if (dart.library.io) 'get_cedar_client.dart';
 
@@ -40,13 +41,13 @@ class MyHomePage extends StatefulWidget {
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-double durationToMs(Duration duration) {
+double durationToMs(proto_duration.Duration duration) {
   return duration.seconds.toDouble() * 1000 +
       (duration.nanos.toDouble()) / 1000000;
 }
 
-Duration msToDuration(int ms) {
-  var duration = Duration();
+proto_duration.Duration msToDuration(int ms) {
+  var duration = proto_duration.Duration();
   duration.seconds = Int64(ms ~/ 1000);
   duration.nanos = (ms * 1000000) % 1000000000;
   return duration;
@@ -209,7 +210,8 @@ class _MyHomePageState extends State<MyHomePage> {
       ..prevFrameId = _prevFrameId
       ..mainImageMode = ImageMode.IMAGE_MODE_BINNED;
     try {
-      final response = await client().getFrame(request);
+      final response = await client().getFrame(request,
+          options: CallOptions(timeout: const Duration(seconds: 1)));
       setState(() {
         setStateFromFrameResult(response);
       });
@@ -227,7 +229,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> updateOperationSettings(OperationSettings request) async {
     try {
-      await client().updateOperationSettings(request);
+      await client().updateOperationSettings(request,
+          options: CallOptions(timeout: const Duration(seconds: 1)));
     } catch (e) {
       log('Error: $e');
     }
