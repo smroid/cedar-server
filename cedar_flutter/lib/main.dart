@@ -82,7 +82,6 @@ class _MainImagePainter extends CustomPainter {
     const double hairline = 0.5;
     const double thin = 1;
     const double thick = 2;
-    const double crossRadius = 4;
     // Draw search box within which we search for the brightest star for
     // focusing.
     canvas.drawRect(
@@ -91,21 +90,23 @@ class _MainImagePainter extends CustomPainter {
           ..color = Colors.red
           ..strokeWidth = thick
           ..style = PaintingStyle.stroke);
-    // Make a cross at the center of the search box (which is overall image
-    // center. TODO: draw the cross at the boresight center, if present.
-    var center = state._centerRegion.center;
+    double crossRadius = state._boresightPosition == null ? 4 : 8;
+    double crossThickness = state._boresightPosition == null ? hairline : thin;
+    var center = state._boresightPosition ?? state._centerRegion.center;
+    // Make a cross at the boresight position (if any) or else the center of
+    // the search box (which is overall image center.
     canvas.drawLine(
         center.translate(-crossRadius, 0),
         center.translate(crossRadius, 0),
         Paint()
           ..color = Colors.red
-          ..strokeWidth = hairline);
+          ..strokeWidth = crossThickness);
     canvas.drawLine(
         center.translate(0, -crossRadius),
         center.translate(0, crossRadius),
         Paint()
           ..color = Colors.red
-          ..strokeWidth = hairline);
+          ..strokeWidth = crossThickness);
     // Draw box around location of the brightest star in search box.
     canvas.drawRect(
         state._centerPeakRegion,
@@ -127,6 +128,8 @@ class _MyHomePageState extends State<MyHomePage> {
   int _width = 0;
   int _height = 0;
 
+  Offset? _boresightPosition; // Scaled by main image's binning.
+
   late Rect _centerRegion; // Scaled by main image's binning.
   late Rect _centerPeakRegion; // Scaled by binning.
 
@@ -138,8 +141,12 @@ class _MyHomePageState extends State<MyHomePage> {
   int _numStarCandidates = 0;
   double _exposureTimeMs = 0.0;
   String _solveFailureReason = "";
+
+  // Degrees.
   double _solutionRA = 0.0;
   double _solutionDec = 0.0;
+
+  // Arcsec.
   double _solutionRMSE = 0.0;
 
   // Values set from on-screen controls.
@@ -169,8 +176,13 @@ class _MyHomePageState extends State<MyHomePage> {
         _solveFailureReason = plateSolution.failureReason;
       } else {
         _solveFailureReason = "";
-        _solutionRA = plateSolution.imageCenterCoords.ra;
-        _solutionDec = plateSolution.imageCenterCoords.dec;
+        if (plateSolution.targetCoords.isNotEmpty) {
+          _solutionRA = plateSolution.targetCoords.first.ra;
+          _solutionDec = plateSolution.targetCoords.first.dec;
+        } else {
+          _solutionRA = plateSolution.imageCenterCoords.ra;
+          _solutionDec = plateSolution.imageCenterCoords.dec;
+        }
         _solutionRMSE = plateSolution.rmse;
       }
     }
@@ -179,6 +191,12 @@ class _MyHomePageState extends State<MyHomePage> {
       _width = response.image.rectangle.width;
       _height = response.image.rectangle.height;
       binFactor = response.image.binningFactor;
+    }
+    if (response.hasBoresightPosition()) {
+      _boresightPosition = Offset(response.boresightPosition.x / binFactor,
+          response.boresightPosition.y / binFactor);
+    } else {
+      _boresightPosition = null;
     }
     if (response.hasCenterRegion()) {
       var cr = response.centerRegion;
@@ -202,6 +220,15 @@ class _MyHomePageState extends State<MyHomePage> {
           center: Offset(cp.x / binFactor, cp.y / binFactor),
           width: _centerPeakWidth.toDouble() / binFactor,
           height: _centerPeakHeight.toDouble() / binFactor);
+    }
+  }
+
+  Future<void> updateOperationSettings(OperationSettings request) async {
+    try {
+      await client().updateOperationSettings(request,
+          options: CallOptions(timeout: const Duration(seconds: 1)));
+    } catch (e) {
+      log('Error: $e');
     }
   }
 
@@ -253,9 +280,9 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
-  Future<void> updateOperationSettings(OperationSettings request) async {
+  Future<void> initiateAction(ActionRequest request) async {
     try {
-      await client().updateOperationSettings(request,
+      await client().initiateAction(request,
           options: CallOptions(timeout: const Duration(seconds: 1)));
     } catch (e) {
       log('Error: $e');
@@ -266,6 +293,12 @@ class _MyHomePageState extends State<MyHomePage> {
     var request = OperationSettings();
     request.exposureTime = msToDuration(expValuesMs[_expSliderValue]);
     await updateOperationSettings(request);
+  }
+
+  Future<void> captureBoresight() async {
+    var request = ActionRequest();
+    request.captureBoresight = true;
+    await initiateAction(request);
   }
 
   Widget runSwitch() {
@@ -382,6 +415,13 @@ class _MyHomePageState extends State<MyHomePage> {
             const Text("Exp time (ms)"),
           ],
         ),
+        Column(children: <Widget>[
+          TextButton(
+              child: const Text("Capture boresight"),
+              onPressed: () {
+                captureBoresight();
+              }),
+        ]),
       ],
     );
   }
