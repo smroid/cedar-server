@@ -254,7 +254,8 @@ impl Cedar for MyCedar {
         // spawn() and channel() are required to handle client "disconnect"
         // functionality. The `output_stream` will not be polled after client
         // disconnect.
-        let (tx, rx) = mpsc::channel(128);
+        // Use shallow channel depth to limit streaming latency.
+        let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
             while let Some(frame_result) = stream.next().await {
                 match tx.send(Result::<_, tonic::Status>::Ok(frame_result)).await {
