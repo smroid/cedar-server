@@ -5,18 +5,21 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
 use camera_service::asi_camera;
+use camera_service::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use image::ImageOutputFormat;
+use image::io::Reader as ImageReader;
 
 use clap::Parser;
 use axum::Router;
 use futures::StreamExt;
-use log::{info};
+use log::{info, warn};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream};
@@ -69,7 +72,7 @@ pub mod cedar {
 }
 
 struct State {
-    camera: Arc<Mutex<asi_camera::ASICamera>>,
+    camera: Arc<Mutex<dyn AbstractCamera>>,
     fixed_settings: Mutex<FixedSettings>,
     operation_settings: Mutex<OperationSettings>,
     calibration_data: Mutex<CalibrationData>,
@@ -376,16 +379,14 @@ impl MyCedar {
     fn get_next_frame(state: &State, prev_frame_id: Option<i32>, main_image_mode: i32)
                       -> FrameResult {
         // TODO(smr): do according to operating mode.
+        let tetra3_solve_result;
         let detect_result;
-        {
-            let detect_engine = &mut state.detect_engine.lock().unwrap();
-            detect_result = detect_engine.get_next_result(prev_frame_id);
-        }
-        let plate_solution;
         let boresight_position;
         {
             let solve_engine = &mut state.solve_engine.lock().unwrap();
-            plate_solution = solve_engine.get_next_result(prev_frame_id);
+            let plate_solution = solve_engine.get_next_result(prev_frame_id);
+            tetra3_solve_result = plate_solution.tetra3_solve_result;
+            detect_result = plate_solution.detect_result;
             boresight_position = solve_engine.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
         }
@@ -399,12 +400,11 @@ impl MyCedar {
         };
 
         let mut centroids = Vec::<StarCentroid>::new();
-        for star in detect_result.star_candidates {
+        for star in &detect_result.star_candidates {
             centroids.push(StarCentroid{
                 centroid_position: Some(cedar::ImageCoord {
                     x: star.centroid_x, y: star.centroid_y,
                 }),
-                stddev_x: star.stddev_x, stddev_y: star.stddev_y,
                 brightness: star.brightness,
                 num_saturated: star.num_saturated as i32,
             });
@@ -506,22 +506,27 @@ impl MyCedar {
             });
         }
         let mut position = state.position.lock().unwrap();
-        if plate_solution.tetra3_solve_result.image_center_coords.is_some() {
-            let coords = plate_solution.tetra3_solve_result.image_center_coords.as_ref()
-                .unwrap();
+        if tetra3_solve_result.image_center_coords.is_some() {
+            let coords;
+            if tetra3_solve_result.target_coords.len() > 0 {
+                coords = tetra3_solve_result.target_coords[0].clone();
+            } else {
+                coords = tetra3_solve_result.image_center_coords.as_ref().unwrap().clone();
+            }
             position.ra = coords.ra as f64;
             position.dec = coords.dec as f64;
             position.valid = true;
         } else {
             position.valid = false;
         }
-        frame_result.plate_solution = Arc::into_inner(plate_solution.tetra3_solve_result);
+        frame_result.plate_solution = Some(tetra3_solve_result);
         frame_result
     }
 
     pub fn new(tetra3_script: String,
                tetra3_database: String,
-               tetra3_uds: String, camera: Arc<Mutex<asi_camera::ASICamera>>,
+               tetra3_uds: String,
+               camera: Arc<Mutex<dyn AbstractCamera>>,
                position: Arc<Mutex<CelestialPosition>>) -> Self {
         let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
             camera.clone(),
@@ -569,8 +574,18 @@ impl MyCedar {
         let cedar = MyCedar { state: state.clone() };
         cedar.set_lens_fl(25.0);  // TODO(smr): this should come from UI.
         // Set pre-calibration defaults on camera.
-        assert!(cedar.set_camera_gain(100).is_ok());
-        assert!(cedar.set_camera_offset(3).is_ok());
+        match cedar.set_camera_gain(100) {
+            Ok(()) => (),
+            Err(x) => {
+                warn!("Could not set gain on camera {:?}", x)
+            }
+        }
+        match cedar.set_camera_offset(3) {
+            Ok(()) => (),
+            Err(x) => {
+                warn!("Could not set offset on camera {:?}", x)
+            }
+        }
         let sigma;
         let max_size;
         {
@@ -600,6 +615,10 @@ struct Args {
     /// Unix domain socket file for Tetra3 gRPC server.
     #[arg(long, default_value = "/home/pi/tetra3.sock")]
     socket: String,
+
+    /// Test image to use instead of camera.
+    #[arg(long, default_value = "")]
+    test_image: String,
 }
 
 #[tokio::main]
@@ -614,9 +633,18 @@ async fn main() {
 
     // TODO(smr): discovery/enumeration mechanism for cameras. Or command
     // line arg?
-    let camera = asi_camera::ASICamera::new(
-        asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap();
-    let shared_camera = Arc::new(Mutex::new(camera));
+    let camera: Arc<Mutex<dyn AbstractCamera>> = match args.test_image.as_str() {
+        "" => Arc::new(Mutex::new(asi_camera::ASICamera::new(
+            asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap())),
+        _ => {
+            let input_path = PathBuf::from(&args.test_image);
+            let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
+            let img_u8 = img.to_luma8();
+            info!("Using test image {} instead of camera.", args.test_image);
+            Arc::new(Mutex::new(ImageCamera::new(img_u8).unwrap()))
+        },
+    };
+
     let shared_position = Arc::new(Mutex::new(CelestialPosition::new()));
 
     // Build the gRPC service.
@@ -627,7 +655,7 @@ async fn main() {
         .add_service(CedarServer::new(MyCedar::new(args.script,
                                                    args.database,
                                                    args.socket,
-                                                   shared_camera.clone(),
+                                                   camera,
                                                    shared_position.clone())))
         .into_service();
 
@@ -643,7 +671,7 @@ async fn main() {
 
     // Spin up ASCOM Alpaca server for reporting our RA/Dec solution as the
     // telescope position.
-    let alpaca_server = create_alpaca_server(shared_position.clone());
+    let alpaca_server = create_alpaca_server(shared_position);
     let alpaca_server_future = alpaca_server.start();
 
     let (service_result, alpaca_result) = join!(service_future, alpaca_server_future);
