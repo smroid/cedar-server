@@ -8,7 +8,7 @@ import "tetra3.proto";
 package cedar;
 
 // In cedar_flutter/lib:
-// run: protoc --dart_out=grpc:. --proto_path=../../src/proto ../../src/proto/cedar.proto
+// run: protoc --experimental_allow_proto3_optional --dart_out=grpc:. --proto_path=../../src/proto ../../src/proto/cedar.proto
 
 // General note: in the Cedar gRPC protocol, the client is a user interface
 // realized as a web app or a mobile app. The client interacts with the

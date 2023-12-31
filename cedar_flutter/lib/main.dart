@@ -13,6 +13,8 @@ import 'google/protobuf/duration.pb.dart' as proto_duration;
 import 'get_cedar_client_for_web.dart'
     if (dart.library.io) 'get_cedar_client.dart';
 
+// To generate release build: flutter build web
+
 void main() {
   runApp(const MyApp());
 }
