@@ -313,6 +313,7 @@ impl SolveEngine {
                 let mut locked_detect_engine = locked_state_mut.detect_engine.lock().unwrap();
                 detect_result = locked_detect_engine.get_next_result(
                     locked_state_mut.frame_id);
+                locked_state_mut.frame_id = Some(detect_result.frame_id);
             }
             let image: &GrayImage = &detect_result.captured_image.image;
             let (width, height) = image.dimensions();
@@ -327,24 +328,24 @@ impl SolveEngine {
             solve_request.image_width = width as i32;
             solve_request.image_height = height as i32;
 
-            let resp;
+            let tetra3_solve_result;
             match client.solve_from_centroids(solve_request).await {
                 Err(e) => {
                     error!("Unexpected error {:?}", e);
                     break;  // Exit the worker thread.
                 },
                 Ok(response) => {
-                    resp = response.into_inner();
+                    tetra3_solve_result = response.into_inner();
                 }
             }
-            // TODO(smr): examine resp: if solution failed because of too few
-            // stars detected, adjust exposure within limits.
+            // TODO(smr): examine tetra3_solve_result: if solution failed
+            // because of too few stars detected, adjust exposure within limits.
 
             // Post the result.
             let mut locked_state = state.lock().unwrap();
             locked_state.plate_solution = Some(PlateSolution{
-                detect_result: detect_result.into(),
-                tetra3_solve_result: resp.into(),
+                detect_result,
+                tetra3_solve_result,
                 processing_duration: process_start_time.elapsed(),
             });
             plate_solution_available.notify_all();
@@ -358,10 +359,10 @@ impl SolveEngine {
 #[derive(Clone)]
 pub struct PlateSolution {
     // The detect result used to produce the information in this solve result.
-    pub detect_result: Arc<DetectResult>,
+    pub detect_result: DetectResult,
 
     // The plate solution for `detect_result`.
-    pub tetra3_solve_result: Arc<SolveResultProto>,
+    pub tetra3_solve_result: SolveResultProto,
 
     // Time taken to produce this PlateSolution, excluding the time taken to
     // detect stars.
