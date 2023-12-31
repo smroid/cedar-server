@@ -126,7 +126,11 @@ class _MainImagePainter extends CustomPainter {
 
 class _MyHomePageState extends State<MyHomePage> {
   // Information from most recent FrameResult.
+
+  // Image data, binned by server.
   Uint8List _imageBytes = Uint8List(1);
+
+  // Original image dimensions, prior to binning.
   int _width = 0;
   int _height = 0;
 
@@ -403,9 +407,9 @@ class _MyHomePageState extends State<MyHomePage> {
     return CustomPaint(
       foregroundPainter: _MainImagePainter(this),
       child: dart_widgets.Image.memory(_imageBytes,
+          // Dimensions halved to reflect _imageBytes's binning by server.
           height: _height.toDouble() / 2,
           width: _width.toDouble() / 2,
-          fit: BoxFit.none,
           gaplessPlayback: true),
     );
   }
@@ -418,34 +422,29 @@ class _MyHomePageState extends State<MyHomePage> {
     // fast, so that you can just rebuild anything that needs updating rather
     // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            topControls(),
-            const SizedBox(height: 2),
-            Stack(
-              alignment: Alignment.topRight,
-              children: <Widget>[
-                _prevFrameId != -1 ? mainImage() : const SizedBox(height: 2),
-                _prevFrameId != -1
-                    ? dart_widgets.Image.memory(_centerPeakImageBytes,
-                        height: _centerPeakHeight.toDouble() * 3,
-                        width: _centerPeakWidth.toDouble() * 3,
-                        fit: BoxFit.fill,
-                        gaplessPlayback: true)
-                    : const SizedBox(height: 2),
-              ],
-            ),
-          ],
+      body: FittedBox(
+        child: Center(
+          // Center is a layout widget. It takes a single child and positions it
+          // in the middle of the parent.
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              topControls(),
+              Stack(
+                alignment: Alignment.topRight,
+                children: <Widget>[
+                  _prevFrameId != -1 ? mainImage() : const SizedBox(height: 2),
+                  _prevFrameId != -1
+                      ? dart_widgets.Image.memory(_centerPeakImageBytes,
+                          height: _centerPeakHeight.toDouble() * 3,
+                          width: _centerPeakWidth.toDouble() * 3,
+                          fit: BoxFit.fill,
+                          gaplessPlayback: true)
+                      : const SizedBox(height: 2),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
