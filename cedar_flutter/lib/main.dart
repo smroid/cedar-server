@@ -16,7 +16,6 @@ import 'get_cedar_client_for_web.dart'
 // To generate release build: flutter build web
 
 void main() {
-  goFullScreen();
   runApp(const MyApp());
 }
 
@@ -430,6 +429,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   Widget build(BuildContext context) {
+    goFullScreen();
     // This method is rerun every time setState() is called.
     return Scaffold(body: FittedBox(child: orientationLayout(context)));
   }
