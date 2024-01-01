@@ -16,6 +16,7 @@ import 'get_cedar_client_for_web.dart'
 // To generate release build: flutter build web
 
 void main() {
+  goFullScreen();
   runApp(const MyApp());
 }
 
