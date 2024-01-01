@@ -28,7 +28,8 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Cedar',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        // colorScheme: ColorScheme.fromSeed(seedColor: Colors.red),
+        brightness: Brightness.dark,
         useMaterial3: true,
       ),
       home: const MyHomePage(title: 'Cedar'),
