@@ -1,6 +1,5 @@
 import 'dart:developer';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -28,7 +27,6 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Cedar',
       theme: ThemeData(
-        // colorScheme: ColorScheme.fromSeed(seedColor: Colors.red),
         brightness: Brightness.dark,
         useMaterial3: true,
       ),
@@ -58,7 +56,7 @@ proto_duration.Duration msToDuration(int ms) {
 
 // The various exposure times (ms) selected by the exposure time slider.
 // TODO: build from the min/max exposure times in the CalibrationData.
-var expValuesMs = [10, 20, 50, 100, 200, 500, 1000];
+var expValuesMs = [1, 2, 5, 10, 20, 50, 100, 200];
 
 // Return the largest index in expValuesMs array that is <= the given value.
 // If the given value is too small returns 0.
