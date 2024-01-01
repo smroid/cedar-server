@@ -6,6 +6,7 @@ use std::io::Cursor;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -311,6 +312,20 @@ impl Cedar for MyCedar {
             match solve_engine.set_target_pixel(None) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
+            }
+        }
+        if req.shutdown_server.is_some() {
+            info!("Shutting down host system");
+            std::thread::sleep(Duration::from_secs(2));
+            let output = Command::new("sudo")
+                .arg("shutdown")
+                .arg("now")
+                .output()
+                .expect("Failed to execute 'sudo shutdown now' command");
+            if !output.status.success() {
+                let error_str = String::from_utf8_lossy(&output.stderr);
+                    return Err(tonic::Status::failed_precondition(
+                        format!("sudo shutdown error: {:?}.", error_str)));
             }
         }
         Ok(tonic::Response::new(EmptyMessage{}))
