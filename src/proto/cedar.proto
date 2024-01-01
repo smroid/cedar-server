@@ -412,6 +412,10 @@ message ActionRequest {
   // empty.
   optional bool delete_boresight = 2;
 
+  // Shut down the computer on which the Cedar server is running. Do this before
+  // unplugging the power!
+  optional bool shutdown_server = 3;
+
   // Calibrate camera/sky (focus mode only). Pre-empts focus mode operation until
   // completed or canceled.
 
