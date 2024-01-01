@@ -336,117 +336,100 @@ class _MyHomePageState extends State<MyHomePage> {
     ]);
   }
 
-  Widget topControls() {
-    return Row(
-      children: <Widget>[
-        Column(
-          children: <Widget>[
-            runSwitch(),
-            const Text("Run"),
-          ],
-        ),
-        Column(
-          children: <Widget>[
-            const Text(" 0       6      25     55    100"),
-            Slider(
-              min: 0,
-              max: 10,
-              value: math.min(10, math.sqrt(_numStarCandidates)),
-              onChanged: (double value) {},
-              activeColor: hasSolution() ? Colors.green : Colors.grey,
-              thumbColor: hasSolution() ? Colors.green : Colors.grey,
-            ),
-            const Text("Stars detected"),
-          ],
-        ),
-        Column(
-          children: <Widget>[
-            Text(sprintf("%.4f", [_solutionRA])),
-            Container(
-              margin: const EdgeInsets.all(10),
-              child: const Text("     RA     "),
-            ),
-          ],
-        ),
-        Column(
-          children: <Widget>[
-            Text(sprintf("%.4f", [_solutionDec])),
-            Container(
-              margin: const EdgeInsets.all(10),
-              child: const Text("    DEC    "),
-            ),
-          ],
-        ),
-        Column(
-          children: <Widget>[
-            Text(sprintf("%.2f", [_solutionRMSE])),
-            Container(
-              margin: const EdgeInsets.all(10),
-              child: const Text("RMSE"),
-            ),
-          ],
-        ),
-        Column(
-          children: <Widget>[
-            expControl(),
-            const Text("Exp time (ms)"),
-          ],
-        ),
-        Column(children: <Widget>[
-          TextButton(
-              child: const Text("Capture boresight"),
-              onPressed: () {
-                captureBoresight();
-              }),
-        ]),
-      ],
-    );
+  List<Widget> controls() {
+    return <Widget>[
+      Column(
+        children: <Widget>[
+          runSwitch(),
+          const Text("Run"),
+        ],
+      ),
+      Column(
+        children: <Widget>[
+          const Text("Stars detected"),
+          const Text(" 0       6      25     55    100"),
+          Slider(
+            min: 0,
+            max: 10,
+            value: math.min(10, math.sqrt(_numStarCandidates)),
+            onChanged: (double value) {},
+            activeColor: hasSolution() ? Colors.green : Colors.grey,
+            thumbColor: hasSolution() ? Colors.green : Colors.grey,
+          ),
+        ],
+      ),
+      Column(
+        children: <Widget>[
+          Text(sprintf("%.4f", [_solutionRA])),
+          Text(sprintf("%.4f", [_solutionDec])),
+          Text(sprintf("%.2f", [_solutionRMSE])),
+          Container(
+            margin: const EdgeInsets.all(10),
+            child: const Text("RA/DEC/RMSE"),
+          ),
+        ],
+      ),
+      Column(
+        children: <Widget>[
+          expControl(),
+          const Text("Exp time (ms)"),
+        ],
+      ),
+      Column(children: <Widget>[
+        TextButton(
+            child: const Text("Capture boresight"),
+            onPressed: () {
+              captureBoresight();
+            }),
+      ]),
+    ];
   }
 
   Widget mainImage() {
     return CustomPaint(
       foregroundPainter: _MainImagePainter(this),
-      child: dart_widgets.Image.memory(_imageBytes,
-          // Dimensions halved to reflect _imageBytes's binning by server.
-          height: _height.toDouble() / 2,
-          width: _width.toDouble() / 2,
-          gaplessPlayback: true),
+      child: dart_widgets.Image.memory(_imageBytes, gaplessPlayback: true),
     );
+  }
+
+  Widget imageStack() {
+    return Stack(
+      alignment: Alignment.topRight,
+      children: <Widget>[
+        _prevFrameId != -1 ? mainImage() : const SizedBox(height: 2),
+        _prevFrameId != -1
+            ? dart_widgets.Image.memory(_centerPeakImageBytes,
+                height: _centerPeakHeight.toDouble() * 3,
+                width: _centerPeakWidth.toDouble() * 3,
+                fit: BoxFit.fill,
+                gaplessPlayback: true)
+            : const SizedBox(height: 2),
+      ],
+    );
+  }
+
+  Widget orientationLayout(BuildContext context) {
+    if (MediaQuery.of(context).orientation == Orientation.portrait) {
+      return Column(
+        children: <Widget>[
+          Row(children: controls()),
+          imageStack(),
+        ],
+      );
+    } else {
+      // Landscape
+      return Row(
+        children: <Widget>[
+          imageStack(),
+          Column(children: controls()),
+        ],
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     // This method is rerun every time setState() is called.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      body: FittedBox(
-        child: Center(
-          // Center is a layout widget. It takes a single child and positions it
-          // in the middle of the parent.
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              topControls(),
-              Stack(
-                alignment: Alignment.topRight,
-                children: <Widget>[
-                  _prevFrameId != -1 ? mainImage() : const SizedBox(height: 2),
-                  _prevFrameId != -1
-                      ? dart_widgets.Image.memory(_centerPeakImageBytes,
-                          height: _centerPeakHeight.toDouble() * 3,
-                          width: _centerPeakWidth.toDouble() * 3,
-                          fit: BoxFit.fill,
-                          gaplessPlayback: true)
-                      : const SizedBox(height: 2),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+    return Scaffold(body: FittedBox(child: orientationLayout(context)));
   }
 }
