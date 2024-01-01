@@ -130,10 +130,6 @@ class _MyHomePageState extends State<MyHomePage> {
   // Image data, binned by server.
   Uint8List _imageBytes = Uint8List(1);
 
-  // Original image dimensions, prior to binning.
-  int _width = 0;
-  int _height = 0;
-
   Offset? _boresightPosition; // Scaled by main image's binning.
 
   late Rect _centerRegion; // Scaled by main image's binning.
@@ -194,8 +190,6 @@ class _MyHomePageState extends State<MyHomePage> {
     }
     if (response.hasImage()) {
       _imageBytes = Uint8List.fromList(response.image.imageData);
-      _width = response.image.rectangle.width;
-      _height = response.image.rectangle.height;
       binFactor = response.image.binningFactor;
     }
     if (response.hasBoresightPosition()) {
@@ -280,6 +274,37 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> captureBoresight() async {
     var request = ActionRequest();
     request.captureBoresight = true;
+    await initiateAction(request);
+  }
+
+  void shutdownDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          content: const Text('Shutdown Raspberry Pi?'),
+          actions: <Widget>[
+            TextButton(
+                child: const Text('Shutdown'),
+                onPressed: () {
+                  shutdown();
+                  Navigator.of(context).pop();
+                }),
+            TextButton(
+                child: const Text('Cancel'),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                }),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> shutdown() async {
+    var request = ActionRequest();
+    request.shutdownServer = true;
     await initiateAction(request);
   }
 
@@ -376,10 +401,17 @@ class _MyHomePageState extends State<MyHomePage> {
         ],
       ),
       Column(children: <Widget>[
-        TextButton(
-            child: const Text("Capture boresight"),
+        OutlinedButton(
+            child: const Text("Set alignment"),
             onPressed: () {
               captureBoresight();
+            }),
+      ]),
+      Column(children: <Widget>[
+        OutlinedButton(
+            child: const Text("Shutdown"),
+            onPressed: () {
+              shutdownDialog();
             }),
       ]),
     ];
