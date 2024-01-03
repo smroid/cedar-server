@@ -79,7 +79,7 @@ impl SolveEngine {
                 update_interval,
                 fov_estimate: None,
                 fov_max_error: None,
-                pattern_checking_stars: 8,
+                pattern_checking_stars: 12,
                 match_radius: 0.01,
                 match_threshold: 0.001,
                 solve_timeout: Duration::from_secs(2),

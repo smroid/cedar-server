@@ -176,10 +176,8 @@ message FrameResult {
   // The camera exposure integration time.
   google.protobuf.Duration exposure_time = 7;
 
-  // The time interval at which Cedar replaces its current frame result. This is
-  // a moving average over recent results. Note that this is independent of the
-  // rate of client FrameRequests.
-  google.protobuf.Duration result_update_interval = 8;
+  // Information about Cedar's performance.
+  ProcessingStats processing_stats = 8;
 
   // The time at which `image` was captured.
   google.protobuf.Timestamp capture_time = 9;
@@ -285,6 +283,56 @@ message ImageCoord {
   // the center of the image's upper left pixel.
   float x = 1;
   float y = 2;
+}
+
+// Diagnostic information summarizing Cedar's performance.
+message ProcessingStats {
+  // The interval at which new FrameResults are available. Seconds per
+  // FrameResult.
+  ValueStats frame_interval = 1;
+
+  // Elapsed time (in seconds) between acquisition of an image (end of exposure)
+  // and completion of a plate solution for it. Skipped images (i.e. solution
+  // not attempted) do not contribute to this.
+  ValueStats overall_latency = 2;
+
+  // How much time (in seconds) is spent detecting/centroiding stars.
+  ValueStats detect_latency = 3;
+
+  // How much time (in seconds) is spent plate solving (when attempted).
+  ValueStats solve_latency = 4;
+
+  // The fraction of images on which a plate solution is attempted. If too few
+  // stars are detected we skip solving. Only the 'mean' is meaningful.
+  ValueStats solve_attempt_fraction = 5;
+
+  // The fraction of plate solve attempts that succeed. Only the 'mean' is
+  // meaningful.
+  ValueStats solve_success_fraction = 6;
+}
+
+message ValueStats {
+  // Stats from the most recent 100 results. Omitted if there are no results
+  // yet.
+  optional DescriptiveStats recent = 1;
+
+  // Stats from the beginning of the session, or since the last session stats
+  // reset (see ActionRequest.reset_session_stats). Omitted if there are
+  // no results since session start or reset.
+  optional DescriptiveStats session = 2;
+}
+
+// See each item in ProcessingStats for units.
+message DescriptiveStats {
+  double min = 1;
+  double max = 2;
+
+  double mean = 3;
+  double stddev = 4;
+
+  // Omitted for `session` stats.
+  optional double median = 5;
+  optional double median_absolute_deviation = 6;
 }
 
 // Identify calibration activities that require more than a trivial amount of
@@ -415,6 +463,10 @@ message ActionRequest {
   // Shut down the computer on which the Cedar server is running. Do this before
   // unplugging the power!
   optional bool shutdown_server = 3;
+
+  // Resets the `session` stats in all of the ValueStats being collected in
+  // `processing_stats` field of FrameResult.
+  optional bool reset_session_stats = 4;
 
   // Calibrate camera/sky (focus mode only). Pre-empts focus mode operation until
   // completed or canceled.
