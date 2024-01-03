@@ -33,7 +33,8 @@ use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{ActionRequest, CalibrationData, CalibrationPhase,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
                    Image, ImageMode, OperatingMode,
-                   OperationSettings, Rectangle, StarCentroid};
+                   OperationSettings, ProcessingStats, Rectangle,
+                   StarCentroid};
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::solve_engine::{tetra3_server, SolveEngine};
 use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
@@ -433,7 +434,7 @@ impl MyCedar {
             hot_pixel_count: detect_result.hot_pixel_count,
             exposure_time: Some(prost_types::Duration::try_from(
                 captured_image.capture_params.exposure_duration).unwrap()),
-            result_update_interval: None,  // TODO: compute this as moving average.
+            processing_stats: None,  // Is set below.
             capture_time: Some(prost_types::Timestamp::try_from(
                 captured_image.readout_time).unwrap()),
             camera_temperature_celsius: captured_image.temperature.0 as f32,
@@ -472,11 +473,14 @@ impl MyCedar {
             ra_rate: None,
             dec_rate: None,
         };
+        // Populate `processing_stats`.
+        // TODO.
+
         // Populate `image` if requested.
         if main_image_mode == ImageMode::Default as i32 {
             let mut main_bmp_buf = Vec::<u8>::new();
             let image = &captured_image.image;
-            main_bmp_buf.reserve((2 * width * height) as usize);
+            main_bmp_buf.reserve((width * height) as usize);
             image.write_to(&mut Cursor::new(&mut main_bmp_buf),
                            ImageOutputFormat::Bmp).unwrap();
             frame_result.image = Some(Image{
@@ -488,7 +492,7 @@ impl MyCedar {
             let mut binned_bmp_buf = Vec::<u8>::new();
             let binned_image = &detect_result.binned_image;
             let (binned_width, binned_height) = binned_image.dimensions();
-            binned_bmp_buf.reserve((2 * binned_width * binned_height) as usize);
+            binned_bmp_buf.reserve((binned_width * binned_height) as usize);
             binned_image.write_to(&mut Cursor::new(&mut binned_bmp_buf),
                                   ImageOutputFormat::Bmp).unwrap();
             frame_result.image = Some(Image{
