@@ -8,6 +8,7 @@ name = "cedar-server"
 path = "src/bin/cedar_server.rs"
 
 [dependencies]
+approx = "0.5.1"
 ascom-alpaca = { version = "1.0.0-beta.1", features = ["server", "telescope"] }
 asi_camera2 = { version = "0.1.0", path = "../asi_camera2" }
 async-std = "1.12.0"
@@ -22,10 +23,13 @@ hyper = { version = "0.14.27", features = ["http1", "http2"] }
 image = "0.24.6"
 imageproc = "0.23.0"
 log = "0.4.19"
+medians = "3.0.5"
 prost = "0.11"
 prost-build = "0.11.9"
 prost-types = "0.11.9"
+rolling-stats = "0.7.0"
 star_gate = { version = "0.3.0", path = "../star_gate" }
+statistical = "1.0.0"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 tokio-stream = "0.1.14"
 tonic = "0.9"
