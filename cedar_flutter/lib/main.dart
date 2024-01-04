@@ -141,7 +141,7 @@ class _MyHomePageState extends State<MyHomePage> {
   int _prevFrameId = -1;
   int _numStarCandidates = 0;
   double _exposureTimeMs = 0.0;
-  String _solveFailureReason = "";
+  bool _hasSolution = false;
 
   // Degrees.
   double _solutionRA = 0.0;
@@ -161,10 +161,6 @@ class _MyHomePageState extends State<MyHomePage> {
     return _client!;
   }
 
-  bool hasSolution() {
-    return _solveFailureReason == "";
-  }
-
   void setStateFromFrameResult(FrameResult response) {
     // TODO(smr): check response.operatingMode and extract information
     // accordingly. Also render widgets according to the operatingMode.
@@ -174,9 +170,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
       if (plateSolution.hasFailureReason()) {
-        _solveFailureReason = plateSolution.failureReason;
+        _hasSolution = false;
       } else {
-        _solveFailureReason = "";
+        _hasSolution = true;
         if (plateSolution.targetCoords.isNotEmpty) {
           _solutionRA = plateSolution.targetCoords.first.ra;
           _solutionDec = plateSolution.targetCoords.first.dec;
@@ -360,6 +356,10 @@ class _MyHomePageState extends State<MyHomePage> {
     ]);
   }
 
+  Color starsSliderColor() {
+    return _hasSolution ? const Color(0xff00c000) : const Color(0xff606060);
+  }
+
   List<Widget> controls() {
     return <Widget>[
       Column(
@@ -377,8 +377,8 @@ class _MyHomePageState extends State<MyHomePage> {
             max: 10,
             value: math.min(10, math.sqrt(_numStarCandidates)),
             onChanged: (double value) {},
-            activeColor: hasSolution() ? Colors.green : Colors.grey,
-            thumbColor: hasSolution() ? Colors.green : Colors.grey,
+            activeColor: starsSliderColor(),
+            thumbColor: starsSliderColor(),
           ),
         ],
       ),
