@@ -32,9 +32,8 @@ use futures::join;
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{ActionRequest, CalibrationData, CalibrationPhase,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
-                   Image, ImageMode, OperatingMode,
-                   OperationSettings, ProcessingStats, Rectangle,
-                   StarCentroid};
+                   Image, ImageMode, OperatingMode, OperationSettings,
+                   Rectangle, StarCentroid};
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::solve_engine::{tetra3_server, SolveEngine};
 use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};

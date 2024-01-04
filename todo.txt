@@ -1,12 +1,15 @@
-add button to save image for debugging
+add button to save image (and current settings) for debugging
 
 runtime stats (recent and session; button to clear session stats)
 
 view server log
 
 setup mode vs. run mode.
-* when transitioning out of setup mode, if a plate solution was obtained, set
-  the fov_estimate, distortion, and reduce the match_max_error to 0.002.
+* when transitioning out of setup mode, if a plate solution(s) were obtained, set
+  the fov_estimate & distortion, and reduce the match_max_error to 0.002.
+* sneak in a super-quick calibration series?
+  * determine camera offset setting to avoid black crush at short exposures. Do
+    this at entry into setup mode?
 
 add affordance to set number of pattern_checking_stars
 

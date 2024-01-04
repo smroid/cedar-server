@@ -353,7 +353,8 @@ enum CalibrationPhase {
   CALIBRATION_PHASE_ANALYZE_EXPOSURE = 2;
 
   // Obtain initial plate solution with loose constraints to obtain the true
-  // field of view and lens distortion.
+  // field of view and lens distortion. TODO: drop this, we get it for free
+  // during setup mode's solves.
   CALIBRATION_PHASE_ANALYZE_FIELD_OF_VIEW = 3;
 
   // Determining the StarGate "sigma" levels to use to maximize true star
@@ -368,7 +369,9 @@ message CalibrationData {
   optional google.protobuf.Timestamp calibration_end_time = 2;
   optional float calibration_temperature_celsius = 3;
 
-  // If no calibration has been done, these will have reasonable default values.
+  // If no calibration has been done, these will have reasonable default values
+  // based on setup mode's auto exposure (or manual exposure setting during
+  // setup).
   optional google.protobuf.Duration min_exposure_time = 4;
   optional google.protobuf.Duration max_exposure_time = 5;
 
@@ -387,6 +390,9 @@ message CalibrationData {
   optional float detection_sigma = 8;
 
   // Omitted if a sky/camera calibration has not been done.
+  // TODO: This depends on the Tetra3 database being deep enough to validate the
+  // faintest imaged stars? Or extrapolate dimward from the faintest Tetra3
+  // matches? Risks confusing false positives as faint stars.
   optional float min_exposure_limiting_magnitude = 10;
   optional float max_exposure_limiting_magnitude = 11;
 
