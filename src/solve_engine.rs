@@ -41,6 +41,10 @@ struct SolveState {
     // Zero means go fast as star detections are computed.
     update_interval: Duration,
 
+    // Required number of detected stars, below which we don't attempt a plate
+    // solution.
+    minimum_stars: i32,
+
     // Parameters for plate solver. See documentation of Tetra3's
     // solve_from_centroids() function for a description of these items.
     fov_estimate: Option<f32>,
@@ -77,6 +81,7 @@ impl SolveEngine {
                 detect_engine: detect_engine.clone(),
                 frame_id: None,
                 update_interval,
+                minimum_stars: 4,
                 fov_estimate: None,
                 fov_max_error: None,
                 pattern_checking_stars: 12,
@@ -145,12 +150,12 @@ impl SolveEngine {
 
     pub fn set_distortion(&mut self, distortion: f32)
                                -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
         if distortion < -0.2 || distortion > 0.2 {
             return Err(invalid_argument_error(
                 format!("distortion must be in [-0.2, 0.2]; got {}",
                         distortion).as_str()));
         }
+        let mut locked_state = self.state.lock().unwrap();
         locked_state.distortion = distortion;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
@@ -159,21 +164,61 @@ impl SolveEngine {
 
     pub fn set_match_max_error(&mut self, match_max_error: f32)
                                -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
         if match_max_error < 0.0 || match_max_error >= 0.1 {
             return Err(invalid_argument_error(
                 format!("match_max_error must be in [0, 0.1); got {}",
                         match_max_error).as_str()));
         }
+        let mut locked_state = self.state.lock().unwrap();
         locked_state.match_max_error = match_max_error;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
     }
 
-    // Note: we don't currently provide methods to change pattern_checking_stars,
-    // match_radius, match_threshold, solve_timeout, or return_matches. The
-    // defaults for these should be fine.
+    pub fn set_minimum_stars(&mut self, minimum_stars: i32)
+                             -> Result<(), CanonicalError> {
+        if minimum_stars < 4 {
+            return Err(invalid_argument_error(
+                format!("minimum_stars must be at least 4; got {}",
+                        minimum_stars).as_str()));
+        }
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.minimum_stars = minimum_stars;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    pub fn set_pattern_checking_stars(&mut self, pattern_checking_stars: i32)
+                                      -> Result<(), CanonicalError> {
+        // 4 is the bare minimum, because Tetra3 is choosing 4-star patterns
+        // from the `pattern_checking_stars`. A more realistic minimum would
+        // be 8.
+        if pattern_checking_stars < 4 {
+            return Err(invalid_argument_error(
+                format!("pattern_checking_stars must be at least 4; got {}",
+                        pattern_checking_stars).as_str()));
+        }
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.pattern_checking_stars = pattern_checking_stars;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    pub fn set_solve_timeout(&mut self, solve_timeout: Duration)
+                             -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.solve_timeout = solve_timeout;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    // Note: we don't currently provide methods to change match_radius,
+    // match_threshold, or return_matches. The defaults for these should be
+    // fine.
 
     /// Obtains a result bundle, as configured above. The returned result is
     /// "fresh" in that we either wait to solve a new detect result or return
@@ -291,8 +336,10 @@ impl SolveEngine {
 
             let detect_result: DetectResult;
             let mut solve_request = SolveRequest::default();
+            let minimum_stars;
             {
                 let mut locked_state = state.lock().unwrap();
+                minimum_stars = locked_state.minimum_stars;
 
                 // Set up SolveRequest.
                 solve_request.fov_estimate = locked_state.fov_estimate;
@@ -329,17 +376,24 @@ impl SolveEngine {
             solve_request.image_height = height as i32;
 
             let tetra3_solve_result;
-            match client.solve_from_centroids(solve_request).await {
-                Err(e) => {
-                    error!("Unexpected error {:?}", e);
-                    break;  // Exit the worker thread.
-                },
-                Ok(response) => {
-                    tetra3_solve_result = response.into_inner();
+            if detect_result.star_candidates.len() < minimum_stars as usize {
+                tetra3_solve_result = tetra3_server::SolveResult{
+                    solve_time: Some(prost_types::Duration{seconds: 0, nanos: 0}),
+                    failure_reason: Some(
+                        "Plate solve attempt skipped for insufficient stars".to_string()),
+                    ..Default::default()
+                };
+            } else {
+                match client.solve_from_centroids(solve_request).await {
+                    Err(e) => {
+                        error!("Unexpected error {:?}", e);
+                        break;  // Exit the worker thread.
+                    },
+                    Ok(response) => {
+                        tetra3_solve_result = response.into_inner();
+                    }
                 }
             }
-            // TODO(smr): examine tetra3_solve_result: if solution failed
-            // because of too few stars detected, adjust exposure within limits.
 
             // Post the result.
             let mut locked_state = state.lock().unwrap();
