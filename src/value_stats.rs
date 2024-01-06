@@ -2,31 +2,10 @@ use medians::Medianf64;
 use rolling_stats;
 use statistical;
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DescriptiveStats {
-    pub min: f64,
-    pub max: f64,
-
-    pub mean: f64,
-    pub stddev: f64,
-
-    // Omitted for `session` in ValueStats.
-    pub median: Option<f64>,
-    pub median_absolute_deviation: Option<f64>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ValueStats {
-    // Stats from recent values.
-    pub recent: DescriptiveStats,
-
-    // Stats from ValueStatsAccumulator::new(), or since the last
-    // ValueStatsAccumulator::reset_session() call.
-    pub session: DescriptiveStats,
-}
+use crate::cedar;
 
 pub struct ValueStatsAccumulator {
-    pub value_stats: ValueStats,
+    pub value_stats: cedar::ValueStats,
 
     // State for `recent`.
     circular_buffer: CircularBuffer,
@@ -38,9 +17,9 @@ pub struct ValueStatsAccumulator {
 impl ValueStatsAccumulator {
     pub fn new(capacity: usize) -> Self {
         Self {
-            value_stats: ValueStats {
-                recent: DescriptiveStats{..Default::default()},
-                session: DescriptiveStats{..Default::default()},
+            value_stats: cedar::ValueStats {
+                recent: Some(cedar::DescriptiveStats{..Default::default()}),
+                session: Some(cedar::DescriptiveStats{..Default::default()}),
             },
             circular_buffer: CircularBuffer::new(capacity),
             rolling_stats: rolling_stats::Stats::<f64>::new(),
@@ -52,7 +31,7 @@ impl ValueStatsAccumulator {
         self.rolling_stats.update(value);
 
         let recent_values = self.circular_buffer.unordered_contents();
-        let recent_stats = &mut self.value_stats.recent;
+        let recent_stats = self.value_stats.recent.as_mut().unwrap();
         recent_stats.min =
             *recent_values.iter().min_by(|a, b| a.total_cmp(b)).unwrap();
         recent_stats.max =
@@ -66,7 +45,7 @@ impl ValueStatsAccumulator {
         recent_stats.median_absolute_deviation =
             Some(recent_values.madf(recent_stats.median.unwrap()));
 
-        let session_stats = &mut self.value_stats.session;
+        let session_stats = self.value_stats.session.as_mut().unwrap();
         session_stats.min = self.rolling_stats.min;
         session_stats.max = self.rolling_stats.max;
         session_stats.mean = self.rolling_stats.mean;
@@ -75,7 +54,7 @@ impl ValueStatsAccumulator {
     }
 
     pub fn reset_session(&mut self) {
-        self.value_stats.session = DescriptiveStats{..Default::default()};
+        self.value_stats.session = Some(cedar::DescriptiveStats{..Default::default()});
         self.rolling_stats = rolling_stats::Stats::<f64>::new();
     }
 }
