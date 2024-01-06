@@ -12,6 +12,7 @@ use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
 use tower::service_fn;
 use tower::timeout::Timeout;
+use crate::value_stats::{ValueStats, ValueStatsAccumulator};
 
 pub mod tetra3_server {
     tonic::include_proto!("tetra3_server");
@@ -58,6 +59,10 @@ struct SolveState {
     return_matches: bool,
     match_max_error: f32,
 
+    solve_latency_stats: ValueStatsAccumulator,
+    solve_attempt_stats: ValueStatsAccumulator,
+    solve_success_stats: ValueStatsAccumulator,
+
     plate_solution: Option<PlateSolution>,
 
     // Set by stop(); the worker thread exits when it sees this.
@@ -75,7 +80,8 @@ impl Drop for SolveEngine {
 impl SolveEngine {
     pub fn new(detect_engine: Arc<Mutex<DetectEngine>>,
                tetra3_server_address: String,
-               update_interval: Duration) -> SolveEngine {
+               update_interval: Duration, stats_capacity: usize)
+               -> SolveEngine {
         SolveEngine{
             state: Arc::new(Mutex::new(SolveState{
                 detect_engine: detect_engine.clone(),
@@ -92,6 +98,9 @@ impl SolveEngine {
                 distortion: 0.0,
                 return_matches: true,
                 match_max_error: 0.005,
+                solve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
+                solve_attempt_stats: ValueStatsAccumulator::new(stats_capacity),
+                solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
                 plate_solution: None,
                 stop_request: false,
                 worker_thread: None,
@@ -264,6 +273,13 @@ impl SolveEngine {
         state.plate_solution.clone().unwrap()
     }
 
+    pub fn reset_session_stats(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        state.solve_latency_stats.reset_session();
+        state.solve_attempt_stats.reset_session();
+        state.solve_success_stats.reset_session();
+    }
+
     /// Shuts down the worker thread; this can save power if get_next_result()
     /// will not be called soon. A subsequent call to get_next_result() will
     /// re-start processing, at the expense of that first get_next_result() call
@@ -395,12 +411,27 @@ impl SolveEngine {
                 }
             }
 
-            // Post the result.
+            let elapsed = process_start_time.elapsed();
             let mut locked_state = state.lock().unwrap();
+            if detect_result.star_candidates.len() < minimum_stars as usize {
+                locked_state.solve_attempt_stats.add_value(0.0);
+            } else {
+                locked_state.solve_attempt_stats.add_value(1.0);
+                if tetra3_solve_result.matches.is_some() {
+                    locked_state.solve_success_stats.add_value(1.0);
+                } else {
+                    locked_state.solve_success_stats.add_value(0.0);
+                }
+                locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
+            }
+            // Post the result.
             locked_state.plate_solution = Some(PlateSolution{
                 detect_result,
                 tetra3_solve_result,
                 processing_duration: process_start_time.elapsed(),
+                solve_latency_stats: locked_state.solve_latency_stats.value_stats,
+                solve_attempt_stats: locked_state.solve_attempt_stats.value_stats,
+                solve_success_stats: locked_state.solve_success_stats.value_stats,
             });
             plate_solution_available.notify_all();
         }  // loop.
@@ -421,4 +452,13 @@ pub struct PlateSolution {
     // Time taken to produce this PlateSolution, excluding the time taken to
     // detect stars.
     pub processing_duration: std::time::Duration,
+
+    // Distribution of `processing_duration` values.
+    pub solve_latency_stats: ValueStats,
+
+    // Fraction of cycles in which a plate solve was attempted.
+    pub solve_attempt_stats: ValueStats,
+
+    // Fraction of attempted plate solves succeeded.
+    pub solve_success_stats: ValueStats,
 }

@@ -556,7 +556,8 @@ impl MyCedar {
         let solve_engine = Arc::new(Mutex::new(SolveEngine::new(
             detect_engine.clone(),
             tetra3_uds,
-            /*update_interval=*/Duration::ZERO)));
+            /*update_interval=*/Duration::ZERO,
+            stats_capacity)));
         let state = Arc::new(State {
             camera: camera.clone(),
             fixed_settings: Mutex::new(FixedSettings {

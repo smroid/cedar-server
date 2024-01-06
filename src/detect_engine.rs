@@ -410,6 +410,4 @@ pub struct FocusAid {
 
     // The location of `peak_image`.
     pub peak_image_region: Rect,
-
-    // TODO(smr): count of "robustly" detected stars.
 }
