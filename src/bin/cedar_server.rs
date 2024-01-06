@@ -545,12 +545,14 @@ impl MyCedar {
                tetra3_database: String,
                tetra3_uds: String,
                camera: Arc<Mutex<dyn AbstractCamera>>,
-               position: Arc<Mutex<CelestialPosition>>) -> Self {
+               position: Arc<Mutex<CelestialPosition>>,
+               stats_capacity: usize) -> Self {
         let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
             camera.clone(),
             /*update_interval=*/Duration::ZERO,
             /*exposure_time=*/Duration::ZERO,
-            /*focus_mode_enabled=*/true)));
+            /*focus_mode_enabled=*/true,
+            stats_capacity)));
         let solve_engine = Arc::new(Mutex::new(SolveEngine::new(
             detect_engine.clone(),
             tetra3_uds,
@@ -674,7 +676,8 @@ async fn main() {
                                                    args.database,
                                                    args.socket,
                                                    camera,
-                                                   shared_position.clone())))
+                                                   shared_position.clone(),
+                                                   /*stats_capacity=*/100)))
         .into_service();
 
     // Combine static content (flutter app) server and gRPC server into one service.
