@@ -12,6 +12,7 @@ use imageproc::rect::Rect;
 use log::{debug, error, info};
 use star_gate::algorithm::{StarDescription, estimate_noise_from_image,
                            get_stars_from_image, summarize_region_of_interest};
+use crate::value_stats::{ValueStats, ValueStatsAccumulator};
 
 pub struct DetectEngine {
     // Our state, shared between DetectEngine methods and the worker thread.
@@ -42,6 +43,8 @@ struct DetectState {
     // True means populate `DetectResult.focus_aid` info.
     focus_mode_enabled: bool,
 
+    detect_latency_stats: ValueStatsAccumulator,
+
     detect_result: Option<DetectResult>,
 
     // Set by stop(); the worker thread exits when it sees this.
@@ -59,7 +62,7 @@ impl Drop for DetectEngine {
 impl DetectEngine {
     pub fn new(camera: Arc<Mutex<dyn AbstractCamera>>,
                update_interval: Duration, exposure_time: Duration,
-               focus_mode_enabled: bool)
+               focus_mode_enabled: bool, stats_capacity: usize)
                -> DetectEngine {
         DetectEngine{
             state: Arc::new(Mutex::new(DetectState{
@@ -70,6 +73,7 @@ impl DetectEngine {
                 detection_sigma: 8.0,
                 detection_max_size: 3,
                 focus_mode_enabled,
+                detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 detect_result: None,
                 stop_request: false,
                 worker_thread: None,
@@ -158,6 +162,11 @@ impl DetectEngine {
         }
         // Don't consume it, other clients may want it.
         state.detect_result.clone().unwrap()
+    }
+
+    pub fn reset_session_stats(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        state.detect_latency_stats.reset_session();
     }
 
     /// Shuts down the worker thread; this can save power if get_next_result()
@@ -254,6 +263,13 @@ impl DetectEngine {
                 }
                 if exp_time.is_zero() {
                     // Adjust exposure time based on histogram of center_region.
+
+                    // TODO: auto exposure based on center histogram is correct
+                    // for focus mode. Outside of focus mode, auto exposure
+                    // should be based on the count of detected stars (within
+                    // limits determined based on the exposure time in effect at
+                    // exit of focus mode).
+
                     let peak_value_goal = 200;
                     // Compute how much to scale the previous exposure
                     // integration time to move towards the goal.
@@ -327,8 +343,10 @@ impl DetectEngine {
                                      sigma, max_size as u32,
                                      /*use_binned_image=*/true,
                                      /*return_binned_image=*/true);
-            // Post the result.
+            let elapsed = process_start_time.elapsed();
             let mut locked_state = state.lock().unwrap();
+            locked_state.detect_latency_stats.add_value(elapsed.as_secs_f64());
+            // Post the result.
             locked_state.detect_result = Some(DetectResult{
                 frame_id: locked_state.frame_id.unwrap(),
                 captured_image: captured_image.clone(),
@@ -336,7 +354,8 @@ impl DetectEngine {
                 star_candidates: stars,
                 hot_pixel_count: hot_pixel_count as i32,
                 focus_aid,
-                processing_duration: process_start_time.elapsed(),
+                processing_duration: elapsed,
+                detect_latency_stats: locked_state.detect_latency_stats.value_stats,
             });
             detect_result_available.notify_all();
         }  // loop.
@@ -372,6 +391,9 @@ pub struct DetectResult {
     // Time taken to produce this DetectResult, excluding the time taken to
     // acquire the image.
     pub processing_duration: std::time::Duration,
+
+    // Distribution of `processing_duration` values.
+    pub detect_latency_stats: ValueStats,
 }
 
 #[derive(Clone)]

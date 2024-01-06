@@ -2,7 +2,7 @@ use medians::Medianf64;
 use rolling_stats;
 use statistical;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct DescriptiveStats {
     pub min: f64,
     pub max: f64,
@@ -15,7 +15,7 @@ pub struct DescriptiveStats {
     pub median_absolute_deviation: Option<f64>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ValueStats {
     // Stats from recent values.
     pub recent: DescriptiveStats,
