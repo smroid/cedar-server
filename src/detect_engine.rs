@@ -12,7 +12,8 @@ use imageproc::rect::Rect;
 use log::{debug, error, info};
 use star_gate::algorithm::{StarDescription, estimate_noise_from_image,
                            get_stars_from_image, summarize_region_of_interest};
-use crate::value_stats::{ValueStats, ValueStatsAccumulator};
+use crate::value_stats::ValueStatsAccumulator;
+use crate::cedar;
 
 pub struct DetectEngine {
     // Our state, shared between DetectEngine methods and the worker thread.
@@ -355,7 +356,7 @@ impl DetectEngine {
                 hot_pixel_count: hot_pixel_count as i32,
                 focus_aid,
                 processing_duration: elapsed,
-                detect_latency_stats: locked_state.detect_latency_stats.value_stats,
+                detect_latency_stats: locked_state.detect_latency_stats.value_stats.clone(),
             });
             detect_result_available.notify_all();
         }  // loop.
@@ -393,7 +394,7 @@ pub struct DetectResult {
     pub processing_duration: std::time::Duration,
 
     // Distribution of `processing_duration` values.
-    pub detect_latency_stats: ValueStats,
+    pub detect_latency_stats: cedar::ValueStats,
 }
 
 #[derive(Clone)]

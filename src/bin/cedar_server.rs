@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
 use camera_service::asi_camera;
@@ -29,15 +29,17 @@ use tracing_subscriber;
 
 use futures::join;
 
-use crate::cedar::cedar_server::{Cedar, CedarServer};
-use crate::cedar::{ActionRequest, CalibrationData, CalibrationPhase,
+use cedar::cedar::cedar_server::{Cedar, CedarServer};
+use cedar::cedar::{ActionRequest, CalibrationData, CalibrationPhase,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
-                   Image, ImageMode, OperatingMode, OperationSettings,
-                   Rectangle, StarCentroid};
+                   Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
+                   ProcessingStats, Rectangle, StarCentroid};
 use ::cedar::detect_engine::DetectEngine;
-use ::cedar::solve_engine::{tetra3_server, SolveEngine};
+use ::cedar::solve_engine::SolveEngine;
 use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
+use ::cedar::value_stats::ValueStatsAccumulator;
+use cedar::tetra3_server;
 
 use self::multiplex_service::MultiplexService;
 
@@ -67,11 +69,6 @@ fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
         canonical_error.message)
 }
 
-pub mod cedar {
-    // The string specified here must match the proto package name.
-    tonic::include_proto!("cedar");
-}
-
 struct State {
     camera: Arc<Mutex<dyn AbstractCamera>>,
     fixed_settings: Mutex<FixedSettings>,
@@ -84,7 +81,13 @@ struct State {
     // TODO: calibration_engine.
 
     // For boresight capturing.
-    center_peak_position: Arc<Mutex<Option<cedar::ImageCoord>>>,
+    center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
+
+    // Time when previous get_next_frame() call occurred.
+    prev_frame_time: Mutex<Option<Instant>>,
+
+    frame_interval_stats: Mutex<ValueStatsAccumulator>,
+    overall_latency_stats: Mutex<ValueStatsAccumulator>,
 }
 
 struct MyCedar {
@@ -285,7 +288,7 @@ impl Cedar for MyCedar {
                              -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req: ActionRequest = request.into_inner();
         let state = &self.state;
-        if req.capture_boresight.is_some() {
+        if req.capture_boresight.unwrap_or(false) {
             let operating_mode =
                 state.operation_settings.lock().unwrap().operating_mode.or(
                     Some(OperatingMode::Setup as i32)).unwrap();
@@ -307,14 +310,14 @@ impl Cedar for MyCedar {
                 Err(x) => { return Err(tonic_status(x)); }
             }
         }
-        if req.delete_boresight.is_some() {
+        if req.delete_boresight.unwrap_or(false) {
             let solve_engine = &mut state.solve_engine.lock().unwrap();
             match solve_engine.set_target_pixel(None) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
         }
-        if req.shutdown_server.is_some() {
+        if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
             std::thread::sleep(Duration::from_secs(2));
             let output = Command::new("sudo")
@@ -327,6 +330,14 @@ impl Cedar for MyCedar {
                     return Err(tonic::Status::failed_precondition(
                         format!("sudo shutdown error: {:?}.", error_str)));
             }
+        }
+        if req.reset_session_stats.unwrap_or(false) {
+            let detect_engine = &mut state.detect_engine.lock().unwrap();
+            let solve_engine = &mut state.solve_engine.lock().unwrap();
+            detect_engine.reset_session_stats();
+            solve_engine.reset_session_stats();
+            state.frame_interval_stats.lock().unwrap().reset_session();
+            state.overall_latency_stats.lock().unwrap().reset_session();
         }
         Ok(tonic::Response::new(EmptyMessage{}))
     }
@@ -396,14 +407,26 @@ impl MyCedar {
         // TODO(smr): do according to operating mode.
         let tetra3_solve_result;
         let detect_result;
+        let plate_solution;
         let boresight_position;
+        let solve_finish_time;
         {
             let solve_engine = &mut state.solve_engine.lock().unwrap();
-            let plate_solution = solve_engine.get_next_result(prev_frame_id);
+            plate_solution = solve_engine.get_next_result(prev_frame_id);
             tetra3_solve_result = plate_solution.tetra3_solve_result;
             detect_result = plate_solution.detect_result;
             boresight_position = solve_engine.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
+            solve_finish_time = plate_solution.solve_finish_time;
+
+            let mut prev_frame_time = state.prev_frame_time.lock().unwrap();
+            let now = Instant::now();
+            if prev_frame_time.is_some() {
+                let frame_interval = now - prev_frame_time.unwrap();
+                state.frame_interval_stats.lock().unwrap().add_value(
+                    frame_interval.as_secs_f64());
+            }
+            *prev_frame_time = Some(now);
         }
 
         let captured_image = &detect_result.captured_image;
@@ -417,7 +440,7 @@ impl MyCedar {
         let mut centroids = Vec::<StarCentroid>::new();
         for star in &detect_result.star_candidates {
             centroids.push(StarCentroid{
-                centroid_position: Some(cedar::ImageCoord {
+                centroid_position: Some(ImageCoord {
                     x: star.centroid_x, y: star.centroid_y,
                 }),
                 brightness: star.brightness,
@@ -425,7 +448,7 @@ impl MyCedar {
             });
         }
 
-        let mut frame_result = cedar::FrameResult {
+        let mut frame_result = FrameResult {
             frame_id: detect_result.frame_id,
             operation_settings: Some(state.operation_settings.lock().unwrap().clone()),
             image: None,  // Is set below.
@@ -438,7 +461,7 @@ impl MyCedar {
                 captured_image.readout_time).unwrap()),
             camera_temperature_celsius: captured_image.temperature.0 as f32,
             boresight_position: match boresight_position {
-                Some(bs) => Some(cedar::ImageCoord{x: bs.x, y: bs.y}),
+                Some(bs) => Some(ImageCoord{x: bs.x, y: bs.y}),
                 None => None,
             },
             center_region: match &detect_result.focus_aid {
@@ -452,7 +475,7 @@ impl MyCedar {
             },
             center_peak_position: match &detect_result.focus_aid {
                 Some(fa) => {
-                    let ic = cedar::ImageCoord {
+                    let ic = ImageCoord {
                         x: fa.center_peak_position.0 as f32,
                         y: fa.center_peak_position.1 as f32,
                     };
@@ -472,8 +495,6 @@ impl MyCedar {
             ra_rate: None,
             dec_rate: None,
         };
-        // Populate `processing_stats`.
-        // TODO.
 
         // Populate `image` if requested.
         if main_image_mode == ImageMode::Default as i32 {
@@ -524,20 +545,44 @@ impl MyCedar {
             });
         }
         let mut position = state.position.lock().unwrap();
-        if tetra3_solve_result.image_center_coords.is_some() {
-            let coords;
-            if tetra3_solve_result.target_coords.len() > 0 {
-                coords = tetra3_solve_result.target_coords[0].clone();
-            } else {
-                coords = tetra3_solve_result.image_center_coords.as_ref().unwrap().clone();
+        position.valid = false;
+        if tetra3_solve_result.is_some() {
+            let tsr = tetra3_solve_result.as_ref().unwrap();
+            if tsr.image_center_coords.is_some() {
+                let coords;
+                if tsr.target_coords.len() > 0 {
+                    coords = tsr.target_coords[0].clone();
+                } else {
+                    coords = tsr.image_center_coords.as_ref().unwrap().clone();
+                }
+                position.ra = coords.ra as f64;
+                position.dec = coords.dec as f64;
+                position.valid = true;
             }
-            position.ra = coords.ra as f64;
-            position.dec = coords.dec as f64;
-            position.valid = true;
-        } else {
-            position.valid = false;
+            // Overall latency is time between image acquisition and completion
+            // of the plate solve attempt.
+            match solve_finish_time.unwrap().duration_since(captured_image.readout_time) {
+                Err(e) => {
+                    warn!("Clock may have gone backwards: {:?}", e)
+                },
+                Ok(d) => {
+                    state.overall_latency_stats.lock().unwrap().add_value(
+                        d.as_secs_f64());
+                }
+            }
+            frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
         }
-        frame_result.plate_solution = Some(tetra3_solve_result);
+        frame_result.processing_stats = Some(ProcessingStats {
+            frame_interval: Some(
+                state.frame_interval_stats.lock().unwrap().value_stats.clone()),
+            overall_latency: Some(
+                state.overall_latency_stats.lock().unwrap().value_stats.clone()),
+            detect_latency: Some(detect_result.detect_latency_stats),
+            solve_latency: Some(plate_solution.solve_latency_stats),
+            solve_attempt_fraction: Some(plate_solution.solve_attempt_stats),
+            solve_success_fraction: Some(plate_solution.solve_success_stats),
+        });
+
         frame_result
     }
 
@@ -591,6 +636,9 @@ impl MyCedar {
             _tetra3_subprocess: Tetra3Subprocess::new(
                 tetra3_script, tetra3_database).unwrap(),
             center_peak_position: Arc::new(Mutex::new(None)),
+            prev_frame_time: Mutex::new(None),
+            frame_interval_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
+            overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
         });
         let cedar = MyCedar { state: state.clone() };
         cedar.set_lens_fl(25.0);  // TODO(smr): this should come from UI.

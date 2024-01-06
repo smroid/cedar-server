@@ -3,7 +3,7 @@ use crate::detect_engine::{DetectEngine, DetectResult};
 use std::ops::DerefMut;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use canonical_error::{CanonicalError, invalid_argument_error};
 use image::GrayImage;
@@ -12,14 +12,11 @@ use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
 use tower::service_fn;
 use tower::timeout::Timeout;
-use crate::value_stats::{ValueStats, ValueStatsAccumulator};
 
-pub mod tetra3_server {
-    tonic::include_proto!("tetra3_server");
-}
-
-use tetra3_server::{ImageCoord, SolveRequest, SolveResult as SolveResultProto};
-use tetra3_server::tetra3_client::Tetra3Client;
+use crate::tetra3_server::{ImageCoord, SolveRequest, SolveResult as SolveResultProto};
+use crate::tetra3_server::tetra3_client::Tetra3Client;
+use crate::value_stats::ValueStatsAccumulator;
+use crate::cedar;
 
 pub struct SolveEngine {
     // Our state, shared between SolveEngine methods and the worker thread.
@@ -391,33 +388,28 @@ impl SolveEngine {
             solve_request.image_width = width as i32;
             solve_request.image_height = height as i32;
 
-            let tetra3_solve_result;
-            if detect_result.star_candidates.len() < minimum_stars as usize {
-                tetra3_solve_result = tetra3_server::SolveResult{
-                    solve_time: Some(prost_types::Duration{seconds: 0, nanos: 0}),
-                    failure_reason: Some(
-                        "Plate solve attempt skipped for insufficient stars".to_string()),
-                    ..Default::default()
-                };
-            } else {
+            let mut tetra3_solve_result: Option<SolveResultProto> = None;
+            let mut solve_finish_time: Option<SystemTime> = None;
+            if detect_result.star_candidates.len() >= minimum_stars as usize {
                 match client.solve_from_centroids(solve_request).await {
                     Err(e) => {
                         error!("Unexpected error {:?}", e);
                         break;  // Exit the worker thread.
                     },
                     Ok(response) => {
-                        tetra3_solve_result = response.into_inner();
+                        tetra3_solve_result = Some(response.into_inner());
                     }
                 }
+                solve_finish_time = Some(SystemTime::now());
             }
 
             let elapsed = process_start_time.elapsed();
             let mut locked_state = state.lock().unwrap();
-            if detect_result.star_candidates.len() < minimum_stars as usize {
+            if tetra3_solve_result.is_none() {
                 locked_state.solve_attempt_stats.add_value(0.0);
             } else {
                 locked_state.solve_attempt_stats.add_value(1.0);
-                if tetra3_solve_result.matches.is_some() {
+                if tetra3_solve_result.as_ref().unwrap().matches.is_some() {
                     locked_state.solve_success_stats.add_value(1.0);
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
@@ -428,10 +420,11 @@ impl SolveEngine {
             locked_state.plate_solution = Some(PlateSolution{
                 detect_result,
                 tetra3_solve_result,
+                solve_finish_time,
                 processing_duration: process_start_time.elapsed(),
-                solve_latency_stats: locked_state.solve_latency_stats.value_stats,
-                solve_attempt_stats: locked_state.solve_attempt_stats.value_stats,
-                solve_success_stats: locked_state.solve_success_stats.value_stats,
+                solve_latency_stats: locked_state.solve_latency_stats.value_stats.clone(),
+                solve_attempt_stats: locked_state.solve_attempt_stats.value_stats.clone(),
+                solve_success_stats: locked_state.solve_success_stats.value_stats.clone(),
             });
             plate_solution_available.notify_all();
         }  // loop.
@@ -446,19 +439,24 @@ pub struct PlateSolution {
     // The detect result used to produce the information in this solve result.
     pub detect_result: DetectResult,
 
-    // The plate solution for `detect_result`.
-    pub tetra3_solve_result: SolveResultProto,
+    // The plate solution for `detect_result`. Omitted if a solve was not
+    // attempted.
+    pub tetra3_solve_result: Option<SolveResultProto>,
+
+    // Time at which the plate solve completed. Omitted if a solve was not
+    // attempted.
+    pub solve_finish_time: Option<SystemTime>,
 
     // Time taken to produce this PlateSolution, excluding the time taken to
     // detect stars.
     pub processing_duration: std::time::Duration,
 
     // Distribution of `processing_duration` values.
-    pub solve_latency_stats: ValueStats,
+    pub solve_latency_stats: cedar::ValueStats,
 
     // Fraction of cycles in which a plate solve was attempted.
-    pub solve_attempt_stats: ValueStats,
+    pub solve_attempt_stats: cedar::ValueStats,
 
     // Fraction of attempted plate solves succeeded.
-    pub solve_success_stats: ValueStats,
+    pub solve_success_stats: cedar::ValueStats,
 }
