@@ -67,9 +67,9 @@ impl Telescope for MyTelescope {
             locked_position.updates_while_invalid += 1;
             if locked_position.updates_while_invalid & 1 == 0 {
                 if locked_position.dec > 0.0 {
-                    Ok(locked_position.dec - 1.0)
+                    Ok(locked_position.dec - 0.1)
                 } else {
-                    Ok(locked_position.dec + 1.0)
+                    Ok(locked_position.dec + 0.1)
                 }
             } else {
                 Ok(locked_position.dec)

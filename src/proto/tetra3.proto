@@ -20,6 +20,7 @@ message SolveRequest {
   optional int32 pattern_checking_stars = 6;
   optional float match_radius = 7;
   optional float match_threshold = 8;
+  optional google.protobuf.Duration solve_timeout = 13;
   repeated ImageCoord target_pixels = 9;
   optional float distortion = 10;  // We don't support min/max.
   bool return_matches = 11;

@@ -230,6 +230,9 @@ impl Cedar for MyCedar {
         let prev_frame_id = req.prev_frame_id;
         let main_image_mode = req.main_image_mode;
 
+        // TODO: what should we do with the clien't RPC timeout? Perhaps our
+        // call to get_next_frame() can be passed a deadline?
+
         let frame_result = Self::get_next_frame(
             &self.state, prev_frame_id, main_image_mode);
         Ok(tonic::Response::new(frame_result))
