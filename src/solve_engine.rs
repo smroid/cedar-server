@@ -11,7 +11,6 @@ use log::{error, info};
 use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
 use tower::service_fn;
-use tower::timeout::Timeout;
 
 use crate::tetra3_server::{ImageCoord, SolveRequest, SolveResult as SolveResultProto};
 use crate::tetra3_server::tetra3_client::Tetra3Client;
@@ -90,7 +89,8 @@ impl SolveEngine {
                 pattern_checking_stars: 12,
                 match_radius: 0.01,
                 match_threshold: 0.001,
-                solve_timeout: Duration::from_secs(5),
+                // solve_timeout: Duration::from_secs(5),
+                solve_timeout: Duration::from_secs(1),
                 target_pixel: None,
                 distortion: 0.0,
                 return_matches: true,
@@ -305,8 +305,7 @@ impl SolveEngine {
         match channel {
             Ok(ch) => {
                 info!("Starting solve engine");
-                let timeout_channel = Timeout::new(ch, state.lock().unwrap().solve_timeout);
-                client = Tetra3Client::new(timeout_channel);
+                client = Tetra3Client::new(ch);
             },
             Err(e) => {
                 error!("Error connecting to Tetra server at {:?}: {:?}", addr, e);
@@ -360,6 +359,15 @@ impl SolveEngine {
                 solve_request.pattern_checking_stars = Some(locked_state.pattern_checking_stars);
                 solve_request.match_radius = Some(locked_state.match_radius);
                 solve_request.match_threshold = Some(locked_state.match_threshold);
+
+                let solve_timeout = locked_state.solve_timeout.as_secs_f64();
+                let solve_timeout_int = solve_timeout as i64;
+                let solve_timeout_frac = solve_timeout - solve_timeout_int as f64;
+                solve_request.solve_timeout = Some(prost_types::Duration {
+                    seconds: solve_timeout_int,
+                    nanos: (solve_timeout_frac * 1000000000.0) as i32,
+                });
+
                 if locked_state.target_pixel.is_some() {
                     solve_request.target_pixels.push(
                         locked_state.target_pixel.as_ref().unwrap().clone());
