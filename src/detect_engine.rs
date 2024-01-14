@@ -10,8 +10,8 @@ use image::{GenericImageView, GrayImage};
 use imageproc::contrast;
 use imageproc::rect::Rect;
 use log::{debug, error, info};
-use star_gate::algorithm::{StarDescription, estimate_noise_from_image,
-                           get_stars_from_image, summarize_region_of_interest};
+use cedar_detect::algorithm::{StarDescription, estimate_noise_from_image,
+                              get_stars_from_image, summarize_region_of_interest};
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
@@ -187,6 +187,7 @@ impl DetectEngine {
 
     fn worker(state: Arc<Mutex<DetectState>>,
               detect_result_available: Arc<Condvar>) {
+        info!("Starting detect engine");
         // Keep track of when we started the detect cycle.
         let mut last_result_time: Option<Instant> = None;
         loop {
@@ -338,7 +339,7 @@ impl DetectEngine {
                 }
             }
 
-            // Run StarGate on the image.
+            // Run CedarDetect on the image.
             let (stars, hot_pixel_count, binned_image) =
                 get_stars_from_image(&image, noise_estimate,
                                      sigma, max_size as u32,
@@ -379,11 +380,11 @@ pub struct DetectResult {
     // `captured_image`.
     pub binned_image: Arc<GrayImage>,
 
-    // The star candidates detected by StarGate; ordered by highest
+    // The star candidates detected by CedarDetect; ordered by highest
     // StarDescription.mean_brightness first.
     pub star_candidates: Vec<StarDescription>,
 
-    // The number of hot pixels detected by StarGate.
+    // The number of hot pixels detected by CedarDetect.
     pub hot_pixel_count: i32,
 
     // Included if `focus_mode` is enabled.

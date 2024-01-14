@@ -21,6 +21,9 @@ pub struct SolveEngine {
     // Our state, shared between SolveEngine methods and the worker thread.
     state: Arc<Mutex<SolveState>>,
 
+    // Detect engine settings can be adjusted behind our back.
+    detect_engine: Arc<Mutex<DetectEngine>>,
+
     // Condition variable signalled whenever `state.plate_solution` is populated.
     // Also signalled when the worker thread exits.
     plate_solution_available: Arc<Condvar>,
@@ -31,8 +34,6 @@ pub struct SolveEngine {
 
 // State shared between worker thread and the SolveEngine methods.
 struct SolveState {
-    // Detect engine settings can be adjusted behind our back.
-    detect_engine: Arc<Mutex<DetectEngine>>,
     frame_id: Option<i32>,
 
     // Zero means go fast as star detections are computed.
@@ -80,7 +81,6 @@ impl SolveEngine {
                -> SolveEngine {
         SolveEngine{
             state: Arc::new(Mutex::new(SolveState{
-                detect_engine: detect_engine.clone(),
                 frame_id: None,
                 update_interval,
                 minimum_stars: 4,
@@ -102,6 +102,7 @@ impl SolveEngine {
                 stop_request: false,
                 worker_thread: None,
             })),
+            detect_engine: detect_engine.clone(),
             plate_solution_available: Arc::new(Condvar::new()),
             tetra3_server_address,
         }
@@ -242,13 +243,16 @@ impl SolveEngine {
         loop {
             // Start worker thread if not yet started (or exited).
             if state.worker_thread.is_none() {
+                // Give time for tetra3_server binary to start up and accept connections.
                 thread::sleep(Duration::from_secs(1));
                 let cloned_addr = self.tetra3_server_address.clone();
                 let cloned_state = self.state.clone();
+                let cloned_detect_engine = self.detect_engine.clone();
                 let cloned_condvar = self.plate_solution_available.clone();
                 state.worker_thread = Some(thread::spawn(|| {
                     let rt = tokio::runtime::Runtime::new().unwrap();
-                    rt.block_on(SolveEngine::worker(cloned_addr, cloned_state, cloned_condvar));
+                    rt.block_on(SolveEngine::worker(
+                        cloned_addr, cloned_state, cloned_detect_engine, cloned_condvar));
                 }));
             }
             if state.plate_solution.is_none() {
@@ -294,6 +298,7 @@ impl SolveEngine {
 
     async fn worker(tetra3_server_address: String,
                     state: Arc<Mutex<SolveState>>,
+                    detect_engine: Arc<Mutex<DetectEngine>>,
                     plate_solution_available: Arc<Condvar>) {
         let addr = tetra3_server_address.clone();
         // Set up gRPC client, connect to a UDS socket. URL is ignored.
@@ -338,6 +343,7 @@ impl SolveEngine {
             if last_result_time.is_some() {
                 let next_update_time = last_result_time.unwrap() + update_interval;
                 if next_update_time > now {
+                    info!("sleeping for {:?}", next_update_time - now);
                     thread::sleep(next_update_time - now);
                     continue;
                 }
@@ -349,8 +355,9 @@ impl SolveEngine {
             let detect_result: DetectResult;
             let mut solve_request = SolveRequest::default();
             let minimum_stars;
+            let frame_id;
             {
-                let mut locked_state = state.lock().unwrap();
+                let locked_state = state.lock().unwrap();
                 minimum_stars = locked_state.minimum_stars;
 
                 // Set up SolveRequest.
@@ -375,14 +382,18 @@ impl SolveEngine {
                 solve_request.distortion = Some(locked_state.distortion);
                 solve_request.return_matches = locked_state.return_matches;
                 solve_request.match_max_error = Some(locked_state.match_max_error);
-
-                // Get the most recent star detection result.
+                frame_id = locked_state.frame_id;
+            }
+            // Get the most recent star detection result.
+            let mut locked_detect_engine = detect_engine.lock().unwrap();
+            detect_result = locked_detect_engine.get_next_result(frame_id);
+            {
+                let mut locked_state = state.lock().unwrap();
                 let locked_state_mut = locked_state.deref_mut();
-                let mut locked_detect_engine = locked_state_mut.detect_engine.lock().unwrap();
-                detect_result = locked_detect_engine.get_next_result(
-                    locked_state_mut.frame_id);
                 locked_state_mut.frame_id = Some(detect_result.frame_id);
             }
+            drop(locked_detect_engine);
+
             let image: &GrayImage = &detect_result.captured_image.image;
             let (width, height) = image.dimensions();
 

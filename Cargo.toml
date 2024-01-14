@@ -28,7 +28,7 @@ prost = "0.11"
 prost-build = "0.11.9"
 prost-types = "0.11.9"
 rolling-stats = "0.7.0"
-star_gate = { version = "0.3.0", path = "../star_gate" }
+cedar_detect = { version = "0.4.0", path = "../cedar-detect" }
 statistical = "1.0.0"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 tokio-stream = "0.1.14"
