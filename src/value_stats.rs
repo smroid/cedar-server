@@ -122,48 +122,54 @@ mod tests {
         let mut vsa = ValueStatsAccumulator::new(3);
 
         // Empty accumulator (just constructed).
-        assert_eq!(vsa.value_stats.recent.min, 0.0);
-        assert_eq!(vsa.value_stats.recent.max, 0.0);
-        assert_eq!(vsa.value_stats.recent.mean, 0.0);
-        assert_eq!(vsa.value_stats.recent.stddev, 0.0);
-        assert_eq!(vsa.value_stats.recent.median, None);
-        assert_eq!(vsa.value_stats.recent.median_absolute_deviation, None);
-        assert_eq!(vsa.value_stats.session.min, 0.0);
-        assert_eq!(vsa.value_stats.session.max, 0.0);
-        assert_eq!(vsa.value_stats.session.mean, 0.0);
-        assert_eq!(vsa.value_stats.session.stddev, 0.0);
-        assert_eq!(vsa.value_stats.session.median, None);
-        assert_eq!(vsa.value_stats.session.median_absolute_deviation, None);
+        let recent = vsa.value_stats.recent.as_ref().unwrap();
+        assert_eq!(recent.min, 0.0);
+        assert_eq!(recent.max, 0.0);
+        assert_eq!(recent.mean, 0.0);
+        assert_eq!(recent.stddev, 0.0);
+        assert_eq!(recent.median, None);
+        assert_eq!(recent.median_absolute_deviation, None);
+        let session = vsa.value_stats.session.as_ref().unwrap();
+        assert_eq!(session.min, 0.0);
+        assert_eq!(session.max, 0.0);
+        assert_eq!(session.mean, 0.0);
+        assert_eq!(session.stddev, 0.0);
+        assert_eq!(session.median, None);
+        assert_eq!(session.median_absolute_deviation, None);
 
         vsa.add_value(1.5);
         vsa.add_value(3.5);
-        assert_eq!(vsa.value_stats.recent.min, 1.5);
-        assert_eq!(vsa.value_stats.recent.max, 3.5);
-        assert_eq!(vsa.value_stats.recent.mean, 2.5);
-        assert_abs_diff_eq!(vsa.value_stats.recent.stddev, 1.41, epsilon = 0.01);
-        assert_eq!(vsa.value_stats.recent.median, Some(2.5));
-        assert_eq!(vsa.value_stats.recent.median_absolute_deviation, Some(1.0));
-        assert_eq!(vsa.value_stats.session.min, 1.5);
-        assert_eq!(vsa.value_stats.session.max, 3.5);
-        assert_eq!(vsa.value_stats.session.mean, 2.5);
-        assert_abs_diff_eq!(vsa.value_stats.session.stddev, 1.41, epsilon = 0.01);
-        assert_eq!(vsa.value_stats.session.median, None);
-        assert_eq!(vsa.value_stats.session.median_absolute_deviation, None);
+        let recent = vsa.value_stats.recent.as_ref().unwrap();
+        assert_eq!(recent.min, 1.5);
+        assert_eq!(recent.max, 3.5);
+        assert_eq!(recent.mean, 2.5);
+        assert_abs_diff_eq!(recent.stddev, 1.41, epsilon = 0.01);
+        assert_eq!(recent.median, Some(2.5));
+        assert_eq!(recent.median_absolute_deviation, Some(1.0));
+        let session = vsa.value_stats.session.as_ref().unwrap();
+        assert_eq!(session.min, 1.5);
+        assert_eq!(session.max, 3.5);
+        assert_eq!(session.mean, 2.5);
+        assert_abs_diff_eq!(session.stddev, 1.41, epsilon = 0.01);
+        assert_eq!(session.median, None);
+        assert_eq!(session.median_absolute_deviation, None);
 
         // reset_session() clears session stats but not recent stats.
         vsa.reset_session();
-        assert_eq!(vsa.value_stats.recent.min, 1.5);
-        assert_eq!(vsa.value_stats.recent.max, 3.5);
-        assert_eq!(vsa.value_stats.recent.mean, 2.5);
-        assert_abs_diff_eq!(vsa.value_stats.recent.stddev, 1.41, epsilon = 0.01);
-        assert_eq!(vsa.value_stats.recent.median, Some(2.5));
-        assert_eq!(vsa.value_stats.recent.median_absolute_deviation, Some(1.0));
-        assert_eq!(vsa.value_stats.session.min, 0.0);
-        assert_eq!(vsa.value_stats.session.max, 0.0);
-        assert_eq!(vsa.value_stats.session.mean, 0.0);
-        assert_eq!(vsa.value_stats.session.stddev, 0.0);
-        assert_eq!(vsa.value_stats.session.median, None);
-        assert_eq!(vsa.value_stats.session.median_absolute_deviation, None);
+        let recent = vsa.value_stats.recent.as_ref().unwrap();
+        assert_eq!(recent.min, 1.5);
+        assert_eq!(recent.max, 3.5);
+        assert_eq!(recent.mean, 2.5);
+        assert_abs_diff_eq!(recent.stddev, 1.41, epsilon = 0.01);
+        assert_eq!(recent.median, Some(2.5));
+        assert_eq!(recent.median_absolute_deviation, Some(1.0));
+        let session = vsa.value_stats.session.as_ref().unwrap();
+        assert_eq!(session.min, 0.0);
+        assert_eq!(session.max, 0.0);
+        assert_eq!(session.mean, 0.0);
+        assert_eq!(session.stddev, 0.0);
+        assert_eq!(session.median, None);
+        assert_eq!(session.median_absolute_deviation, None);
     }
 
 }  // mod tests.
