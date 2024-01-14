@@ -81,7 +81,7 @@ message OperationSettings {
   // calibration has been done 8 is used.
   optional float detection_sigma = 6;
 
-  // StarGate clumps adjacent bright pixels to form a single star candidate. The
+  // CedarDetect clumps adjacent bright pixels to form a single star candidate. The
   // `detection_max_size` argument governs how large a clump can be before it is
   // rejected. Note that making `max_size` small can eliminate very bright stars
   // that "bleed" to many surrounding pixels.
@@ -166,11 +166,11 @@ message FrameResult {
   // omitted or binned according to the FrameRequest.
   optional Image image = 3;
 
-  // The star candidates detected by StarGate; ordered by highest
+  // The star candidates detected by CedarDetect; ordered by highest
   // brightness first.
   repeated StarCentroid star_candidates = 4;
 
-  // The number of hot pixels detected by StarGate.
+  // The number of hot pixels detected by CedarDetect.
   int32 hot_pixel_count = 6;
 
   // The camera exposure integration time.
@@ -265,7 +265,7 @@ message Rectangle {
   int32 height = 4;
 }
 
-// Summarizes a star-like spot found by the StarGate algorithm.
+// Summarizes a star-like spot found by the CedarDetect algorithm.
 message StarCentroid {
   // Location of star centroid in full resolution image coordinates.
   ImageCoord centroid_position = 1;
@@ -357,7 +357,7 @@ enum CalibrationPhase {
   // during setup mode's solves.
   CALIBRATION_PHASE_ANALYZE_FIELD_OF_VIEW = 3;
 
-  // Determining the StarGate "sigma" levels to use to maximize true star
+  // Determining the CedarDetect "sigma" levels to use to maximize true star
   // detections and minimize false star detections, using catalogue as ground
   // (sky) truth.
   CALIBRATION_PHASE_ANALYZE_STAR_THRESHOLD = 4;
