@@ -167,11 +167,10 @@ class _MyHomePageState extends State<MyHomePage> {
     _prevFrameId = response.frameId;
     _numStarCandidates = response.starCandidates.length;
     int binFactor = 1;
+    _hasSolution = false;
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
-      if (plateSolution.hasFailureReason()) {
-        _hasSolution = false;
-      } else {
+      if (!plateSolution.hasFailureReason()) {
         _hasSolution = true;
         if (plateSolution.targetCoords.isNotEmpty) {
           _solutionRA = plateSolution.targetCoords.first.ra;
