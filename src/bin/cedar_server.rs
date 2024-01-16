@@ -337,6 +337,13 @@ impl Cedar for MyCedar {
             solve_engine.reset_session_stats();
             state.overall_latency_stats.lock().unwrap().reset_session();
         }
+        if req.save_image.unwrap_or(false) {
+            let solve_engine = &mut state.solve_engine.lock().unwrap();
+            match solve_engine.save_image() {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+        }
         Ok(tonic::Response::new(EmptyMessage{}))
     }
 }

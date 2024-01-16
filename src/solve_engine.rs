@@ -5,7 +5,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use canonical_error::{CanonicalError, invalid_argument_error};
+use canonical_error::{CanonicalError, failed_precondition_error, invalid_argument_error};
+use chrono::Local;
 use image::GrayImage;
 use log::{error, info};
 use tonic::transport::{Endpoint, Uri};
@@ -282,6 +283,24 @@ impl SolveEngine {
         state.solve_latency_stats.reset_session();
         state.solve_attempt_stats.reset_session();
         state.solve_success_stats.reset_session();
+    }
+
+    // TODO: arg specifying directory to save to.
+    pub fn save_image(&self) -> Result<(), CanonicalError> {
+        // Grab most recent image.
+        let mut locked_detect_engine = self.detect_engine.lock().unwrap();
+        let image: &GrayImage = &locked_detect_engine.get_next_result(/*frame_id=*/None).captured_image.image;
+        // Generate file name.
+        let local_time = Local::now();
+        let filename = format!("img_{}.bmp", local_time.format("%Y%m%d_%H%M%S"));
+        // Write to current directory.
+        match image.save(filename) {
+            Ok(()) => Ok(()),
+            Err(x) => {
+            return Err(failed_precondition_error(
+                format!("Error saving file: {:?}", x).as_str()));
+            }
+        }
     }
 
     /// Shuts down the worker thread; this can save power if get_next_result()
