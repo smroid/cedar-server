@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
 import 'package:grpc/service_api.dart';
+import 'package:numberpicker/numberpicker.dart';
 import 'package:sprintf/sprintf.dart';
 import 'cedar.pbgrpc.dart';
 import 'tetra3.pb.dart';
@@ -52,25 +53,6 @@ proto_duration.Duration msToDuration(int ms) {
   duration.seconds = Int64(ms ~/ 1000);
   duration.nanos = (ms * 1000000) % 1000000000;
   return duration;
-}
-
-// The various exposure times (ms) selected by the exposure time slider.
-// TODO: build from the min/max exposure times in the CalibrationData.
-var expValuesMs = [1, 2, 5, 10, 20, 50, 100, 200];
-
-// Return the largest index in expValuesMs array that is <= the given value.
-// If the given value is too small returns 0.
-int expValueIndex(double value) {
-  if (value <= expValuesMs[0]) {
-    return 0;
-  }
-  int index = 0;
-  while (++index < expValuesMs.length) {
-    if (expValuesMs[index] > value) {
-      return index - 1;
-    }
-  }
-  return expValuesMs.length - 1;
 }
 
 class _MainImagePainter extends CustomPainter {
@@ -152,8 +134,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   // Values set from on-screen controls.
   bool _doRefreshes = false;
-  bool _expAuto = true;
-  int _expSliderValue = 0;
+  int _expSettingMs = 0; // 0 is auto-exposure.
 
   CedarClient? _client;
   CedarClient client() {
@@ -203,7 +184,8 @@ class _MyHomePageState extends State<MyHomePage> {
     if (response.hasExposureTime()) {
       _exposureTimeMs = durationToMs(response.exposureTime);
     }
-    _expAuto = durationToMs(response.operationSettings.exposureTime) == 0.0;
+    _expSettingMs =
+        durationToMs(response.operationSettings.exposureTime).toInt();
     _centerPeakImageBytes =
         Uint8List.fromList(response.centerPeakImage.imageData);
     _centerPeakWidth = response.centerPeakImage.rectangle.width;
@@ -220,7 +202,7 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> updateOperationSettings(OperationSettings request) async {
     try {
       await client().updateOperationSettings(request,
-          options: CallOptions(timeout: const Duration(seconds: 1)));
+          options: CallOptions(timeout: const Duration(seconds: 10)));
     } catch (e) {
       log('Error: $e');
     }
@@ -245,6 +227,7 @@ class _MyHomePageState extends State<MyHomePage> {
   // Issue repeated request/response RPCs.
   Future<void> refreshStateFromServer() async {
     await Future.doWhile(() async {
+      await Future.delayed(const Duration(milliseconds: 10));
       await getFrameFromServer();
       return _doRefreshes;
     });
@@ -259,9 +242,9 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
-  Future<void> setExpTimeFromSlider() async {
+  Future<void> setExpTime() async {
     var request = OperationSettings();
-    request.exposureTime = msToDuration(expValuesMs[_expSliderValue]);
+    request.exposureTime = msToDuration(_expSettingMs);
     await updateOperationSettings(request);
   }
 
@@ -321,46 +304,6 @@ class _MyHomePageState extends State<MyHomePage> {
         }); // Switch
   }
 
-  Widget expControl() {
-    return Column(children: <Widget>[
-      _expAuto
-          ? const SizedBox(height: 48)
-          : Slider(
-              min: 0,
-              max: expValuesMs.length - 1,
-              divisions: expValuesMs.length - 1,
-              value: expValueIndex(_exposureTimeMs).toDouble(),
-              onChanged: (double value) => {
-                    setState(() {
-                      _expSliderValue = value.toInt();
-                      if (!_expAuto) {
-                        setExpTimeFromSlider();
-                      }
-                    })
-                  }),
-      Row(
-        children: <Widget>[
-          Switch(
-              value: _expAuto,
-              onChanged: (bool value) => {
-                    setState(() {
-                      _expAuto = value;
-                      if (_expAuto) {
-                        var request = OperationSettings();
-                        request.exposureTime = msToDuration(0);
-                        updateOperationSettings(request);
-                      } else {
-                        setExpTimeFromSlider();
-                      }
-                    })
-                  }),
-          const Text("Auto"),
-        ],
-      ),
-      Text("$_exposureTimeMs"),
-    ]);
-  }
-
   Color starsSliderColor() {
     return _hasSolution ? const Color(0xff00c000) : const Color(0xff606060);
   }
@@ -400,8 +343,21 @@ class _MyHomePageState extends State<MyHomePage> {
       ),
       Column(
         children: <Widget>[
-          expControl(),
-          const Text("Exp time (ms)"),
+          NumberPicker(
+              axis: Axis.horizontal,
+              itemWidth: 40,
+              itemHeight: 30,
+              minValue: 0,
+              maxValue: 200,
+              step: 10,
+              value: _expSettingMs,
+              onChanged: (value) => {
+                    setState(() {
+                      _expSettingMs = value;
+                      setExpTime();
+                    })
+                  }),
+          Text(sprintf("Exp time %.1f", [_exposureTimeMs])),
         ],
       ),
       Column(children: <Widget>[
