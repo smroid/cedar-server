@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 
 use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
 use camera_service::asi_camera;
@@ -83,10 +83,6 @@ struct State {
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
 
-    // Time when previous get_next_frame() call occurred.
-    prev_frame_time: Mutex<Option<Instant>>,
-
-    frame_interval_stats: Mutex<ValueStatsAccumulator>,
     overall_latency_stats: Mutex<ValueStatsAccumulator>,
 }
 
@@ -339,7 +335,6 @@ impl Cedar for MyCedar {
             let solve_engine = &mut state.solve_engine.lock().unwrap();
             detect_engine.reset_session_stats();
             solve_engine.reset_session_stats();
-            state.frame_interval_stats.lock().unwrap().reset_session();
             state.overall_latency_stats.lock().unwrap().reset_session();
         }
         Ok(tonic::Response::new(EmptyMessage{}))
@@ -421,15 +416,6 @@ impl MyCedar {
             boresight_position = solve_engine.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
             solve_finish_time = plate_solution.solve_finish_time;
-
-            let mut prev_frame_time = state.prev_frame_time.lock().unwrap();
-            let now = Instant::now();
-            if prev_frame_time.is_some() {
-                let frame_interval = now - prev_frame_time.unwrap();
-                state.frame_interval_stats.lock().unwrap().add_value(
-                    frame_interval.as_secs_f64());
-            }
-            *prev_frame_time = Some(now);
         }
 
         let captured_image = &detect_result.captured_image;
@@ -576,11 +562,10 @@ impl MyCedar {
             frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
         }
         frame_result.processing_stats = Some(ProcessingStats {
-            frame_interval: Some(
-                state.frame_interval_stats.lock().unwrap().value_stats.clone()),
             overall_latency: Some(
                 state.overall_latency_stats.lock().unwrap().value_stats.clone()),
             detect_latency: Some(detect_result.detect_latency_stats),
+            solve_interval: Some(plate_solution.solve_interval_stats),
             solve_latency: Some(plate_solution.solve_latency_stats),
             solve_attempt_fraction: Some(plate_solution.solve_attempt_stats),
             solve_success_fraction: Some(plate_solution.solve_success_stats),
@@ -639,8 +624,6 @@ impl MyCedar {
             _tetra3_subprocess: Tetra3Subprocess::new(
                 tetra3_script, tetra3_database).unwrap(),
             center_peak_position: Arc::new(Mutex::new(None)),
-            prev_frame_time: Mutex::new(None),
-            frame_interval_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
             overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
         });
         let cedar = MyCedar { state: state.clone() };

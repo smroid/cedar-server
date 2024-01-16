@@ -219,7 +219,8 @@ message FrameResult {
 
   // Information returned when `operating_mode` is OPERATING_MODE_OPERATE.
 
-  // The current plate solution.
+  // The current plate solution. Omitted if no plate solve was attempted for
+  // this frame.
   optional tetra3_server.SolveResult plate_solution = 17;
 
   // Detected camera motion.
@@ -287,10 +288,6 @@ message ImageCoord {
 
 // Diagnostic information summarizing Cedar's performance.
 message ProcessingStats {
-  // The interval at which new FrameResults are available. Seconds per
-  // FrameResult.
-  ValueStats frame_interval = 1;
-
   // Elapsed time (in seconds) between acquisition of an image (end of exposure)
   // and completion of a plate solution for it. Skipped images (i.e. solution
   // not attempted) do not contribute to this.
@@ -298,6 +295,10 @@ message ProcessingStats {
 
   // How much time (in seconds) is spent detecting/centroiding stars.
   ValueStats detect_latency = 3;
+
+  // The interval at which new plate solutions (or lack thereof) are
+  // available. Seconds per solution cycle.
+  ValueStats solve_interval = 1;
 
   // How much time (in seconds) is spent plate solving (when attempted).
   ValueStats solve_latency = 4;
@@ -473,6 +474,8 @@ message ActionRequest {
   // Resets the `session` stats in all of the ValueStats being collected in
   // `processing_stats` field of FrameResult.
   optional bool reset_session_stats = 4;
+
+  // TODO: save next image for debugging
 
   // Calibrate camera/sky (focus mode only). Pre-empts focus mode operation until
   // completed or canceled.

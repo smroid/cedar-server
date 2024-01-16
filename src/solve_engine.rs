@@ -56,6 +56,7 @@ struct SolveState {
     return_matches: bool,
     match_max_error: f32,
 
+    solve_interval_stats: ValueStatsAccumulator,
     solve_latency_stats: ValueStatsAccumulator,
     solve_attempt_stats: ValueStatsAccumulator,
     solve_success_stats: ValueStatsAccumulator,
@@ -95,6 +96,7 @@ impl SolveEngine {
                 distortion: 0.0,
                 return_matches: true,
                 match_max_error: 0.005,
+                solve_interval_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_attempt_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
@@ -276,6 +278,7 @@ impl SolveEngine {
 
     pub fn reset_session_stats(&mut self) {
         let mut state = self.state.lock().unwrap();
+        state.solve_interval_stats.reset_session();
         state.solve_latency_stats.reset_session();
         state.solve_attempt_stats.reset_session();
         state.solve_success_stats.reset_session();
@@ -350,6 +353,11 @@ impl SolveEngine {
             }
 
             // Time to do a solve processing cycle.
+            if last_result_time.is_some() {
+                let elapsed = last_result_time.unwrap().elapsed();
+                let mut locked_state = state.lock().unwrap();
+                locked_state.solve_interval_stats.add_value(elapsed.as_secs_f64());
+            }
             last_result_time = Some(now);
 
             let detect_result: DetectResult;
@@ -441,6 +449,7 @@ impl SolveEngine {
                 tetra3_solve_result,
                 solve_finish_time,
                 processing_duration: process_start_time.elapsed(),
+                solve_interval_stats: locked_state.solve_interval_stats.value_stats.clone(),
                 solve_latency_stats: locked_state.solve_latency_stats.value_stats.clone(),
                 solve_attempt_stats: locked_state.solve_attempt_stats.value_stats.clone(),
                 solve_success_stats: locked_state.solve_success_stats.value_stats.clone(),
@@ -469,6 +478,9 @@ pub struct PlateSolution {
     // Time taken to produce this PlateSolution, excluding the time taken to
     // detect stars.
     pub processing_duration: std::time::Duration,
+
+    // Seconds per plate solve cycle.
+    pub solve_interval_stats: cedar::ValueStats,
 
     // Distribution of `processing_duration` values.
     pub solve_latency_stats: cedar::ValueStats,
