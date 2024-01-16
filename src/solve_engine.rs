@@ -411,15 +411,16 @@ impl SolveEngine {
                 solve_request.match_max_error = Some(locked_state.match_max_error);
                 frame_id = locked_state.frame_id;
             }
-            // Get the most recent star detection result.
-            let mut locked_detect_engine = detect_engine.lock().unwrap();
-            detect_result = locked_detect_engine.get_next_result(frame_id);
+            {
+                // Get the most recent star detection result.
+                let mut locked_detect_engine = detect_engine.lock().unwrap();
+                detect_result = locked_detect_engine.get_next_result(frame_id);
+            }
             {
                 let mut locked_state = state.lock().unwrap();
                 let locked_state_mut = locked_state.deref_mut();
                 locked_state_mut.frame_id = Some(detect_result.frame_id);
             }
-            drop(locked_detect_engine);
 
             let image: &GrayImage = &detect_result.captured_image.image;
             let (width, height) = image.dimensions();
