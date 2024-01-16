@@ -376,7 +376,6 @@ impl MyCedar {
                          -> Result<(), CanonicalError> {
         let detect_engine = &mut self.state.detect_engine.lock().unwrap();
         detect_engine.set_exposure_time(exposure_time)
-        // TODO: also set in solve_engine?
     }
 
     fn set_detection_sigma(&self, detection_sigma: f32)

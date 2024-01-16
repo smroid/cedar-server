@@ -19,6 +19,9 @@ pub struct DetectEngine {
     // Our state, shared between DetectEngine methods and the worker thread.
     state: Arc<Mutex<DetectState>>,
 
+    // Note: camera settings can be adjusted behind our back.
+    camera: Arc<Mutex<dyn AbstractCamera>>,
+
     // Condition variable signalled whenever `state.detect_result` is populated.
     // Also signalled when the worker thread exits.
     detect_result_available: Arc<Condvar>,
@@ -26,8 +29,6 @@ pub struct DetectEngine {
 
 // State shared between worker thread and the DetectEngine methods.
 struct DetectState {
-    // Note: camera settings can be adjusted behind our back.
-    camera: Arc<Mutex<dyn AbstractCamera>>,
     frame_id: Option<i32>,
 
     // If zero, use auto exposure. If positive, this is the camera's exposure
@@ -67,7 +68,6 @@ impl DetectEngine {
                -> DetectEngine {
         DetectEngine{
             state: Arc::new(Mutex::new(DetectState{
-                camera: camera.clone(),
                 frame_id: None,
                 exposure_time,
                 update_interval,
@@ -79,21 +79,21 @@ impl DetectEngine {
                 stop_request: false,
                 worker_thread: None,
             })),
+            camera: camera.clone(),
             detect_result_available: Arc::new(Condvar::new()),
         }
     }
 
     pub fn set_exposure_time(&mut self, exp_time: Duration)
                              -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
-        if exp_time != locked_state.exposure_time {
-            locked_state.exposure_time = exp_time;
-            if !exp_time.is_zero() {
-                let mut locked_camera = locked_state.camera.lock().unwrap();
-                locked_camera.set_exposure_duration(exp_time)?
-            }
-            // Don't need to invalidate `detect_result` state.
+        if !exp_time.is_zero() {
+            let mut locked_camera = self.camera.lock().unwrap();
+            locked_camera.set_exposure_duration(exp_time)?
         }
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.exposure_time = exp_time;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
         Ok(())
     }
 
@@ -140,9 +140,10 @@ impl DetectEngine {
         // Start worker thread if not yet started.
         if state.worker_thread.is_none() {
             let cloned_state = self.state.clone();
+            let cloned_camera = self.camera.clone();
             let cloned_condvar = self.detect_result_available.clone();
             state.worker_thread = Some(thread::spawn(|| {
-                DetectEngine::worker(cloned_state, cloned_condvar);
+                DetectEngine::worker(cloned_state, cloned_camera, cloned_condvar);
             }));
         }
         // Get the most recently posted result.
@@ -186,6 +187,7 @@ impl DetectEngine {
     }
 
     fn worker(state: Arc<Mutex<DetectState>>,
+              camera: Arc<Mutex<dyn AbstractCamera>>,
               detect_result_available: Arc<Condvar>) {
         info!("Starting detect engine");
         // Keep track of when we started the detect cycle.
@@ -226,22 +228,27 @@ impl DetectEngine {
             // Time to do a detect processing cycle.
             last_result_time = Some(now);
 
-            let captured_image: Arc<CapturedImage>;
+            let frame_id;
             {
-                let mut locked_state = state.lock().unwrap();
-                let locked_state_mut = locked_state.deref_mut();
-                let mut locked_camera = locked_state_mut.camera.lock().unwrap();
-                match locked_camera.capture_image(locked_state_mut.frame_id) {
-                    Ok((img, id)) => {
-                        captured_image = img;
-                        locked_state_mut.frame_id = Some(id);
-                    }
-                    Err(e) => {
-                        error!("Error capturing image: {}", &e.to_string());
-                        break;  // Abandon thread execution!
-                    }
+                let locked_state = state.lock().unwrap();
+                frame_id = locked_state.frame_id;
+            }
+            let captured_image: Arc<CapturedImage>;
+            let mut locked_camera = camera.lock().unwrap();
+            match locked_camera.capture_image(frame_id) {
+                Ok((img, id)) => {
+                    drop(locked_camera);
+                    captured_image = img;
+                    let mut locked_state = state.lock().unwrap();
+                    let locked_state_mut = locked_state.deref_mut();
+                    locked_state_mut.frame_id = Some(id);
+                }
+                Err(e) => {
+                    error!("Error capturing image: {}", &e.to_string());
+                    break;  // Abandon thread execution!
                 }
             }
+
             // Process the just-acquired image.
             let process_start_time = Instant::now();
             let image: &GrayImage = &captured_image.image;
@@ -297,8 +304,7 @@ impl DetectEngine {
                         if prev_exposure_duration_secs != new_exposure_duration_secs {
                             debug!("Setting new exposure duration {}s",
                                    new_exposure_duration_secs);
-                            let locked_state = state.lock().unwrap();
-                            let mut locked_camera = locked_state.camera.lock().unwrap();
+                            let mut locked_camera = camera.lock().unwrap();
                             match locked_camera.set_exposure_duration(
                                 Duration::from_secs_f32(new_exposure_duration_secs)) {
                                 Ok(()) => (),
