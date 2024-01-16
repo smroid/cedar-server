@@ -302,6 +302,12 @@ class _MyHomePageState extends State<MyHomePage> {
     await initiateAction(request);
   }
 
+  Future<void> saveImage() async {
+    var request = ActionRequest();
+    request.saveImage = true;
+    await initiateAction(request);
+  }
+
   Widget runSwitch() {
     return Switch(
         value: _doRefreshes,
@@ -403,6 +409,13 @@ class _MyHomePageState extends State<MyHomePage> {
             child: const Text("Set alignment"),
             onPressed: () {
               captureBoresight();
+            }),
+      ]),
+      Column(children: <Widget>[
+        OutlinedButton(
+            child: const Text("Save image"),
+            onPressed: () {
+              saveImage();
             }),
       ]),
       Column(children: <Widget>[
