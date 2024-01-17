@@ -172,6 +172,8 @@ impl SolveEngine {
         Ok(())
     }
 
+    // TODO: drop this method and state var, we determine match_max_error based
+    // on whether we have fov_estimate.
     pub fn set_match_max_error(&mut self, match_max_error: f32)
                                -> Result<(), CanonicalError> {
         if match_max_error < 0.0 || match_max_error >= 0.1 {
