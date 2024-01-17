@@ -30,7 +30,7 @@ use tracing_subscriber;
 use futures::join;
 
 use cedar::cedar::cedar_server::{Cedar, CedarServer};
-use cedar::cedar::{ActionRequest, CalibrationData, CalibrationPhase,
+use cedar::cedar::{ActionRequest, CalibrationPhase,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
                    Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
                    ProcessingStats, Rectangle, StarCentroid};
@@ -73,7 +73,7 @@ struct State {
     camera: Arc<Mutex<dyn AbstractCamera>>,
     fixed_settings: Mutex<FixedSettings>,
     operation_settings: Mutex<OperationSettings>,
-    calibration_data: Mutex<CalibrationData>,
+    // calibration_data: Mutex<CalibrationData>,
     detect_engine: Arc<Mutex<DetectEngine>>,
     solve_engine: Arc<Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
@@ -99,13 +99,6 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<FixedSettings>, tonic::Status>
     {
         let req: FixedSettings = request.into_inner();
-        if req.lens_fl_mm.is_some() {
-            if req.lens_fl_mm.unwrap() <= 0.0 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got non-positive lens_fl_mm: {}.", req.lens_fl_mm.unwrap())));
-            }
-            self.set_lens_fl(req.lens_fl_mm.unwrap());
-        }
         if req.latitude.is_some() {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings not implemented for latitude."));
@@ -349,20 +342,6 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
-    fn set_lens_fl(&self, lens_fl_mm: f32) {
-        let state = &self.state;
-        state.fixed_settings.lock().unwrap().lens_fl_mm = Some(lens_fl_mm);
-        let calibration_data = state.calibration_data.lock().unwrap();
-        if calibration_data.lens_fl_mm.is_none() {
-            // We're not yet calibrated, so use the `lens_fl_mm` value being set
-            // here to determine the solver's field of view estimate.
-            let sensor_width_mm = state.camera.lock().unwrap().sensor_size().0;
-            let fov = 2.0 * (sensor_width_mm / (2.0 * lens_fl_mm)).atan().to_degrees();
-            assert!(state.solve_engine.lock().unwrap().set_fov_estimate(
-                /*fov_estimate=*/Some(fov), /*fov_max_error=*/None).is_ok());
-        }
-    }
-
     fn set_camera_gain(&self, gain: i32) -> Result<(), CanonicalError> {
         let mut locked_camera = self.state.camera.lock().unwrap();
         return locked_camera.set_gain(Gain::new(gain));
@@ -600,7 +579,6 @@ impl MyCedar {
         let state = Arc::new(State {
             camera: camera.clone(),
             fixed_settings: Mutex::new(FixedSettings {
-                lens_fl_mm: None,
                 latitude: None,
                 longitude: None,
                 client_time: None,
@@ -623,7 +601,7 @@ impl MyCedar {
                 }),
                 log_dwelled_positions: Some(false),
             }),
-            calibration_data: Mutex::new(CalibrationData::default()),
+            // calibration_data: Mutex::new(CalibrationData::default()),
             detect_engine: detect_engine.clone(),
             solve_engine: solve_engine.clone(),
             position,
@@ -633,7 +611,6 @@ impl MyCedar {
             overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
         });
         let cedar = MyCedar { state: state.clone() };
-        cedar.set_lens_fl(25.0);  // TODO(smr): this should come from UI.
         // Set pre-calibration defaults on camera.
         match cedar.set_camera_gain(100) {
             Ok(()) => (),

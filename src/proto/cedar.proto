@@ -33,11 +33,6 @@ package cedar;
 // integration with Tetra3 is described in a separate proto file.
 
 message FixedSettings {
-  // Focal length of lens, in millimeters. If provided, this is used as a hint
-  // during camera/sky calibration. Note that the camera sensor's parameters
-  // (resolution and size) are obtained by the server from the camera interface.
-  optional float lens_fl_mm = 1;
-
   // Lat/long of observer location, in degrees.
   optional float latitude = 2;
   optional float longitude = 3;
@@ -111,6 +106,8 @@ enum OperatingMode {
   // Mode supporting establishment of camera focus and boresight alignment of
   // camera and telescope:
   // * Exposure metered based on brightest point in central region.
+  // * Plate solves done using no FOV or distortion estimate and a large
+  //   match_max_error tolerance.
   OPERATING_MODE_SETUP = 1;
 
   // TODO: sky/camera calibration is a top-level operating mode?
@@ -397,26 +394,25 @@ message CalibrationData {
   optional float min_exposure_limiting_magnitude = 10;
   optional float max_exposure_limiting_magnitude = 11;
 
-  // If sky/camera calibration has not been done, this will be the FixedSettings
-  // `lens_fl_mm` value.
-  optional float lens_fl_mm = 12;
+  // The following fields are set when a plate solution is obtained in setup
+  // mode. The UI might choose to block exit out of setup mode until a plate
+  // solution has been obtained so these can be determined, allowing non-setup
+  // plate solves to use accurate FOV and distortion estimates.
 
-  // Omitted if a sky/camera calibration has not been done.
+  // The angular size (radians) of the camera's width projected onto the sky.
+  optional float fov_horizontal = 15;
+
+  // Tetra3's estimate of the lens distortion (pincushion or barrel).
   optional float lens_distortion = 13;
+
+  // The lens focal length in millimeters, derived from `fov_horizontal`
+  // together with the camera's sensor's physical size.
+  optional float lens_fl_mm = 12;
 
   // The angular size of a pixel, in radians. This is for the field center, as
   // the "pinhole" projection of sky angles onto a planar detector causes the
   // pixel/angle scale to vary as you move away from the center.
-  // If sky/camera calibration has not been done, this will be derived from the
-  // FixedSettings `lens_fl_mm` value and the camera's sensor size and pixel
-  // count.
   optional float pixel_angular_size = 14;
-
-  // The angular size (radians) of the camera's width projected onto the sky.
-  // If sky/camera calibration has not been done, this will be derived from the
-  // FixedSettings `lens_fl_mm` value and the camera's sensor size and pixel
-  // count.
-  optional float fov_horizontal = 15;
 }
 
 enum MotionType {
