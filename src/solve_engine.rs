@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use canonical_error::{CanonicalError, failed_precondition_error, invalid_argument_error};
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use image::GrayImage;
 use log::{error, info};
 use tonic::transport::{Endpoint, Uri};
@@ -289,10 +289,18 @@ impl SolveEngine {
     pub fn save_image(&self) -> Result<(), CanonicalError> {
         // Grab most recent image.
         let mut locked_detect_engine = self.detect_engine.lock().unwrap();
-        let image: &GrayImage = &locked_detect_engine.get_next_result(/*frame_id=*/None).captured_image.image;
+        let captured_image = &locked_detect_engine.get_next_result(/*frame_id=*/None).captured_image;
+        let image: &GrayImage = &captured_image.image;
+        let readout_time: &SystemTime = &captured_image.readout_time;
+        let exposure_duration_ms = captured_image.capture_params.exposure_duration.as_millis();
+
+        let seconds_since_epoch = readout_time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        let datetime_utc: DateTime<Utc> = DateTime::from_timestamp(seconds_since_epoch as i64, 0).unwrap();
+        let datetime_local: DateTime<Local> = DateTime::from(datetime_utc);
+
         // Generate file name.
-        let local_time = Local::now();
-        let filename = format!("img_{}.bmp", local_time.format("%Y%m%d_%H%M%S"));
+        let filename = format!("img_{}ms_{}.bmp",
+                               exposure_duration_ms, datetime_local.format("%Y%m%d_%H%M%S"));
         // Write to current directory.
         match image.save(filename) {
             Ok(()) => Ok(()),
