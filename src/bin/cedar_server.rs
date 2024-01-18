@@ -99,13 +99,9 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<FixedSettings>, tonic::Status>
     {
         let req: FixedSettings = request.into_inner();
-        if req.latitude.is_some() {
+        if req.observer_location.is_some() {
             return Err(tonic::Status::unimplemented(
-                "rpc UpdateFixedSettings not implemented for latitude."));
-        }
-        if req.longitude.is_some() {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateFixedSettings not implemented for longitude."));
+                "rpc UpdateFixedSettings not implemented for observer_location."));
         }
         if req.client_time.is_some() {
             return Err(tonic::Status::unimplemented(
@@ -148,8 +144,16 @@ impl Cedar for MyCedar {
             self.state.operation_settings.lock().unwrap().camera_offset = Some(offset);
         }
         if req.operating_mode.is_some() {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateOperationSettings not implemented for operating_mode."));
+            let operating_mode = req.operating_mode.unwrap();
+            if operating_mode == OperatingMode::Setup as i32 {
+                // TODO: update detect engine.
+            } else if operating_mode == OperatingMode::Operate as i32 {
+                // TODO: update detect engine.
+            } else {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got invalid operating_mode: {}.", operating_mode)));
+            }
+            self.state.operation_settings.lock().unwrap().operating_mode = Some(operating_mode);
         }
         if req.exposure_time.is_some() {
             let exp_time = req.exposure_time.unwrap();
@@ -579,8 +583,7 @@ impl MyCedar {
         let state = Arc::new(State {
             camera: camera.clone(),
             fixed_settings: Mutex::new(FixedSettings {
-                latitude: None,
-                longitude: None,
+                observer_location: None,
                 client_time: None,
                 session_name: None,
             }),

@@ -33,9 +33,7 @@ package cedar;
 // integration with Tetra3 is described in a separate proto file.
 
 message FixedSettings {
-  // Lat/long of observer location, in degrees.
-  optional float latitude = 2;
-  optional float longitude = 3;
+  optional LatLong observer_location = 2;
 
   // The current time on the client. The server's current time is updated to
   // match.
@@ -50,6 +48,12 @@ message FixedSettings {
   // latter should go elsewhere?). A processed catalog can also be associated
   // with the session.
   optional string session_name = 5;
+}
+
+message LatLong {
+  // Degrees.
+  float latitude = 1;
+  float longitude = 2;
 }
 
 message OperationSettings {
@@ -101,14 +105,14 @@ message OperationSettings {
 }
 
 enum OperatingMode {
-  OPERATING_MODE_UNSPECIFIED = 0;
+  UNSPECIFIED = 0;
 
   // Mode supporting establishment of camera focus and boresight alignment of
   // camera and telescope:
   // * Exposure metered based on brightest point in central region.
   // * Plate solves done using no FOV or distortion estimate and a large
   //   match_max_error tolerance.
-  OPERATING_MODE_SETUP = 1;
+  SETUP = 1;
 
   // TODO: sky/camera calibration is a top-level operating mode?
 
@@ -117,7 +121,7 @@ enum OperatingMode {
   // during dwells.
   // * Exposure metered based on camera/sky calibration carried out in setup
   //   mode.
-  OPERATING_MODE_OPERATE = 2;
+  OPERATE = 2;
 }
 
 message FrameRequest {
@@ -186,7 +190,7 @@ message FrameResult {
   // no boresight has been captured. See ActionRequest.capture_boresight.
   optional ImageCoord boresight_position = 21;
 
-  // Information returned when `operating_mode` is OPERATING_MODE_SETUP. Note
+  // Information returned when `operating_mode` is SETUP. Note
   // that these fields are ommitted while a camera/sky calibration is underway
   // (see below).
 
@@ -201,7 +205,7 @@ message FrameResult {
   // A small full resolution crop of `image` centered at `center_peak_position`.
   optional Image center_peak_image = 13;
 
-  // In OPERATING_MODE_SETUP, Cedar can be instructed to perform a camera/sky
+  // In SETUP, Cedar can be instructed to perform a camera/sky
   // calibration. Most of the above fields are omitted while such a calibration
   // is underway, and the following fields are present.
 
@@ -214,7 +218,7 @@ message FrameResult {
   // TODO: calibration operation result? E.g. none performed; no stars detected;
   // too much movement during capture; other inconsistencies.
 
-  // Information returned when `operating_mode` is OPERATING_MODE_OPERATE.
+  // Information returned when `operating_mode` is OPERATE.
 
   // The current plate solution. Omitted if no plate solve was attempted for
   // this frame.
@@ -399,7 +403,8 @@ message CalibrationData {
   // solution has been obtained so these can be determined, allowing non-setup
   // plate solves to use accurate FOV and distortion estimates.
 
-  // The angular size (radians) of the camera's width projected onto the sky.
+  // The angular size (radians) of the camera's width (longer dimension)
+  // projected onto the sky.
   optional float fov_horizontal = 15;
 
   // Tetra3's estimate of the lens distortion (pincushion or barrel).
