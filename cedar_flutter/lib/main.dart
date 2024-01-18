@@ -67,12 +67,6 @@ class _MainImagePainter extends CustomPainter {
     const double thick = 2;
     // Draw search box within which we search for the brightest star for
     // focusing.
-    canvas.drawRect(
-        state._centerRegion,
-        Paint()
-          ..color = Colors.red
-          ..strokeWidth = thick
-          ..style = PaintingStyle.stroke);
     double crossRadius = state._boresightPosition == null ? 4 : 8;
     double crossThickness = state._boresightPosition == null ? hairline : thin;
     var center = state._boresightPosition ?? state._centerRegion.center;
@@ -90,13 +84,21 @@ class _MainImagePainter extends CustomPainter {
         Paint()
           ..color = Colors.red
           ..strokeWidth = crossThickness);
-    // Draw box around location of the brightest star in search box.
-    canvas.drawRect(
-        state._centerPeakRegion,
-        Paint()
-          ..color = Colors.red
-          ..strokeWidth = thin
-          ..style = PaintingStyle.stroke);
+    if (state._setupMode) {
+      canvas.drawRect(
+          state._centerRegion,
+          Paint()
+            ..color = Colors.red
+            ..strokeWidth = thick
+            ..style = PaintingStyle.stroke);
+      // Draw box around location of the brightest star in search box.
+      canvas.drawRect(
+          state._centerPeakRegion,
+          Paint()
+            ..color = Colors.red
+            ..strokeWidth = thin
+            ..style = PaintingStyle.stroke);
+    }
   }
 
   @override
@@ -110,6 +112,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
   // Image data, binned by server.
   Uint8List _imageBytes = Uint8List(1);
+
+  bool _setupMode = false;
 
   Offset? _boresightPosition; // Scaled by main image's binning.
 
@@ -174,22 +178,27 @@ class _MyHomePageState extends State<MyHomePage> {
       _boresightPosition = null;
     }
     if (response.hasCenterRegion()) {
+      _setupMode = true;
       var cr = response.centerRegion;
       _centerRegion = Rect.fromLTWH(
           cr.originX.toDouble() / binFactor,
           cr.originY.toDouble() / binFactor,
           cr.width.toDouble() / binFactor,
           cr.height.toDouble() / binFactor);
+    } else {
+      _setupMode = false;
     }
     if (response.hasExposureTime()) {
       _exposureTimeMs = durationToMs(response.exposureTime);
     }
     _expSettingMs =
         durationToMs(response.operationSettings.exposureTime).toInt();
-    _centerPeakImageBytes =
-        Uint8List.fromList(response.centerPeakImage.imageData);
-    _centerPeakWidth = response.centerPeakImage.rectangle.width;
-    _centerPeakHeight = response.centerPeakImage.rectangle.height;
+    if (response.hasCenterPeakImage()) {
+      _centerPeakImageBytes =
+          Uint8List.fromList(response.centerPeakImage.imageData);
+      _centerPeakWidth = response.centerPeakImage.rectangle.width;
+      _centerPeakHeight = response.centerPeakImage.rectangle.height;
+    }
     if (response.hasCenterPeakPosition()) {
       var cp = response.centerPeakPosition;
       _centerPeakRegion = Rect.fromCenter(
@@ -252,6 +261,12 @@ class _MyHomePageState extends State<MyHomePage> {
     var request = ActionRequest();
     request.captureBoresight = true;
     await initiateAction(request);
+  }
+
+  Future<void> setOperatingMode(bool setup) async {
+    var request = OperationSettings();
+    request.operatingMode = setup ? OperatingMode.SETUP : OperatingMode.OPERATE;
+    await updateOperationSettings(request);
   }
 
   void shutdownDialog() {
@@ -330,17 +345,19 @@ class _MyHomePageState extends State<MyHomePage> {
           ),
         ],
       ),
-      Column(
-        children: <Widget>[
-          Text(sprintf("%.4f", [_solutionRA])),
-          Text(sprintf("%.4f", [_solutionDec])),
-          Text(sprintf("%.2f", [_solutionRMSE])),
-          Container(
-            margin: const EdgeInsets.all(10),
-            child: const Text("RA/DEC/RMSE"),
-          ),
-        ],
-      ),
+      _setupMode
+          ? const SizedBox(height: 2)
+          : Column(
+              children: <Widget>[
+                Text(sprintf("%.4f", [_solutionRA])),
+                Text(sprintf("%.4f", [_solutionDec])),
+                Text(sprintf("%.2f", [_solutionRMSE])),
+                Container(
+                  margin: const EdgeInsets.all(10),
+                  child: const Text("RA/DEC/RMSE"),
+                ),
+              ],
+            ),
       Column(
         children: <Widget>[
           NumberPicker(
@@ -361,12 +378,27 @@ class _MyHomePageState extends State<MyHomePage> {
         ],
       ),
       Column(children: <Widget>[
-        OutlinedButton(
-            child: const Text("Set alignment"),
-            onPressed: () {
-              captureBoresight();
-            }),
+        _setupMode
+            ? OutlinedButton(
+                child: const Text("Exit setup"),
+                onPressed: () {
+                  setOperatingMode(/*setup=*/ false);
+                })
+            : OutlinedButton(
+                child: const Text("Setup"),
+                onPressed: () {
+                  setOperatingMode(/*setup=*/ true);
+                })
       ]),
+      _setupMode
+          ? Column(children: <Widget>[
+              OutlinedButton(
+                  child: const Text("Set alignment"),
+                  onPressed: () {
+                    captureBoresight();
+                  }),
+            ])
+          : const SizedBox(height: 2),
       Column(children: <Widget>[
         OutlinedButton(
             child: const Text("Save image"),
@@ -396,7 +428,7 @@ class _MyHomePageState extends State<MyHomePage> {
       alignment: Alignment.topRight,
       children: <Widget>[
         _prevFrameId != -1 ? mainImage() : const SizedBox(height: 2),
-        _prevFrameId != -1
+        _prevFrameId != -1 && _setupMode
             ? dart_widgets.Image.memory(_centerPeakImageBytes,
                 height: _centerPeakHeight.toDouble() * 3,
                 width: _centerPeakWidth.toDouble() * 3,
