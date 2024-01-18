@@ -144,11 +144,12 @@ impl Cedar for MyCedar {
             self.state.operation_settings.lock().unwrap().camera_offset = Some(offset);
         }
         if req.operating_mode.is_some() {
+            let detect_engine = &mut self.state.detect_engine.lock().unwrap();
             let operating_mode = req.operating_mode.unwrap();
             if operating_mode == OperatingMode::Setup as i32 {
-                // TODO: update detect engine.
+                detect_engine.set_focus_mode(true);
             } else if operating_mode == OperatingMode::Operate as i32 {
-                // TODO: update detect engine.
+                detect_engine.set_focus_mode(false);
             } else {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got invalid operating_mode: {}.", operating_mode)));

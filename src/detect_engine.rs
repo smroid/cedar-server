@@ -118,12 +118,11 @@ impl DetectEngine {
         Ok(())
     }
 
-    pub fn set_focus_mode(&mut self, enabled: bool) -> Result<(), CanonicalError> {
+    pub fn set_focus_mode(&mut self, enabled: bool) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.focus_mode_enabled = enabled;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
-        Ok(())
     }
 
     /// Obtains a result bundle, as configured above. The returned result is
@@ -279,7 +278,7 @@ impl DetectEngine {
                     // limits determined based on the exposure time in effect at
                     // exit of focus mode).
 
-                    let peak_value_goal = 200;
+                    let peak_value_goal = 220;
                     // Compute how much to scale the previous exposure
                     // integration time to move towards the goal.
                     let correction_factor =
@@ -334,8 +333,8 @@ impl DetectEngine {
                                                     peak_region.top() as u32,
                                                     sub_image_size as u32,
                                                     sub_image_size as u32).to_image();
-                    contrast::stretch_contrast_mut(&mut peak_image, 0, 255);
-                    // contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
+                    // contrast::stretch_contrast_mut(&mut peak_image, 0, 255);
+                    contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
                     focus_aid = Some(FocusAid{
                         center_region,
                         center_peak_position: peak_position,
