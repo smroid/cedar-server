@@ -370,7 +370,8 @@ impl DetectEngine {
                 let star_goal_fraction =
                     f32::max(num_stars_detected as f32, 1.0) / star_count_goal as f32;
                 // Don't adjust exposure time too often, is a bit janky because the
-                // camera re-initializes.
+                // camera re-initializes. Allow number of detected stars to greatly
+                // exceed goal, but don't allow much of a shortfall.
                 if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
                     // What is the relationship between exposure time and number
                     // of stars detected?
@@ -381,10 +382,10 @@ impl DetectEngine {
                     //   magnitude increase corresponds to around 3x the number
                     //   of stars.
                     // * 2.5x and 3x are "close enough", so we model the number
-                    //   of detectable stars as being directly proportional to
-                    //   the exposure time. This is OK because we'll only be
-                    //   varying the exposure time a modest amount relative to
-                    //   the baseline_exposure_time.
+                    //   of detectable stars as being simply proportional to the
+                    //   exposure time. This is OK because we'll only be varying
+                    //   the exposure time a modest amount relative to the
+                    //   baseline_exposure_time.
                     new_exposure_duration_secs =
                         prev_exposure_duration_secs / star_goal_fraction;
                     // Bound exposure duration to be within 0.5..2.0x
