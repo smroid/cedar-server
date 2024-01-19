@@ -67,7 +67,7 @@ message OperationSettings {
   // or 0 if no calibration has been done.
   optional int32 camera_offset = 3;
 
-  // Defaults to OPERATING_MODE_SETUP.
+  // Defaults to SETUP mode.
   optional OperatingMode operating_mode = 4;
 
   // The camera exposure integration time. Zero selects automatic exposure.
@@ -91,7 +91,7 @@ message OperationSettings {
   // result. Default is zero, meaning go as fast as possible.
   optional google.protobuf.Duration update_interval = 7;
 
-  // In OPERATING_MODE_OPERATE, when Cedar detects that the camera is dwelling
+  // In OPERATE mode, when Cedar detects that the camera is dwelling
   // (motionless) for more than some number of seconds, `dwell_update_interval`
   // is used instead of `update_interval`. Default is 1sec.
   optional google.protobuf.Duration dwell_update_interval = 8;
