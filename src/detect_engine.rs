@@ -31,9 +31,8 @@ pub struct DetectEngine {
 struct DetectState {
     frame_id: Option<i32>,
 
-    // If zero, use auto exposure. If positive, this is the camera's exposure
-    // integration time.
-    exposure_time: Duration,
+    // If true, use auto exposure.
+    auto_exposure: bool,
 
     // Zero means go fast as images are captured.
     update_interval: Duration,
@@ -44,6 +43,19 @@ struct DetectState {
 
     // True means populate `DetectResult.focus_aid` info.
     focus_mode_enabled: bool,
+
+    // In operate mode (`focus_mode_enabled` is false), the auto-exposure
+    // algorithm uses this as the desired number of detected stars. The
+    // algorithm allows the number of detected stars to vary around the goal by
+    // a large amount to the high side (is OK to have more stars than needed)
+    // but only a small amount to the low side.
+    star_count_goal: i32,
+
+    // When using auto exposure in operate mode, this is the exposure duration
+    // determined (by calibration) to yield `star_count_goal` detected stars.
+    // Auto exposure logic will only deviate from this by a bounded amount.
+    // None if calibration result is not yet available.
+    baseline_exposure_time: Option<Duration>,
 
     detect_latency_stats: ValueStatsAccumulator,
 
@@ -63,17 +75,19 @@ impl Drop for DetectEngine {
 
 impl DetectEngine {
     pub fn new(camera: Arc<Mutex<dyn AbstractCamera>>,
-               update_interval: Duration, exposure_time: Duration,
-               focus_mode_enabled: bool, stats_capacity: usize)
+               update_interval: Duration, auto_exposure: bool,
+               focus_mode_enabled: bool, star_count_goal: i32, stats_capacity: usize)
                -> DetectEngine {
         DetectEngine{
             state: Arc::new(Mutex::new(DetectState{
                 frame_id: None,
-                exposure_time,
+                auto_exposure,
                 update_interval,
                 detection_sigma: 8.0,
                 detection_max_size: 3,
                 focus_mode_enabled,
+                star_count_goal,
+                baseline_exposure_time: None,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 detect_result: None,
                 stop_request: false,
@@ -84,6 +98,11 @@ impl DetectEngine {
         }
     }
 
+    // If `exp_time` is zero, enables auto exposure. In setup mode, auto
+    // exposure is based on a histogram of the central region, and aims to make
+    // the brightest part of the central region bright but not saturated. In
+    // operate mode, auto exposure is based on the number of detected stars in
+    // the entire image.
     pub fn set_exposure_time(&mut self, exp_time: Duration)
                              -> Result<(), CanonicalError> {
         if !exp_time.is_zero() {
@@ -91,7 +110,7 @@ impl DetectEngine {
             locked_camera.set_exposure_duration(exp_time)?
         }
         let mut locked_state = self.state.lock().unwrap();
-        locked_state.exposure_time = exp_time;
+        locked_state.auto_exposure = exp_time.is_zero();
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
@@ -124,6 +143,10 @@ impl DetectEngine {
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
+
+    // TODO: set_star_count_goal()?
+    // TODO: calibration logic by which our baseline_exposure_time value is
+    // set.
 
     /// Obtains a result bundle, as configured above. The returned result is
     /// "fresh" in that we either wait to process a new exposure or return the
@@ -192,18 +215,22 @@ impl DetectEngine {
         // Keep track of when we started the detect cycle.
         let mut last_result_time: Option<Instant> = None;
         loop {
-            let exp_time: Duration;
+            let auto_exposure: bool;
             let update_interval: Duration;
             let sigma: f32;
             let max_size: i32;
             let focus_mode_enabled: bool;
+            let star_count_goal: i32;
+            let baseline_exposure_time: Option<Duration>;
             {
                 let mut locked_state = state.lock().unwrap();
-                exp_time = locked_state.exposure_time;
+                auto_exposure = locked_state.auto_exposure;
                 update_interval = locked_state.update_interval;
                 sigma = locked_state.detection_sigma;
                 max_size = locked_state.detection_max_size;
                 focus_mode_enabled = locked_state.focus_mode_enabled;
+                star_count_goal = locked_state.star_count_goal;
+                baseline_exposure_time = locked_state.baseline_exposure_time;
                 if locked_state.stop_request {
                     info!("Stopping detect engine");
                     locked_state.stop_request = false;
@@ -257,9 +284,12 @@ impl DetectEngine {
                                          ((height - center_size) / 2) as i32)
                 .of_size(center_size, center_size);
             let noise_estimate = estimate_noise_from_image(&image);
+            let prev_exposure_duration_secs =
+                captured_image.capture_params.exposure_duration.as_secs_f32();
+            let mut new_exposure_duration_secs = prev_exposure_duration_secs;
 
             let mut focus_aid: Option<FocusAid> = None;
-            if focus_mode_enabled || exp_time.is_zero() {
+            if focus_mode_enabled {
                 let roi_summary = summarize_region_of_interest(
                     &image, &center_region, noise_estimate, sigma);
                 let mut peak_value = 1_u8;  // Avoid div0 below.
@@ -269,18 +299,12 @@ impl DetectEngine {
                         peak_value = bin as u8;
                     }
                 }
-                if exp_time.is_zero() {
-                    // Adjust exposure time based on histogram of center_region.
-
-                    // TODO: auto exposure based on center histogram is correct
-                    // for focus mode. Outside of focus mode, auto exposure
-                    // should be based on the count of detected stars (within
-                    // limits determined based on the exposure time in effect at
-                    // exit of focus mode).
-
+                if auto_exposure {
+                    // Adjust exposure time based on peak value of center_region.
                     let peak_value_goal = 220;
                     // Compute how much to scale the previous exposure
-                    // integration time to move towards the goal.
+                    // integration time to move towards the goal. Assumes linear
+                    // detector response.
                     let correction_factor =
                         if peak_value == 255 {
                             // We don't know how overexposed we are. Cut the
@@ -290,59 +314,44 @@ impl DetectEngine {
                             // Move proportionally towards the goal.
                             peak_value_goal as f32 / peak_value as f32
                         };
-                    if correction_factor < 0.8 || correction_factor > 1.2 {
-                        let prev_exposure_duration_secs =
-                            captured_image.capture_params.exposure_duration.as_secs_f32();
-                        let mut new_exposure_duration_secs =
+                    // Don't adjust exposure time too often, is a bit janky because the
+                    // camera re-initializes.
+                    if correction_factor < 0.7 || correction_factor > 1.3 {
+                        new_exposure_duration_secs =
                             prev_exposure_duration_secs * correction_factor;
-                        // Bound exposure duration to 0.01ms..1s.
+                        // Bound focus mode exposure duration to 0.01ms..1s.
                         new_exposure_duration_secs = f32::max(
                             new_exposure_duration_secs, 0.00001);
                         new_exposure_duration_secs = f32::min(
                             new_exposure_duration_secs, 1.0);
-                        if prev_exposure_duration_secs != new_exposure_duration_secs {
-                            debug!("Setting new exposure duration {}s",
-                                   new_exposure_duration_secs);
-                            let mut locked_camera = camera.lock().unwrap();
-                            match locked_camera.set_exposure_duration(
-                                Duration::from_secs_f32(new_exposure_duration_secs)) {
-                                Ok(()) => (),
-                                Err(e) => {
-                                    error!("Error updating exposure duration: {}",
-                                           &e.to_string());
-                                    break;  // Abandon thread execution!
-                                }
-                            }
-                        }
+                        // Camera exposure duration is updated below.
                     }
-                }
-                if focus_mode_enabled {
-                    let image_rect = Rect::at(0, 0).of_size(width, height);
-                    // Get a small sub-image centered on the peak coordinates.
-                    let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
-                    let sub_image_size = 30;
-                    let peak_region = Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
-                                               (peak_position.1 as i32 - sub_image_size/2) as i32)
-                        .of_size(sub_image_size as u32, sub_image_size as u32);
-                    let peak_region = peak_region.intersect(image_rect).unwrap();
-                    debug!("peak {} at x/y {}/{}",
-                           peak_value, peak_region.left(), peak_region.top());
-                    // We scale up the pixel values in the peak_image for good
-                    // display visibility.
-                    let mut peak_image = image.view(peak_region.left() as u32,
-                                                    peak_region.top() as u32,
-                                                    sub_image_size as u32,
-                                                    sub_image_size as u32).to_image();
-                    // contrast::stretch_contrast_mut(&mut peak_image, 0, 255);
-                    contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
-                    focus_aid = Some(FocusAid{
-                        center_region,
-                        center_peak_position: peak_position,
-                        peak_image,
-                        peak_image_region: peak_region,
-                    });
-                }
-            }
+                }  // auto_exposure
+
+                let image_rect = Rect::at(0, 0).of_size(width, height);
+                // Get a small sub-image centered on the peak coordinates.
+                let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
+                let sub_image_size = 30;
+                let peak_region = Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
+                                           (peak_position.1 as i32 - sub_image_size/2) as i32)
+                    .of_size(sub_image_size as u32, sub_image_size as u32);
+                let peak_region = peak_region.intersect(image_rect).unwrap();
+                debug!("peak {} at x/y {}/{}",
+                       peak_value, peak_region.left(), peak_region.top());
+                // We scale up the pixel values in the peak_image for good
+                // display visibility.
+                let mut peak_image = image.view(peak_region.left() as u32,
+                                                peak_region.top() as u32,
+                                                sub_image_size as u32,
+                                                sub_image_size as u32).to_image();
+                contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
+                focus_aid = Some(FocusAid{
+                    center_region,
+                    center_peak_position: peak_position,
+                    peak_image,
+                    peak_image_region: peak_region,
+                });
+            }  // focus_mode_enabled
 
             // Run CedarDetect on the image.
             let (stars, hot_pixel_count, binned_image) =
@@ -353,6 +362,59 @@ impl DetectEngine {
             let elapsed = process_start_time.elapsed();
             let mut locked_state = state.lock().unwrap();
             locked_state.detect_latency_stats.add_value(elapsed.as_secs_f64());
+
+            if !focus_mode_enabled && auto_exposure && baseline_exposure_time.is_some() {
+                let num_stars_detected = stars.len();
+                // >1 if we have more stars than goal; <1 if fewer stars than
+                // goal.
+                let star_goal_fraction =
+                    f32::max(num_stars_detected as f32, 1.0) / star_count_goal as f32;
+                // Don't adjust exposure time too often, is a bit janky because the
+                // camera re-initializes.
+                if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
+                    // What is the relationship between exposure time and number
+                    // of stars detected?
+                    // * If we increase the exposure time by 2.5x, we'll be able
+                    //   to detect stars 40% as bright. This corresponds to an
+                    //   increase of one stellar magnitude.
+                    // * Per https://www.hnsky.org/star_count, at mag=5 a one
+                    //   magnitude increase corresponds to around 3x the number
+                    //   of stars.
+                    // * 2.5x and 3x are "close enough", so we model the number
+                    //   of detectable stars as being directly proportional to
+                    //   the exposure time. This is OK because we'll only be
+                    //   varying the exposure time a modest amount relative to
+                    //   the baseline_exposure_time.
+                    new_exposure_duration_secs =
+                        prev_exposure_duration_secs / star_goal_fraction;
+                    // Bound exposure duration to be within 0.5..2.0x
+                    // baseline_exposure_time.
+                    new_exposure_duration_secs = f32::max(
+                        new_exposure_duration_secs,
+                        (baseline_exposure_time.unwrap() / 2).as_secs_f32());
+                    new_exposure_duration_secs = f32::min(
+                        new_exposure_duration_secs,
+                        (baseline_exposure_time.unwrap() * 2).as_secs_f32());
+                }
+            }
+
+            // Update camera exposure time if auto-exposure calls for an
+            // adjustment.
+            if prev_exposure_duration_secs != new_exposure_duration_secs {
+                debug!("Setting new exposure duration {}s",
+                       new_exposure_duration_secs);
+                let mut locked_camera = camera.lock().unwrap();
+                match locked_camera.set_exposure_duration(
+                    Duration::from_secs_f32(new_exposure_duration_secs)) {
+                    Ok(()) => (),
+                    Err(e) => {
+                        error!("Error updating exposure duration: {}",
+                               &e.to_string());
+                        break;  // Abandon thread execution!
+                    }
+                }
+            }
+
             // Post the result.
             locked_state.detect_result = Some(DetectResult{
                 frame_id: locked_state.frame_id.unwrap(),

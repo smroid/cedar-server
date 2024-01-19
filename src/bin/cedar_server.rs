@@ -569,12 +569,14 @@ impl MyCedar {
                tetra3_uds: String,
                camera: Arc<Mutex<dyn AbstractCamera>>,
                position: Arc<Mutex<CelestialPosition>>,
+               star_count_goal: i32,
                stats_capacity: usize) -> Self {
         let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
             camera.clone(),
             /*update_interval=*/Duration::ZERO,
-            /*exposure_time=*/Duration::ZERO,
+            /*auto_exposure=*/true,
             /*focus_mode_enabled=*/true,
+            star_count_goal,
             stats_capacity)));
         let solve_engine = Arc::new(Mutex::new(SolveEngine::new(
             detect_engine.clone(),
@@ -699,6 +701,7 @@ async fn main() {
                                                    args.socket,
                                                    camera,
                                                    shared_position.clone(),
+                                                   /*star_count_goal=*/20,  // TODO: command line arg
                                                    /*stats_capacity=*/100)))
         .into_service();
 
