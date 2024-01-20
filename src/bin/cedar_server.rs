@@ -30,7 +30,7 @@ use tracing_subscriber;
 use futures::join;
 
 use cedar::cedar::cedar_server::{Cedar, CedarServer};
-use cedar::cedar::{ActionRequest, CalibrationPhase,
+use cedar::cedar::{ActionRequest,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
                    Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
                    ProcessingStats, Rectangle, StarCentroid};
@@ -78,7 +78,7 @@ struct State {
     solve_engine: Arc<Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
     _tetra3_subprocess: Tetra3Subprocess,
-    // TODO: calibration_engine.
+    // TODO: calibration object. Has methods for short/long calibrations.
 
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
@@ -468,8 +468,6 @@ impl MyCedar {
                 },
             },
             center_peak_image: None,  // Is set below.
-            calibration_phase: CalibrationPhase::None as i32,
-            calibration_progress: None,
             plate_solution: None,
             camera_motion: None,
             ra_rate: None,
