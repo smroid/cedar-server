@@ -4,7 +4,6 @@
 
 use std::io::Cursor;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -19,11 +18,8 @@ use image::io::Reader as ImageReader;
 
 use clap::Parser;
 use axum::Router;
-use futures::StreamExt;
 use log::{info, warn};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
-use tokio::sync::mpsc;
-use tokio_stream::{wrappers::ReceiverStream, Stream};
 use tonic_web::GrpcWebLayer;
 use tracing_subscriber;
 
@@ -42,9 +38,6 @@ use ::cedar::value_stats::ValueStatsAccumulator;
 use cedar::tetra3_server;
 
 use self::multiplex_service::MultiplexService;
-
-type ResponseStream =
-    Pin<Box<dyn Stream<Item = Result<FrameResult, tonic::Status>> + Send>>;
 
 fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
     tonic::Status::new(
@@ -69,7 +62,7 @@ fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
         canonical_error.message)
 }
 
-struct State {
+struct MyCedar {
     camera: Arc<Mutex<dyn AbstractCamera>>,
     fixed_settings: Mutex<FixedSettings>,
     operation_settings: Mutex<OperationSettings>,
@@ -78,16 +71,12 @@ struct State {
     solve_engine: Arc<Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
     _tetra3_subprocess: Tetra3Subprocess,
-    // TODO: calibration object. Has methods for short/long calibrations.
+    // TODO: calibrator object. Has methods for short/long calibrations.
 
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
 
     overall_latency_stats: Mutex<ValueStatsAccumulator>,
-}
-
-struct MyCedar {
-    state: Arc<State>,
 }
 
 #[tonic::async_trait]
@@ -111,7 +100,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings not implemented for session_name."));
         }
-        Ok(tonic::Response::new(self.state.fixed_settings.lock().unwrap().clone()))
+        Ok(tonic::Response::new(self.fixed_settings.lock().unwrap().clone()))
     }
 
     async fn update_operation_settings(
@@ -129,7 +118,7 @@ impl Cedar for MyCedar {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            self.state.operation_settings.lock().unwrap().camera_gain = Some(gain);
+            self.operation_settings.lock().unwrap().camera_gain = Some(gain);
         }
         if req.camera_offset.is_some() {
             let offset = req.camera_offset.unwrap();
@@ -141,10 +130,10 @@ impl Cedar for MyCedar {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            self.state.operation_settings.lock().unwrap().camera_offset = Some(offset);
+            self.operation_settings.lock().unwrap().camera_offset = Some(offset);
         }
         if req.operating_mode.is_some() {
-            let detect_engine = &mut self.state.detect_engine.lock().unwrap();
+            let detect_engine = &mut self.detect_engine.lock().unwrap();
             let operating_mode = req.operating_mode.unwrap();
             if operating_mode == OperatingMode::Setup as i32 {
                 detect_engine.set_focus_mode(true);
@@ -156,7 +145,7 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got invalid operating_mode: {}.", operating_mode)));
             }
-            self.state.operation_settings.lock().unwrap().operating_mode = Some(operating_mode);
+            self.operation_settings.lock().unwrap().operating_mode = Some(operating_mode);
         }
         if req.exposure_time.is_some() {
             let exp_time = req.exposure_time.unwrap();
@@ -169,7 +158,7 @@ impl Cedar for MyCedar {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            self.state.operation_settings.lock().unwrap().exposure_time = Some(exp_time);
+            self.operation_settings.lock().unwrap().exposure_time = Some(exp_time);
         }
         if req.detection_sigma.is_some() {
             let sigma = req.detection_sigma.unwrap();
@@ -181,7 +170,7 @@ impl Cedar for MyCedar {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            self.state.operation_settings.lock().unwrap().detection_sigma = Some(sigma);
+            self.operation_settings.lock().unwrap().detection_sigma = Some(sigma);
         }
         if req.detection_max_size.is_some() {
             let max_size = req.detection_max_size.unwrap();
@@ -193,7 +182,7 @@ impl Cedar for MyCedar {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            self.state.operation_settings.lock().unwrap().detection_max_size = Some(max_size);
+            self.operation_settings.lock().unwrap().detection_max_size = Some(max_size);
         }
         if req.update_interval.is_some() {
             let update_interval = req.update_interval.unwrap();
@@ -206,7 +195,7 @@ impl Cedar for MyCedar {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            self.state.operation_settings.lock().unwrap().update_interval = Some(update_interval);
+            self.operation_settings.lock().unwrap().update_interval = Some(update_interval);
         }
         if req.dwell_update_interval.is_some() {
             return Err(tonic::Status::unimplemented(
@@ -217,7 +206,7 @@ impl Cedar for MyCedar {
                 "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
         }
 
-        Ok(tonic::Response::new(self.state.operation_settings.lock().unwrap().clone()))
+        Ok(tonic::Response::new(self.operation_settings.lock().unwrap().clone()))
     }
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
@@ -229,74 +218,23 @@ impl Cedar for MyCedar {
         // TODO: what should we do with the client's RPC timeout? Perhaps our
         // call to get_next_frame() can be passed a deadline?
 
-        let frame_result = Self::get_next_frame(
-            &self.state, prev_frame_id, main_image_mode);
+        let frame_result = self.get_next_frame(prev_frame_id, main_image_mode);
         Ok(tonic::Response::new(frame_result))
     }  // get_frame().
-
-    type GetFramesStream = ResponseStream;
-    async fn get_frames(&self, request: tonic::Request<FrameRequest>)
-                        -> Result<tonic::Response<Self::GetFramesStream>,
-                                  tonic::Status>
-    {
-        info!("Client connected from: {:?}", request.remote_addr());
-        let state = self.state.clone();
-        let req: FrameRequest = request.into_inner();
-        let mut prev_frame_id = req.prev_frame_id;
-        let main_image_mode = req.main_image_mode;
-
-        // Adapted from
-        // https://github.com/hyperium/tonic/blob/master/examples/src/streaming/server.rs
-
-        // Yield infinite stream of frame results, as they are plate-solved.
-        let repeat = std::iter::repeat_with(move || {
-            let frame_result = Self::get_next_frame(
-                &state, prev_frame_id, main_image_mode);
-            prev_frame_id = Some(frame_result.frame_id);
-            frame_result
-        });
-        let mut stream = Box::pin(tokio_stream::iter(repeat));
-
-        // spawn() and channel() are required to handle client "disconnect"
-        // functionality. The `output_stream` will not be polled after client
-        // disconnect.
-        // Use shallow channel depth to limit streaming latency.
-        let (tx, rx) = mpsc::channel(4);
-        tokio::spawn(async move {
-            while let Some(frame_result) = stream.next().await {
-                match tx.send(Result::<_, tonic::Status>::Ok(frame_result)).await {
-                    Ok(_) => {
-                        // frame_result was queued to be send to client.
-                    }
-                    Err(_item) => {
-                        // `output_stream` was built from rx and both are dropped.
-                        break;
-                    }
-                }
-            }
-            info!("Client disconnected.");
-        });
-
-        let output_stream = ReceiverStream::new(rx);
-        Ok(tonic::Response::new(
-            Box::pin(output_stream) as Self::GetFramesStream
-        ))
-    }
 
     async fn initiate_action(&self, request: tonic::Request<ActionRequest>)
                              -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req: ActionRequest = request.into_inner();
-        let state = &self.state;
         if req.capture_boresight.unwrap_or(false) {
             let operating_mode =
-                state.operation_settings.lock().unwrap().operating_mode.or(
+                self.operation_settings.lock().unwrap().operating_mode.or(
                     Some(OperatingMode::Setup as i32)).unwrap();
             if operating_mode != OperatingMode::Setup as i32 {
                 return Err(tonic::Status::failed_precondition(
                     format!("Not in Setup mode: {:?}.", operating_mode)));
             }
-            let solve_engine = &mut state.solve_engine.lock().unwrap();
-            let cpp = state.center_peak_position.lock().unwrap();
+            let solve_engine = &mut self.solve_engine.lock().unwrap();
+            let cpp = self.center_peak_position.lock().unwrap();
             match solve_engine.set_target_pixel(
                 match cpp.as_ref() {
                     Some(pos) => Some(tetra3_server::ImageCoord{
@@ -310,7 +248,7 @@ impl Cedar for MyCedar {
             }
         }
         if req.delete_boresight.unwrap_or(false) {
-            let solve_engine = &mut state.solve_engine.lock().unwrap();
+            let solve_engine = &mut self.solve_engine.lock().unwrap();
             match solve_engine.set_target_pixel(None) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
@@ -331,14 +269,14 @@ impl Cedar for MyCedar {
             }
         }
         if req.reset_session_stats.unwrap_or(false) {
-            let detect_engine = &mut state.detect_engine.lock().unwrap();
-            let solve_engine = &mut state.solve_engine.lock().unwrap();
+            let detect_engine = &mut self.detect_engine.lock().unwrap();
+            let solve_engine = &mut self.solve_engine.lock().unwrap();
             detect_engine.reset_session_stats();
             solve_engine.reset_session_stats();
-            state.overall_latency_stats.lock().unwrap().reset_session();
+            self.overall_latency_stats.lock().unwrap().reset_session();
         }
         if req.save_image.unwrap_or(false) {
-            let solve_engine = &mut state.solve_engine.lock().unwrap();
+            let solve_engine = &mut self.solve_engine.lock().unwrap();
             match solve_engine.save_image() {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
@@ -350,49 +288,46 @@ impl Cedar for MyCedar {
 
 impl MyCedar {
     fn set_camera_gain(&self, gain: i32) -> Result<(), CanonicalError> {
-        let mut locked_camera = self.state.camera.lock().unwrap();
+        let mut locked_camera = self.camera.lock().unwrap();
         return locked_camera.set_gain(Gain::new(gain));
     }
     fn set_camera_offset(&self, offset: i32) -> Result<(), CanonicalError> {
-        let mut locked_camera = self.state.camera.lock().unwrap();
+        let mut locked_camera = self.camera.lock().unwrap();
         return locked_camera.set_offset(Offset::new(offset));
     }
 
     fn set_exposure_time(&self, exposure_time: std::time::Duration)
                          -> Result<(), CanonicalError> {
-        let detect_engine = &mut self.state.detect_engine.lock().unwrap();
+        let detect_engine = &mut self.detect_engine.lock().unwrap();
         detect_engine.set_exposure_time(exposure_time)
     }
 
     fn set_detection_sigma(&self, detection_sigma: f32)
                            -> Result<(), CanonicalError> {
-        let state = &self.state;
-        let detect_engine = &mut state.detect_engine.lock().unwrap();
+        let detect_engine = &mut self.detect_engine.lock().unwrap();
         // TODO(smr): if `detection_sigma` is 0, we use calibration_data's `detection_sigma`
         // value.
         detect_engine.set_detection_params(
             detection_sigma,
-            state.operation_settings.lock().unwrap().detection_max_size.unwrap())
+            self.operation_settings.lock().unwrap().detection_max_size.unwrap())
     }
     fn set_detection_max_size(&self, max_size: i32)
                               -> Result<(), CanonicalError> {
-        let state = &self.state;
-        let detect_engine = &mut state.detect_engine.lock().unwrap();
+        let detect_engine = &mut self.detect_engine.lock().unwrap();
         detect_engine.set_detection_params(
-            state.operation_settings.lock().unwrap().detection_sigma.unwrap(),
+            self.operation_settings.lock().unwrap().detection_sigma.unwrap(),
             max_size)
     }
 
     fn set_update_interval(&self, update_interval: std::time::Duration)
                          -> Result<(), CanonicalError> {
-        let state = &self.state;
-        let detect_engine = &mut state.detect_engine.lock().unwrap();
-        let solve_engine = &mut state.solve_engine.lock().unwrap();
+        let detect_engine = &mut self.detect_engine.lock().unwrap();
+        let solve_engine = &mut self.solve_engine.lock().unwrap();
         detect_engine.set_update_interval(update_interval)?;
         solve_engine.set_update_interval(update_interval)
     }
 
-    fn get_next_frame(state: &State, prev_frame_id: Option<i32>, main_image_mode: i32)
+    fn get_next_frame(&self, prev_frame_id: Option<i32>, main_image_mode: i32)
                       -> FrameResult {
         let tetra3_solve_result;
         let detect_result;
@@ -400,7 +335,7 @@ impl MyCedar {
         let boresight_position;
         let solve_finish_time;
         {
-            let solve_engine = &mut state.solve_engine.lock().unwrap();
+            let solve_engine = &mut self.solve_engine.lock().unwrap();
             plate_solution = solve_engine.get_next_result(prev_frame_id);
             tetra3_solve_result = plate_solution.tetra3_solve_result;
             detect_result = plate_solution.detect_result;
@@ -430,7 +365,7 @@ impl MyCedar {
 
         let mut frame_result = FrameResult {
             frame_id: detect_result.frame_id,
-            operation_settings: Some(state.operation_settings.lock().unwrap().clone()),
+            operation_settings: Some(self.operation_settings.lock().unwrap().clone()),
             image: None,  // Is set below.
             star_candidates: centroids,
             hot_pixel_count: detect_result.hot_pixel_count,
@@ -459,11 +394,11 @@ impl MyCedar {
                         x: fa.center_peak_position.0 as f32,
                         y: fa.center_peak_position.1 as f32,
                     };
-                    *state.center_peak_position.lock().unwrap() = Some(ic.clone());
+                    *self.center_peak_position.lock().unwrap() = Some(ic.clone());
                     Some(ic)
                 },
                 None => {
-                    *state.center_peak_position.lock().unwrap() = None;
+                    *self.center_peak_position.lock().unwrap() = None;
                     None
                 },
             },
@@ -522,7 +457,7 @@ impl MyCedar {
                 image_data: center_peak_bmp_buf,
             });
         }
-        let mut position = state.position.lock().unwrap();
+        let mut position = self.position.lock().unwrap();
         position.valid = false;
         if tetra3_solve_result.is_some() {
             let tsr = tetra3_solve_result.as_ref().unwrap();
@@ -544,7 +479,7 @@ impl MyCedar {
                     warn!("Clock may have gone backwards: {:?}", e)
                 },
                 Ok(d) => {
-                    state.overall_latency_stats.lock().unwrap().add_value(
+                    self.overall_latency_stats.lock().unwrap().add_value(
                         d.as_secs_f64());
                 }
             }
@@ -552,7 +487,7 @@ impl MyCedar {
         }
         frame_result.processing_stats = Some(ProcessingStats {
             overall_latency: Some(
-                state.overall_latency_stats.lock().unwrap().value_stats.clone()),
+                self.overall_latency_stats.lock().unwrap().value_stats.clone()),
             detect_latency: Some(detect_result.detect_latency_stats),
             solve_interval: Some(plate_solution.solve_interval_stats),
             solve_latency: Some(plate_solution.solve_latency_stats),
@@ -581,12 +516,7 @@ impl MyCedar {
             /*focus_mode_enabled=*/true,
             star_count_goal,
             stats_capacity)));
-        let solve_engine = Arc::new(Mutex::new(SolveEngine::new(
-            detect_engine.clone(),
-            tetra3_uds,
-            /*update_interval=*/Duration::ZERO,
-            stats_capacity)));
-        let state = Arc::new(State {
+        let cedar = MyCedar {
             camera: camera.clone(),
             fixed_settings: Mutex::new(FixedSettings {
                 observer_location: None,
@@ -612,14 +542,17 @@ impl MyCedar {
             }),
             // calibration_data: Mutex::new(CalibrationData::default()),
             detect_engine: detect_engine.clone(),
-            solve_engine: solve_engine.clone(),
+            solve_engine: Arc::new(Mutex::new(SolveEngine::new(
+                detect_engine.clone(),
+                tetra3_uds,
+                /*update_interval=*/Duration::ZERO,
+                stats_capacity))),
             position,
             _tetra3_subprocess: Tetra3Subprocess::new(
                 tetra3_script, tetra3_database).unwrap(),
             center_peak_position: Arc::new(Mutex::new(None)),
             overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
-        });
-        let cedar = MyCedar { state: state.clone() };
+        };
         // Set pre-calibration defaults on camera.
         match cedar.set_camera_gain(100) {
             Ok(()) => (),
@@ -636,11 +569,11 @@ impl MyCedar {
         let sigma;
         let max_size;
         {
-            let op_settings = state.operation_settings.lock().unwrap();
+            let op_settings = cedar.operation_settings.lock().unwrap();
             sigma = op_settings.detection_sigma.unwrap();
             max_size = op_settings.detection_max_size.unwrap();
         }
-        assert!(detect_engine.lock().unwrap().set_detection_params(
+        assert!(cedar.detect_engine.lock().unwrap().set_detection_params(
             sigma, max_size).is_ok());
         cedar
     }

@@ -534,11 +534,6 @@ service Cedar {
   // blocks if a sky/camera calibration is underway.
   rpc GetFrame(FrameRequest) returns (FrameResult);
 
-  // Streaming variant of GetFrame().
-  // This streams back FrameResults as they become available on an open-ended
-  // basis, until the client cancels the RPC.
-  rpc GetFrames(FrameRequest) returns (stream FrameResult);
-
   // TODO: RPC to track progress of a sky/camera calibration?
 
   // Performs the requested action(s).
