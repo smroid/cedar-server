@@ -111,7 +111,8 @@ enum OperatingMode {
   // camera and telescope:
   // * Exposure metered based on brightest point in central region.
   // * Plate solves done using no FOV or distortion estimate and a large
-  //   match_max_error tolerance.
+  //   match_max_error tolerance. TODO: don't attempt plate solving in SETUP
+  //   mode? Slows the frame rate for focusing.
   SETUP = 1;
 
   // TODO: sky/camera calibration is a top-level operating mode?
@@ -119,8 +120,9 @@ enum OperatingMode {
   // Main operating mode. Continually updated RA/DEC sent to SkySafari.
   // Detection of tracking mount and accumulation of polar alignment advice
   // during dwells.
-  // * Exposure metered based on camera/sky calibration carried out in setup
-  //   mode.
+  // * Exposure metered based on number of detected stars.
+  // * Plate solves done using FOV and distortion estimate obtained when
+  //   leaving SETUP mode. A small match_max_error tolerance is used.
   OPERATE = 2;
 }
 
@@ -160,8 +162,7 @@ message FrameResult {
 
   // TODO: CalibrationData in effect for this frame.
 
-  // Information returned regardless of `operating_mode`. Note that these fields
-  // are ommitted while a camera/sky calibration is underway (see below).
+  // Information returned regardless of `operating_mode`.
 
   // The image from which information in this FrameResult is derived. Can be
   // omitted or binned according to the FrameRequest.
@@ -174,7 +175,7 @@ message FrameResult {
   // The number of hot pixels detected by CedarDetect.
   int32 hot_pixel_count = 6;
 
-  // The camera exposure integration time.
+  // The camera exposure integration time for `image`.
   google.protobuf.Duration exposure_time = 7;
 
   // Information about Cedar's performance.
@@ -190,9 +191,7 @@ message FrameResult {
   // no boresight has been captured. See ActionRequest.capture_boresight.
   optional ImageCoord boresight_position = 21;
 
-  // Information returned when `operating_mode` is SETUP. Note
-  // that these fields are ommitted while a camera/sky calibration is underway
-  // (see below).
+  // Information returned when `operating_mode` is SETUP.
 
   // Identifies the center region used for brightest-star detection for focusing
   // support.
@@ -204,19 +203,6 @@ message FrameResult {
 
   // A small full resolution crop of `image` centered at `center_peak_position`.
   optional Image center_peak_image = 13;
-
-  // In SETUP, Cedar can be instructed to perform a camera/sky
-  // calibration. Most of the above fields are omitted while such a calibration
-  // is underway, and the following fields are present.
-
-  // Non-zero while a camera/sky calibration is underway.
-  CalibrationPhase calibration_phase = 15;
-
-  // Estimated completion fraction [0..1) of the calibration.
-  optional float calibration_progress = 16;
-
-  // TODO: calibration operation result? E.g. none performed; no stars detected;
-  // too much movement during capture; other inconsistencies.
 
   // Information returned when `operating_mode` is OPERATE.
 
@@ -337,33 +323,35 @@ message DescriptiveStats {
   optional double median_absolute_deviation = 6;
 }
 
-// Identify calibration activities that require more than a trivial amount of
-// time to complete.
-enum CalibrationPhase {
-  // Calibration not underway.
-  CALIBRATION_PHASE_NONE = 0;
+// // Identify calibration activities that require more than a trivial amount of
+// // time to complete.
+// enum CalibrationPhase {
+//   // Calibration not underway.
+//   CALIBRATION_PHASE_NONE = 0;
 
-  // Capturing a set of images over a range of exposure times, gain values, and
-  // offset values.
-  CALIBRATION_PHASE_EXPOSURE_SWEEP = 1;
+//   // TODO: redesign the following...
 
-  // Analyzing the captured image set to determine:
-  // * Minimum offset value that avoids crushing too many pixels to 0 value.
-  // * Optimum gain value for best signal to noise.
-  // * At optimum gain value, minimum and maximum exposure integration times for
-  //   obtaining good star counts and avoiding too many overexposed stars.
-  CALIBRATION_PHASE_ANALYZE_EXPOSURE = 2;
+//   // Capturing a set of images over a range of exposure times, gain values, and
+//   // offset values.
+//   CALIBRATION_PHASE_EXPOSURE_SWEEP = 1;
 
-  // Obtain initial plate solution with loose constraints to obtain the true
-  // field of view and lens distortion. TODO: drop this, we get it for free
-  // during setup mode's solves.
-  CALIBRATION_PHASE_ANALYZE_FIELD_OF_VIEW = 3;
+//   // Analyzing the captured image set to determine:
+//   // * Minimum offset value that avoids crushing too many pixels to 0 value.
+//   // * Optimum gain value for best signal to noise.
+//   // * At optimum gain value, minimum and maximum exposure integration times for
+//   //   obtaining good star counts and avoiding too many overexposed stars.
+//   CALIBRATION_PHASE_ANALYZE_EXPOSURE = 2;
 
-  // Determining the CedarDetect "sigma" levels to use to maximize true star
-  // detections and minimize false star detections, using catalogue as ground
-  // (sky) truth.
-  CALIBRATION_PHASE_ANALYZE_STAR_THRESHOLD = 4;
-}
+//   // Obtain initial plate solution with loose constraints to obtain the true
+//   // field of view and lens distortion. TODO: drop this, we get it for free
+//   // during setup mode's solves.
+//   CALIBRATION_PHASE_ANALYZE_FIELD_OF_VIEW = 3;
+
+//   // Determining the CedarDetect "sigma" levels to use to maximize true star
+//   // detections and minimize false star detections, using catalogue as ground
+//   // (sky) truth.
+//   CALIBRATION_PHASE_ANALYZE_STAR_THRESHOLD = 4;
+// }
 
 message CalibrationData {
   // Omitted if a sky/camera calibration has not been done.
@@ -374,6 +362,8 @@ message CalibrationData {
   // If no calibration has been done, these will have reasonable default values
   // based on setup mode's auto exposure (or manual exposure setting during
   // setup).
+  // TODO: change to target_exposure_time, for desired number of star detections.
+  // min/max exposure times are bracketed from target.
   optional google.protobuf.Duration min_exposure_time = 4;
   optional google.protobuf.Duration max_exposure_time = 5;
 
@@ -480,20 +470,13 @@ message ActionRequest {
   // on the server with the current date/time incorporated into the filename.
   optional bool save_image = 5;
 
-  // TODO: save next image for debugging
-
   // Calibrate camera/sky (focus mode only). Pre-empts focus mode operation until
   // completed or canceled.
 
   // Cancel camera/sky calibration.
+  // TODO: calibration operation result? E.g. none performed; no stars detected;
+  // too much movement during capture; other inconsistencies.
 
-  // Optimize catalogue (requires camera/sky calibration). Uses calibration's limiting
-  // magnitude (at calibration's determined maximum exposure) to trim the catalog.
-  // Resulting catalog is associated with the session.
-  // What else?
-  // Proceeds in background.
-
-  // Save image.
 }
 
 message ServerInformationRequest {
@@ -547,13 +530,16 @@ service Cedar {
   rpc UpdateOperationSettings(OperationSettings) returns (OperationSettings);
 
   // Obtains the most recent Cedar computation result. Blocks if necessary to
-  // wait for a new result (see FrameRequest's `prev_frame_id` field).
+  // wait for a new result (see FrameRequest's `prev_frame_id` field); also
+  // blocks if a sky/camera calibration is underway.
   rpc GetFrame(FrameRequest) returns (FrameResult);
 
   // Streaming variant of GetFrame().
-  // TODO: figure out how this RPC knows when to end. In principle it could
-  // stream back FrameResults on an open-ended basis. Client cancels?
+  // This streams back FrameResults as they become available on an open-ended
+  // basis, until the client cancels the RPC.
   rpc GetFrames(FrameRequest) returns (stream FrameResult);
+
+  // TODO: RPC to track progress of a sky/camera calibration?
 
   // Performs the requested action(s).
   rpc InitiateAction(ActionRequest) returns (EmptyMessage);
