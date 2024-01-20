@@ -16,6 +16,13 @@ use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
 pub struct DetectEngine {
+    // Bounds the range of exposure durations to be set by setup mode
+    // auto-exposure.
+    // The set_exposure_time() function is not bound by these limits, nor
+    // is the operating mode auto-exposure.
+    min_exposure_duration: Duration,
+    max_exposure_duration: Duration,
+
     // Our state, shared between DetectEngine methods and the worker thread.
     state: Arc<Mutex<DetectState>>,
 
@@ -55,7 +62,7 @@ struct DetectState {
     // determined (by calibration) to yield `star_count_goal` detected stars.
     // Auto exposure logic will only deviate from this by a bounded amount.
     // None if calibration result is not yet available.
-    baseline_exposure_time: Option<Duration>,
+    calibrated_exposure_duration: Option<Duration>,
 
     detect_latency_stats: ValueStatsAccumulator,
 
@@ -74,11 +81,15 @@ impl Drop for DetectEngine {
 }
 
 impl DetectEngine {
-    pub fn new(camera: Arc<Mutex<dyn AbstractCamera>>,
+    pub fn new(min_exposure_duration: Duration,
+               max_exposure_duration: Duration,
+               camera: Arc<Mutex<dyn AbstractCamera>>,
                update_interval: Duration, auto_exposure: bool,
                focus_mode_enabled: bool, star_count_goal: i32, stats_capacity: usize)
                -> DetectEngine {
         DetectEngine{
+            min_exposure_duration,
+            max_exposure_duration,
             state: Arc::new(Mutex::new(DetectState{
                 frame_id: None,
                 auto_exposure,
@@ -87,7 +98,7 @@ impl DetectEngine {
                 detection_max_size: 3,
                 focus_mode_enabled,
                 star_count_goal,
-                baseline_exposure_time: None,
+                calibrated_exposure_duration: None,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 detect_result: None,
                 stop_request: false,
@@ -145,7 +156,7 @@ impl DetectEngine {
     }
 
     // TODO: set_star_count_goal()?
-    // TODO: calibration logic by which our baseline_exposure_time value is
+    // TODO: calibration logic by which our calibrated_exposure_duration value is
     // set.
 
     /// Obtains a result bundle, as configured above. The returned result is
@@ -161,11 +172,15 @@ impl DetectEngine {
         let mut state = self.state.lock().unwrap();
         // Start worker thread if not yet started.
         if state.worker_thread.is_none() {
+            let min_exposure_duration = self.min_exposure_duration;
+            let max_exposure_duration = self.max_exposure_duration;
             let cloned_state = self.state.clone();
             let cloned_camera = self.camera.clone();
             let cloned_condvar = self.detect_result_available.clone();
-            state.worker_thread = Some(thread::spawn(|| {
-                DetectEngine::worker(cloned_state, cloned_camera, cloned_condvar);
+            state.worker_thread = Some(thread::spawn(move || {
+                DetectEngine::worker(min_exposure_duration,
+                                     max_exposure_duration,
+                                     cloned_state, cloned_camera, cloned_condvar);
             }));
         }
         // Get the most recently posted result.
@@ -208,7 +223,9 @@ impl DetectEngine {
         }
     }
 
-    fn worker(state: Arc<Mutex<DetectState>>,
+    fn worker(min_exposure_duration: Duration,
+              max_exposure_duration: Duration,
+              state: Arc<Mutex<DetectState>>,
               camera: Arc<Mutex<dyn AbstractCamera>>,
               detect_result_available: Arc<Condvar>) {
         info!("Starting detect engine");
@@ -221,7 +238,7 @@ impl DetectEngine {
             let max_size: i32;
             let focus_mode_enabled: bool;
             let star_count_goal: i32;
-            let baseline_exposure_time: Option<Duration>;
+            let calibrated_exposure_duration: Option<Duration>;
             {
                 let mut locked_state = state.lock().unwrap();
                 auto_exposure = locked_state.auto_exposure;
@@ -230,7 +247,8 @@ impl DetectEngine {
                 max_size = locked_state.detection_max_size;
                 focus_mode_enabled = locked_state.focus_mode_enabled;
                 star_count_goal = locked_state.star_count_goal;
-                baseline_exposure_time = locked_state.baseline_exposure_time;
+                calibrated_exposure_duration =
+                    locked_state.calibrated_exposure_duration;
                 if locked_state.stop_request {
                     info!("Stopping detect engine");
                     locked_state.stop_request = false;
@@ -314,16 +332,18 @@ impl DetectEngine {
                             // Move proportionally towards the goal.
                             peak_value_goal as f32 / peak_value as f32
                         };
-                    // Don't adjust exposure time too often, is a bit janky because the
-                    // camera re-initializes.
+                    // Don't adjust exposure time too often, is a bit janky
+                    // because the camera re-initializes.
                     if correction_factor < 0.7 || correction_factor > 1.3 {
                         new_exposure_duration_secs =
                             prev_exposure_duration_secs * correction_factor;
                         // Bound focus mode exposure duration to 0.01ms..1s.
                         new_exposure_duration_secs = f32::max(
-                            new_exposure_duration_secs, 0.00001);
+                            new_exposure_duration_secs,
+                            min_exposure_duration.as_secs_f32());
                         new_exposure_duration_secs = f32::min(
-                            new_exposure_duration_secs, 1.0);
+                            new_exposure_duration_secs,
+                            max_exposure_duration.as_secs_f32());
                         // Camera exposure duration is updated below.
                     }
                 }  // auto_exposure
@@ -332,8 +352,9 @@ impl DetectEngine {
                 // Get a small sub-image centered on the peak coordinates.
                 let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
                 let sub_image_size = 30;
-                let peak_region = Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
-                                           (peak_position.1 as i32 - sub_image_size/2) as i32)
+                let peak_region =
+                    Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
+                             (peak_position.1 as i32 - sub_image_size/2) as i32)
                     .of_size(sub_image_size as u32, sub_image_size as u32);
                 let peak_region = peak_region.intersect(image_rect).unwrap();
                 debug!("peak {} at x/y {}/{}",
@@ -363,7 +384,9 @@ impl DetectEngine {
             let mut locked_state = state.lock().unwrap();
             locked_state.detect_latency_stats.add_value(elapsed.as_secs_f64());
 
-            if !focus_mode_enabled && auto_exposure && baseline_exposure_time.is_some() {
+            if !focus_mode_enabled && auto_exposure &&
+                calibrated_exposure_duration.is_some()
+            {
                 let num_stars_detected = stars.len();
                 // >1 if we have more stars than goal; <1 if fewer stars than
                 // goal.
@@ -385,17 +408,17 @@ impl DetectEngine {
                     //   of detectable stars as being simply proportional to the
                     //   exposure time. This is OK because we'll only be varying
                     //   the exposure time a modest amount relative to the
-                    //   baseline_exposure_time.
+                    //   calibrated_exposure_duration.
                     new_exposure_duration_secs =
                         prev_exposure_duration_secs / star_goal_fraction;
                     // Bound exposure duration to be within 0.5..2.0x
-                    // baseline_exposure_time.
+                    // calibrated_exposure_duration.
                     new_exposure_duration_secs = f32::max(
                         new_exposure_duration_secs,
-                        (baseline_exposure_time.unwrap() / 2).as_secs_f32());
+                        (calibrated_exposure_duration.unwrap() / 2).as_secs_f32());
                     new_exposure_duration_secs = f32::min(
                         new_exposure_duration_secs,
-                        (baseline_exposure_time.unwrap() * 2).as_secs_f32());
+                        (calibrated_exposure_duration.unwrap() * 2).as_secs_f32());
                 }
             }
 
@@ -425,7 +448,8 @@ impl DetectEngine {
                 hot_pixel_count: hot_pixel_count as i32,
                 focus_aid,
                 processing_duration: elapsed,
-                detect_latency_stats: locked_state.detect_latency_stats.value_stats.clone(),
+                detect_latency_stats:
+                locked_state.detect_latency_stats.value_stats.clone(),
             });
             detect_result_available.notify_all();
         }  // loop.

@@ -150,6 +150,8 @@ impl Cedar for MyCedar {
                 detect_engine.set_focus_mode(true);
             } else if operating_mode == OperatingMode::Operate as i32 {
                 detect_engine.set_focus_mode(false);
+                // TODO: if we were previously in focus mode, initiate a short
+                // calibration.
             } else {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got invalid operating_mode: {}.", operating_mode)));
@@ -224,7 +226,7 @@ impl Cedar for MyCedar {
         let prev_frame_id = req.prev_frame_id;
         let main_image_mode = req.main_image_mode;
 
-        // TODO: what should we do with the clien't RPC timeout? Perhaps our
+        // TODO: what should we do with the client's RPC timeout? Perhaps our
         // call to get_next_frame() can be passed a deadline?
 
         let frame_result = Self::get_next_frame(
@@ -392,7 +394,6 @@ impl MyCedar {
 
     fn get_next_frame(state: &State, prev_frame_id: Option<i32>, main_image_mode: i32)
                       -> FrameResult {
-        // TODO(smr): do according to operating mode.
         let tetra3_solve_result;
         let detect_result;
         let plate_solution;
@@ -564,7 +565,9 @@ impl MyCedar {
         frame_result
     }
 
-    pub fn new(tetra3_script: String,
+    pub fn new(min_exposure_duration: Duration,
+               max_exposure_duration: Duration,
+               tetra3_script: String,
                tetra3_database: String,
                tetra3_uds: String,
                camera: Arc<Mutex<dyn AbstractCamera>>,
@@ -572,6 +575,8 @@ impl MyCedar {
                star_count_goal: i32,
                stats_capacity: usize) -> Self {
         let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
+            min_exposure_duration,
+            max_exposure_duration,
             camera.clone(),
             /*update_interval=*/Duration::ZERO,
             /*auto_exposure=*/true,
@@ -650,26 +655,46 @@ struct Args {
     /// command line or set up a symlink. Note that PYPATH must
     /// be set to include the tetra3.py library location.
     #[arg(long, default_value = "./tetra3_server.py")]
-    script: String,
+    tetra3_script: String,
 
     /// Star catalog database for Tetra3 to load.
     #[arg(long, default_value = "default_database")]
-    database: String,
+    tetra3_database: String,
 
     /// Unix domain socket file for Tetra3 gRPC server.
     #[arg(long, default_value = "/home/pi/tetra3.sock")]
-    socket: String,
+    tetra3_socket: String,
 
     /// Test image to use instead of camera.
     #[arg(long, default_value = "")]
     test_image: String,
+
+    /// Minimum exposure duration, seconds.
+    #[arg(long, value_parser = parse_duration, default_value = "0.00001")]
+    min_exposure: Duration,
+
+    /// Maximum exposure duration, seconds.
+    #[arg(long, value_parser = parse_duration, default_value = "1.0")]
+    max_exposure: Duration,
+
+    /// Target number of detected stars for auto-exposure.
+    #[arg(long, default_value = "20")]
+    star_count_goal: i32,
+}
+
+// Adapted from
+// https://stackoverflow.com/questions/72313616/using-claps-deriveparser-how-can-i-accept-a-stdtimeduration
+fn parse_duration(arg: &str)
+                  -> Result<std::time::Duration, std::num::ParseIntError> {
+    let seconds = arg.parse()?;
+    Ok(std::time::Duration::from_secs(seconds))
 }
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
-    info!("Using Tetra3 server {:?} listening at {:?}", args.script, args.socket);
+    info!("Using Tetra3 server {:?} listening at {:?}", args.tetra3_script, args.tetra3_socket);
 
     // Build the static content web service.
     let rest = Router::new().nest_service(
@@ -696,12 +721,15 @@ async fn main() {
         .accept_http1(true)
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
-        .add_service(CedarServer::new(MyCedar::new(args.script,
-                                                   args.database,
-                                                   args.socket,
+        .add_service(CedarServer::new(MyCedar::new(args.min_exposure,
+                                                   args.max_exposure,
+                                                   args.tetra3_script,
+                                                   args.tetra3_database,
+                                                   args.tetra3_socket,
                                                    camera,
                                                    shared_position.clone(),
-                                                   /*star_count_goal=*/20,  // TODO: command line arg
+                                                   args.star_count_goal,
+                                                   // TODO: arg for this?
                                                    /*stats_capacity=*/100)))
         .into_service();
 
