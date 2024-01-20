@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration};
+use std::time::{Duration, SystemTime};
 
 use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
 use camera_service::asi_camera;
@@ -31,11 +31,12 @@ use cedar::cedar::{ActionRequest,
                    Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
                    ProcessingStats, Rectangle, StarCentroid};
 use ::cedar::detect_engine::DetectEngine;
-use ::cedar::solve_engine::SolveEngine;
+use ::cedar::solve_engine::{PlateSolution, SolveEngine};
 use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 use ::cedar::value_stats::ValueStatsAccumulator;
 use cedar::tetra3_server;
+use cedar::tetra3_server::SolveResult as SolveResultProto;
 
 use self::multiplex_service::MultiplexService;
 
@@ -329,19 +330,28 @@ impl MyCedar {
 
     fn get_next_frame(&self, prev_frame_id: Option<i32>, main_image_mode: i32)
                       -> FrameResult {
-        let tetra3_solve_result;
+        // Always populated.
         let detect_result;
-        let plate_solution;
         let boresight_position;
-        let solve_finish_time;
+        // Populated only in OperatingMode::Operate mode.
+        let mut tetra3_solve_result: Option<SolveResultProto> = None;
+        let mut plate_solution: Option<PlateSolution> = None;
+        let mut solve_finish_time: Option<SystemTime> = None;
+
+        if self.operation_settings.lock().unwrap().operating_mode.unwrap() ==
+            OperatingMode::Setup as i32
         {
+            detect_result = self.detect_engine.lock().unwrap().get_next_result(prev_frame_id);
+            boresight_position = self.solve_engine.lock().unwrap().target_pixel().expect(
+                "solve_engine.target_pixel() should not fail");
+        } else {
             let solve_engine = &mut self.solve_engine.lock().unwrap();
-            plate_solution = solve_engine.get_next_result(prev_frame_id);
-            tetra3_solve_result = plate_solution.tetra3_solve_result;
-            detect_result = plate_solution.detect_result;
+            plate_solution = Some(solve_engine.get_next_result(prev_frame_id));
+            tetra3_solve_result = plate_solution.as_ref().unwrap().tetra3_solve_result.clone();
+            solve_finish_time = plate_solution.as_ref().unwrap().solve_finish_time;
+            detect_result = plate_solution.as_ref().unwrap().detect_result.clone();
             boresight_position = solve_engine.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
-            solve_finish_time = plate_solution.solve_finish_time;
         }
 
         let captured_image = &detect_result.captured_image;
@@ -402,7 +412,8 @@ impl MyCedar {
                     None
                 },
             },
-            center_peak_image: None,  // Is set below.
+            // These are set below.
+            center_peak_image: None,
             plate_solution: None,
             camera_motion: None,
             ra_rate: None,
@@ -486,14 +497,21 @@ impl MyCedar {
             frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
         }
         frame_result.processing_stats = Some(ProcessingStats {
-            overall_latency: Some(
-                self.overall_latency_stats.lock().unwrap().value_stats.clone()),
             detect_latency: Some(detect_result.detect_latency_stats),
-            solve_interval: Some(plate_solution.solve_interval_stats),
-            solve_latency: Some(plate_solution.solve_latency_stats),
-            solve_attempt_fraction: Some(plate_solution.solve_attempt_stats),
-            solve_success_fraction: Some(plate_solution.solve_success_stats),
+            ..Default::default()
         });
+        if self.operation_settings.lock().unwrap().operating_mode.unwrap() ==
+            OperatingMode::Operate as i32
+        {
+            let stats = &mut frame_result.processing_stats.as_mut().unwrap();
+            let plate_solution = &plate_solution.as_ref().unwrap();
+            stats.overall_latency =
+                Some(self.overall_latency_stats.lock().unwrap().value_stats.clone());
+            stats.solve_interval = Some(plate_solution.solve_interval_stats.clone());
+            stats.solve_latency = Some(plate_solution.solve_latency_stats.clone());
+            stats.solve_attempt_fraction = Some(plate_solution.solve_attempt_stats.clone());
+            stats.solve_success_fraction = Some(plate_solution.solve_success_stats.clone());
+        }
 
         frame_result
     }

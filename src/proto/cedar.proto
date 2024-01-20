@@ -158,7 +158,7 @@ message FrameResult {
   int32 frame_id = 1;
 
   // The Cedar settings in effect for this frame.
-  optional OperationSettings operation_settings = 2;
+  OperationSettings operation_settings = 2;
 
   // TODO: CalibrationData in effect for this frame.
 
@@ -275,13 +275,15 @@ message ImageCoord {
 
 // Diagnostic information summarizing Cedar's performance.
 message ProcessingStats {
+  // How much time (in seconds) is spent detecting/centroiding stars.
+  ValueStats detect_latency = 3;
+
+  // The following items are omitted in SETUP mode.
+
   // Elapsed time (in seconds) between acquisition of an image (end of exposure)
   // and completion of a plate solution for it. Skipped images (i.e. solution
   // not attempted) do not contribute to this.
   ValueStats overall_latency = 2;
-
-  // How much time (in seconds) is spent detecting/centroiding stars.
-  ValueStats detect_latency = 3;
 
   // The interval at which new plate solutions (or lack thereof) are
   // available. Seconds per solution cycle.
