@@ -549,7 +549,7 @@ impl MyCedar {
                     seconds: 0, nanos: 0,
                 }),
                 detection_sigma: Some(8.0),
-                detection_max_size: Some(5),
+                detection_max_size: Some(8),
                 update_interval: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
@@ -634,9 +634,9 @@ struct Args {
 // Adapted from
 // https://stackoverflow.com/questions/72313616/using-claps-deriveparser-how-can-i-accept-a-stdtimeduration
 fn parse_duration(arg: &str)
-                  -> Result<std::time::Duration, std::num::ParseIntError> {
+                  -> Result<std::time::Duration, std::num::ParseFloatError> {
     let seconds = arg.parse()?;
-    Ok(std::time::Duration::from_secs(seconds))
+    Ok(std::time::Duration::from_secs_f32(seconds))
 }
 
 #[tokio::main]
