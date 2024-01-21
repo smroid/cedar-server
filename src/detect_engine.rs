@@ -155,7 +155,11 @@ impl DetectEngine {
         // it finishes the current interval.
     }
 
+    pub fn get_star_count_goal(&self) -> i32 {
+        return self.state.lock().unwrap().star_count_goal;
+    }
     // TODO: set_star_count_goal()?
+
     // TODO: calibration logic by which our calibrated_exposure_duration value is
     // set.
 
