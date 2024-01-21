@@ -26,7 +26,7 @@ use tracing_subscriber;
 use futures::join;
 
 use cedar::cedar::cedar_server::{Cedar, CedarServer};
-use cedar::cedar::{ActionRequest,
+use cedar::cedar::{ActionRequest, CalibrationData,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
                    Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
                    ProcessingStats, Rectangle, StarCentroid};
@@ -68,7 +68,7 @@ struct MyCedar {
     camera: Arc<Mutex<dyn AbstractCamera>>,
     fixed_settings: Mutex<FixedSettings>,
     operation_settings: Mutex<OperationSettings>,
-    // calibration_data: Mutex<CalibrationData>,
+    calibration_data: Mutex<CalibrationData>,
     detect_engine: Arc<Mutex<DetectEngine>>,
     solve_engine: Arc<Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
@@ -137,25 +137,28 @@ impl Cedar for MyCedar {
         if req.operating_mode.is_some() {
             let detect_engine = &mut self.detect_engine.lock().unwrap();
             let operating_mode = req.operating_mode.unwrap();
-            if operating_mode == OperatingMode::Setup as i32 {
-                detect_engine.set_focus_mode(true);
-            } else if operating_mode == OperatingMode::Operate as i32 {
-                detect_engine.set_focus_mode(false);
-                // TODO: if we were previously in focus mode, initiate a short
-                // calibration.
-                let locked_calibrator = self.calibrator.lock().unwrap();
-                info!("Calibrating offset");
-                match locked_calibrator.calibrate_offset() {
-                    Ok(offset) => {
-                        info!("Calibrated offset: {:?}", offset);
-                    },
-                    Err(x) => { return Err(tonic_status(x)); }
+            let mut locked_operation_settings = self.operation_settings.lock().unwrap();
+            if operating_mode !=
+                locked_operation_settings.operating_mode.unwrap()
+            {
+                if operating_mode == OperatingMode::Setup as i32 {
+                    match self.set_pre_calibration_defaults() {
+                        Ok(()) => {},
+                        Err(x) => { return Err(tonic_status(x)); }
+                    }
+                    detect_engine.set_focus_mode(true);
+                } else if operating_mode == OperatingMode::Operate as i32 {
+                    match self.calibrate() {
+                        Ok(()) => {},
+                        Err(x) => { return Err(tonic_status(x)); }
+                    }
+                    detect_engine.set_focus_mode(false);
+                } else {
+                    return Err(tonic::Status::invalid_argument(
+                        format!("Got invalid operating_mode: {}.", operating_mode)));
                 }
-            } else {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got invalid operating_mode: {}.", operating_mode)));
+                locked_operation_settings.operating_mode = Some(operating_mode);
             }
-            self.operation_settings.lock().unwrap().operating_mode = Some(operating_mode);
         }
         if req.exposure_time.is_some() {
             let exp_time = req.exposure_time.unwrap();
@@ -335,6 +338,29 @@ impl MyCedar {
         let solve_engine = &mut self.solve_engine.lock().unwrap();
         detect_engine.set_update_interval(update_interval)?;
         solve_engine.set_update_interval(update_interval)
+    }
+
+    // Called when returning to SETUP mode.
+    fn set_pre_calibration_defaults(&self) -> Result<(), CanonicalError> {
+        let mut locked_camera = self.camera.lock().unwrap();
+        locked_camera.set_gain(Gain::new(100))?;
+        locked_camera.set_offset(Offset::new(3))?;
+        *self.calibration_data.lock().unwrap() = CalibrationData{..Default::default()};
+        Ok(())
+    }
+
+    // Called when entering to OPERATE mode.
+    fn calibrate(&self) -> Result<(), CanonicalError> {
+        let locked_calibrator = self.calibrator.lock().unwrap();
+        info!("Calibrating offset");
+        let offset = locked_calibrator.calibrate_offset()?;
+        info!("Calibrated offset: {:?}", offset);  // TEMPORARY
+
+        // TODO: additional calibrations.
+
+        let mut locked_calibration_data = self.calibration_data.lock().unwrap();
+        locked_calibration_data.camera_offset = Some(offset.value());
+        Ok(())
     }
 
     fn get_next_frame(&self, prev_frame_id: Option<i32>, main_image_mode: i32)
@@ -566,7 +592,7 @@ impl MyCedar {
                 }),
                 log_dwelled_positions: Some(false),
             }),
-            // calibration_data: Mutex::new(CalibrationData::default()),
+            calibration_data: Mutex::new(CalibrationData{..Default::default()}),
             detect_engine: detect_engine.clone(),
             solve_engine: Arc::new(Mutex::new(SolveEngine::new(
                 detect_engine.clone(),
@@ -581,16 +607,10 @@ impl MyCedar {
             overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
         };
         // Set pre-calibration defaults on camera.
-        match cedar.set_camera_gain(100) {
+        match cedar.set_pre_calibration_defaults() {
             Ok(()) => (),
             Err(x) => {
-                warn!("Could not set gain on camera {:?}", x)
-            }
-        }
-        match cedar.set_camera_offset(3) {
-            Ok(()) => (),
-            Err(x) => {
-                warn!("Could not set offset on camera {:?}", x)
+                warn!("Could not set default settings on camera {:?}", x)
             }
         }
         let sigma;

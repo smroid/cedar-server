@@ -361,13 +361,14 @@ message CalibrationData {
   optional google.protobuf.Timestamp calibration_end_time = 2;
   optional float calibration_temperature_celsius = 3;
 
-  // If no calibration has been done, these will have reasonable default values
+  // Exposure time determined to yield the desired number of star detections
+  // during calibration.
+  // Operation mode varies the exposure duration around this value based on
+  // the current detected star count.
+  // If no calibration has been done, this will have reasonable default value
   // based on setup mode's auto exposure (or manual exposure setting during
   // setup).
-  // TODO: change to target_exposure_time, for desired number of star detections.
-  // min/max exposure times are bracketed from target.
-  optional google.protobuf.Duration min_exposure_time = 4;
-  optional google.protobuf.Duration max_exposure_time = 5;
+  optional google.protobuf.Duration target_exposure_time = 4;
 
   // The camera gain value [0..100] at which S/N is maximized.
   // Omitted if a sky/camera calibration has not been done.
@@ -379,17 +380,11 @@ message CalibrationData {
 
   // The optimal S/N factor used to determine if a background-subtracted pixel
   // is bright enough relative to the noise measure to be considered part of a
-  // star.
+  // star. TODO: how do we determine this?
   // Omitted if a sky/camera calibration has not been done.
   optional float detection_sigma = 8;
 
-  // Omitted if a sky/camera calibration has not been done.
-  // TODO: This depends on the Tetra3 database being deep enough to validate the
-  // faintest imaged stars? Or extrapolate dimward from the faintest Tetra3
-  // matches? Risks confusing false positives as faint stars.
-  optional float min_exposure_limiting_magnitude = 10;
-  optional float max_exposure_limiting_magnitude = 11;
-
+  // TODO: revise
   // The following fields are set when a plate solution is obtained in setup
   // mode. The UI might choose to block exit out of setup mode until a plate
   // solution has been obtained so these can be determined, allowing non-setup

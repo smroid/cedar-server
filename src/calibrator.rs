@@ -17,7 +17,6 @@ impl Calibrator {
     }
 
     pub fn calibrate_offset(&self) -> Result<Offset, CanonicalError> {
-        let _restore_settings = RestoreSettings::new(self.camera.clone());
         // Goal: find the minimum camera offset setting that avoids
         //     black crush (too many zero-value pixels).
         // Assumption: camera is pointed at sky which is mostly dark. Camera
@@ -27,6 +26,8 @@ impl Calibrator {
         // * Use 1ms exposures.
         // * Starting at offset=0, as long as >1% of pixels have zero
         //   value, increase the offset.
+
+        let _restore_settings = RestoreSettings::new(self.camera.clone());
         let mut locked_camera = self.camera.lock().unwrap();
 
         let optimal_gain = locked_camera.optimal_gain();
@@ -57,13 +58,13 @@ impl Calibrator {
     }
 }
 
+// RAII gadget for saving/restoring camera settings.
 struct RestoreSettings {
     camera: Arc<Mutex<dyn AbstractCamera>>,
     gain: Gain,
     offset: Offset,
     exp_duration: Duration,
 }
-
 impl RestoreSettings {
     fn new(camera: Arc<Mutex<dyn AbstractCamera>>) -> Self {
         let locked_camera = camera.lock().unwrap();
@@ -75,7 +76,6 @@ impl RestoreSettings {
         }
     }
 }
-
 impl Drop for RestoreSettings {
     fn drop(&mut self) {
         let mut locked_camera = self.camera.lock().unwrap();
