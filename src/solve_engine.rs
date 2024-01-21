@@ -80,7 +80,7 @@ impl SolveEngine {
     pub fn new(detect_engine: Arc<Mutex<DetectEngine>>,
                tetra3_server_address: String,
                update_interval: Duration, stats_capacity: usize)
-               -> SolveEngine {
+               -> Self {
         SolveEngine{
             state: Arc::new(Mutex::new(SolveState{
                 frame_id: None,

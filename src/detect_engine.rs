@@ -86,7 +86,7 @@ impl DetectEngine {
                camera: Arc<Mutex<dyn AbstractCamera>>,
                update_interval: Duration, auto_exposure: bool,
                focus_mode_enabled: bool, star_count_goal: i32, stats_capacity: usize)
-               -> DetectEngine {
+               -> Self {
         DetectEngine{
             min_exposure_duration,
             max_exposure_duration,
