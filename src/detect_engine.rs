@@ -286,7 +286,7 @@ impl DetectEngine {
                 let locked_state = state.lock().unwrap();
                 frame_id = locked_state.frame_id;
             }
-            let captured_image: Arc<CapturedImage>;
+            let captured_image;
             let mut locked_camera = camera.lock().unwrap();
             match locked_camera.capture_image(frame_id) {
                 Ok((img, id)) => {
@@ -451,7 +451,7 @@ impl DetectEngine {
             // Post the result.
             locked_state.detect_result = Some(DetectResult{
                 frame_id: locked_state.frame_id.unwrap(),
-                captured_image: captured_image.clone(),
+                captured_image: captured_image,
                 binned_image: Arc::new(binned_image.unwrap()),
                 star_candidates: stars,
                 hot_pixel_count: hot_pixel_count as i32,
@@ -475,7 +475,7 @@ pub struct DetectResult {
 
     // The full resolution camera image used to produce the information in this
     // detect result.
-    pub captured_image: Arc<CapturedImage>,
+    pub captured_image: CapturedImage,
 
     // The 2x2 binned image computed (with hot pixel removal) from
     // `captured_image`.

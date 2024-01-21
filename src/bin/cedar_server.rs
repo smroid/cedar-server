@@ -345,6 +345,8 @@ impl MyCedar {
         let optimal_gain = locked_camera.optimal_gain();
         locked_camera.set_gain(optimal_gain)?;
         locked_camera.set_offset(Offset::new(3))?;
+        self.solve_engine.lock().unwrap().set_fov_estimate(/*fov_estimate=*/None,
+                                                           /*fov_max_error*/None)?;
         *self.calibration_data.lock().unwrap() = CalibrationData{..Default::default()};
         Ok(())
     }
@@ -614,6 +616,8 @@ impl MyCedar {
                 exposure_time: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
+                // TODO: command line args for detection_{sigma,max_size}. Or
+                // figure out how to calibrate them.
                 detection_sigma: Some(8.0),
                 detection_max_size: Some(8),
                 update_interval: Some(prost_types::Duration {

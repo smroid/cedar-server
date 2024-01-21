@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use image::GrayImage;
 use imageproc::stats::histogram;
 use log::warn;
 
@@ -8,6 +9,7 @@ use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
 use canonical_error::{CanonicalError, failed_precondition_error};
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
+use crate::tetra3_server::SolveRequest;
 
 pub struct Calibrator {
     camera: Arc<Mutex<dyn AbstractCamera>>,
@@ -82,7 +84,7 @@ impl Calibrator {
         let _restore_settings = RestoreSettings::new(self.camera.clone());
 
         self.camera.lock().unwrap().set_exposure_duration(setup_exposure_duration)?;
-        let (mut stars, frame_id) = self.acquire_image_get_stars(
+        let (_, mut stars, frame_id) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_sigma, detection_max_size)?;
 
         let mut num_stars_detected = stars.len();
@@ -103,7 +105,7 @@ impl Calibrator {
         // Iterate with the refined exposure duration.
         self.camera.lock().unwrap().set_exposure_duration(
             Duration::from_secs_f32(scaled_exposure_duration_secs))?;
-        (stars, _) = self.acquire_image_get_stars(
+        (_, stars, _) = self.acquire_image_get_stars(
             Some(frame_id), detection_sigma, detection_max_size)?;
 
         num_stars_detected = stars.len();
@@ -125,15 +127,57 @@ impl Calibrator {
 
     // TODO: calibrate_gain()
 
-    // result is FOV (degrees), lens distortion, solve time.
-    // TODO: pass in stars? Optional, makes exposure if needed.
-    // pub fn calibrate_optical(&self) -> Result<(f32, f32, Duration), CanonicalError> {
-    // }
+    // Result is FOV (degrees), lens distortion, solve time.
+    pub fn calibrate_optical(&self, exposure_duration: Duration,
+                             detection_sigma: f32, detection_max_size: i32)
+                             -> Result<(f32, f32, Duration), CanonicalError> {
+        // Goal: find the field of view, lens distortion, and representative
+        // plate solve time.
+        //
+        // Assumption: camera is focused and pointed at sky with stars.
+        //
+        // Approach:
+        // * Grab an image, detect the stars.
+        // * Do a plate solution with no FOV estimate and distortion estimate.
+        //   Use a generous match_max_error value and a very generous
+        //   solve_timeout.
+
+        let _restore_settings = RestoreSettings::new(self.camera.clone());
+
+        self.camera.lock().unwrap().set_exposure_duration(exposure_duration)?;
+        let (image, stars, _) = self.acquire_image_get_stars(
+            /*frame_id=*/None, detection_sigma, detection_max_size)?;
+
+        let num_stars_detected = stars.len();
+        if num_stars_detected < 4 {
+            return Err(failed_precondition_error(
+                format!("Too few stars detected ({})", num_stars_detected).as_str()))
+        }
+
+        // Set up SolveRequest.
+        let mut solve_request = SolveRequest::default();
+        solve_request.fov_estimate = None;
+        solve_request.fov_max_error = None;
+        solve_request.solve_timeout = Some(prost_types::Duration {
+            seconds: 5, nanos: 0,
+        });
+
+        solve_request.distortion = Some(0.0);
+        solve_request.return_matches = false;
+        solve_request.match_max_error = Some(0.005);
+
+
+        Ok((10.0, 0.0, Duration::ZERO))
+    }
+
+    // TODO: calibrate detection_sigma, detection_max_size? How...
 
 
     fn acquire_image_get_stars(&self, frame_id: Option<i32>,
                                detection_sigma: f32, detection_max_size: i32)
-                               -> Result<(Vec<StarDescription>, i32), CanonicalError> {
+                               -> Result<(Arc<GrayImage>,
+                                          Vec<StarDescription>,
+                                          i32), CanonicalError> {
         let (captured_image, frame_id) =
             self.camera.lock().unwrap().capture_image(frame_id)?;
         // Run CedarDetect on the image.
@@ -144,7 +188,7 @@ impl Calibrator {
                                  detection_sigma, detection_max_size as u32,
                                  /*use_binned_image=*/true,
                                  /*return_binned_image=*/false);
-        Ok((stars, frame_id))
+        Ok((image.clone(), stars, frame_id))
     }
 }
 
