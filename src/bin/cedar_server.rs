@@ -30,6 +30,7 @@ use cedar::cedar::{ActionRequest,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
                    Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
                    ProcessingStats, Rectangle, StarCentroid};
+use ::cedar::calibrator::Calibrator;
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::solve_engine::{PlateSolution, SolveEngine};
 use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
@@ -72,7 +73,7 @@ struct MyCedar {
     solve_engine: Arc<Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
     _tetra3_subprocess: Tetra3Subprocess,
-    // TODO: calibrator object. Has methods for short/long calibrations.
+    calibrator: Arc<Mutex<Calibrator>>,
 
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
@@ -142,6 +143,14 @@ impl Cedar for MyCedar {
                 detect_engine.set_focus_mode(false);
                 // TODO: if we were previously in focus mode, initiate a short
                 // calibration.
+                let locked_calibrator = self.calibrator.lock().unwrap();
+                info!("Calibrating offset");
+                match locked_calibrator.calibrate_offset() {
+                    Ok(offset) => {
+                        info!("Calibrated offset: {:?}", offset);
+                    },
+                    Err(x) => { return Err(tonic_status(x)); }
+                }
             } else {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got invalid operating_mode: {}.", operating_mode)));
@@ -338,6 +347,8 @@ impl MyCedar {
         let mut plate_solution: Option<PlateSolution> = None;
         let mut solve_finish_time: Option<SystemTime> = None;
 
+        // TODO: if calibration active, block until done.
+
         if self.operation_settings.lock().unwrap().operating_mode.unwrap() ==
             OperatingMode::Setup as i32
         {
@@ -468,6 +479,10 @@ impl MyCedar {
                 image_data: center_peak_bmp_buf,
             });
         }
+        frame_result.processing_stats = Some(ProcessingStats {
+            detect_latency: Some(detect_result.detect_latency_stats),
+            ..Default::default()
+        });
         let mut position = self.position.lock().unwrap();
         position.valid = false;
         if tetra3_solve_result.is_some() {
@@ -495,14 +510,7 @@ impl MyCedar {
                 }
             }
             frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
-        }
-        frame_result.processing_stats = Some(ProcessingStats {
-            detect_latency: Some(detect_result.detect_latency_stats),
-            ..Default::default()
-        });
-        if self.operation_settings.lock().unwrap().operating_mode.unwrap() ==
-            OperatingMode::Operate as i32
-        {
+
             let stats = &mut frame_result.processing_stats.as_mut().unwrap();
             let plate_solution = &plate_solution.as_ref().unwrap();
             stats.overall_latency =
@@ -568,6 +576,7 @@ impl MyCedar {
             position,
             _tetra3_subprocess: Tetra3Subprocess::new(
                 tetra3_script, tetra3_database).unwrap(),
+            calibrator: Arc::new(Mutex::new(Calibrator::new(camera.clone()))),
             center_peak_position: Arc::new(Mutex::new(None)),
             overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
         };
