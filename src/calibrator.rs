@@ -9,7 +9,7 @@ use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
 use canonical_error::{CanonicalError, failed_precondition_error};
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
-use crate::tetra3_server::SolveRequest;
+use crate::tetra3_server::{ImageCoord, SolveRequest};
 
 pub struct Calibrator {
     camera: Arc<Mutex<dyn AbstractCamera>>,
@@ -147,6 +147,7 @@ impl Calibrator {
         self.camera.lock().unwrap().set_exposure_duration(exposure_duration)?;
         let (image, stars, _) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_sigma, detection_max_size)?;
+        let (width, height) = image.dimensions();
 
         let num_stars_detected = stars.len();
         if num_stars_detected < 4 {
@@ -161,10 +162,16 @@ impl Calibrator {
         solve_request.solve_timeout = Some(prost_types::Duration {
             seconds: 5, nanos: 0,
         });
-
         solve_request.distortion = Some(0.0);
         solve_request.return_matches = false;
         solve_request.match_max_error = Some(0.005);
+
+        for star in &stars {
+            solve_request.star_centroids.push(ImageCoord{x: star.centroid_x,
+                                                         y: star.centroid_y});
+        }
+        solve_request.image_width = width as i32;
+        solve_request.image_height = height as i32;
 
 
         Ok((10.0, 0.0, Duration::ZERO))

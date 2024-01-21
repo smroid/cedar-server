@@ -19,6 +19,9 @@ use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
 pub struct SolveEngine {
+    // Our connection to the tetra3 gRPC server.
+    client: Arc<Mutex<Tetra3Client<tonic::transport::Channel>>>,
+
     // Our state, shared between SolveEngine methods and the worker thread.
     state: Arc<Mutex<SolveState>>,
 
@@ -28,9 +31,6 @@ pub struct SolveEngine {
     // Condition variable signalled whenever `state.plate_solution` is populated.
     // Also signalled when the worker thread exits.
     plate_solution_available: Arc<Condvar>,
-
-    // The Tetra3 server we invoke for plate solving.
-    tetra3_server_address: String,
 }
 
 // State shared between worker thread and the SolveEngine methods.
@@ -76,11 +76,40 @@ impl Drop for SolveEngine {
 }
 
 impl SolveEngine {
-    pub fn new(detect_engine: Arc<Mutex<DetectEngine>>,
-               tetra3_server_address: String,
-               update_interval: Duration, stats_capacity: usize)
-               -> Self {
-        SolveEngine{
+    async fn connect(tetra3_server_address: String)
+                     -> Result<Tetra3Client<tonic::transport::Channel>, CanonicalError> {
+        // Set up gRPC client, connect to a UDS socket. URL is ignored.
+        let mut backoff = Duration::from_millis(1);
+        loop {
+            let addr = tetra3_server_address.clone();
+            let channel = Endpoint::try_from("http://[::]:50051").unwrap()
+                .connect_with_connector(service_fn(move |_: Uri| {
+                    UnixStream::connect(addr.clone())
+                })).await;
+            match channel {
+                Ok(ch) => {
+                    return Ok(Tetra3Client::new(ch));
+                },
+                Err(e) => {
+                    if backoff > Duration::from_secs(5) {
+                        return Err(failed_precondition_error(
+                            format!("Error connecting to Tetra server at {:?}: {:?}",
+                                    tetra3_server_address, e).as_str()));
+                    }
+                    thread::sleep(backoff);
+                    backoff *= 2;
+                }
+            }
+        }
+    }
+
+    pub async fn new(detect_engine: Arc<Mutex<DetectEngine>>,
+                     tetra3_server_address: String,
+                     update_interval: Duration, stats_capacity: usize)
+                     -> Result<Self, CanonicalError> {
+        let client = Self::connect(tetra3_server_address).await?;
+        Ok(SolveEngine{
+            client: Arc::new(Mutex::new(client)),
             state: Arc::new(Mutex::new(SolveState{
                 frame_id: None,
                 update_interval,
@@ -105,8 +134,7 @@ impl SolveEngine {
             })),
             detect_engine: detect_engine.clone(),
             plate_solution_available: Arc::new(Condvar::new()),
-            tetra3_server_address,
-        }
+        })
     }
 
     pub fn set_update_interval(&mut self, update_interval: Duration)
@@ -231,14 +259,15 @@ impl SolveEngine {
             if state.worker_thread.is_none() {
                 // Give time for tetra3_server binary to start up and accept connections.
                 thread::sleep(Duration::from_secs(1));
-                let cloned_addr = self.tetra3_server_address.clone();
+                let cloned_client = self.client.clone();
                 let cloned_state = self.state.clone();
                 let cloned_detect_engine = self.detect_engine.clone();
                 let cloned_condvar = self.plate_solution_available.clone();
                 state.worker_thread = Some(thread::spawn(|| {
                     let rt = tokio::runtime::Runtime::new().unwrap();
                     rt.block_on(SolveEngine::worker(
-                        cloned_addr, cloned_state, cloned_detect_engine, cloned_condvar));
+                        cloned_client, cloned_state,
+                        cloned_detect_engine, cloned_condvar));
                 }));
             }
             if state.plate_solution.is_none() {
@@ -272,13 +301,17 @@ impl SolveEngine {
     pub fn save_image(&self) -> Result<(), CanonicalError> {
         // Grab most recent image.
         let mut locked_detect_engine = self.detect_engine.lock().unwrap();
-        let captured_image = &locked_detect_engine.get_next_result(/*frame_id=*/None).captured_image;
+        let captured_image =
+            &locked_detect_engine.get_next_result(/*frame_id=*/None).captured_image;
         let image: &GrayImage = &captured_image.image;
         let readout_time: &SystemTime = &captured_image.readout_time;
-        let exposure_duration_ms = captured_image.capture_params.exposure_duration.as_millis();
+        let exposure_duration_ms =
+            captured_image.capture_params.exposure_duration.as_millis();
 
-        let seconds_since_epoch = readout_time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-        let datetime_utc: DateTime<Utc> = DateTime::from_timestamp(seconds_since_epoch as i64, 0).unwrap();
+        let seconds_since_epoch =
+            readout_time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        let datetime_utc: DateTime<Utc> =
+            DateTime::from_timestamp(seconds_since_epoch as i64, 0).unwrap();
         let datetime_local: DateTime<Local> = DateTime::from(datetime_utc);
 
         // Generate file name.
@@ -309,31 +342,10 @@ impl SolveEngine {
         }
     }
 
-    async fn worker(tetra3_server_address: String,
+    async fn worker(client: Arc<Mutex<Tetra3Client<tonic::transport::Channel>>>,
                     state: Arc<Mutex<SolveState>>,
                     detect_engine: Arc<Mutex<DetectEngine>>,
                     plate_solution_available: Arc<Condvar>) {
-        let addr = tetra3_server_address.clone();
-        // Set up gRPC client, connect to a UDS socket. URL is ignored.
-        let channel = Endpoint::try_from("http://[::]:50051").unwrap()
-            .connect_with_connector(service_fn(move |_: Uri| {
-                UnixStream::connect(tetra3_server_address.clone())
-            })).await;
-        let mut client;
-        match channel {
-            Ok(ch) => {
-                info!("Starting solve engine");
-                client = Tetra3Client::new(ch);
-            },
-            Err(e) => {
-                error!("Error connecting to Tetra server at {:?}: {:?}", addr, e);
-                let mut locked_state = state.lock().unwrap();
-                locked_state.worker_thread = None;
-                plate_solution_available.notify_all();
-                return
-            }
-        }
-
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
         loop {
@@ -428,7 +440,7 @@ impl SolveEngine {
             let mut tetra3_solve_result: Option<SolveResultProto> = None;
             let mut solve_finish_time: Option<SystemTime> = None;
             if detect_result.star_candidates.len() >= minimum_stars as usize {
-                match client.solve_from_centroids(solve_request).await {
+                match client.lock().unwrap().solve_from_centroids(solve_request).await {
                     Err(e) => {
                         error!("Unexpected error {:?}", e);
                         break;  // Exit the worker thread.

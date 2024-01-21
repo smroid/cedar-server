@@ -146,6 +146,7 @@ impl Tetra3Subprocess {
             stopping: Arc::new(Mutex::new(false)),
         };
         t3_subprocess.make_wait_worker();
+        thread::sleep(Duration::from_secs(2));
         Ok(t3_subprocess)
     }
 
