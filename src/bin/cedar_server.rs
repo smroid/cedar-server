@@ -339,16 +339,17 @@ impl MyCedar {
         solve_engine.set_update_interval(update_interval)
     }
 
-    // Called when returning to SETUP mode.
+    // Called when entering SETUP mode.
     fn set_pre_calibration_defaults(&self) -> Result<(), CanonicalError> {
         let mut locked_camera = self.camera.lock().unwrap();
-        locked_camera.set_gain(Gain::new(100))?;
+        let optimal_gain = locked_camera.optimal_gain();
+        locked_camera.set_gain(optimal_gain)?;
         locked_camera.set_offset(Offset::new(3))?;
         *self.calibration_data.lock().unwrap() = CalibrationData{..Default::default()};
         Ok(())
     }
 
-    // Called when entering to OPERATE mode.
+    // Called when entering OPERATE mode.
     fn calibrate(&self) -> Result<(), CanonicalError> {
         let locked_calibrator = self.calibrator.lock().unwrap();
 
@@ -356,17 +357,15 @@ impl MyCedar {
         let offset = match locked_calibrator.calibrate_offset() {
             Ok(o) => o,
             Err(e) => {
-                warn!{"Error while calibrating offset: {:?}", e};
+                warn!{"Error while calibrating offset: {:?}, using 3", e};
                 Offset::new(3)  // Sane fallback value.
             }
         };
         info!("Calibrated offset: {:?}", offset);  // TEMPORARY
-        let mut locked_camera = self.camera.lock().unwrap();
-        locked_camera.set_offset(offset)?;
+        self.camera.lock().unwrap().set_offset(offset)?;
 
         // What was the final exposure duration coming out of SETUP mode?
-        let setup_exposure_duration = locked_camera.get_exposure_duration();
-        drop(locked_camera);
+        let setup_exposure_duration = self.camera.lock().unwrap().get_exposure_duration();
         info!("Calibrating exposure duration"); // TEMPORARY
         let op_settings = &self.operation_settings.lock().unwrap();
         let exp_duration = match locked_calibrator.calibrate_exposure_duration(
@@ -376,13 +375,13 @@ impl MyCedar {
             op_settings.detection_max_size.unwrap()) {
             Ok(ed) => ed,
             Err(e) => {
-                warn!{"Error while calibrating exposure duration: {:?}", e};
+                warn!{"Error while calibrating exposure duration: {:?}, using {:?}",
+                      e, setup_exposure_duration};
                 setup_exposure_duration  // Sane fallback value.
             }
         };
         info!("Calibrated exposure duration: {:?}", exp_duration);  // TEMPORARY
-        locked_camera = self.camera.lock().unwrap();
-        locked_camera.set_exposure_duration(exp_duration)?;
+        self.camera.lock().unwrap().set_exposure_duration(exp_duration)?;
 
         // TODO: additional calibrations.
 
@@ -390,6 +389,9 @@ impl MyCedar {
         locked_calibration_data.camera_offset = Some(offset.value());
         locked_calibration_data.target_exposure_time =
             Some(prost_types::Duration::try_from(exp_duration).unwrap());
+
+        self.detect_engine.lock().unwrap().set_calibrated_exposure_duration(
+            exp_duration);
         Ok(())
     }
 

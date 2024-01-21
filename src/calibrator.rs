@@ -2,11 +2,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use imageproc::stats::histogram;
-use log::{info, warn};
+use log::warn;
 
 use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
 use canonical_error::{CanonicalError, failed_precondition_error};
-use cedar_detect::algorithm::{estimate_noise_from_image, get_stars_from_image};
+use cedar_detect::algorithm::{StarDescription,
+                              estimate_noise_from_image, get_stars_from_image};
 
 pub struct Calibrator {
     camera: Arc<Mutex<dyn AbstractCamera>>,
@@ -21,11 +22,11 @@ impl Calibrator {
 
     pub fn calibrate_offset(&self) -> Result<Offset, CanonicalError> {
         // Goal: find the minimum camera offset setting that avoids
-        //     black crush (too many zero-value pixels).
-        // Assumption: camera is pointed at sky which is mostly dark. Camera
-        //     ROI is full sensor, no binning.
+        // black crush (too many zero-value pixels).
+        //
+        // Assumption: camera is pointed at sky which is mostly dark.
+        //
         // Approach:
-        // * Use camera's self-reported optimal gain.
         // * Use 1ms exposures.
         // * Starting at offset=0, as long as >1% of pixels have zero
         //   value, increase the offset.
@@ -33,8 +34,6 @@ impl Calibrator {
         let _restore_settings = RestoreSettings::new(self.camera.clone());
         let mut locked_camera = self.camera.lock().unwrap();
 
-        let optimal_gain = locked_camera.optimal_gain();
-        locked_camera.set_gain(optimal_gain)?;
         locked_camera.set_exposure_duration(Duration::from_millis(1))?;
         let (width, height) = locked_camera.dimensions();
         let total_pixels = width * height;
@@ -64,14 +63,15 @@ impl Calibrator {
         &self, setup_exposure_duration: Duration, star_count_goal: i32,
         detection_sigma: f32, detection_max_size: i32)
         -> Result<Duration, CanonicalError> {
-
         // Goal: find the camera exposure duration that yields the desired
-        //     number of detected stars.
-        // Assumption: camera is focused and pointed at sky with stars. ROI is
-        //     full sensor, no binning. Camera offset is set properly.
+        // number of detected stars.
+        //
+        // Assumption: camera is focused and pointed at sky with stars. The
+        // passed `setup_exposure_duration` yields a large number of detected
+        // stars (i.e. at least a good fraction of `star_count_goal`).
+        //
         // Approach:
-        // * Use camera's self-reported optimal gain.
-        // * With the `setup_exposure_duration`
+        // * Using the `setup_exposure_duration`
         //   * Grab an image.
         //   * Detect the stars.
         //   * If close enough to the goal, scale the exposure duration and
@@ -80,24 +80,16 @@ impl Calibrator {
         //     do one more exposure/detect/scale.
 
         let _restore_settings = RestoreSettings::new(self.camera.clone());
-        let mut locked_camera = self.camera.lock().unwrap();
 
-        let optimal_gain = locked_camera.optimal_gain();
-        locked_camera.set_gain(optimal_gain)?;
-        locked_camera.set_exposure_duration(setup_exposure_duration)?;
-        let (mut captured_image, frame_id) =
-            locked_camera.capture_image(/*prev_frame_id=*/None)?;
-        let frame_id = Some(frame_id);
+        self.camera.lock().unwrap().set_exposure_duration(setup_exposure_duration)?;
+        let (mut stars, frame_id) = self.acquire_image_get_stars(
+            /*frame_id=*/None, detection_sigma, detection_max_size)?;
 
-        // Run CedarDetect on the image.
-        let mut image = &captured_image.image;
-        let mut noise_estimate = estimate_noise_from_image(&image);
-        let (mut stars, _, _) =
-            get_stars_from_image(&image, noise_estimate,
-                                 detection_sigma, detection_max_size as u32,
-                                 /*use_binned_image=*/true,
-                                 /*return_binned_image=*/false);
         let mut num_stars_detected = stars.len();
+        if num_stars_detected < (star_count_goal / 5) as usize {
+            return Err(failed_precondition_error(
+                format!("Too few stars detected ({})", num_stars_detected).as_str()))
+        }
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         let mut star_goal_fraction =
             f32::max(num_stars_detected as f32, 1.0) / star_count_goal as f32;
@@ -109,18 +101,16 @@ impl Calibrator {
         }
 
         // Iterate with the refined exposure duration.
-        locked_camera.set_exposure_duration(
+        self.camera.lock().unwrap().set_exposure_duration(
             Duration::from_secs_f32(scaled_exposure_duration_secs))?;
-        (captured_image, _) = locked_camera.capture_image(frame_id)?;
+        (stars, _) = self.acquire_image_get_stars(
+            Some(frame_id), detection_sigma, detection_max_size)?;
 
-        image = &captured_image.image;
-        noise_estimate = estimate_noise_from_image(&image);
-        (stars, _, _) =
-            get_stars_from_image(&image, noise_estimate,
-                                 detection_sigma, detection_max_size as u32,
-                                 /*use_binned_image=*/true,
-                                 /*return_binned_image=*/false);
         num_stars_detected = stars.len();
+        if num_stars_detected < (star_count_goal / 5) as usize {
+            return Err(failed_precondition_error(
+                format!("Too few stars detected ({})", num_stars_detected).as_str()))
+        }
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         star_goal_fraction =
             f32::max(num_stars_detected as f32, 1.0) / star_count_goal as f32;
@@ -131,6 +121,30 @@ impl Calibrator {
                   star_goal_fraction);
         }
         Ok(Duration::from_secs_f32(scaled_exposure_duration_secs))
+    }
+
+    // TODO: calibrate_gain()
+
+    // result is FOV (degrees), lens distortion, solve time.
+    // TODO: pass in stars? Optional, makes exposure if needed.
+    // pub fn calibrate_optical(&self) -> Result<(f32, f32, Duration), CanonicalError> {
+    // }
+
+
+    fn acquire_image_get_stars(&self, frame_id: Option<i32>,
+                               detection_sigma: f32, detection_max_size: i32)
+                               -> Result<(Vec<StarDescription>, i32), CanonicalError> {
+        let (captured_image, frame_id) =
+            self.camera.lock().unwrap().capture_image(frame_id)?;
+        // Run CedarDetect on the image.
+        let image = &captured_image.image;
+        let noise_estimate = estimate_noise_from_image(&image);
+        let (stars, _, _) =
+            get_stars_from_image(&image, noise_estimate,
+                                 detection_sigma, detection_max_size as u32,
+                                 /*use_binned_image=*/true,
+                                 /*return_binned_image=*/false);
+        Ok((stars, frame_id))
     }
 }
 

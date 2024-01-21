@@ -160,8 +160,13 @@ impl DetectEngine {
     }
     // TODO: set_star_count_goal()?
 
-    // TODO: calibration logic by which our calibrated_exposure_duration value is
-    // set.
+    pub fn set_calibrated_exposure_duration(
+        &mut self, calibrated_exposure_duration: Duration) {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.calibrated_exposure_duration = Some(calibrated_exposure_duration);
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+    }
 
     /// Obtains a result bundle, as configured above. The returned result is
     /// "fresh" in that we either wait to process a new exposure or return the
@@ -415,14 +420,14 @@ impl DetectEngine {
                     //   calibrated_exposure_duration.
                     new_exposure_duration_secs =
                         prev_exposure_duration_secs / star_goal_fraction;
-                    // Bound exposure duration to be within 0.5..2.0x
+                    // Bound exposure duration to be within two stops of
                     // calibrated_exposure_duration.
                     new_exposure_duration_secs = f32::max(
                         new_exposure_duration_secs,
-                        (calibrated_exposure_duration.unwrap() / 2).as_secs_f32());
+                        (calibrated_exposure_duration.unwrap() / 4).as_secs_f32());
                     new_exposure_duration_secs = f32::min(
                         new_exposure_duration_secs,
-                        (calibrated_exposure_duration.unwrap() * 2).as_secs_f32());
+                        (calibrated_exposure_duration.unwrap() * 4).as_secs_f32());
                 }
             }
 
