@@ -70,9 +70,9 @@ struct MyCedar {
     operation_settings: Mutex<OperationSettings>,
     calibration_data: Mutex<CalibrationData>,
     detect_engine: Arc<Mutex<DetectEngine>>,
+    _tetra3_subprocess: Tetra3Subprocess,
     solve_engine: Arc<Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
-    _tetra3_subprocess: Tetra3Subprocess,
     calibrator: Arc<Mutex<Calibrator>>,
 
     // For boresight capturing.
@@ -584,15 +584,15 @@ impl MyCedar {
         frame_result
     }
 
-    pub fn new(min_exposure_duration: Duration,
-               max_exposure_duration: Duration,
-               tetra3_script: String,
-               tetra3_database: String,
-               tetra3_uds: String,
-               camera: Arc<Mutex<dyn AbstractCamera>>,
-               position: Arc<Mutex<CelestialPosition>>,
-               star_count_goal: i32,
-               stats_capacity: usize) -> Self {
+    pub async fn new(min_exposure_duration: Duration,
+                     max_exposure_duration: Duration,
+                     tetra3_script: String,
+                     tetra3_database: String,
+                     tetra3_uds: String,
+                     camera: Arc<Mutex<dyn AbstractCamera>>,
+                     position: Arc<Mutex<CelestialPosition>>,
+                     star_count_goal: i32,
+                     stats_capacity: usize) -> Self {
         let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
             min_exposure_duration,
             max_exposure_duration,
@@ -630,14 +630,14 @@ impl MyCedar {
             }),
             calibration_data: Mutex::new(CalibrationData{..Default::default()}),
             detect_engine: detect_engine.clone(),
+            _tetra3_subprocess: Tetra3Subprocess::new(
+                tetra3_script, tetra3_database).unwrap(),
             solve_engine: Arc::new(Mutex::new(SolveEngine::new(
                 detect_engine.clone(),
                 tetra3_uds,
                 /*update_interval=*/Duration::ZERO,
-                stats_capacity))),
+                stats_capacity).await.unwrap())),
             position,
-            _tetra3_subprocess: Tetra3Subprocess::new(
-                tetra3_script, tetra3_database).unwrap(),
             calibrator: Arc::new(Mutex::new(Calibrator::new(camera.clone()))),
             center_peak_position: Arc::new(Mutex::new(None)),
             overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
@@ -744,7 +744,7 @@ async fn main() {
                                                    shared_position.clone(),
                                                    args.star_count_goal,
                                                    // TODO: arg for this?
-                                                   /*stats_capacity=*/100)))
+                                                   /*stats_capacity=*/100).await))
         .into_service();
 
     // Combine static content (flutter app) server and gRPC server into one service.
