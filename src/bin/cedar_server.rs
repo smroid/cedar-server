@@ -135,29 +135,28 @@ impl Cedar for MyCedar {
             self.operation_settings.lock().unwrap().camera_offset = Some(offset);
         }
         if req.operating_mode.is_some() {
-            let detect_engine = &mut self.detect_engine.lock().unwrap();
             let operating_mode = req.operating_mode.unwrap();
-            let mut locked_operation_settings = self.operation_settings.lock().unwrap();
             if operating_mode !=
-                locked_operation_settings.operating_mode.unwrap()
+                self.operation_settings.lock().unwrap().operating_mode.unwrap()
             {
                 if operating_mode == OperatingMode::Setup as i32 {
                     match self.set_pre_calibration_defaults() {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
                     }
-                    detect_engine.set_focus_mode(true);
+                    self.detect_engine.lock().unwrap().set_focus_mode(true);
                 } else if operating_mode == OperatingMode::Operate as i32 {
                     match self.calibrate() {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
                     }
-                    detect_engine.set_focus_mode(false);
+                    self.detect_engine.lock().unwrap().set_focus_mode(false);
                 } else {
                     return Err(tonic::Status::invalid_argument(
                         format!("Got invalid operating_mode: {}.", operating_mode)));
                 }
-                locked_operation_settings.operating_mode = Some(operating_mode);
+                self.operation_settings.lock().unwrap().operating_mode =
+                    Some(operating_mode);
             }
         }
         if req.exposure_time.is_some() {
@@ -352,14 +351,45 @@ impl MyCedar {
     // Called when entering to OPERATE mode.
     fn calibrate(&self) -> Result<(), CanonicalError> {
         let locked_calibrator = self.calibrator.lock().unwrap();
-        info!("Calibrating offset");
-        let offset = locked_calibrator.calibrate_offset()?;
+
+        info!("Calibrating offset"); // TEMPORARY
+        let offset = match locked_calibrator.calibrate_offset() {
+            Ok(o) => o,
+            Err(e) => {
+                warn!{"Error while calibrating offset: {:?}", e};
+                Offset::new(3)  // Sane fallback value.
+            }
+        };
         info!("Calibrated offset: {:?}", offset);  // TEMPORARY
+        let mut locked_camera = self.camera.lock().unwrap();
+        locked_camera.set_offset(offset)?;
+
+        // What was the final exposure duration coming out of SETUP mode?
+        let setup_exposure_duration = locked_camera.get_exposure_duration();
+        drop(locked_camera);
+        info!("Calibrating exposure duration"); // TEMPORARY
+        let op_settings = &self.operation_settings.lock().unwrap();
+        let exp_duration = match locked_calibrator.calibrate_exposure_duration(
+            setup_exposure_duration,
+            self.detect_engine.lock().unwrap().get_star_count_goal(),
+            op_settings.detection_sigma.unwrap(),
+            op_settings.detection_max_size.unwrap()) {
+            Ok(ed) => ed,
+            Err(e) => {
+                warn!{"Error while calibrating exposure duration: {:?}", e};
+                setup_exposure_duration  // Sane fallback value.
+            }
+        };
+        info!("Calibrated exposure duration: {:?}", exp_duration);  // TEMPORARY
+        locked_camera = self.camera.lock().unwrap();
+        locked_camera.set_exposure_duration(exp_duration)?;
 
         // TODO: additional calibrations.
 
         let mut locked_calibration_data = self.calibration_data.lock().unwrap();
         locked_calibration_data.camera_offset = Some(offset.value());
+        locked_calibration_data.target_exposure_time =
+            Some(prost_types::Duration::try_from(exp_duration).unwrap());
         Ok(())
     }
 
