@@ -48,7 +48,6 @@ struct SolveState {
     // solve_from_centroids() function for a description of these items.
     fov_estimate: Option<f32>,
     fov_max_error: Option<f32>,
-    pattern_checking_stars: i32,
     match_radius: f32,
     match_threshold: f32,
     solve_timeout: Duration,
@@ -88,7 +87,6 @@ impl SolveEngine {
                 minimum_stars: 4,
                 fov_estimate: None,
                 fov_max_error: None,
-                pattern_checking_stars: 12,
                 match_radius: 0.01,
                 match_threshold: 0.001,
                 // solve_timeout: Duration::from_secs(5),
@@ -197,23 +195,6 @@ impl SolveEngine {
         }
         let mut locked_state = self.state.lock().unwrap();
         locked_state.minimum_stars = minimum_stars;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-        Ok(())
-    }
-
-    pub fn set_pattern_checking_stars(&mut self, pattern_checking_stars: i32)
-                                      -> Result<(), CanonicalError> {
-        // 4 is the bare minimum, because Tetra3 is choosing 4-star patterns
-        // from the `pattern_checking_stars`. A more realistic minimum would
-        // be 8.
-        if pattern_checking_stars < 4 {
-            return Err(invalid_argument_error(
-                format!("pattern_checking_stars must be at least 4; got {}",
-                        pattern_checking_stars).as_str()));
-        }
-        let mut locked_state = self.state.lock().unwrap();
-        locked_state.pattern_checking_stars = pattern_checking_stars;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
@@ -400,7 +381,6 @@ impl SolveEngine {
                 // Set up SolveRequest.
                 solve_request.fov_estimate = locked_state.fov_estimate;
                 solve_request.fov_max_error = locked_state.fov_max_error;
-                solve_request.pattern_checking_stars = Some(locked_state.pattern_checking_stars);
                 solve_request.match_radius = Some(locked_state.match_radius);
                 solve_request.match_threshold = Some(locked_state.match_threshold);
 

@@ -17,7 +17,6 @@ message SolveRequest {
   int32 image_height = 3;
   optional float fov_estimate = 4;
   optional float fov_max_error = 5;
-  optional int32 pattern_checking_stars = 6;
   optional float match_radius = 7;
   optional float match_threshold = 8;
   optional google.protobuf.Duration solve_timeout = 13;
