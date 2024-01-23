@@ -178,15 +178,15 @@ impl DetectEngine {
     /// has the same id value.
     /// Returns: the processed result along with its frame_id value.
     pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> DetectResult {
-        let mut state = self.state.lock().unwrap();
+        let mut locked_state = self.state.lock().unwrap();
         // Start worker thread if not yet started.
-        if state.worker_thread.is_none() {
+        if locked_state.worker_thread.is_none() {
             let min_exposure_duration = self.min_exposure_duration;
             let max_exposure_duration = self.max_exposure_duration;
             let cloned_state = self.state.clone();
             let cloned_camera = self.camera.clone();
             let cloned_condvar = self.detect_result_available.clone();
-            state.worker_thread = Some(thread::spawn(move || {
+            locked_state.worker_thread = Some(thread::spawn(move || {
                 DetectEngine::worker(min_exposure_duration,
                                      max_exposure_duration,
                                      cloned_state, cloned_camera, cloned_condvar);
@@ -194,22 +194,22 @@ impl DetectEngine {
         }
         // Get the most recently posted result.
         loop {
-            if state.detect_result.is_none() {
-                state = self.detect_result_available.wait(state).unwrap();
+            if locked_state.detect_result.is_none() {
+                locked_state = self.detect_result_available.wait(locked_state).unwrap();
                 continue;
             }
             // Wait if the posted result is the same as the one the caller has
             // already obtained.
             if prev_frame_id.is_some() &&
-                state.detect_result.as_ref().unwrap().frame_id == prev_frame_id.unwrap()
+                locked_state.detect_result.as_ref().unwrap().frame_id == prev_frame_id.unwrap()
             {
-                state = self.detect_result_available.wait(state).unwrap();
+                locked_state = self.detect_result_available.wait(locked_state).unwrap();
                 continue;
             }
             break;
         }
         // Don't consume it, other clients may want it.
-        state.detect_result.clone().unwrap()
+        locked_state.detect_result.clone().unwrap()
     }
 
     pub fn reset_session_stats(&mut self) {

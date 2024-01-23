@@ -9,6 +9,7 @@ use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
 use canonical_error::{CanonicalError, failed_precondition_error};
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
+use crate::solve_engine::SolveEngine;
 use crate::tetra3_server::{ImageCoord, SolveRequest};
 
 pub struct Calibrator {
@@ -127,8 +128,9 @@ impl Calibrator {
 
     // TODO: calibrate_gain()
 
-    // Result is FOV (degrees), lens distortion, solve time.
-    pub fn calibrate_optical(&self, exposure_duration: Duration,
+    // Result is FOV (degrees), lens distortion, solve duration.
+    pub fn calibrate_optical(&self, solve_engine: Arc<Mutex<SolveEngine>>,
+                             exposure_duration: Duration,
                              detection_sigma: f32, detection_max_size: i32)
                              -> Result<(f32, f32, Duration), CanonicalError> {
         // Goal: find the field of view, lens distortion, and representative
@@ -173,12 +175,22 @@ impl Calibrator {
         solve_request.image_width = width as i32;
         solve_request.image_height = height as i32;
 
-
-        Ok((10.0, 0.0, Duration::ZERO))
+        let solve_result_proto = solve_engine.lock().unwrap().solve(solve_request)?;
+        log::info!("solve result {:?}", solve_result_proto);  // TEMPORARY
+        let solve_duration = std::time::Duration::try_from(
+            solve_result_proto.solve_time.unwrap()).unwrap();
+        if solve_result_proto.image_center_coords.is_some() {
+            return Ok((solve_result_proto.fov.unwrap(),
+                       solve_result_proto.distortion.unwrap(),
+                       solve_duration));
+        } else {
+            return Err(failed_precondition_error(
+                format!("No plate solution; elapsed time {:?}",
+                        solve_duration).as_str()));
+        }
     }
 
     // TODO: calibrate detection_sigma, detection_max_size? How...
-
 
     fn acquire_image_get_stars(&self, frame_id: Option<i32>,
                                detection_sigma: f32, detection_max_size: i32)
