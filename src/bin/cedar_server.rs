@@ -71,7 +71,7 @@ struct MyCedar {
     calibration_data: Mutex<CalibrationData>,
     detect_engine: Arc<Mutex<DetectEngine>>,
     _tetra3_subprocess: Tetra3Subprocess,
-    solve_engine: Arc<Mutex<SolveEngine>>,
+    solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
     calibrator: Arc<Mutex<Calibrator>>,
 
@@ -140,7 +140,7 @@ impl Cedar for MyCedar {
                 self.operation_settings.lock().unwrap().operating_mode.unwrap()
             {
                 if operating_mode == OperatingMode::Setup as i32 {
-                    match self.set_pre_calibration_defaults() {
+                    match self.set_pre_calibration_defaults().await {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
                     }
@@ -203,7 +203,7 @@ impl Cedar for MyCedar {
                     format!("Got negative update_interval: {}.", update_interval)));
             }
             let std_duration = std::time::Duration::try_from(update_interval.clone()).unwrap();
-            match self.set_update_interval(std_duration) {
+            match self.set_update_interval(std_duration).await {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
@@ -230,7 +230,7 @@ impl Cedar for MyCedar {
         // TODO: what should we do with the client's RPC timeout? Perhaps our
         // call to get_next_frame() can be passed a deadline?
 
-        let frame_result = self.get_next_frame(prev_frame_id, main_image_mode);
+        let frame_result = self.get_next_frame(prev_frame_id, main_image_mode).await;
         Ok(tonic::Response::new(frame_result))
     }  // get_frame().
 
@@ -245,7 +245,7 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::failed_precondition(
                     format!("Not in Setup mode: {:?}.", operating_mode)));
             }
-            let solve_engine = &mut self.solve_engine.lock().unwrap();
+            let solve_engine = &mut self.solve_engine.lock().await;
             let cpp = self.center_peak_position.lock().unwrap();
             match solve_engine.set_target_pixel(
                 match cpp.as_ref() {
@@ -260,7 +260,7 @@ impl Cedar for MyCedar {
             }
         }
         if req.delete_boresight.unwrap_or(false) {
-            let solve_engine = &mut self.solve_engine.lock().unwrap();
+            let solve_engine = &mut self.solve_engine.lock().await;
             match solve_engine.set_target_pixel(None) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
@@ -281,14 +281,16 @@ impl Cedar for MyCedar {
             }
         }
         if req.reset_session_stats.unwrap_or(false) {
-            let detect_engine = &mut self.detect_engine.lock().unwrap();
-            let solve_engine = &mut self.solve_engine.lock().unwrap();
-            detect_engine.reset_session_stats();
+            {
+                let detect_engine = &mut self.detect_engine.lock().unwrap();
+                detect_engine.reset_session_stats();
+            }
+            let solve_engine = &mut self.solve_engine.lock().await;
             solve_engine.reset_session_stats();
             self.overall_latency_stats.lock().unwrap().reset_session();
         }
         if req.save_image.unwrap_or(false) {
-            let solve_engine = &mut self.solve_engine.lock().unwrap();
+            let solve_engine = &mut self.solve_engine.lock().await;
             match solve_engine.save_image() {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
@@ -331,22 +333,30 @@ impl MyCedar {
             max_size)
     }
 
-    fn set_update_interval(&self, update_interval: std::time::Duration)
-                         -> Result<(), CanonicalError> {
-        let detect_engine = &mut self.detect_engine.lock().unwrap();
-        let solve_engine = &mut self.solve_engine.lock().unwrap();
-        detect_engine.set_update_interval(update_interval)?;
+    async fn set_update_interval(&self, update_interval: std::time::Duration)
+                                 -> Result<(), CanonicalError> {
+        {
+            let detect_engine = &mut self.detect_engine.lock().unwrap();
+            detect_engine.set_update_interval(update_interval)?;
+        }
+        let solve_engine = &mut self.solve_engine.lock().await;
         solve_engine.set_update_interval(update_interval)
     }
 
     // Called when entering SETUP mode.
-    fn set_pre_calibration_defaults(&self) -> Result<(), CanonicalError> {
-        let mut locked_camera = self.camera.lock().unwrap();
-        let optimal_gain = locked_camera.optimal_gain();
-        locked_camera.set_gain(optimal_gain)?;
-        locked_camera.set_offset(Offset::new(3))?;
-        self.solve_engine.lock().unwrap().set_fov_estimate(/*fov_estimate=*/None,
-                                                           /*fov_max_error*/None)?;
+    async fn set_pre_calibration_defaults(&self) -> Result<(), CanonicalError> {
+        {
+            let mut locked_camera = self.camera.lock().unwrap();
+            let optimal_gain = locked_camera.optimal_gain();
+            locked_camera.set_gain(optimal_gain)?;
+            locked_camera.set_offset(Offset::new(3))?;
+        }
+        let mut locked_solve_engine = self.solve_engine.lock().await;
+        locked_solve_engine.set_fov_estimate(/*fov_estimate=*/None,
+                                             /*fov_max_error*/None)?;
+        locked_solve_engine.set_distortion(0.0)?;
+        locked_solve_engine.set_match_max_error(0.005)?;
+        locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
         *self.calibration_data.lock().unwrap() = CalibrationData{..Default::default()};
         Ok(())
     }
@@ -354,6 +364,7 @@ impl MyCedar {
     // Called when entering OPERATE mode.
     fn calibrate(&self) -> Result<(), CanonicalError> {
         let locked_calibrator = self.calibrator.lock().unwrap();
+        let mut locked_calibration_data = self.calibration_data.lock().unwrap();
 
         info!("Calibrating offset"); // TEMPORARY
         let offset = match locked_calibrator.calibrate_offset() {
@@ -365,16 +376,22 @@ impl MyCedar {
         };
         info!("Calibrated offset: {:?}", offset);  // TEMPORARY
         self.camera.lock().unwrap().set_offset(offset)?;
+        locked_calibration_data.camera_offset = Some(offset.value());
 
         // What was the final exposure duration coming out of SETUP mode?
         let setup_exposure_duration = self.camera.lock().unwrap().get_exposure_duration();
         info!("Calibrating exposure duration"); // TEMPORARY
-        let op_settings = &self.operation_settings.lock().unwrap();
+        let detection_sigma;
+        let detection_max_size;
+        {
+            let op_settings = self.operation_settings.lock().unwrap();
+            detection_sigma = op_settings.detection_sigma.unwrap();
+            detection_max_size = op_settings.detection_max_size.unwrap();
+        }
         let exp_duration = match locked_calibrator.calibrate_exposure_duration(
             setup_exposure_duration,
             self.detect_engine.lock().unwrap().get_star_count_goal(),
-            op_settings.detection_sigma.unwrap(),
-            op_settings.detection_max_size.unwrap()) {
+            detection_sigma, detection_max_size) {
             Ok(ed) => ed,
             Err(e) => {
                 warn!{"Error while calibrating exposure duration: {:?}, using {:?}",
@@ -384,21 +401,49 @@ impl MyCedar {
         };
         info!("Calibrated exposure duration: {:?}", exp_duration);  // TEMPORARY
         self.camera.lock().unwrap().set_exposure_duration(exp_duration)?;
+        locked_calibration_data.target_exposure_time =
+            Some(prost_types::Duration::try_from(exp_duration).unwrap());
+        self.detect_engine.lock().unwrap().set_calibrated_exposure_duration(
+            exp_duration);
+
+        // info!("Calibrating optical"); // TEMPORARY
+        // match locked_calibrator.calibrate_optical(
+        //     self.solve_engine.clone(), exp_duration,
+        //     detection_sigma, detection_max_size)
+        // {
+        //     Ok((fov, distortion, solve_duration)) => {
+        //         locked_calibration_data.fov_horizontal = Some(fov);
+        //         locked_calibration_data.lens_distortion = Some(distortion);
+        //         let solve_timeout =
+        //             std::cmp::max(solve_duration * 10, Duration::from_millis(500));
+        //         // let mut locked_solve_engine = self.solve_engine.lock().unwrap();
+        //         // locked_solve_engine.set_fov_estimate(Some(fov), Some(fov/10.0))?;
+        //         // locked_solve_engine.set_distortion(distortion)?;
+        //         // locked_solve_engine.set_match_max_error(0.002)?;
+        //         // locked_solve_engine.set_solve_timeout(solve_timeout)?;
+
+        //         info!("Calibrated fov {:?}, distortion {:?}, will use solve timeout {:?}",
+        //               fov, distortion, solve_timeout);  // TEMPORARY
+        //     }
+        //     Err(e) => {
+        //         warn!{"Error while calibrating optics: {:?}", e};
+        //         locked_calibration_data.fov_horizontal = None;
+        //         locked_calibration_data.lens_distortion = None;
+        //         let mut locked_solve_engine = self.solve_engine.lock().unwrap();
+        //         locked_solve_engine.set_fov_estimate(None, None)?;
+        //         locked_solve_engine.set_distortion(0.0)?;
+        //         locked_solve_engine.set_match_max_error(0.005)?;
+        //         locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
+        //     }
+        // };
 
         // TODO: additional calibrations.
 
-        let mut locked_calibration_data = self.calibration_data.lock().unwrap();
-        locked_calibration_data.camera_offset = Some(offset.value());
-        locked_calibration_data.target_exposure_time =
-            Some(prost_types::Duration::try_from(exp_duration).unwrap());
-
-        self.detect_engine.lock().unwrap().set_calibrated_exposure_duration(
-            exp_duration);
         Ok(())
     }
 
-    fn get_next_frame(&self, prev_frame_id: Option<i32>, main_image_mode: i32)
-                      -> FrameResult {
+    async fn get_next_frame(&self, prev_frame_id: Option<i32>, main_image_mode: i32)
+                            -> FrameResult {
         // Always populated.
         let detect_result;
         let boresight_position;
@@ -413,11 +458,11 @@ impl MyCedar {
             OperatingMode::Setup as i32
         {
             detect_result = self.detect_engine.lock().unwrap().get_next_result(prev_frame_id);
-            boresight_position = self.solve_engine.lock().unwrap().target_pixel().expect(
+            boresight_position = self.solve_engine.lock().await.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
         } else {
-            let solve_engine = &mut self.solve_engine.lock().unwrap();
-            plate_solution = Some(solve_engine.get_next_result(prev_frame_id));
+            let solve_engine = &mut self.solve_engine.lock().await;
+            plate_solution = Some(solve_engine.get_next_result(prev_frame_id).await);
             tetra3_solve_result = plate_solution.as_ref().unwrap().tetra3_solve_result.clone();
             solve_finish_time = plate_solution.as_ref().unwrap().solve_finish_time;
             detect_result = plate_solution.as_ref().unwrap().detect_result.clone();
@@ -632,7 +677,7 @@ impl MyCedar {
             detect_engine: detect_engine.clone(),
             _tetra3_subprocess: Tetra3Subprocess::new(
                 tetra3_script, tetra3_database).unwrap(),
-            solve_engine: Arc::new(Mutex::new(SolveEngine::new(
+            solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
                 detect_engine.clone(),
                 tetra3_uds,
                 /*update_interval=*/Duration::ZERO,
@@ -643,7 +688,7 @@ impl MyCedar {
             overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
         };
         // Set pre-calibration defaults on camera.
-        match cedar.set_pre_calibration_defaults() {
+        match cedar.set_pre_calibration_defaults().await {
             Ok(()) => (),
             Err(x) => {
                 warn!("Could not set default settings on camera {:?}", x)

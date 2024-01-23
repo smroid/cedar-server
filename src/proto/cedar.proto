@@ -390,7 +390,7 @@ message CalibrationData {
   // solution has been obtained so these can be determined, allowing non-setup
   // plate solves to use accurate FOV and distortion estimates.
 
-  // The angular size (radians) of the camera's width (longer dimension)
+  // The angular size (degrees) of the camera's width (longer dimension)
   // projected onto the sky.
   optional float fov_horizontal = 15;
 
@@ -401,7 +401,7 @@ message CalibrationData {
   // together with the camera's sensor's physical size.
   optional float lens_fl_mm = 12;
 
-  // The angular size of a pixel, in radians. This is for the field center, as
+  // The angular size of a pixel, in degrees. This is for the field center, as
   // the "pinhole" projection of sky angles onto a planar detector causes the
   // pixel/angle scale to vary as you move away from the center.
   optional float pixel_angular_size = 14;
