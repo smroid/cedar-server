@@ -65,15 +65,15 @@ fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
 }
 
 struct MyCedar {
-    camera: Arc<Mutex<dyn AbstractCamera>>,
+    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
     fixed_settings: Mutex<FixedSettings>,
     operation_settings: Mutex<OperationSettings>,
     calibration_data: Mutex<CalibrationData>,
-    detect_engine: Arc<Mutex<DetectEngine>>,
+    detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
     _tetra3_subprocess: Tetra3Subprocess,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
-    calibrator: Arc<Mutex<Calibrator>>,
+    calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
 
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
@@ -116,7 +116,7 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got invalid gain: {}.", gain)));
             }
-            match self.set_camera_gain(gain) {
+            match self.set_camera_gain(gain).await {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
@@ -128,7 +128,7 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got invalid offset: {}.", offset)));
             }
-            match self.set_camera_offset(offset) {
+            match self.set_camera_offset(offset).await {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
@@ -144,13 +144,13 @@ impl Cedar for MyCedar {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
                     }
-                    self.detect_engine.lock().unwrap().set_focus_mode(true);
+                    self.detect_engine.lock().await.set_focus_mode(true);
                 } else if operating_mode == OperatingMode::Operate as i32 {
-                    match self.calibrate() {
+                    match self.calibrate().await {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
                     }
-                    self.detect_engine.lock().unwrap().set_focus_mode(false);
+                    self.detect_engine.lock().await.set_focus_mode(false);
                 } else {
                     return Err(tonic::Status::invalid_argument(
                         format!("Got invalid operating_mode: {}.", operating_mode)));
@@ -166,7 +166,7 @@ impl Cedar for MyCedar {
                     format!("Got negative exposure_time: {}.", exp_time)));
             }
             let std_duration = std::time::Duration::try_from(exp_time.clone()).unwrap();
-            match self.set_exposure_time(std_duration) {
+            match self.set_exposure_time(std_duration).await {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
@@ -178,7 +178,7 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got negative detection_sigma: {}.", sigma)));
             }
-            match self.set_detection_sigma(sigma) {
+            match self.set_detection_sigma(sigma).await {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
@@ -190,7 +190,7 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got non-positive detection_max_size: {}.", max_size)));
             }
-            match self.set_detection_max_size(max_size) {
+            match self.set_detection_max_size(max_size).await {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
@@ -282,7 +282,7 @@ impl Cedar for MyCedar {
         }
         if req.reset_session_stats.unwrap_or(false) {
             {
-                let detect_engine = &mut self.detect_engine.lock().unwrap();
+                let detect_engine = &mut self.detect_engine.lock().await;
                 detect_engine.reset_session_stats();
             }
             let solve_engine = &mut self.solve_engine.lock().await;
@@ -291,7 +291,7 @@ impl Cedar for MyCedar {
         }
         if req.save_image.unwrap_or(false) {
             let solve_engine = &mut self.solve_engine.lock().await;
-            match solve_engine.save_image() {
+            match solve_engine.save_image().await {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
@@ -301,33 +301,33 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
-    fn set_camera_gain(&self, gain: i32) -> Result<(), CanonicalError> {
-        let mut locked_camera = self.camera.lock().unwrap();
+    async fn set_camera_gain(&self, gain: i32) -> Result<(), CanonicalError> {
+        let mut locked_camera = self.camera.lock().await;
         return locked_camera.set_gain(Gain::new(gain));
     }
-    fn set_camera_offset(&self, offset: i32) -> Result<(), CanonicalError> {
-        let mut locked_camera = self.camera.lock().unwrap();
+    async fn set_camera_offset(&self, offset: i32) -> Result<(), CanonicalError> {
+        let mut locked_camera = self.camera.lock().await;
         return locked_camera.set_offset(Offset::new(offset));
     }
 
-    fn set_exposure_time(&self, exposure_time: std::time::Duration)
-                         -> Result<(), CanonicalError> {
-        let detect_engine = &mut self.detect_engine.lock().unwrap();
-        detect_engine.set_exposure_time(exposure_time)
+    async fn set_exposure_time(&self, exposure_time: std::time::Duration)
+                               -> Result<(), CanonicalError> {
+        let detect_engine = &mut self.detect_engine.lock().await;
+        detect_engine.set_exposure_time(exposure_time).await
     }
 
-    fn set_detection_sigma(&self, detection_sigma: f32)
-                           -> Result<(), CanonicalError> {
-        let detect_engine = &mut self.detect_engine.lock().unwrap();
+    async fn set_detection_sigma(&self, detection_sigma: f32)
+                                 -> Result<(), CanonicalError> {
+        let detect_engine = &mut self.detect_engine.lock().await;
         // TODO(smr): if `detection_sigma` is 0, we use calibration_data's `detection_sigma`
         // value.
         detect_engine.set_detection_params(
             detection_sigma,
             self.operation_settings.lock().unwrap().detection_max_size.unwrap())
     }
-    fn set_detection_max_size(&self, max_size: i32)
-                              -> Result<(), CanonicalError> {
-        let detect_engine = &mut self.detect_engine.lock().unwrap();
+    async fn set_detection_max_size(&self, max_size: i32)
+                                    -> Result<(), CanonicalError> {
+        let detect_engine = &mut self.detect_engine.lock().await;
         detect_engine.set_detection_params(
             self.operation_settings.lock().unwrap().detection_sigma.unwrap(),
             max_size)
@@ -336,7 +336,7 @@ impl MyCedar {
     async fn set_update_interval(&self, update_interval: std::time::Duration)
                                  -> Result<(), CanonicalError> {
         {
-            let detect_engine = &mut self.detect_engine.lock().unwrap();
+            let detect_engine = &mut self.detect_engine.lock().await;
             detect_engine.set_update_interval(update_interval)?;
         }
         let solve_engine = &mut self.solve_engine.lock().await;
@@ -346,7 +346,7 @@ impl MyCedar {
     // Called when entering SETUP mode.
     async fn set_pre_calibration_defaults(&self) -> Result<(), CanonicalError> {
         {
-            let mut locked_camera = self.camera.lock().unwrap();
+            let mut locked_camera = self.camera.lock().await;
             let optimal_gain = locked_camera.optimal_gain();
             locked_camera.set_gain(optimal_gain)?;
             locked_camera.set_offset(Offset::new(3))?;
@@ -362,12 +362,11 @@ impl MyCedar {
     }
 
     // Called when entering OPERATE mode.
-    fn calibrate(&self) -> Result<(), CanonicalError> {
-        let locked_calibrator = self.calibrator.lock().unwrap();
-        let mut locked_calibration_data = self.calibration_data.lock().unwrap();
+    async fn calibrate(&self) -> Result<(), CanonicalError> {
+        let locked_calibrator = self.calibrator.lock().await;
 
         info!("Calibrating offset"); // TEMPORARY
-        let offset = match locked_calibrator.calibrate_offset() {
+        let offset = match locked_calibrator.calibrate_offset().await {
             Ok(o) => o,
             Err(e) => {
                 warn!{"Error while calibrating offset: {:?}, using 3", e};
@@ -375,11 +374,11 @@ impl MyCedar {
             }
         };
         info!("Calibrated offset: {:?}", offset);  // TEMPORARY
-        self.camera.lock().unwrap().set_offset(offset)?;
-        locked_calibration_data.camera_offset = Some(offset.value());
+        self.camera.lock().await.set_offset(offset)?;
+        self.calibration_data.lock().unwrap().camera_offset = Some(offset.value());
 
         // What was the final exposure duration coming out of SETUP mode?
-        let setup_exposure_duration = self.camera.lock().unwrap().get_exposure_duration();
+        let setup_exposure_duration = self.camera.lock().await.get_exposure_duration();
         info!("Calibrating exposure duration"); // TEMPORARY
         let detection_sigma;
         let detection_max_size;
@@ -390,8 +389,8 @@ impl MyCedar {
         }
         let exp_duration = match locked_calibrator.calibrate_exposure_duration(
             setup_exposure_duration,
-            self.detect_engine.lock().unwrap().get_star_count_goal(),
-            detection_sigma, detection_max_size) {
+            self.detect_engine.lock().await.get_star_count_goal(),
+            detection_sigma, detection_max_size).await {
             Ok(ed) => ed,
             Err(e) => {
                 warn!{"Error while calibrating exposure duration: {:?}, using {:?}",
@@ -400,10 +399,10 @@ impl MyCedar {
             }
         };
         info!("Calibrated exposure duration: {:?}", exp_duration);  // TEMPORARY
-        self.camera.lock().unwrap().set_exposure_duration(exp_duration)?;
-        locked_calibration_data.target_exposure_time =
+        self.camera.lock().await.set_exposure_duration(exp_duration)?;
+        self.calibration_data.lock().unwrap().target_exposure_time =
             Some(prost_types::Duration::try_from(exp_duration).unwrap());
-        self.detect_engine.lock().unwrap().set_calibrated_exposure_duration(
+        self.detect_engine.lock().await.set_calibrated_exposure_duration(
             exp_duration);
 
         // info!("Calibrating optical"); // TEMPORARY
@@ -457,7 +456,8 @@ impl MyCedar {
         if self.operation_settings.lock().unwrap().operating_mode.unwrap() ==
             OperatingMode::Setup as i32
         {
-            detect_result = self.detect_engine.lock().unwrap().get_next_result(prev_frame_id);
+            detect_result =
+                self.detect_engine.lock().await.get_next_result(prev_frame_id).await;
             boresight_position = self.solve_engine.lock().await.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
         } else {
@@ -634,11 +634,11 @@ impl MyCedar {
                      tetra3_script: String,
                      tetra3_database: String,
                      tetra3_uds: String,
-                     camera: Arc<Mutex<dyn AbstractCamera>>,
+                     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                      position: Arc<Mutex<CelestialPosition>>,
                      star_count_goal: i32,
                      stats_capacity: usize) -> Self {
-        let detect_engine = Arc::new(Mutex::new(DetectEngine::new(
+        let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration,
             max_exposure_duration,
             camera.clone(),
@@ -683,7 +683,7 @@ impl MyCedar {
                 /*update_interval=*/Duration::ZERO,
                 stats_capacity).await.unwrap())),
             position,
-            calibrator: Arc::new(Mutex::new(Calibrator::new(camera.clone()))),
+            calibrator: Arc::new(tokio::sync::Mutex::new(Calibrator::new(camera.clone()))),
             center_peak_position: Arc::new(Mutex::new(None)),
             overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
         };
@@ -701,7 +701,7 @@ impl MyCedar {
             sigma = op_settings.detection_sigma.unwrap();
             max_size = op_settings.detection_max_size.unwrap();
         }
-        assert!(cedar.detect_engine.lock().unwrap().set_detection_params(
+        assert!(cedar.detect_engine.lock().await.set_detection_params(
             sigma, max_size).is_ok());
         cedar
     }
@@ -761,15 +761,16 @@ async fn main() {
 
     // TODO(smr): discovery/enumeration mechanism for cameras. Or command
     // line arg?
-    let camera: Arc<Mutex<dyn AbstractCamera>> = match args.test_image.as_str() {
-        "" => Arc::new(Mutex::new(asi_camera::ASICamera::new(
+    let camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>> =
+        match args.test_image.as_str() {
+        "" => Arc::new(tokio::sync::Mutex::new(asi_camera::ASICamera::new(
             asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap())),
         _ => {
             let input_path = PathBuf::from(&args.test_image);
             let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
             let img_u8 = img.to_luma8();
             info!("Using test image {} instead of camera.", args.test_image);
-            Arc::new(Mutex::new(ImageCamera::new(img_u8).unwrap()))
+            Arc::new(tokio::sync::Mutex::new(ImageCamera::new(img_u8).unwrap()))
         },
     };
 
