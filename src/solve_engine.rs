@@ -1,7 +1,7 @@
 use crate::detect_engine::{DetectEngine, DetectResult};
 
 use std::ops::DerefMut;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -26,11 +26,13 @@ pub struct SolveEngine {
     state: Arc<Mutex<SolveState>>,
 
     // Detect engine settings can be adjusted behind our back.
-    detect_engine: Arc<Mutex<DetectEngine>>,
+    detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
 
-    // Condition variable signalled whenever `state.plate_solution` is populated.
-    // Also signalled when the worker thread exits.
-    plate_solution_available: Arc<Condvar>,
+    // Notified whenever `state.plate_solution` is populated.
+    notify: Arc<tokio::sync::Notify>,
+
+    // Executes worker().
+    worker_thread: Option<thread::JoinHandle<()>>,
 }
 
 // State shared between worker thread and the SolveEngine methods.
@@ -65,8 +67,6 @@ struct SolveState {
 
     // Set by stop(); the worker thread exits when it sees this.
     stop_request: bool,
-
-    worker_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for SolveEngine {
@@ -98,14 +98,14 @@ impl SolveEngine {
                     }
                     // Give time for tetra3_server binary to start up and accept
                     // connections.
-                    thread::sleep(backoff);
+                    tokio::time::sleep(backoff).await;
                     backoff *= 2;
                 }
             }
         }
     }
 
-    pub async fn new(detect_engine: Arc<Mutex<DetectEngine>>,
+    pub async fn new(detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
                      tetra3_server_address: String,
                      update_interval: Duration, stats_capacity: usize)
                      -> Result<Self, CanonicalError> {
@@ -131,10 +131,10 @@ impl SolveEngine {
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
                 plate_solution: None,
                 stop_request: false,
-                worker_thread: None,
             })),
             detect_engine: detect_engine.clone(),
-            plate_solution_available: Arc::new(Condvar::new()),
+            notify: Arc::new(tokio::sync::Notify::new()),
+            worker_thread: None,
         })
     }
 
@@ -150,7 +150,7 @@ impl SolveEngine {
     // TODO: drop fov_max_error, we'll compute it as a fraction of fov_estimate.
     pub fn set_fov_estimate(&mut self, fov_estimate: Option<f32>,
                             fov_max_error: Option<f32>)
-                               -> Result<(), CanonicalError> {
+                            -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();
         if fov_estimate.is_some() && fov_estimate.unwrap() <= 0.0 {
             return Err(invalid_argument_error(
@@ -254,47 +254,42 @@ impl SolveEngine {
     /// has the same id value.
     /// Returns: the processed result along with its frame_id value.
     pub async fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> PlateSolution {
-        // info!("solve engine get_next_result");  // TEMPORARY
+        // Has the worker terminated for some reason?
+        if self.worker_thread.is_some() &&
+            self.worker_thread.as_ref().unwrap().is_finished()
         {
-            let mut locked_state = self.state.lock().unwrap();
-            // Start worker thread if not yet started (or exited).
-            if locked_state.worker_thread.is_none() {
-                let cloned_client = self.client.clone();
-                let cloned_state = self.state.clone();
-                let cloned_detect_engine = self.detect_engine.clone();
-                let cloned_condvar = self.plate_solution_available.clone();
-                locked_state.worker_thread = Some(thread::spawn(|| {
-                    SolveEngine::worker(
-                        cloned_client, cloned_state,
-                        cloned_detect_engine, cloned_condvar);
-                }));
-            }
+            self.worker_thread.take().unwrap().join().unwrap();
         }
-        // Get the most recently posted result.
+        // Start worker thread if terminated or not yet started.
+        if self.worker_thread.is_none() {
+            let cloned_client = self.client.clone();
+            let cloned_state = self.state.clone();
+            let cloned_notify = self.notify.clone();
+            let cloned_detect_engine = self.detect_engine.clone();
+            self.worker_thread = Some(thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(SolveEngine::worker(
+                    cloned_client, cloned_state, cloned_notify,
+                    cloned_detect_engine));
+            }));
+        }
+        // Get the most recently posted result; wait if there is none yet or the
+        // currently posted result is the same as the one the caller has already
+        // obtained.
         loop {
-            if self.state.lock().unwrap().plate_solution.is_none() {
-                // info!("no plate solution");  // TEMPORARY
-                tokio::time::sleep(Duration::from_millis(1)).await;
-                // drop(self.plate_solution_available.wait(locked_state).unwrap());
-                // info!("continuing");  // TEMPORARY
-                continue;
-            }
-            // Wait if the posted result is the same as the one the caller has
-            // already obtained.
-            if prev_frame_id.is_some() &&
-                (self.state.lock().unwrap().plate_solution.as_ref().unwrap().detect_result.frame_id ==
-                 prev_frame_id.unwrap())
             {
-                // info!("wrong plate solution id");  // TEMPORARY
-                tokio::time::sleep(Duration::from_millis(1)).await;
-                // drop(self.plate_solution_available.wait(locked_state).unwrap());
-                // info!("continuing");  // TEMPORARY
-                continue;
+                let locked_state = self.state.lock().unwrap();
+                if locked_state.plate_solution.is_some() &&
+                    (prev_frame_id.is_none() ||
+                     prev_frame_id.unwrap() !=
+                     locked_state.plate_solution.as_ref().unwrap().detect_result.frame_id)
+                {
+                    // Don't consume it, other clients may want it.
+                    return locked_state.plate_solution.clone().unwrap();
+                }
             }
-            break;
+            self.notify.notified().await;
         }
-        // Don't consume it, other clients may want it.
-        return self.state.lock().unwrap().plate_solution.clone().unwrap();
     }
 
     pub fn reset_session_stats(&mut self) {
@@ -306,11 +301,11 @@ impl SolveEngine {
     }
 
     // TODO: arg specifying directory to save to.
-    pub fn save_image(&self) -> Result<(), CanonicalError> {
+    pub async fn save_image(&self) -> Result<(), CanonicalError> {
         // Grab most recent image.
-        let mut locked_detect_engine = self.detect_engine.lock().unwrap();
+        let mut locked_detect_engine = self.detect_engine.lock().await;
         let captured_image =
-            &locked_detect_engine.get_next_result(/*frame_id=*/None).captured_image;
+            &locked_detect_engine.get_next_result(/*frame_id=*/None).await.captured_image;
         let image: &GrayImage = &captured_image.image;
         let readout_time: &SystemTime = &captured_image.readout_time;
         let exposure_duration_ms =
@@ -335,26 +330,23 @@ impl SolveEngine {
         }
     }
 
-    pub fn solve(&self, solve_request: SolveRequest)
+    pub async fn solve(&self, solve_request: SolveRequest)
              -> Result<SolveResultProto, CanonicalError> {
-        Self::solve_with_client(self.client.clone(), solve_request)
+        Self::solve_with_client(self.client.clone(), solve_request).await
     }
 
-    fn solve_with_client(client: Arc<Mutex<Tetra3Client<tonic::transport::Channel>>>,
-                         solve_request: SolveRequest)
-                         -> Result<SolveResultProto, CanonicalError> {
-        thread::spawn(move || {
-            match tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(
-                client.lock().unwrap().solve_from_centroids(solve_request)) {
-                Ok(response) => {
-                    return Ok(response.into_inner());
-                },
-                Err(e) => {
-                    return Err(failed_precondition_error(
-                        format!("Error invoking plate solver: {:?}", e).as_str()));
-                },
-            }
-        }).join().unwrap()
+    async fn solve_with_client(client: Arc<Mutex<Tetra3Client<tonic::transport::Channel>>>,
+                               solve_request: SolveRequest)
+                               -> Result<SolveResultProto, CanonicalError> {
+        match client.lock().unwrap().solve_from_centroids(solve_request).await {
+            Ok(response) => {
+                return Ok(response.into_inner());
+            },
+            Err(e) => {
+                return Err(failed_precondition_error(
+                    format!("Error invoking plate solver: {:?}", e).as_str()));
+            },
+        }
     }
 
     /// Shuts down the worker thread; this can save power if get_next_result()
@@ -362,20 +354,16 @@ impl SolveEngine {
     /// re-start processing, at the expense of that first get_next_result() call
     /// taking longer than usual.
     pub fn stop(&mut self) {
-        let mut state = self.state.lock().unwrap();
-        if state.worker_thread.is_none() {
-            return;
-        }
-        state.stop_request = true;
-        while state.worker_thread.is_some() {
-            state = self.plate_solution_available.wait(state).unwrap();
+        self.state.lock().unwrap().stop_request = true;
+        if self.worker_thread.is_some() {
+            self.worker_thread.take().unwrap().join().unwrap();
         }
     }
 
-    fn worker(client: Arc<Mutex<Tetra3Client<tonic::transport::Channel>>>,
-              state: Arc<Mutex<SolveState>>,
-              detect_engine: Arc<Mutex<DetectEngine>>,
-              plate_solution_available: Arc<Condvar>) {
+    async fn worker(client: Arc<Mutex<Tetra3Client<tonic::transport::Channel>>>,
+                    state: Arc<Mutex<SolveState>>,
+                    notify: Arc<tokio::sync::Notify>,
+                    detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>) {
         info!("Starting solve engine");
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
@@ -387,20 +375,15 @@ impl SolveEngine {
                 if locked_state.stop_request {
                     info!("Stopping solve engine");
                     locked_state.stop_request = false;
-                    break;
+                    return;  // Exit thread.
                 }
-                // TODO: another stopping condition can be: if no
-                // get_next_result() calls are seen for more than N seconds,
-                // stop. The next get_next_result() call will restart the worker
-                // thread.
             }
             // Is it time to generate the next PlateSolution?
             let now = Instant::now();
             if last_result_time.is_some() {
                 let next_update_time = last_result_time.unwrap() + update_interval;
                 if next_update_time > now {
-                    info!("sleeping for {:?}", next_update_time - now);
-                    thread::sleep(next_update_time - now);
+                    tokio::time::sleep(next_update_time - now).await;
                     continue;
                 }
             }
@@ -444,16 +427,9 @@ impl SolveEngine {
                 solve_request.match_max_error = Some(locked_state.match_max_error);
                 frame_id = locked_state.frame_id;
             }
-            {
-                // Get the most recent star detection result.
-                let mut locked_detect_engine = detect_engine.lock().unwrap();
-                detect_result = locked_detect_engine.get_next_result(frame_id);
-            }
-            {
-                let mut locked_state = state.lock().unwrap();
-                let locked_state_mut = locked_state.deref_mut();
-                locked_state_mut.frame_id = Some(detect_result.frame_id);
-            }
+            // Get the most recent star detection result.
+            detect_result = detect_engine.lock().await.get_next_result(frame_id).await;
+            state.lock().unwrap().deref_mut().frame_id = Some(detect_result.frame_id);
 
             let image: &GrayImage = &detect_result.captured_image.image;
             let (width, height) = image.dimensions();
@@ -471,18 +447,12 @@ impl SolveEngine {
             let mut tetra3_solve_result: Option<SolveResultProto> = None;
             let mut solve_finish_time: Option<SystemTime> = None;
             if detect_result.star_candidates.len() >= minimum_stars as usize {
-                // info!("solve_from_centroids");  // TEMPORARY
-                // let mut locked_client = client.lock().unwrap();
-                // info!("locked client");  // TEMPORARY
-                // match locked_client.solve_from_centroids(solve_request).await {
-                match Self::solve_with_client(client.clone(), solve_request) {
+                match Self::solve_with_client(client.clone(), solve_request).await {
                     Err(e) => {
                         error!("Unexpected error {:?}", e);
-                        break;  // Exit the worker thread.
+                        return;  // Abandon thread execution!
                     },
                     Ok(response) => {
-                        // info!("got response");  // TEMPORARY
-                        // tetra3_solve_result = Some(response.into_inner());
                         tetra3_solve_result = Some(response);
                     }
                 }
@@ -490,9 +460,7 @@ impl SolveEngine {
             }
 
             let elapsed = process_start_time.elapsed();
-            // info!("locking state");  // TEMPORARY
             let mut locked_state = state.lock().unwrap();
-            // info!("locked state for posting");  // TEMPORARY
             if tetra3_solve_result.is_none() {
                 locked_state.solve_attempt_stats.add_value(0.0);
             } else {
@@ -505,7 +473,6 @@ impl SolveEngine {
                 locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
             }
             // Post the result.
-            // info!("posting");  // TEMPORARY
             locked_state.plate_solution = Some(PlateSolution{
                 detect_result,
                 tetra3_solve_result,
@@ -516,11 +483,8 @@ impl SolveEngine {
                 solve_attempt_stats: locked_state.solve_attempt_stats.value_stats.clone(),
                 solve_success_stats: locked_state.solve_success_stats.value_stats.clone(),
             });
-            plate_solution_available.notify_all();
+            notify.notify_waiters();
         }  // loop.
-        let mut locked_state = state.lock().unwrap();
-        locked_state.worker_thread = None;
-        plate_solution_available.notify_all();
     }
 }
 

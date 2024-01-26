@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use image::GrayImage;
@@ -13,17 +13,17 @@ use crate::solve_engine::SolveEngine;
 use crate::tetra3_server::{ImageCoord, SolveRequest};
 
 pub struct Calibrator {
-    camera: Arc<Mutex<dyn AbstractCamera>>,
+    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
 }
 
 // By convention, all methods restore any camera settings that they
 // alter.
 impl Calibrator {
-    pub fn new(camera: Arc<Mutex<dyn AbstractCamera>>) -> Self{
+    pub fn new(camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>) -> Self{
         Calibrator{camera}
     }
 
-    pub fn calibrate_offset(&self) -> Result<Offset, CanonicalError> {
+    pub async fn calibrate_offset(&self) -> Result<Offset, CanonicalError> {
         // Goal: find the minimum camera offset setting that avoids
         // black crush (too many zero-value pixels).
         //
@@ -33,9 +33,8 @@ impl Calibrator {
         // * Use 1ms exposures.
         // * Starting at offset=0, as long as >1% of pixels have zero
         //   value, increase the offset.
-
         let _restore_settings = RestoreSettings::new(self.camera.clone());
-        let mut locked_camera = self.camera.lock().unwrap();
+        let mut locked_camera = self.camera.lock().await;
 
         locked_camera.set_exposure_duration(Duration::from_millis(1))?;
         let (width, height) = locked_camera.dimensions();
@@ -46,7 +45,8 @@ impl Calibrator {
         let mut num_zero_pixels = 0;
         for mut offset in 0..=max_offset {
             locked_camera.set_offset(Offset::new(offset))?;
-            let (captured_image, frame_id) = locked_camera.capture_image(prev_frame_id)?;
+            let (captured_image, frame_id) =
+                locked_camera.capture_image(prev_frame_id).await?;
             prev_frame_id = Some(frame_id);
             let channel_histogram = histogram(&captured_image.image);
             let histo = channel_histogram.channels[0];
@@ -62,7 +62,7 @@ impl Calibrator {
                                               num_zero_pixels, max_offset).as_str()))
     }
 
-    pub fn calibrate_exposure_duration(
+    pub async fn calibrate_exposure_duration(
         &self, setup_exposure_duration: Duration, star_count_goal: i32,
         detection_sigma: f32, detection_max_size: i32)
         -> Result<Duration, CanonicalError> {
@@ -81,12 +81,11 @@ impl Calibrator {
         //     return it.
         //   * If not close to the goal, scale the exposure duration and
         //     do one more exposure/detect/scale.
-
         let _restore_settings = RestoreSettings::new(self.camera.clone());
 
-        self.camera.lock().unwrap().set_exposure_duration(setup_exposure_duration)?;
+        self.camera.lock().await.set_exposure_duration(setup_exposure_duration)?;
         let (_, mut stars, frame_id) = self.acquire_image_get_stars(
-            /*frame_id=*/None, detection_sigma, detection_max_size)?;
+            /*frame_id=*/None, detection_sigma, detection_max_size).await?;
 
         let mut num_stars_detected = stars.len();
         if num_stars_detected < (star_count_goal / 5) as usize {
@@ -104,10 +103,10 @@ impl Calibrator {
         }
 
         // Iterate with the refined exposure duration.
-        self.camera.lock().unwrap().set_exposure_duration(
+        self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f32(scaled_exposure_duration_secs))?;
         (_, stars, _) = self.acquire_image_get_stars(
-            Some(frame_id), detection_sigma, detection_max_size)?;
+            Some(frame_id), detection_sigma, detection_max_size).await?;
 
         num_stars_detected = stars.len();
         if num_stars_detected < (star_count_goal / 5) as usize {
@@ -126,13 +125,12 @@ impl Calibrator {
         Ok(Duration::from_secs_f32(scaled_exposure_duration_secs))
     }
 
-    // TODO: calibrate_gain()
-
     // Result is FOV (degrees), lens distortion, solve duration.
-    pub fn calibrate_optical(&self, solve_engine: Arc<Mutex<SolveEngine>>,
-                             exposure_duration: Duration,
-                             detection_sigma: f32, detection_max_size: i32)
-                             -> Result<(f32, f32, Duration), CanonicalError> {
+    pub async fn calibrate_optical(&self,
+                                   solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
+                                   exposure_duration: Duration,
+                                   detection_sigma: f32, detection_max_size: i32)
+                                   -> Result<(f32, f32, Duration), CanonicalError> {
         // Goal: find the field of view, lens distortion, and representative
         // plate solve time.
         //
@@ -143,12 +141,11 @@ impl Calibrator {
         // * Do a plate solution with no FOV estimate and distortion estimate.
         //   Use a generous match_max_error value and a very generous
         //   solve_timeout.
-
         let _restore_settings = RestoreSettings::new(self.camera.clone());
 
-        self.camera.lock().unwrap().set_exposure_duration(exposure_duration)?;
+        self.camera.lock().await.set_exposure_duration(exposure_duration)?;
         let (image, stars, _) = self.acquire_image_get_stars(
-            /*frame_id=*/None, detection_sigma, detection_max_size)?;
+            /*frame_id=*/None, detection_sigma, detection_max_size).await?;
         let (width, height) = image.dimensions();
 
         let num_stars_detected = stars.len();
@@ -167,7 +164,6 @@ impl Calibrator {
         solve_request.distortion = Some(0.0);
         solve_request.return_matches = false;
         solve_request.match_max_error = Some(0.005);
-
         for star in &stars {
             solve_request.star_centroids.push(ImageCoord{x: star.centroid_x,
                                                          y: star.centroid_y});
@@ -175,8 +171,7 @@ impl Calibrator {
         solve_request.image_width = width as i32;
         solve_request.image_height = height as i32;
 
-        let solve_result_proto = solve_engine.lock().unwrap().solve(solve_request)?;
-        log::info!("solve result {:?}", solve_result_proto);  // TEMPORARY
+        let solve_result_proto = solve_engine.lock().await.solve(solve_request).await?;
         let solve_duration = std::time::Duration::try_from(
             solve_result_proto.solve_time.unwrap()).unwrap();
         if solve_result_proto.image_center_coords.is_some() {
@@ -192,13 +187,13 @@ impl Calibrator {
 
     // TODO: calibrate detection_sigma, detection_max_size? How...
 
-    fn acquire_image_get_stars(&self, frame_id: Option<i32>,
-                               detection_sigma: f32, detection_max_size: i32)
-                               -> Result<(Arc<GrayImage>,
-                                          Vec<StarDescription>,
-                                          i32), CanonicalError> {
+    async fn acquire_image_get_stars(&self, frame_id: Option<i32>,
+                                     detection_sigma: f32, detection_max_size: i32)
+                                     -> Result<(Arc<GrayImage>,
+                                                Vec<StarDescription>,
+                                                i32), CanonicalError> {
         let (captured_image, frame_id) =
-            self.camera.lock().unwrap().capture_image(frame_id)?;
+            self.camera.lock().await.capture_image(frame_id).await?;
         // Run CedarDetect on the image.
         let image = &captured_image.image;
         let noise_estimate = estimate_noise_from_image(&image);
@@ -213,14 +208,14 @@ impl Calibrator {
 
 // RAII gadget for saving/restoring camera settings.
 struct RestoreSettings {
-    camera: Arc<Mutex<dyn AbstractCamera>>,
+    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
     gain: Gain,
     offset: Offset,
     exp_duration: Duration,
 }
 impl RestoreSettings {
-    fn new(camera: Arc<Mutex<dyn AbstractCamera>>) -> Self {
-        let locked_camera = camera.lock().unwrap();
+    async fn new(camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>) -> Self {
+        let locked_camera = camera.lock().await;
         RestoreSettings{
             camera: camera.clone(),
             gain: locked_camera.get_gain(),
@@ -228,12 +223,17 @@ impl RestoreSettings {
             exp_duration: locked_camera.get_exposure_duration(),
         }
     }
-}
-impl Drop for RestoreSettings {
-    fn drop(&mut self) {
-        let mut locked_camera = self.camera.lock().unwrap();
+
+    async fn restore(&mut self) {
+        let mut locked_camera = self.camera.lock().await;
         locked_camera.set_gain(self.gain).unwrap();
         locked_camera.set_offset(self.offset).unwrap();
         locked_camera.set_exposure_duration(self.exp_duration).unwrap();
+    }
+}
+impl Drop for RestoreSettings {
+    fn drop(&mut self) {
+        // https://stackoverflow.com/questions/71541765/rust-async-drop
+        futures::executor::block_on(self.restore());
     }
 }

@@ -1,7 +1,7 @@
 use camera_service::abstract_camera::{AbstractCamera, CapturedImage};
 
 use std::ops::DerefMut;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,15 +23,17 @@ pub struct DetectEngine {
     min_exposure_duration: Duration,
     max_exposure_duration: Duration,
 
+    // Note: camera settings can be adjusted behind our back.
+    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
+
     // Our state, shared between DetectEngine methods and the worker thread.
     state: Arc<Mutex<DetectState>>,
 
-    // Note: camera settings can be adjusted behind our back.
-    camera: Arc<Mutex<dyn AbstractCamera>>,
+    // Notified whenever `state.detect_result` is populated.
+    notify: Arc<tokio::sync::Notify>,
 
-    // Condition variable signalled whenever `state.detect_result` is populated.
-    // Also signalled when the worker thread exits.
-    detect_result_available: Arc<Condvar>,
+    // Executes worker().
+    worker_thread: Option<thread::JoinHandle<()>>,
 }
 
 // State shared between worker thread and the DetectEngine methods.
@@ -70,8 +72,6 @@ struct DetectState {
 
     // Set by stop(); the worker thread exits when it sees this.
     stop_request: bool,
-
-    worker_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for DetectEngine {
@@ -83,13 +83,14 @@ impl Drop for DetectEngine {
 impl DetectEngine {
     pub fn new(min_exposure_duration: Duration,
                max_exposure_duration: Duration,
-               camera: Arc<Mutex<dyn AbstractCamera>>,
+               camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                update_interval: Duration, auto_exposure: bool,
                focus_mode_enabled: bool, star_count_goal: i32, stats_capacity: usize)
                -> Self {
         DetectEngine{
             min_exposure_duration,
             max_exposure_duration,
+            camera: camera.clone(),
             state: Arc::new(Mutex::new(DetectState{
                 frame_id: None,
                 auto_exposure,
@@ -102,10 +103,9 @@ impl DetectEngine {
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 detect_result: None,
                 stop_request: false,
-                worker_thread: None,
             })),
-            camera: camera.clone(),
-            detect_result_available: Arc::new(Condvar::new()),
+            notify: Arc::new(tokio::sync::Notify::new()),
+            worker_thread: None,
         }
     }
 
@@ -114,10 +114,10 @@ impl DetectEngine {
     // the brightest part of the central region bright but not saturated. In
     // operate mode, auto exposure is based on the number of detected stars in
     // the entire image.
-    pub fn set_exposure_time(&mut self, exp_time: Duration)
-                             -> Result<(), CanonicalError> {
+    pub async fn set_exposure_time(&mut self, exp_time: Duration)
+                                   -> Result<(), CanonicalError> {
         if !exp_time.is_zero() {
-            let mut locked_camera = self.camera.lock().unwrap();
+            let mut locked_camera = self.camera.lock().await;
             locked_camera.set_exposure_duration(exp_time)?
         }
         let mut locked_state = self.state.lock().unwrap();
@@ -177,39 +177,44 @@ impl DetectEngine {
     /// `prev_frame_id` is supplied, the call blocks while the current result
     /// has the same id value.
     /// Returns: the processed result along with its frame_id value.
-    pub fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> DetectResult {
-        let mut locked_state = self.state.lock().unwrap();
-        // Start worker thread if not yet started.
-        if locked_state.worker_thread.is_none() {
+    pub async fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> DetectResult {
+        // Has the worker terminated for some reason?
+        if self.worker_thread.is_some() &&
+            self.worker_thread.as_ref().unwrap().is_finished()
+        {
+            self.worker_thread.take().unwrap().join().unwrap();
+        }
+        // Start worker thread if terminated or not yet started.
+        if self.worker_thread.is_none() {
             let min_exposure_duration = self.min_exposure_duration;
             let max_exposure_duration = self.max_exposure_duration;
             let cloned_state = self.state.clone();
+            let cloned_notify = self.notify.clone();
             let cloned_camera = self.camera.clone();
-            let cloned_condvar = self.detect_result_available.clone();
-            locked_state.worker_thread = Some(thread::spawn(move || {
-                DetectEngine::worker(min_exposure_duration,
-                                     max_exposure_duration,
-                                     cloned_state, cloned_camera, cloned_condvar);
+            self.worker_thread = Some(thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(DetectEngine::worker(
+                    min_exposure_duration, max_exposure_duration,
+                    cloned_state, cloned_notify, cloned_camera));
             }));
         }
-        // Get the most recently posted result.
+        // Get the most recently posted result; wait if there is none yet or the
+        // currently posted result is the same as the one the caller has already
+        // obtained.
         loop {
-            if locked_state.detect_result.is_none() {
-                locked_state = self.detect_result_available.wait(locked_state).unwrap();
-                continue;
-            }
-            // Wait if the posted result is the same as the one the caller has
-            // already obtained.
-            if prev_frame_id.is_some() &&
-                locked_state.detect_result.as_ref().unwrap().frame_id == prev_frame_id.unwrap()
             {
-                locked_state = self.detect_result_available.wait(locked_state).unwrap();
-                continue;
+                let locked_state = self.state.lock().unwrap();
+                if locked_state.detect_result.is_some() &&
+                    (prev_frame_id.is_none() ||
+                     prev_frame_id.unwrap() !=
+                     locked_state.detect_result.as_ref().unwrap().frame_id)
+                {
+                    // Don't consume it, other clients may want it.
+                    return locked_state.detect_result.clone().unwrap();
+                }
             }
-            break;
+            self.notify.notified().await;
         }
-        // Don't consume it, other clients may want it.
-        locked_state.detect_result.clone().unwrap()
     }
 
     pub fn reset_session_stats(&mut self) {
@@ -222,21 +227,17 @@ impl DetectEngine {
     /// re-start processing, at the expense of that first get_next_result() call
     /// taking longer than usual.
     pub fn stop(&mut self) {
-        let mut state = self.state.lock().unwrap();
-        if state.worker_thread.is_none() {
-            return;
-        }
-        state.stop_request = true;
-        while state.worker_thread.is_some() {
-            state = self.detect_result_available.wait(state).unwrap();
+        self.state.lock().unwrap().stop_request = true;
+        if self.worker_thread.is_some() {
+            self.worker_thread.take().unwrap().join().unwrap();
         }
     }
 
-    fn worker(min_exposure_duration: Duration,
-              max_exposure_duration: Duration,
-              state: Arc<Mutex<DetectState>>,
-              camera: Arc<Mutex<dyn AbstractCamera>>,
-              detect_result_available: Arc<Condvar>) {
+    async fn worker(min_exposure_duration: Duration,
+                    max_exposure_duration: Duration,
+                    state: Arc<Mutex<DetectState>>,
+                    notify: Arc<tokio::sync::Notify>,
+                    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>) {
         info!("Starting detect engine");
         // Keep track of when we started the detect cycle.
         let mut last_result_time: Option<Instant> = None;
@@ -261,19 +262,15 @@ impl DetectEngine {
                 if locked_state.stop_request {
                     info!("Stopping detect engine");
                     locked_state.stop_request = false;
-                    break;
+                    return;  // Exit thread.
                 }
-                // TODO: another stopping condition can be: if no
-                // get_next_result() calls are seen for more than N seconds,
-                // stop. The next get_next_result() call will restart the worker
-                // thread.
             }
             // Is it time to generate the next DetectResult?
             let now = Instant::now();
             if last_result_time.is_some() {
                 let next_update_time = last_result_time.unwrap() + update_interval;
                 if next_update_time > now {
-                    thread::sleep(next_update_time - now);
+                    tokio::time::sleep(next_update_time - now).await;
                     continue;
                 }
             }
@@ -287,8 +284,8 @@ impl DetectEngine {
                 frame_id = locked_state.frame_id;
             }
             let captured_image;
-            let mut locked_camera = camera.lock().unwrap();
-            match locked_camera.capture_image(frame_id) {
+            let mut locked_camera = camera.lock().await;
+            match locked_camera.capture_image(frame_id).await {
                 Ok((img, id)) => {
                     drop(locked_camera);
                     captured_image = img;
@@ -436,14 +433,14 @@ impl DetectEngine {
             if prev_exposure_duration_secs != new_exposure_duration_secs {
                 debug!("Setting new exposure duration {}s",
                        new_exposure_duration_secs);
-                let mut locked_camera = camera.lock().unwrap();
+                let mut locked_camera = camera.lock().await;
                 match locked_camera.set_exposure_duration(
                     Duration::from_secs_f32(new_exposure_duration_secs)) {
                     Ok(()) => (),
                     Err(e) => {
                         error!("Error updating exposure duration: {}",
                                &e.to_string());
-                        break;  // Abandon thread execution!
+                        return;  // Abandon thread execution!
                     }
                 }
             }
@@ -460,11 +457,8 @@ impl DetectEngine {
                 detect_latency_stats:
                 locked_state.detect_latency_stats.value_stats.clone(),
             });
-            detect_result_available.notify_all();
+            notify.notify_waiters();
         }  // loop.
-        let mut locked_state = state.lock().unwrap();
-        locked_state.worker_thread = None;
-        detect_result_available.notify_all();
     }
 }
 
