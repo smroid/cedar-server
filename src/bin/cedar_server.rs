@@ -111,12 +111,15 @@ impl Cedar for MyCedar {
             if operating_mode !=
                 self.operation_settings.lock().unwrap().operating_mode.unwrap()
             {
+                self.operation_settings.lock().unwrap().operating_mode =
+                    Some(operating_mode);
                 if operating_mode == OperatingMode::Setup as i32 {
                     match self.set_pre_calibration_defaults().await {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
                     }
                     self.detect_engine.lock().await.set_focus_mode(true);
+                    self.solve_engine.lock().await.stop();
                     self.reset_session_stats().await;
                 } else if operating_mode == OperatingMode::Operate as i32 {
                     match self.calibrate().await {
@@ -128,8 +131,6 @@ impl Cedar for MyCedar {
                     return Err(tonic::Status::invalid_argument(
                         format!("Got invalid operating_mode: {}.", operating_mode)));
                 }
-                self.operation_settings.lock().unwrap().operating_mode =
-                    Some(operating_mode);
             }
         }
         if req.exposure_time.is_some() {
@@ -429,13 +430,13 @@ impl MyCedar {
             boresight_position = self.solve_engine.lock().await.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
         } else {
-            let solve_engine = &mut self.solve_engine.lock().await;
-            plate_solution = Some(solve_engine.get_next_result(prev_frame_id).await);
+            let locked_solve_engine = &mut self.solve_engine.lock().await;
+            plate_solution = Some(locked_solve_engine.get_next_result(prev_frame_id).await);
             tetra3_solve_result =
                 plate_solution.as_ref().unwrap().tetra3_solve_result.clone();
             solve_finish_time = plate_solution.as_ref().unwrap().solve_finish_time;
             detect_result = plate_solution.as_ref().unwrap().detect_result.clone();
-            boresight_position = solve_engine.target_pixel().expect(
+            boresight_position = locked_solve_engine.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
         }
 
