@@ -1,7 +1,3 @@
-// Adapted from
-// https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
-// https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
-
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -9,7 +5,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
+use camera_service::abstract_camera::{AbstractCamera, Offset};
 use camera_service::asi_camera;
 use camera_service::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
@@ -67,8 +63,8 @@ fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
 struct MyCedar {
     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
     fixed_settings: Mutex<FixedSettings>,
+    calibration_data: tokio::sync::Mutex<CalibrationData>,
     operation_settings: Mutex<OperationSettings>,
-    calibration_data: Mutex<CalibrationData>,
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
     _tetra3_subprocess: Tetra3Subprocess,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
@@ -110,30 +106,6 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<OperationSettings>, tonic::Status>
     {
         let req: OperationSettings = request.into_inner();
-        if req.camera_gain.is_some() {
-            let gain = req.camera_gain.unwrap();
-            if gain < 0 || gain > 100 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got invalid gain: {}.", gain)));
-            }
-            match self.set_camera_gain(gain).await {
-                Ok(()) => (),
-                Err(x) => { return Err(tonic_status(x)); }
-            }
-            self.operation_settings.lock().unwrap().camera_gain = Some(gain);
-        }
-        if req.camera_offset.is_some() {
-            let offset = req.camera_offset.unwrap();
-            if offset < 0 || offset > 20 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got invalid offset: {}.", offset)));
-            }
-            match self.set_camera_offset(offset).await {
-                Ok(()) => (),
-                Err(x) => { return Err(tonic_status(x)); }
-            }
-            self.operation_settings.lock().unwrap().camera_offset = Some(offset);
-        }
         if req.operating_mode.is_some() {
             let operating_mode = req.operating_mode.unwrap();
             if operating_mode !=
@@ -145,6 +117,7 @@ impl Cedar for MyCedar {
                         Err(x) => { return Err(tonic_status(x)); }
                     }
                     self.detect_engine.lock().await.set_focus_mode(true);
+                    self.reset_session_stats().await;
                 } else if operating_mode == OperatingMode::Operate as i32 {
                     match self.calibrate().await {
                         Ok(()) => {},
@@ -202,12 +175,14 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got negative update_interval: {}.", update_interval)));
             }
-            let std_duration = std::time::Duration::try_from(update_interval.clone()).unwrap();
+            let std_duration = std::time::Duration::try_from(
+                update_interval.clone()).unwrap();
             match self.set_update_interval(std_duration).await {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
             }
-            self.operation_settings.lock().unwrap().update_interval = Some(update_interval);
+            self.operation_settings.lock().unwrap().update_interval =
+                Some(update_interval);
         }
         if req.dwell_update_interval.is_some() {
             return Err(tonic::Status::unimplemented(
@@ -281,13 +256,7 @@ impl Cedar for MyCedar {
             }
         }
         if req.reset_session_stats.unwrap_or(false) {
-            {
-                let detect_engine = &mut self.detect_engine.lock().await;
-                detect_engine.reset_session_stats();
-            }
-            let solve_engine = &mut self.solve_engine.lock().await;
-            solve_engine.reset_session_stats();
-            self.overall_latency_stats.lock().unwrap().reset_session();
+            self.reset_session_stats().await;
         }
         if req.save_image.unwrap_or(false) {
             let solve_engine = &mut self.solve_engine.lock().await;
@@ -301,15 +270,6 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
-    async fn set_camera_gain(&self, gain: i32) -> Result<(), CanonicalError> {
-        let mut locked_camera = self.camera.lock().await;
-        return locked_camera.set_gain(Gain::new(gain));
-    }
-    async fn set_camera_offset(&self, offset: i32) -> Result<(), CanonicalError> {
-        let mut locked_camera = self.camera.lock().await;
-        return locked_camera.set_offset(Offset::new(offset));
-    }
-
     async fn set_exposure_time(&self, exposure_time: std::time::Duration)
                                -> Result<(), CanonicalError> {
         let detect_engine = &mut self.detect_engine.lock().await;
@@ -319,8 +279,6 @@ impl MyCedar {
     async fn set_detection_sigma(&self, detection_sigma: f32)
                                  -> Result<(), CanonicalError> {
         let detect_engine = &mut self.detect_engine.lock().await;
-        // TODO(smr): if `detection_sigma` is 0, we use calibration_data's `detection_sigma`
-        // value.
         detect_engine.set_detection_params(
             detection_sigma,
             self.operation_settings.lock().unwrap().detection_max_size.unwrap())
@@ -343,12 +301,18 @@ impl MyCedar {
         solve_engine.set_update_interval(update_interval)
     }
 
+    async fn reset_session_stats(&self) {
+        self.detect_engine.lock().await.reset_session_stats();
+        self.solve_engine.lock().await.reset_session_stats();
+        self.overall_latency_stats.lock().unwrap().reset_session();
+    }
+
     // Called when entering SETUP mode.
     async fn set_pre_calibration_defaults(&self) -> Result<(), CanonicalError> {
         {
             let mut locked_camera = self.camera.lock().await;
-            let optimal_gain = locked_camera.optimal_gain();
-            locked_camera.set_gain(optimal_gain)?;
+            let gain = locked_camera.optimal_gain();
+            locked_camera.set_gain(gain)?;
             locked_camera.set_offset(Offset::new(3))?;
         }
         let mut locked_solve_engine = self.solve_engine.lock().await;
@@ -357,15 +321,20 @@ impl MyCedar {
         locked_solve_engine.set_distortion(0.0)?;
         locked_solve_engine.set_match_max_error(0.005)?;
         locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
-        *self.calibration_data.lock().unwrap() = CalibrationData{..Default::default()};
+        *self.calibration_data.lock().await = CalibrationData{..Default::default()};
         Ok(())
     }
 
     // Called when entering OPERATE mode.
     async fn calibrate(&self) -> Result<(), CanonicalError> {
         let locked_calibrator = self.calibrator.lock().await;
+        let mut locked_calibration_data = self.calibration_data.lock().await;
+        locked_calibration_data.calibration_time = Some(prost_types::Timestamp::try_from(
+                SystemTime::now()).unwrap());
 
-        info!("Calibrating offset"); // TEMPORARY
+        // What was the final exposure duration coming out of SETUP mode?
+        let setup_exposure_duration = self.camera.lock().await.get_exposure_duration();
+
         let offset = match locked_calibrator.calibrate_offset().await {
             Ok(o) => o,
             Err(e) => {
@@ -373,13 +342,9 @@ impl MyCedar {
                 Offset::new(3)  // Sane fallback value.
             }
         };
-        info!("Calibrated offset: {:?}", offset);  // TEMPORARY
         self.camera.lock().await.set_offset(offset)?;
-        self.calibration_data.lock().unwrap().camera_offset = Some(offset.value());
+        locked_calibration_data.camera_offset = Some(offset.value());
 
-        // What was the final exposure duration coming out of SETUP mode?
-        let setup_exposure_duration = self.camera.lock().await.get_exposure_duration();
-        info!("Calibrating exposure duration"); // TEMPORARY
         let detection_sigma;
         let detection_max_size;
         {
@@ -398,46 +363,48 @@ impl MyCedar {
                 setup_exposure_duration  // Sane fallback value.
             }
         };
-        info!("Calibrated exposure duration: {:?}", exp_duration);  // TEMPORARY
         self.camera.lock().await.set_exposure_duration(exp_duration)?;
-        self.calibration_data.lock().unwrap().target_exposure_time =
+        locked_calibration_data.target_exposure_time =
             Some(prost_types::Duration::try_from(exp_duration).unwrap());
         self.detect_engine.lock().await.set_calibrated_exposure_duration(
             exp_duration);
 
-        // info!("Calibrating optical"); // TEMPORARY
-        // match locked_calibrator.calibrate_optical(
-        //     self.solve_engine.clone(), exp_duration,
-        //     detection_sigma, detection_max_size)
-        // {
-        //     Ok((fov, distortion, solve_duration)) => {
-        //         locked_calibration_data.fov_horizontal = Some(fov);
-        //         locked_calibration_data.lens_distortion = Some(distortion);
-        //         let solve_timeout =
-        //             std::cmp::max(solve_duration * 10, Duration::from_millis(500));
-        //         // let mut locked_solve_engine = self.solve_engine.lock().unwrap();
-        //         // locked_solve_engine.set_fov_estimate(Some(fov), Some(fov/10.0))?;
-        //         // locked_solve_engine.set_distortion(distortion)?;
-        //         // locked_solve_engine.set_match_max_error(0.002)?;
-        //         // locked_solve_engine.set_solve_timeout(solve_timeout)?;
+        match locked_calibrator.calibrate_optical(
+            self.solve_engine.clone(), exp_duration,
+            detection_sigma, detection_max_size).await
+        {
+            Ok((fov, distortion, solve_duration)) => {
+                locked_calibration_data.fov_horizontal = Some(fov);
+                locked_calibration_data.lens_distortion = Some(distortion);
+                let sensor_width_mm = self.camera.lock().await.sensor_size().0;
+                let lens_fl_mm =
+                    sensor_width_mm / (2.0 * (fov/2.0).to_radians()).tan();
+                locked_calibration_data.lens_fl_mm = Some(lens_fl_mm);
+                let pixel_width_mm =
+                    sensor_width_mm / self.camera.lock().await.dimensions().0 as f32;
+                locked_calibration_data.pixel_angular_size =
+                    Some((pixel_width_mm / lens_fl_mm).atan().to_degrees());
 
-        //         info!("Calibrated fov {:?}, distortion {:?}, will use solve timeout {:?}",
-        //               fov, distortion, solve_timeout);  // TEMPORARY
-        //     }
-        //     Err(e) => {
-        //         warn!{"Error while calibrating optics: {:?}", e};
-        //         locked_calibration_data.fov_horizontal = None;
-        //         locked_calibration_data.lens_distortion = None;
-        //         let mut locked_solve_engine = self.solve_engine.lock().unwrap();
-        //         locked_solve_engine.set_fov_estimate(None, None)?;
-        //         locked_solve_engine.set_distortion(0.0)?;
-        //         locked_solve_engine.set_match_max_error(0.005)?;
-        //         locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
-        //     }
-        // };
-
-        // TODO: additional calibrations.
-
+                let solve_timeout =
+                    std::cmp::max(solve_duration * 10, Duration::from_millis(500));
+                let mut locked_solve_engine = self.solve_engine.lock().await;
+                locked_solve_engine.set_fov_estimate(Some(fov), Some(fov/10.0))?;
+                locked_solve_engine.set_distortion(distortion)?;
+                locked_solve_engine.set_match_max_error(0.002)?;
+                locked_solve_engine.set_solve_timeout(solve_timeout)?;
+            }
+            Err(e) => {
+                warn!{"Error while calibrating optics: {:?}", e};
+                locked_calibration_data.fov_horizontal = None;
+                locked_calibration_data.lens_distortion = None;
+                let mut locked_solve_engine = self.solve_engine.lock().await;
+                locked_solve_engine.set_fov_estimate(None, None)?;
+                locked_solve_engine.set_distortion(0.0)?;
+                locked_solve_engine.set_match_max_error(0.005)?;
+                locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
+            }
+        };
+        info!("Calibration result: {:?}", locked_calibration_data);
         Ok(())
     }
 
@@ -451,7 +418,8 @@ impl MyCedar {
         let mut plate_solution: Option<PlateSolution> = None;
         let mut solve_finish_time: Option<SystemTime> = None;
 
-        // TODO: if calibration active, block until done.
+        // Be mutually exclusive with calibrate().
+        let locked_calibration_data = self.calibration_data.lock().await;
 
         if self.operation_settings.lock().unwrap().operating_mode.unwrap() ==
             OperatingMode::Setup as i32
@@ -463,7 +431,8 @@ impl MyCedar {
         } else {
             let solve_engine = &mut self.solve_engine.lock().await;
             plate_solution = Some(solve_engine.get_next_result(prev_frame_id).await);
-            tetra3_solve_result = plate_solution.as_ref().unwrap().tetra3_solve_result.clone();
+            tetra3_solve_result =
+                plate_solution.as_ref().unwrap().tetra3_solve_result.clone();
             solve_finish_time = plate_solution.as_ref().unwrap().solve_finish_time;
             detect_result = plate_solution.as_ref().unwrap().detect_result.clone();
             boresight_position = solve_engine.target_pixel().expect(
@@ -491,10 +460,10 @@ impl MyCedar {
 
         let mut frame_result = FrameResult {
             frame_id: detect_result.frame_id,
+            calibration_data: Some(locked_calibration_data.clone()),
             operation_settings: Some(self.operation_settings.lock().unwrap().clone()),
             image: None,  // Is set below.
             star_candidates: centroids,
-            hot_pixel_count: detect_result.hot_pixel_count,
             exposure_time: Some(prost_types::Duration::try_from(
                 captured_image.capture_params.exposure_duration).unwrap()),
             processing_stats: None,  // Is set below.
@@ -565,8 +534,10 @@ impl MyCedar {
         if detect_result.focus_aid.is_some() {
             // Populate `center_peak_image`.
             let mut center_peak_bmp_buf = Vec::<u8>::new();
-            let center_peak_image = &detect_result.focus_aid.as_ref().unwrap().peak_image;
-            let peak_image_region = &detect_result.focus_aid.as_ref().unwrap().peak_image_region;
+            let center_peak_image =
+                &detect_result.focus_aid.as_ref().unwrap().peak_image;
+            let peak_image_region =
+                &detect_result.focus_aid.as_ref().unwrap().peak_image_region;
             let (center_peak_width, center_peak_height) =
                 center_peak_image.dimensions();
             center_peak_bmp_buf.reserve(
@@ -605,7 +576,8 @@ impl MyCedar {
             }
             // Overall latency is time between image acquisition and completion
             // of the plate solve attempt.
-            match solve_finish_time.unwrap().duration_since(captured_image.readout_time) {
+            match solve_finish_time.unwrap().duration_since(
+                captured_image.readout_time) {
                 Err(e) => {
                     warn!("Clock may have gone backwards: {:?}", e)
                 },
@@ -622,8 +594,10 @@ impl MyCedar {
                 Some(self.overall_latency_stats.lock().unwrap().value_stats.clone());
             stats.solve_interval = Some(plate_solution.solve_interval_stats.clone());
             stats.solve_latency = Some(plate_solution.solve_latency_stats.clone());
-            stats.solve_attempt_fraction = Some(plate_solution.solve_attempt_stats.clone());
-            stats.solve_success_fraction = Some(plate_solution.solve_success_stats.clone());
+            stats.solve_attempt_fraction =
+                Some(plate_solution.solve_attempt_stats.clone());
+            stats.solve_success_fraction =
+                Some(plate_solution.solve_success_stats.clone());
         }
 
         frame_result
@@ -655,8 +629,6 @@ impl MyCedar {
                 session_name: None,
             }),
             operation_settings: Mutex::new(OperationSettings {
-                camera_gain: None,
-                camera_offset: None,
                 operating_mode: Some(OperatingMode::Setup as i32),
                 exposure_time: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
@@ -673,7 +645,8 @@ impl MyCedar {
                 }),
                 log_dwelled_positions: Some(false),
             }),
-            calibration_data: Mutex::new(CalibrationData{..Default::default()}),
+            calibration_data: tokio::sync::Mutex::new(
+                CalibrationData{..Default::default()}),
             detect_engine: detect_engine.clone(),
             _tetra3_subprocess: Tetra3Subprocess::new(
                 tetra3_script, tetra3_database).unwrap(),
@@ -683,9 +656,11 @@ impl MyCedar {
                 /*update_interval=*/Duration::ZERO,
                 stats_capacity).await.unwrap())),
             position,
-            calibrator: Arc::new(tokio::sync::Mutex::new(Calibrator::new(camera.clone()))),
+            calibrator: Arc::new(tokio::sync::Mutex::new(
+                Calibrator::new(camera.clone()))),
             center_peak_position: Arc::new(Mutex::new(None)),
-            overall_latency_stats: Mutex::new(ValueStatsAccumulator::new(stats_capacity)),
+            overall_latency_stats: Mutex::new(
+                ValueStatsAccumulator::new(stats_capacity)),
         };
         // Set pre-calibration defaults on camera.
         match cedar.set_pre_calibration_defaults().await {
@@ -749,6 +724,9 @@ fn parse_duration(arg: &str)
     Ok(std::time::Duration::from_secs_f32(seconds))
 }
 
+// Adapted from
+// https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
+// https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();

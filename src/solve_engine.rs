@@ -20,7 +20,7 @@ use crate::cedar;
 
 pub struct SolveEngine {
     // Our connection to the tetra3 gRPC server.
-    client: Arc<Mutex<Tetra3Client<tonic::transport::Channel>>>,
+    client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
 
     // Our state, shared between SolveEngine methods and the worker thread.
     state: Arc<Mutex<SolveState>>,
@@ -111,7 +111,7 @@ impl SolveEngine {
                      -> Result<Self, CanonicalError> {
         let client = Self::connect(tetra3_server_address).await?;
         Ok(SolveEngine{
-            client: Arc::new(Mutex::new(client)),
+            client: Arc::new(tokio::sync::Mutex::new(client)),
             state: Arc::new(Mutex::new(SolveState{
                 frame_id: None,
                 update_interval,
@@ -335,10 +335,11 @@ impl SolveEngine {
         Self::solve_with_client(self.client.clone(), solve_request).await
     }
 
-    async fn solve_with_client(client: Arc<Mutex<Tetra3Client<tonic::transport::Channel>>>,
-                               solve_request: SolveRequest)
-                               -> Result<SolveResultProto, CanonicalError> {
-        match client.lock().unwrap().solve_from_centroids(solve_request).await {
+    async fn solve_with_client(
+        client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
+        solve_request: SolveRequest)
+        -> Result<SolveResultProto, CanonicalError> {
+        match client.lock().await.solve_from_centroids(solve_request).await {
             Ok(response) => {
                 return Ok(response.into_inner());
             },
@@ -360,10 +361,11 @@ impl SolveEngine {
         }
     }
 
-    async fn worker(client: Arc<Mutex<Tetra3Client<tonic::transport::Channel>>>,
-                    state: Arc<Mutex<SolveState>>,
-                    notify: Arc<tokio::sync::Notify>,
-                    detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>) {
+    async fn worker(
+        client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
+        state: Arc<Mutex<SolveState>>,
+        notify: Arc<tokio::sync::Notify>,
+        detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>) {
         info!("Starting solve engine");
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
