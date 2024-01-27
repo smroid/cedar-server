@@ -98,6 +98,17 @@ class _MainImagePainter extends CustomPainter {
             ..color = Colors.red
             ..strokeWidth = thin
             ..style = PaintingStyle.stroke);
+      for (var star in state._stars) {
+        var offset = Offset(star.centroidPosition.x / state._binFactor,
+            star.centroidPosition.y / state._binFactor);
+        canvas.drawCircle(
+            offset,
+            4,
+            Paint()
+              ..color = Colors.red
+              ..strokeWidth = hairline
+              ..style = PaintingStyle.stroke);
+      }
     }
   }
 
@@ -111,7 +122,9 @@ class _MyHomePageState extends State<MyHomePage> {
   // Information from most recent FrameResult.
 
   // Image data, binned by server.
+  bool _hasImage = false;
   Uint8List _imageBytes = Uint8List(1);
+  int _binFactor = 1;
 
   bool _setupMode = false;
 
@@ -125,7 +138,8 @@ class _MyHomePageState extends State<MyHomePage> {
   Uint8List _centerPeakImageBytes = Uint8List(1);
 
   int _prevFrameId = -1;
-  int _numStarCandidates = 0;
+  late List<StarCentroid> _stars;
+  int _numStars = 0;
   double _exposureTimeMs = 0.0;
   bool _hasSolution = false;
 
@@ -147,12 +161,11 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void setStateFromFrameResult(FrameResult response) {
-    // TODO(smr): check response.operatingMode and extract information
-    // accordingly. Also render widgets according to the operatingMode.
     _prevFrameId = response.frameId;
-    _numStarCandidates = response.starCandidates.length;
-    int binFactor = 1;
+    _stars = response.starCandidates;
+    _numStars = _stars.length;
     _hasSolution = false;
+    _hasImage = false;
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
       if (!plateSolution.hasFailureReason()) {
@@ -168,12 +181,13 @@ class _MyHomePageState extends State<MyHomePage> {
       }
     }
     if (response.hasImage()) {
+      _hasImage = true;
       _imageBytes = Uint8List.fromList(response.image.imageData);
-      binFactor = response.image.binningFactor;
+      _binFactor = response.image.binningFactor;
     }
     if (response.hasBoresightPosition()) {
-      _boresightPosition = Offset(response.boresightPosition.x / binFactor,
-          response.boresightPosition.y / binFactor);
+      _boresightPosition = Offset(response.boresightPosition.x / _binFactor,
+          response.boresightPosition.y / _binFactor);
     } else {
       _boresightPosition = null;
     }
@@ -181,10 +195,10 @@ class _MyHomePageState extends State<MyHomePage> {
       _setupMode = true;
       var cr = response.centerRegion;
       _centerRegion = Rect.fromLTWH(
-          cr.originX.toDouble() / binFactor,
-          cr.originY.toDouble() / binFactor,
-          cr.width.toDouble() / binFactor,
-          cr.height.toDouble() / binFactor);
+          cr.originX.toDouble() / _binFactor,
+          cr.originY.toDouble() / _binFactor,
+          cr.width.toDouble() / _binFactor,
+          cr.height.toDouble() / _binFactor);
     } else {
       _setupMode = false;
     }
@@ -202,9 +216,9 @@ class _MyHomePageState extends State<MyHomePage> {
     if (response.hasCenterPeakPosition()) {
       var cp = response.centerPeakPosition;
       _centerPeakRegion = Rect.fromCenter(
-          center: Offset(cp.x / binFactor, cp.y / binFactor),
-          width: _centerPeakWidth.toDouble() / binFactor,
-          height: _centerPeakHeight.toDouble() / binFactor);
+          center: Offset(cp.x / _binFactor, cp.y / _binFactor),
+          width: _centerPeakWidth.toDouble() / _binFactor,
+          height: _centerPeakHeight.toDouble() / _binFactor);
     }
   }
 
@@ -338,7 +352,7 @@ class _MyHomePageState extends State<MyHomePage> {
           Slider(
             min: 0,
             max: 10,
-            value: math.min(10, math.sqrt(_numStarCandidates)),
+            value: math.min(10, math.sqrt(_numStars)),
             onChanged: (double value) {},
             activeColor: starsSliderColor(),
             thumbColor: starsSliderColor(),
