@@ -43,10 +43,9 @@ message FixedSettings {
   // from the current time and the supplied latitude/longitude (converted to a
   // nearby location name).
 
-  // The session name is used when storing calibration data, boresight offset,
-  // when logging dwell positions, and when logging debugging captures (the
-  // latter should go elsewhere?). A processed catalog can also be associated
-  // with the session.
+  // The session name is used when storing boresight offset, when logging dwell
+  // positions, and when logging debugging captures (the latter should go
+  // elsewhere?).
   optional string session_name = 5;
 }
 
@@ -59,14 +58,6 @@ message LatLong {
 message OperationSettings {
   // TODO: Camera number.
 
-  // The camera's gain, [0..100]. Default is determined by camera/sky calibration,
-  // or 100 if no calibration has been done.
-  optional int32 camera_gain = 2;
-
-  // The camera's offset [0..20]. Default is determined by camera/sky calibration,
-  // or 0 if no calibration has been done.
-  optional int32 camera_offset = 3;
-
   // Defaults to SETUP mode.
   optional OperatingMode operating_mode = 4;
 
@@ -75,16 +66,15 @@ message OperationSettings {
   optional google.protobuf.Duration exposure_time = 5;
 
   // The S/N factor used to determine if a background-subtracted pixel is bright
-  // enough relative to the noise measure to be considered part of a star. Zero
-  // selects automatic determination based on camera/sky calibration; if no
-  // calibration has been done 8 is used.
+  // enough relative to the noise measure to be considered part of a star.
+  // Initial value is set from server config.
   optional float detection_sigma = 6;
 
   // CedarDetect clumps adjacent bright pixels to form a single star candidate. The
   // `detection_max_size` argument governs how large a clump can be before it is
   // rejected. Note that making `max_size` small can eliminate very bright stars
   // that "bleed" to many surrounding pixels.
-  // Default is 8.
+  // Initial value is set from server config.
   optional int32 detection_max_size = 12;
 
   // The desired time interval at which Cedar should replace its current frame
@@ -110,19 +100,14 @@ enum OperatingMode {
   // Mode supporting establishment of camera focus and boresight alignment of
   // camera and telescope:
   // * Exposure metered based on brightest point in central region.
-  // * Plate solves done using no FOV or distortion estimate and a large
-  //   match_max_error tolerance. TODO: don't attempt plate solving in SETUP
-  //   mode? Slows the frame rate for focusing.
   SETUP = 1;
-
-  // TODO: sky/camera calibration is a top-level operating mode?
 
   // Main operating mode. Continually updated RA/DEC sent to SkySafari.
   // Detection of tracking mount and accumulation of polar alignment advice
   // during dwells.
   // * Exposure metered based on number of detected stars.
   // * Plate solves done using FOV and distortion estimate obtained when
-  //   leaving SETUP mode. A small match_max_error tolerance is used.
+  //   leaving SETUP mode.
   OPERATE = 2;
 }
 
@@ -160,7 +145,8 @@ message FrameResult {
   // The Cedar settings in effect for this frame.
   OperationSettings operation_settings = 2;
 
-  // TODO: CalibrationData in effect for this frame.
+  // Calibration in effect for this frame.
+  CalibrationData calibration_data = 5;
 
   // Information returned regardless of `operating_mode`.
 
@@ -168,12 +154,9 @@ message FrameResult {
   // omitted or binned according to the FrameRequest.
   optional Image image = 3;
 
-  // The star candidates detected by CedarDetect; ordered by highest
-  // brightness first.
+  // The star candidates detected by CedarDetect; ordered by brightest
+  // first.
   repeated StarCentroid star_candidates = 4;
-
-  // The number of hot pixels detected by CedarDetect.
-  int32 hot_pixel_count = 6;
 
   // The camera exposure integration time for `image`.
   google.protobuf.Duration exposure_time = 7;
@@ -325,86 +308,42 @@ message DescriptiveStats {
   optional double median_absolute_deviation = 6;
 }
 
-// // Identify calibration activities that require more than a trivial amount of
-// // time to complete.
-// enum CalibrationPhase {
-//   // Calibration not underway.
-//   CALIBRATION_PHASE_NONE = 0;
-
-//   // TODO: redesign the following...
-
-//   // Capturing a set of images over a range of exposure times, gain values, and
-//   // offset values.
-//   CALIBRATION_PHASE_EXPOSURE_SWEEP = 1;
-
-//   // Analyzing the captured image set to determine:
-//   // * Minimum offset value that avoids crushing too many pixels to 0 value.
-//   // * Optimum gain value for best signal to noise.
-//   // * At optimum gain value, minimum and maximum exposure integration times for
-//   //   obtaining good star counts and avoiding too many overexposed stars.
-//   CALIBRATION_PHASE_ANALYZE_EXPOSURE = 2;
-
-//   // Obtain initial plate solution with loose constraints to obtain the true
-//   // field of view and lens distortion. TODO: drop this, we get it for free
-//   // during setup mode's solves.
-//   CALIBRATION_PHASE_ANALYZE_FIELD_OF_VIEW = 3;
-
-//   // Determining the CedarDetect "sigma" levels to use to maximize true star
-//   // detections and minimize false star detections, using catalogue as ground
-//   // (sky) truth.
-//   CALIBRATION_PHASE_ANALYZE_STAR_THRESHOLD = 4;
-// }
-
 message CalibrationData {
-  // Omitted if a sky/camera calibration has not been done.
-  optional google.protobuf.Timestamp calibration_start_time = 1;
-  optional google.protobuf.Timestamp calibration_end_time = 2;
-  optional float calibration_temperature_celsius = 3;
+  // Omitted if a sky/camera calibration has not been attempted.
+  optional google.protobuf.Timestamp calibration_time = 1;
 
   // Exposure time determined to yield the desired number of star detections
   // during calibration.
   // Operation mode varies the exposure duration around this value based on
   // the current detected star count.
-  // If no calibration has been done, this will have reasonable default value
+  // If no calibration has succeeded, this will have reasonable default value
   // based on setup mode's auto exposure (or manual exposure setting during
   // setup).
-  optional google.protobuf.Duration target_exposure_time = 4;
-
-  // The camera gain value [0..100] at which S/N is maximized.
-  // Omitted if a sky/camera calibration has not been done.
-  optional int32 optimal_camera_gain = 6;
+  optional google.protobuf.Duration target_exposure_time = 2;
 
   // The camera offset value [0..20] found to be needed to avoid black crush.
-  // Omitted if a sky/camera calibration has not been done.
-  optional int32 camera_offset = 7;
-
-  // The optimal S/N factor used to determine if a background-subtracted pixel
-  // is bright enough relative to the noise measure to be considered part of a
-  // star. TODO: how do we determine this?
-  // Omitted if a sky/camera calibration has not been done.
-  optional float detection_sigma = 8;
-
-  // TODO: revise
-  // The following fields are set when a plate solution is obtained in setup
-  // mode. The UI might choose to block exit out of setup mode until a plate
-  // solution has been obtained so these can be determined, allowing non-setup
-  // plate solves to use accurate FOV and distortion estimates.
+  // Omitted if a sky/camera calibration has not succeeded.
+  optional int32 camera_offset = 3;
 
   // The angular size (degrees) of the camera's width (longer dimension)
   // projected onto the sky.
-  optional float fov_horizontal = 15;
+  // Omitted if a sky/camera calibration has not succeeded.
+  optional float fov_horizontal = 4;
 
   // Tetra3's estimate of the lens distortion (pincushion or barrel).
-  optional float lens_distortion = 13;
+  // Omitted if a sky/camera calibration has not succeeded.
+  optional float lens_distortion = 5;
 
   // The lens focal length in millimeters, derived from `fov_horizontal`
   // together with the camera's sensor's physical size.
-  optional float lens_fl_mm = 12;
+  // Omitted if a sky/camera calibration has not succeeded.
+  optional float lens_fl_mm = 6;
 
   // The angular size of a pixel, in degrees. This is for the field center, as
   // the "pinhole" projection of sky angles onto a planar detector causes the
   // pixel/angle scale to vary as you move away from the center.
-  optional float pixel_angular_size = 14;
+  // Omitted if a sky/camera calibration has not succeeded.
+  optional float pixel_angular_size = 7;
 }
 
 enum MotionType {
@@ -466,14 +405,6 @@ message ActionRequest {
   // Save the current image for debugging. The image is saved in TBD directory
   // on the server with the current date/time incorporated into the filename.
   optional bool save_image = 5;
-
-  // Calibrate camera/sky (focus mode only). Pre-empts focus mode operation until
-  // completed or canceled.
-
-  // Cancel camera/sky calibration.
-  // TODO: calibration operation result? E.g. none performed; no stars detected;
-  // too much movement during capture; other inconsistencies.
-
 }
 
 message ServerInformationRequest {
@@ -531,14 +462,6 @@ service Cedar {
   // blocks if a sky/camera calibration is underway.
   rpc GetFrame(FrameRequest) returns (FrameResult);
 
-  // TODO: RPC to track progress of a sky/camera calibration?
-
   // Performs the requested action(s).
   rpc InitiateAction(ActionRequest) returns (EmptyMessage);
-
-  // TODO: list/get available sky/camera calibration data (by name). Calibration
-  // names are based on the session name, suffixed by an integer (in case
-  // multiple calibrations are performed during a session).
-
-  // TODO: use the calibration data for a given calibration name.
 }

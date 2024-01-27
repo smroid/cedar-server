@@ -16,8 +16,7 @@ pub struct Calibrator {
     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
 }
 
-// By convention, all methods restore any camera settings that they
-// alter.
+// By convention, all methods restore any camera settings that they alter.
 impl Calibrator {
     pub fn new(camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>) -> Self{
         Calibrator{camera}
@@ -31,7 +30,7 @@ impl Calibrator {
         //
         // Approach:
         // * Use 1ms exposures.
-        // * Starting at offset=0, as long as >1% of pixels have zero
+        // * Starting at offset=0, as long as >0.1% of pixels have zero
         //   value, increase the offset.
         let _restore_settings = RestoreSettings::new(self.camera.clone());
         let mut locked_camera = self.camera.lock().await;
@@ -51,7 +50,7 @@ impl Calibrator {
             let channel_histogram = histogram(&captured_image.image);
             let histo = channel_histogram.channels[0];
             num_zero_pixels = histo[0];
-            if num_zero_pixels < (total_pixels / 100) as u32 {
+            if num_zero_pixels < (total_pixels / 1000) as u32 {
                 if offset < max_offset {
                     offset += 1;  // One more for good measure.
                 }
@@ -118,7 +117,7 @@ impl Calibrator {
             f32::max(num_stars_detected as f32, 1.0) / star_count_goal as f32;
         scaled_exposure_duration_secs =
             setup_exposure_duration.as_secs_f32() / star_goal_fraction;
-        if star_goal_fraction < 0.7 || star_goal_fraction > 1.3 {
+        if star_goal_fraction < 0.6 || star_goal_fraction > 1.5 {
             warn!("Exposure time calibration diverged, goal fraction {}",
                   star_goal_fraction);
         }
@@ -184,8 +183,6 @@ impl Calibrator {
                         solve_duration).as_str()));
         }
     }
-
-    // TODO: calibrate detection_sigma, detection_max_size? How...
 
     async fn acquire_image_get_stars(&self, frame_id: Option<i32>,
                                      detection_sigma: f32, detection_max_size: i32)

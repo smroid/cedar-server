@@ -1,22 +1,34 @@
-add button to save image (and current settings) for debugging
-
 runtime stats (recent and session; button to clear session stats)
 
 view server log
 
-setup mode vs. run mode.
-* when transitioning out of setup mode, if a plate solution(s) were obtained, set
-  the fov_estimate & distortion, and reduce the match_max_error to 0.002.
-* sneak in a super-quick calibration series?
-  * determine camera offset setting to avoid black crush at short exposures. Do
-    this at entry into setup mode?
+add affordance to set number of pattern_checking_stars. This can be our
+speed vs accuracy slider.
 
-add affordance to set number of pattern_checking_stars
+time/location from phone
 
-don't attempt solve if there are less than N detected stars (~10)
+session handling
 
-tetra3:
-* report depth of pattern_checking_stars that were used for the match
-* optimize use of patterns in pattern_checking_stars in overall brightness
-  order
+command line options for camera binning: yes, no, auto.
 
+goto support from SkySafari
+* visible instruction phone
+* aural cue from phone
+* alt/az vs equatorial?
+
+update interval, reduce when dwelling, increase upon movement
+
+motion classification
+* capture RA/DEC when dwell starts
+* adjust update interval
+
+polar alignment advice
+
+broaden camera support
+
+multi camera support (choose which)
+
+UI:
+* slide-out settings/controls
+* night vision theme
+* pause updates when control is visible
