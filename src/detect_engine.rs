@@ -85,7 +85,7 @@ impl DetectEngine {
                max_exposure_duration: Duration,
                camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                update_interval: Duration, auto_exposure: bool,
-               focus_mode_enabled: bool, star_count_goal: i32, stats_capacity: usize)
+               focus_mode_enabled: bool, stats_capacity: usize)
                -> Self {
         DetectEngine{
             min_exposure_duration,
@@ -98,7 +98,7 @@ impl DetectEngine {
                 detection_sigma: 8.0,
                 detection_max_size: 3,
                 focus_mode_enabled,
-                star_count_goal,
+                star_count_goal: 20,
                 calibrated_exposure_duration: None,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 detect_result: None,
@@ -158,7 +158,11 @@ impl DetectEngine {
     pub fn get_star_count_goal(&self) -> i32 {
         return self.state.lock().unwrap().star_count_goal;
     }
-    // TODO: set_star_count_goal()?
+    pub fn set_star_count_goal(&mut self, star_count_goal: i32) {
+        self.state.lock().unwrap().star_count_goal = star_count_goal;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+    }
 
     pub fn set_calibrated_exposure_duration(
         &mut self, calibrated_exposure_duration: Duration) {

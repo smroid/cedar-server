@@ -22,7 +22,7 @@ use tracing_subscriber;
 use futures::join;
 
 use cedar::cedar::cedar_server::{Cedar, CedarServer};
-use cedar::cedar::{ActionRequest, CalibrationData,
+use cedar::cedar::{Accuracy, ActionRequest, CalibrationData,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
                    Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
                    ProcessingStats, Rectangle, StarCentroid};
@@ -70,6 +70,7 @@ struct MyCedar {
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     position: Arc<Mutex<CelestialPosition>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
+    base_star_count_goal: i32,
 
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
@@ -145,6 +146,11 @@ impl Cedar for MyCedar {
                 Err(x) => { return Err(tonic_status(x)); }
             }
             self.operation_settings.lock().unwrap().exposure_time = Some(exp_time);
+        }
+        if req.accuracy.is_some() {
+            let accuracy = req.accuracy.unwrap();
+            self.operation_settings.lock().unwrap().accuracy = Some(accuracy);
+            self.set_effective_star_count_goal().await;
         }
         if req.detection_sigma.is_some() {
             let sigma = req.detection_sigma.unwrap();
@@ -611,7 +617,7 @@ impl MyCedar {
                      tetra3_uds: String,
                      camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                      position: Arc<Mutex<CelestialPosition>>,
-                     star_count_goal: i32,
+                     base_star_count_goal: i32,
                      stats_capacity: usize) -> Self {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration,
@@ -620,7 +626,6 @@ impl MyCedar {
             /*update_interval=*/Duration::ZERO,
             /*auto_exposure=*/true,
             /*focus_mode_enabled=*/true,
-            star_count_goal,
             stats_capacity)));
         let cedar = MyCedar {
             camera: camera.clone(),
@@ -634,6 +639,7 @@ impl MyCedar {
                 exposure_time: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
+                accuracy: Some(Accuracy::Balanced.into()),
                 // TODO: command line args for detection_{sigma,max_size}. Or
                 // figure out how to calibrate them.
                 detection_sigma: Some(8.0),
@@ -659,6 +665,7 @@ impl MyCedar {
             position,
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
+            base_star_count_goal,
             center_peak_position: Arc::new(Mutex::new(None)),
             overall_latency_stats: Mutex::new(
                 ValueStatsAccumulator::new(stats_capacity)),
@@ -670,16 +677,30 @@ impl MyCedar {
                 warn!("Could not set default settings on camera {:?}", x)
             }
         }
-        let sigma;
-        let max_size;
         {
-            let op_settings = cedar.operation_settings.lock().unwrap();
-            sigma = op_settings.detection_sigma.unwrap();
-            max_size = op_settings.detection_max_size.unwrap();
+            let locked_op_settings = cedar.operation_settings.lock().unwrap();
+            cedar.detect_engine.lock().await.set_detection_params(
+                locked_op_settings.detection_sigma.unwrap(),
+                locked_op_settings.detection_max_size.unwrap()).unwrap();
         }
-        assert!(cedar.detect_engine.lock().await.set_detection_params(
-            sigma, max_size).is_ok());
+        cedar.set_effective_star_count_goal().await;
+
         cedar
+    }
+
+    async fn set_effective_star_count_goal(&self) {
+        let accuracy: i32 = self.operation_settings.lock().unwrap().accuracy.unwrap();
+        // https://stackoverflow.com/questions/28028854/how-do-i-match-enum-values-with-an-integer
+        let acc_enum: Accuracy = unsafe { ::std::mem::transmute(accuracy) };
+        let multiplier = match acc_enum {
+            Accuracy::Fastest => 0.5,
+            Accuracy::Faster => 0.7,
+            Accuracy::Balanced => 1.0,
+            Accuracy::Accurate => 1.4,
+            _ => 1.0,
+        };
+        self.detect_engine.lock().await.set_star_count_goal(
+            self.base_star_count_goal * multiplier as i32);
     }
 }
 
@@ -712,8 +733,10 @@ struct Args {
     #[arg(long, value_parser = parse_duration, default_value = "1.0")]
     max_exposure: Duration,
 
-    /// Target number of detected stars for auto-exposure.
-    #[arg(long, default_value = "20")]
+    /// Target number of detected stars for auto-exposure. This is altered by
+    /// the OperationSettings.accuracy setting (multiplier ranging from 0.5 to
+    /// 1.4).
+    #[arg(long, default_value = "30")]
     star_count_goal: i32,
 }
 
