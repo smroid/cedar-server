@@ -67,20 +67,15 @@ message OperationSettings {
 
   // Controls the speed vs accuracy. Default is BALANCED. Only relevant in
   // OPERATE mode.
-  // High value: uses longer exposures to obtain more detected stars. Perhaps
-  //   with higher detection sigma threshold to reduce false star detections.
+  // High value: uses longer exposures to obtain more detected stars. Also
+  //   uses higher detection sigma threshold to reduce false star detections.
   //   Benefit: more robust plate solves, smaller RMS errors. Drawback: slower
   //   cycle time.
-  // Low value: shorter exposures to obtain fewer detected stars. Perhaps with
+  // Low value: shorter exposures to obtain fewer detected stars. Also uses
   //   lower detection sigma threshold to find more stars despite shorter
   //   exposures. Benefit: faster cycle time. Drawback: risk of failed plate
   //   solves from too few stars and more spurious detections.
   optional int32 accuracy = 3;
-
-  // The S/N factor used to determine if a background-subtracted pixel is bright
-  // enough relative to the noise measure to be considered part of a star.
-  // Initial value is set from server config.
-  optional float detection_sigma = 6;
 
   // CedarDetect clumps adjacent bright pixels to form a single star candidate. The
   // `detection_max_size` argument governs how large a clump can be before it is

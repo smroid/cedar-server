@@ -96,7 +96,7 @@ impl DetectEngine {
                 auto_exposure,
                 update_interval,
                 detection_sigma: 8.0,
-                detection_max_size: 3,
+                detection_max_size: 8,
                 focus_mode_enabled,
                 star_count_goal: 20,
                 calibrated_exposure_duration: None,
@@ -136,13 +136,19 @@ impl DetectEngine {
         Ok(())
     }
 
-    // Note that `detection_max_size` is in the 2x2 binned image.
-    pub fn set_detection_params(&mut self, detection_sigma: f32,
-                                detection_max_size: i32)
-                                -> Result<(), CanonicalError> {
+    pub fn set_sigma(&mut self, sigma: f32) -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();
-        locked_state.detection_sigma = detection_sigma;
-        locked_state.detection_max_size = detection_max_size;
+        locked_state.detection_sigma = sigma;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    // Note that `max_size` is always in full-resolution units.
+    pub fn set_max_size(&mut self, max_size: i32)
+                        -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.detection_max_size = max_size;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())

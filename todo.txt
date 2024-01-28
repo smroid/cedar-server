@@ -2,8 +2,6 @@ runtime stats (recent and session; button to clear session stats)
 
 view server log
 
-add sigma adjusting to accuracy slider.
-
 time/location from phone
 
 session handling

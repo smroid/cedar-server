@@ -71,6 +71,7 @@ struct MyCedar {
     position: Arc<Mutex<CelestialPosition>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     base_star_count_goal: i32,
+    base_detection_sigma: f32,
 
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
@@ -150,19 +151,7 @@ impl Cedar for MyCedar {
         if req.accuracy.is_some() {
             let accuracy = req.accuracy.unwrap();
             self.operation_settings.lock().unwrap().accuracy = Some(accuracy);
-            self.set_effective_star_count_goal().await;
-        }
-        if req.detection_sigma.is_some() {
-            let sigma = req.detection_sigma.unwrap();
-            if sigma < 0.0 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got negative detection_sigma: {}.", sigma)));
-            }
-            match self.set_detection_sigma(sigma).await {
-                Ok(()) => (),
-                Err(x) => { return Err(tonic_status(x)); }
-            }
-            self.operation_settings.lock().unwrap().detection_sigma = Some(sigma);
+            self.update_accuracy_adjusted_params().await;
         }
         if req.detection_max_size.is_some() {
             let max_size = req.detection_max_size.unwrap();
@@ -283,19 +272,10 @@ impl MyCedar {
         detect_engine.set_exposure_time(exposure_time).await
     }
 
-    async fn set_detection_sigma(&self, detection_sigma: f32)
-                                 -> Result<(), CanonicalError> {
-        let detect_engine = &mut self.detect_engine.lock().await;
-        detect_engine.set_detection_params(
-            detection_sigma,
-            self.operation_settings.lock().unwrap().detection_max_size.unwrap())
-    }
     async fn set_detection_max_size(&self, max_size: i32)
                                     -> Result<(), CanonicalError> {
         let detect_engine = &mut self.detect_engine.lock().await;
-        detect_engine.set_detection_params(
-            self.operation_settings.lock().unwrap().detection_sigma.unwrap(),
-            max_size)
+        detect_engine.set_max_size(max_size)
     }
 
     async fn set_update_interval(&self, update_interval: std::time::Duration)
@@ -352,11 +332,12 @@ impl MyCedar {
         self.camera.lock().await.set_offset(offset)?;
         locked_calibration_data.camera_offset = Some(offset.value());
 
-        let detection_sigma;
+        // For calibrations, use statically configured sigma value, not adjusted
+        // by accuracy setting.
+        let detection_sigma = self.base_detection_sigma;
         let detection_max_size;
         {
             let op_settings = self.operation_settings.lock().unwrap();
-            detection_sigma = op_settings.detection_sigma.unwrap();
             detection_max_size = op_settings.detection_max_size.unwrap();
         }
         let exp_duration = match locked_calibrator.calibrate_exposure_duration(
@@ -618,6 +599,7 @@ impl MyCedar {
                      camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                      position: Arc<Mutex<CelestialPosition>>,
                      base_star_count_goal: i32,
+                     base_detection_sigma: f32,
                      stats_capacity: usize) -> Self {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration,
@@ -640,9 +622,8 @@ impl MyCedar {
                     seconds: 0, nanos: 0,
                 }),
                 accuracy: Some(Accuracy::Balanced.into()),
-                // TODO: command line args for detection_{sigma,max_size}. Or
-                // figure out how to calibrate them.
-                detection_sigma: Some(8.0),
+                // TODO: command line arg for detection_max_size. Or
+                // figure out how to calibrate it.
                 detection_max_size: Some(8),
                 update_interval: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
@@ -666,6 +647,7 @@ impl MyCedar {
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
             base_star_count_goal,
+            base_detection_sigma,
             center_peak_position: Arc::new(Mutex::new(None)),
             overall_latency_stats: Mutex::new(
                 ValueStatsAccumulator::new(stats_capacity)),
@@ -677,18 +659,15 @@ impl MyCedar {
                 warn!("Could not set default settings on camera {:?}", x)
             }
         }
-        {
-            let locked_op_settings = cedar.operation_settings.lock().unwrap();
-            cedar.detect_engine.lock().await.set_detection_params(
-                locked_op_settings.detection_sigma.unwrap(),
-                locked_op_settings.detection_max_size.unwrap()).unwrap();
-        }
-        cedar.set_effective_star_count_goal().await;
+        cedar.set_detection_max_size(
+            cedar.operation_settings.lock().unwrap().detection_max_size.unwrap())
+            .await.unwrap();
+        cedar.update_accuracy_adjusted_params().await;
 
         cedar
     }
 
-    async fn set_effective_star_count_goal(&self) {
+    async fn update_accuracy_adjusted_params(&self) {
         let accuracy: i32 = self.operation_settings.lock().unwrap().accuracy.unwrap();
         // https://stackoverflow.com/questions/28028854/how-do-i-match-enum-values-with-an-integer
         let acc_enum: Accuracy = unsafe { ::std::mem::transmute(accuracy) };
@@ -699,8 +678,11 @@ impl MyCedar {
             Accuracy::Accurate => 1.4,
             _ => 1.0,
         };
-        self.detect_engine.lock().await.set_star_count_goal(
+        let mut locked_detect_engine = self.detect_engine.lock().await;
+        locked_detect_engine.set_star_count_goal(
             (self.base_star_count_goal as f32 * multiplier) as i32);
+        locked_detect_engine.set_sigma(
+            self.base_detection_sigma as f32 * multiplier).unwrap();
     }
 }
 
@@ -738,6 +720,13 @@ struct Args {
     /// 1.4).
     #[arg(long, default_value = "30")]
     star_count_goal: i32,
+
+    /// The S/N factor used to determine if a background-subtracted pixel is
+    /// bright enough relative to the noise measure to be considered part of a
+    /// star. This is altered by the OperationSettings.accuracy setting
+    /// (multiplier ranging from 0.5 to 1.4).
+    #[arg(long, default_value = "8.0")]
+    sigma: f32,
 }
 
 // Adapted from
@@ -791,6 +780,7 @@ async fn main() {
                                                    camera,
                                                    shared_position.clone(),
                                                    args.star_count_goal,
+                                                   args.sigma,
                                                    // TODO: arg for this?
                                                    /*stats_capacity=*/100).await))
         .into_service();
