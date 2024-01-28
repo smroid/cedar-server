@@ -117,7 +117,7 @@ impl Calibrator {
             f32::max(num_stars_detected as f32, 1.0) / star_count_goal as f32;
         scaled_exposure_duration_secs =
             setup_exposure_duration.as_secs_f32() / star_goal_fraction;
-        if star_goal_fraction < 0.6 || star_goal_fraction > 1.5 {
+        if star_goal_fraction < 0.5 || star_goal_fraction > 2.0 {
             warn!("Exposure time calibration diverged, goal fraction {}",
                   star_goal_fraction);
         }

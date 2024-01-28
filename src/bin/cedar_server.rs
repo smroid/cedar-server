@@ -114,13 +114,13 @@ impl Cedar for MyCedar {
                 self.operation_settings.lock().unwrap().operating_mode =
                     Some(operating_mode);
                 if operating_mode == OperatingMode::Setup as i32 {
+                    self.solve_engine.lock().await.stop().await;
+                    self.detect_engine.lock().await.set_focus_mode(true);
+                    self.reset_session_stats().await;
                     match self.set_pre_calibration_defaults().await {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
                     }
-                    self.detect_engine.lock().await.set_focus_mode(true);
-                    self.solve_engine.lock().await.stop();
-                    self.reset_session_stats().await;
                 } else if operating_mode == OperatingMode::Operate as i32 {
                     match self.calibrate().await {
                         Ok(()) => {},

@@ -2,7 +2,6 @@ use crate::detect_engine::{DetectEngine, DetectResult};
 
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use canonical_error::{CanonicalError, failed_precondition_error, invalid_argument_error};
@@ -32,7 +31,7 @@ pub struct SolveEngine {
     notify: Arc<tokio::sync::Notify>,
 
     // Executes worker().
-    worker_thread: Option<thread::JoinHandle<()>>,
+    worker_thread: Option<tokio::task::JoinHandle<()>>,
 }
 
 // State shared between worker thread and the SolveEngine methods.
@@ -71,7 +70,8 @@ struct SolveState {
 
 impl Drop for SolveEngine {
     fn drop(&mut self) {
-        self.stop();
+        // https://stackoverflow.com/questions/71541765/rust-async-drop
+        futures::executor::block_on(self.stop());
     }
 }
 
@@ -258,7 +258,7 @@ impl SolveEngine {
         if self.worker_thread.is_some() &&
             self.worker_thread.as_ref().unwrap().is_finished()
         {
-            self.worker_thread.take().unwrap().join().unwrap();
+            self.worker_thread.take().unwrap().await.unwrap();
         }
         // Start worker thread if terminated or not yet started.
         if self.worker_thread.is_none() {
@@ -266,11 +266,9 @@ impl SolveEngine {
             let cloned_state = self.state.clone();
             let cloned_notify = self.notify.clone();
             let cloned_detect_engine = self.detect_engine.clone();
-            self.worker_thread = Some(thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(SolveEngine::worker(
-                    cloned_client, cloned_state, cloned_notify,
-                    cloned_detect_engine));
+            self.worker_thread = Some(tokio::task::spawn(async move {
+                SolveEngine::worker(cloned_client, cloned_state, cloned_notify,
+                                    cloned_detect_engine).await;
             }));
         }
         // Get the most recently posted result; wait if there is none yet or the
@@ -354,10 +352,10 @@ impl SolveEngine {
     /// will not be called soon. A subsequent call to get_next_result() will
     /// re-start processing, at the expense of that first get_next_result() call
     /// taking longer than usual.
-    pub fn stop(&mut self) {
-        self.state.lock().unwrap().stop_request = true;
+    pub async fn stop(&mut self) {
         if self.worker_thread.is_some() {
-            self.worker_thread.take().unwrap().join().unwrap();
+            self.state.lock().unwrap().stop_request = true;
+            self.worker_thread.take().unwrap().await.unwrap();
         }
     }
 
