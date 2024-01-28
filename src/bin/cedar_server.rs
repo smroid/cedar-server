@@ -700,7 +700,7 @@ impl MyCedar {
             _ => 1.0,
         };
         self.detect_engine.lock().await.set_star_count_goal(
-            self.base_star_count_goal * multiplier as i32);
+            (self.base_star_count_goal as f32 * multiplier) as i32);
     }
 }
 
