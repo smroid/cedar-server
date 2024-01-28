@@ -126,6 +126,7 @@ class _MyHomePageState extends State<MyHomePage> {
   int _binFactor = 1;
 
   bool _setupMode = false;
+  int _accuracy = 3; // 1-4.
 
   Offset? _boresightPosition; // Scaled by main image's binning.
 
@@ -164,6 +165,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _stars = response.starCandidates;
     _numStars = _stars.length;
     _hasSolution = false;
+    _accuracy = response.operationSettings.accuracy.toInt();
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
       if (!plateSolution.hasFailureReason()) {
@@ -280,6 +282,12 @@ class _MyHomePageState extends State<MyHomePage> {
     await updateOperationSettings(request);
   }
 
+  Future<void> setAccuracy(int value) async {
+    var request = OperationSettings();
+    request.accuracy = value;
+    await updateOperationSettings(request);
+  }
+
   void shutdownDialog() {
     showDialog(
       context: context,
@@ -366,6 +374,21 @@ class _MyHomePageState extends State<MyHomePage> {
                 Container(
                   margin: const EdgeInsets.all(10),
                   child: const Text("RA/DEC/RMSE"),
+                ),
+              ],
+            ),
+      _setupMode
+          ? const SizedBox(height: 2)
+          : Column(
+              children: <Widget>[
+                const Text("Fast              Accurate"),
+                Slider(
+                  min: 1,
+                  max: 4,
+                  value: _accuracy.toDouble(),
+                  onChanged: (double value) {
+                    setAccuracy(value.toInt());
+                  },
                 ),
               ],
             ),
