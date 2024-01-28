@@ -32,3 +32,4 @@ UI:
 * slide-out settings/controls
 * night vision theme
 * pause updates when control is visible
+* box around inset zoomed star in setup mode

@@ -2,7 +2,6 @@ use camera_service::abstract_camera::{AbstractCamera, CapturedImage};
 
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use canonical_error::CanonicalError;
@@ -33,7 +32,7 @@ pub struct DetectEngine {
     notify: Arc<tokio::sync::Notify>,
 
     // Executes worker().
-    worker_thread: Option<thread::JoinHandle<()>>,
+    worker_thread: Option<tokio::task::JoinHandle<()>>,
 }
 
 // State shared between worker thread and the DetectEngine methods.
@@ -76,7 +75,8 @@ struct DetectState {
 
 impl Drop for DetectEngine {
     fn drop(&mut self) {
-        self.stop();
+        // https://stackoverflow.com/questions/71541765/rust-async-drop
+        futures::executor::block_on(self.stop());
     }
 }
 
@@ -182,7 +182,7 @@ impl DetectEngine {
         if self.worker_thread.is_some() &&
             self.worker_thread.as_ref().unwrap().is_finished()
         {
-            self.worker_thread.take().unwrap().join().unwrap();
+            self.worker_thread.take().unwrap().await.unwrap();
         }
         // Start worker thread if terminated or not yet started.
         if self.worker_thread.is_none() {
@@ -191,11 +191,9 @@ impl DetectEngine {
             let cloned_state = self.state.clone();
             let cloned_notify = self.notify.clone();
             let cloned_camera = self.camera.clone();
-            self.worker_thread = Some(thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(DetectEngine::worker(
-                    min_exposure_duration, max_exposure_duration,
-                    cloned_state, cloned_notify, cloned_camera));
+            self.worker_thread = Some(tokio::task::spawn(async move {
+                DetectEngine::worker(min_exposure_duration, max_exposure_duration,
+                                     cloned_state, cloned_notify, cloned_camera).await;
             }));
         }
         // Get the most recently posted result; wait if there is none yet or the
@@ -226,10 +224,10 @@ impl DetectEngine {
     /// will not be called soon. A subsequent call to get_next_result() will
     /// re-start processing, at the expense of that first get_next_result() call
     /// taking longer than usual.
-    pub fn stop(&mut self) {
-        self.state.lock().unwrap().stop_request = true;
+    pub async fn stop(&mut self) {
         if self.worker_thread.is_some() {
-            self.worker_thread.take().unwrap().join().unwrap();
+            self.state.lock().unwrap().stop_request = true;
+            self.worker_thread.take().unwrap().await.unwrap();
         }
     }
 
@@ -284,18 +282,19 @@ impl DetectEngine {
                 frame_id = locked_state.frame_id;
             }
             let captured_image;
-            let mut locked_camera = camera.lock().await;
-            match locked_camera.capture_image(frame_id).await {
-                Ok((img, id)) => {
-                    drop(locked_camera);
-                    captured_image = img;
-                    let mut locked_state = state.lock().unwrap();
-                    let locked_state_mut = locked_state.deref_mut();
-                    locked_state_mut.frame_id = Some(id);
-                }
-                Err(e) => {
-                    error!("Error capturing image: {}", &e.to_string());
-                    break;  // Abandon thread execution!
+            {
+                let mut locked_camera = camera.lock().await;
+                match locked_camera.capture_image(frame_id).await {
+                    Ok((img, id)) => {
+                        captured_image = img;
+                        let mut locked_state = state.lock().unwrap();
+                        let locked_state_mut = locked_state.deref_mut();
+                        locked_state_mut.frame_id = Some(id);
+                    }
+                    Err(e) => {
+                        error!("Error capturing image: {}", &e.to_string());
+                        break;  // Abandon thread execution!
+                    }
                 }
             }
 
@@ -387,8 +386,7 @@ impl DetectEngine {
                                      /*use_binned_image=*/true,
                                      /*return_binned_image=*/true);
             let elapsed = process_start_time.elapsed();
-            let mut locked_state = state.lock().unwrap();
-            locked_state.detect_latency_stats.add_value(elapsed.as_secs_f64());
+            state.lock().unwrap().detect_latency_stats.add_value(elapsed.as_secs_f64());
 
             if !focus_mode_enabled && auto_exposure &&
                 calibrated_exposure_duration.is_some()
@@ -417,14 +415,14 @@ impl DetectEngine {
                     //   calibrated_exposure_duration.
                     new_exposure_duration_secs =
                         prev_exposure_duration_secs / star_goal_fraction;
-                    // Bound exposure duration to be within two stops of
+                    // Bound exposure duration to be within three stops of
                     // calibrated_exposure_duration.
                     new_exposure_duration_secs = f32::max(
                         new_exposure_duration_secs,
-                        (calibrated_exposure_duration.unwrap() / 4).as_secs_f32());
+                        (calibrated_exposure_duration.unwrap() / 8).as_secs_f32());
                     new_exposure_duration_secs = f32::min(
                         new_exposure_duration_secs,
-                        (calibrated_exposure_duration.unwrap() * 4).as_secs_f32());
+                        (calibrated_exposure_duration.unwrap() * 8).as_secs_f32());
                 }
             }
 
@@ -446,6 +444,7 @@ impl DetectEngine {
             }
 
             // Post the result.
+            let mut locked_state = state.lock().unwrap();
             locked_state.detect_result = Some(DetectResult{
                 frame_id: locked_state.frame_id.unwrap(),
                 captured_image: captured_image,
