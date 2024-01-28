@@ -28,9 +28,6 @@ pub struct DetectEngine {
     // Our state, shared between DetectEngine methods and the worker thread.
     state: Arc<Mutex<DetectState>>,
 
-    // Notified whenever `state.detect_result` is populated.
-    notify: Arc<tokio::sync::Notify>,
-
     // Executes worker().
     worker_thread: Option<tokio::task::JoinHandle<()>>,
 }
@@ -67,6 +64,9 @@ struct DetectState {
 
     detect_latency_stats: ValueStatsAccumulator,
 
+    // Estimated time at which `detect_result` will next be updated.
+    eta: Option<Instant>,
+
     detect_result: Option<DetectResult>,
 
     // Set by stop(); the worker thread exits when it sees this.
@@ -101,10 +101,10 @@ impl DetectEngine {
                 star_count_goal: 20,
                 calibrated_exposure_duration: None,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
+                eta: None,
                 detect_result: None,
                 stop_request: false,
             })),
-            notify: Arc::new(tokio::sync::Notify::new()),
             worker_thread: None,
         }
     }
@@ -193,17 +193,17 @@ impl DetectEngine {
             let min_exposure_duration = self.min_exposure_duration;
             let max_exposure_duration = self.max_exposure_duration;
             let cloned_state = self.state.clone();
-            let cloned_notify = self.notify.clone();
             let cloned_camera = self.camera.clone();
             self.worker_thread = Some(tokio::task::spawn(async move {
                 DetectEngine::worker(min_exposure_duration, max_exposure_duration,
-                                     cloned_state, cloned_notify, cloned_camera).await;
+                                     cloned_state, cloned_camera).await;
             }));
         }
         // Get the most recently posted result; wait if there is none yet or the
         // currently posted result is the same as the one the caller has already
         // obtained.
         loop {
+            let mut sleep_duration = Duration::from_millis(1);
             {
                 let locked_state = self.state.lock().unwrap();
                 if locked_state.detect_result.is_some() &&
@@ -214,14 +214,36 @@ impl DetectEngine {
                     // Don't consume it, other clients may want it.
                     return locked_state.detect_result.clone().unwrap();
                 }
+                if locked_state.eta.is_some() {
+                    let time_to_eta =
+                        locked_state.eta.unwrap().saturating_duration_since(Instant::now());
+                    if time_to_eta > sleep_duration {
+                        sleep_duration = time_to_eta;
+                    }
+                }
             }
-            self.notify.notified().await;
+            tokio::time::sleep(sleep_duration).await;
         }
     }
 
     pub fn reset_session_stats(&mut self) {
         let mut state = self.state.lock().unwrap();
         state.detect_latency_stats.reset_session();
+    }
+
+    pub fn estimate_delay(&self, prev_frame_id: Option<i32>) -> Option<Duration> {
+        let locked_state = self.state.lock().unwrap();
+        if locked_state.detect_result.is_some() &&
+            (prev_frame_id.is_none() ||
+             prev_frame_id.unwrap() !=
+             locked_state.detect_result.as_ref().unwrap().frame_id)
+        {
+            Some(Duration::ZERO)
+        } else if locked_state.eta.is_some() {
+            Some(locked_state.eta.unwrap().saturating_duration_since(Instant::now()))
+        } else {
+            None
+        }
     }
 
     /// Shuts down the worker thread; this can save power if get_next_result()
@@ -238,7 +260,6 @@ impl DetectEngine {
     async fn worker(min_exposure_duration: Duration,
                     max_exposure_duration: Duration,
                     state: Arc<Mutex<DetectState>>,
-                    notify: Arc<tokio::sync::Notify>,
                     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>) {
         info!("Starting detect engine");
         // Keep track of when we started the detect cycle.
@@ -272,7 +293,9 @@ impl DetectEngine {
             if last_result_time.is_some() {
                 let next_update_time = last_result_time.unwrap() + update_interval;
                 if next_update_time > now {
-                    tokio::time::sleep(next_update_time - now).await;
+                    let delay = next_update_time - now;
+                    state.lock().unwrap().eta = Some(Instant::now() + delay);
+                    tokio::time::sleep(delay).await;
                     continue;
                 }
             }
@@ -280,14 +303,15 @@ impl DetectEngine {
             // Time to do a detect processing cycle.
             last_result_time = Some(now);
 
-            let frame_id;
-            {
-                let locked_state = state.lock().unwrap();
-                frame_id = locked_state.frame_id;
-            }
+            let frame_id = state.lock().unwrap().frame_id;
             let captured_image;
             {
                 let mut locked_camera = camera.lock().await;
+                let delay_est = locked_camera.estimate_delay(frame_id);
+                if delay_est.is_some() {
+                    state.lock().unwrap().eta =
+                        Some(Instant::now() + delay_est.unwrap());
+                }
                 match locked_camera.capture_image(frame_id).await {
                     Ok((img, id)) => {
                         captured_image = img;
@@ -384,6 +408,15 @@ impl DetectEngine {
             }  // focus_mode_enabled
 
             // Run CedarDetect on the image.
+            {
+                let mut locked_state = state.lock().unwrap();
+                if let Some(recent_stats) =
+                    &locked_state.detect_latency_stats.value_stats.recent
+                {
+                    let detect_duration = Duration::from_secs_f64(recent_stats.min);
+                    locked_state.eta = Some(Instant::now() + detect_duration);
+                }
+            }
             let (stars, hot_pixel_count, binned_image) =
                 get_stars_from_image(&image, noise_estimate,
                                      sigma, max_size as u32,
@@ -460,7 +493,6 @@ impl DetectEngine {
                 detect_latency_stats:
                 locked_state.detect_latency_stats.value_stats.clone(),
             });
-            notify.notify_waiters();
         }  // loop.
     }
 }

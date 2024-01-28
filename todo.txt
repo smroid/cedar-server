@@ -2,8 +2,7 @@ runtime stats (recent and session; button to clear session stats)
 
 view server log
 
-add affordance to set number of pattern_checking_stars. This can be our
-speed vs accuracy slider.
+add sigma adjusting to accuracy slider.
 
 time/location from phone
 
