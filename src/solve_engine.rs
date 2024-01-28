@@ -27,9 +27,6 @@ pub struct SolveEngine {
     // Detect engine settings can be adjusted behind our back.
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
 
-    // Notified whenever `state.plate_solution` is populated.
-    notify: Arc<tokio::sync::Notify>,
-
     // Executes worker().
     worker_thread: Option<tokio::task::JoinHandle<()>>,
 }
@@ -61,6 +58,9 @@ struct SolveState {
     solve_latency_stats: ValueStatsAccumulator,
     solve_attempt_stats: ValueStatsAccumulator,
     solve_success_stats: ValueStatsAccumulator,
+
+    // Estimated time at which `plate_solution` will next be updated.
+    eta: Option<Instant>,
 
     plate_solution: Option<PlateSolution>,
 
@@ -129,11 +129,11 @@ impl SolveEngine {
                 solve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_attempt_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
+                eta: None,
                 plate_solution: None,
                 stop_request: false,
             })),
             detect_engine: detect_engine.clone(),
-            notify: Arc::new(tokio::sync::Notify::new()),
             worker_thread: None,
         })
     }
@@ -264,10 +264,9 @@ impl SolveEngine {
         if self.worker_thread.is_none() {
             let cloned_client = self.client.clone();
             let cloned_state = self.state.clone();
-            let cloned_notify = self.notify.clone();
             let cloned_detect_engine = self.detect_engine.clone();
             self.worker_thread = Some(tokio::task::spawn(async move {
-                SolveEngine::worker(cloned_client, cloned_state, cloned_notify,
+                SolveEngine::worker(cloned_client, cloned_state,
                                     cloned_detect_engine).await;
             }));
         }
@@ -275,6 +274,7 @@ impl SolveEngine {
         // currently posted result is the same as the one the caller has already
         // obtained.
         loop {
+            let mut sleep_duration = Duration::from_millis(1);
             {
                 let locked_state = self.state.lock().unwrap();
                 if locked_state.plate_solution.is_some() &&
@@ -285,8 +285,15 @@ impl SolveEngine {
                     // Don't consume it, other clients may want it.
                     return locked_state.plate_solution.clone().unwrap();
                 }
+                if locked_state.eta.is_some() {
+                    let time_to_eta =
+                        locked_state.eta.unwrap().saturating_duration_since(Instant::now());
+                    if time_to_eta > sleep_duration {
+                        sleep_duration = time_to_eta;
+                    }
+                }
             }
-            self.notify.notified().await;
+            tokio::time::sleep(sleep_duration).await;
         }
     }
 
@@ -362,7 +369,6 @@ impl SolveEngine {
     async fn worker(
         client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
         state: Arc<Mutex<SolveState>>,
-        notify: Arc<tokio::sync::Notify>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>) {
         info!("Starting solve engine");
         // Keep track of when we started the solve cycle.
@@ -383,7 +389,9 @@ impl SolveEngine {
             if last_result_time.is_some() {
                 let next_update_time = last_result_time.unwrap() + update_interval;
                 if next_update_time > now {
-                    tokio::time::sleep(next_update_time - now).await;
+                    let delay = next_update_time - now;
+                    state.lock().unwrap().eta = Some(Instant::now() + delay);
+                    tokio::time::sleep(delay).await;
                     continue;
                 }
             }
@@ -428,6 +436,11 @@ impl SolveEngine {
                 frame_id = locked_state.frame_id;
             }
             // Get the most recent star detection result.
+            let delay_est = detect_engine.lock().await.estimate_delay(frame_id);
+            if delay_est.is_some() {
+                state.lock().unwrap().eta =
+                    Some(Instant::now() + delay_est.unwrap());
+            }
             detect_result = detect_engine.lock().await.get_next_result(frame_id).await;
             state.lock().unwrap().deref_mut().frame_id = Some(detect_result.frame_id);
 
@@ -447,6 +460,15 @@ impl SolveEngine {
             let mut tetra3_solve_result: Option<SolveResultProto> = None;
             let mut solve_finish_time: Option<SystemTime> = None;
             if detect_result.star_candidates.len() >= minimum_stars as usize {
+                {
+                    let mut locked_state = state.lock().unwrap();
+                    if let Some(recent_stats) =
+                        &locked_state.solve_latency_stats.value_stats.recent
+                    {
+                        let solve_duration = Duration::from_secs_f64(recent_stats.min);
+                        locked_state.eta = Some(Instant::now() + solve_duration);
+                    }
+                }
                 match Self::solve_with_client(client.clone(), solve_request).await {
                     Err(e) => {
                         error!("Unexpected error {:?}", e);
@@ -483,7 +505,6 @@ impl SolveEngine {
                 solve_attempt_stats: locked_state.solve_attempt_stats.value_stats.clone(),
                 solve_success_stats: locked_state.solve_success_stats.value_stats.clone(),
             });
-            notify.notify_waiters();
         }  // loop.
     }
 }
