@@ -122,7 +122,6 @@ class _MyHomePageState extends State<MyHomePage> {
   // Information from most recent FrameResult.
 
   // Image data, binned by server.
-  bool _hasImage = false;
   Uint8List _imageBytes = Uint8List(1);
   int _binFactor = 1;
 
@@ -165,7 +164,6 @@ class _MyHomePageState extends State<MyHomePage> {
     _stars = response.starCandidates;
     _numStars = _stars.length;
     _hasSolution = false;
-    _hasImage = false;
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
       if (!plateSolution.hasFailureReason()) {
@@ -181,7 +179,6 @@ class _MyHomePageState extends State<MyHomePage> {
       }
     }
     if (response.hasImage()) {
-      _hasImage = true;
       _imageBytes = Uint8List.fromList(response.image.imageData);
       _binFactor = response.image.binningFactor;
     }
@@ -235,7 +232,7 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> getFrameFromServer() async {
     final request = FrameRequest()
       ..prevFrameId = _prevFrameId
-      ..mainImageMode = ImageMode.IMAGE_MODE_BINNED;
+      ..mainImageMode = ImageMode.BINNED;
     try {
       final response = await client().getFrame(request,
           options: CallOptions(timeout: const Duration(seconds: 10)));
