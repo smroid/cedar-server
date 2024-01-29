@@ -12,6 +12,7 @@ use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
 use tower::service_fn;
 
+use crate::position_reporter::CelestialPosition;
 use crate::tetra3_server::{ImageCoord, SolveRequest, SolveResult as SolveResultProto};
 use crate::tetra3_server::tetra3_client::Tetra3Client;
 use crate::value_stats::ValueStatsAccumulator;
@@ -64,6 +65,9 @@ struct SolveState {
 
     plate_solution: Option<PlateSolution>,
 
+    // We post our solution here (SkySafari telescope interface).
+    position: Arc<Mutex<CelestialPosition>>,
+
     // Set by stop(); the worker thread exits when it sees this.
     stop_request: bool,
 }
@@ -106,6 +110,7 @@ impl SolveEngine {
     }
 
     pub async fn new(detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
+                     position: Arc<Mutex<CelestialPosition>>,
                      tetra3_server_address: String,
                      update_interval: Duration, stats_capacity: usize)
                      -> Result<Self, CanonicalError> {
@@ -131,9 +136,10 @@ impl SolveEngine {
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 plate_solution: None,
+                position,
                 stop_request: false,
             })),
-            detect_engine: detect_engine.clone(),
+            detect_engine,
             worker_thread: None,
         })
     }
@@ -485,12 +491,26 @@ impl SolveEngine {
             let mut locked_state = state.lock().unwrap();
             if tetra3_solve_result.is_none() {
                 locked_state.solve_attempt_stats.add_value(0.0);
+                locked_state.position.lock().unwrap().valid = false;
             } else {
                 locked_state.solve_attempt_stats.add_value(1.0);
-                if tetra3_solve_result.as_ref().unwrap().matches.is_some() {
+                let tsr = tetra3_solve_result.as_ref().unwrap();
+                if tsr.matches.is_some() {
                     locked_state.solve_success_stats.add_value(1.0);
+                    // Update SkySafari telescope interface with our position.
+                    let coords;
+                    if tsr.target_coords.len() > 0 {
+                        coords = tsr.target_coords[0].clone();
+                    } else {
+                        coords = tsr.image_center_coords.as_ref().unwrap().clone();
+                    }
+                    let mut position = locked_state.position.lock().unwrap();
+                    position.ra = coords.ra as f64;
+                    position.dec = coords.dec as f64;
+                    position.valid = true;
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
+                    locked_state.position.lock().unwrap().valid = false;
                 }
                 locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
             }
