@@ -32,8 +32,8 @@ use ::cedar::solve_engine::{PlateSolution, SolveEngine};
 use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 use ::cedar::value_stats::ValueStatsAccumulator;
-use cedar::tetra3_server;
-use cedar::tetra3_server::SolveResult as SolveResultProto;
+use ::cedar::tetra3_server;
+use ::cedar::tetra3_server::SolveResult as SolveResultProto;
 
 use self::multiplex_service::MultiplexService;
 
@@ -68,7 +68,6 @@ struct MyCedar {
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
     _tetra3_subprocess: Tetra3Subprocess,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
-    position: Arc<Mutex<CelestialPosition>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     base_star_count_goal: i32,
     base_detection_sigma: f32,
@@ -547,21 +546,7 @@ impl MyCedar {
             detect_latency: Some(detect_result.detect_latency_stats),
             ..Default::default()
         });
-        let mut position = self.position.lock().unwrap();
-        position.valid = false;
         if tetra3_solve_result.is_some() {
-            let tsr = tetra3_solve_result.as_ref().unwrap();
-            if tsr.image_center_coords.is_some() {
-                let coords;
-                if tsr.target_coords.len() > 0 {
-                    coords = tsr.target_coords[0].clone();
-                } else {
-                    coords = tsr.image_center_coords.as_ref().unwrap().clone();
-                }
-                position.ra = coords.ra as f64;
-                position.dec = coords.dec as f64;
-                position.valid = true;
-            }
             // Overall latency is time between image acquisition and completion
             // of the plate solve attempt.
             match solve_finish_time.unwrap().duration_since(
@@ -639,11 +624,10 @@ impl MyCedar {
             _tetra3_subprocess: Tetra3Subprocess::new(
                 tetra3_script, tetra3_database).unwrap(),
             solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
-                detect_engine.clone(),
+                detect_engine.clone(), position.clone(),
                 tetra3_uds,
                 /*update_interval=*/Duration::ZERO,
                 stats_capacity).await.unwrap())),
-            position,
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
             base_star_count_goal,
