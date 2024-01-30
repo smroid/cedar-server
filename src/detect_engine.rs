@@ -423,7 +423,7 @@ impl DetectEngine {
                     locked_state.eta = Some(Instant::now() + detect_duration);
                 }
             }
-            let (stars, hot_pixel_count, binned_image) =
+            let (stars, hot_pixel_count, binned_image, _peak_star_pixel) =
                 get_stars_from_image(&image, noise_estimate,
                                      sigma, max_size as u32,
                                      /*use_binned_image=*/true,
