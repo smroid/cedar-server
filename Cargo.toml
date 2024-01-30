@@ -9,7 +9,7 @@ path = "src/bin/cedar_server.rs"
 
 [dependencies]
 approx = "0.5.1"
-ascom-alpaca = { version = "1.0.0-beta.1", features = ["server", "telescope"] }
+ascom-alpaca = { version = "1.0.0-beta.3", features = ["server", "telescope"] }
 asi_camera2 = { version = "0.1.0", path = "../asi_camera2" }
 async-std = "1.12.0"
 async-trait = "0.1.77"
