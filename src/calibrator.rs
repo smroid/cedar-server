@@ -194,7 +194,7 @@ impl Calibrator {
         // Run CedarDetect on the image.
         let image = &captured_image.image;
         let noise_estimate = estimate_noise_from_image(&image);
-        let (stars, _, _) =
+        let (stars, _, _, _) =
             get_stars_from_image(&image, noise_estimate,
                                  detection_sigma, detection_max_size as u32,
                                  /*use_binned_image=*/true,
