@@ -1,3 +1,25 @@
+fix mode switch jank
+- cap sleeps
+- interrupt long detect and/or solve?
+
+image sent to client for display
+- scale to 255
+- apply gamma
+- these are request params?
+
+setup mode:
+- autoexposure goal should be 64, for shorter exposures
+- display scaling and gamma will make things visible
+
+cedar-detect get info for ROI: include noise measure, background estimate
+
+accuracy slider in setup mode: affects sigma as in operate mode; faster
+lowers autoexposure goal ADU; accurate raises autoexpsure ADU
+
+args: min sigma
+
+tighten up max exposure duration
+
 runtime stats (recent and session; button to clear session stats)
 
 view server log
@@ -30,3 +52,5 @@ UI:
 * night vision theme
 * pause updates when control is visible
 * box around inset zoomed star in setup mode
+
+IOS
