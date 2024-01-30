@@ -423,7 +423,7 @@ impl DetectEngine {
                     locked_state.eta = Some(Instant::now() + detect_duration);
                 }
             }
-            let (stars, hot_pixel_count, binned_image, _peak_star_pixel) =
+            let (stars, hot_pixel_count, binned_image, peak_star_pixel) =
                 get_stars_from_image(&image, noise_estimate,
                                      sigma, max_size as u32,
                                      /*use_binned_image=*/true,
@@ -494,6 +494,7 @@ impl DetectEngine {
                 binned_image: Arc::new(binned_image.unwrap()),
                 star_candidates: stars,
                 hot_pixel_count: hot_pixel_count as i32,
+                peak_star_pixel,
                 focus_aid,
                 processing_duration: elapsed,
                 detect_latency_stats:
@@ -522,6 +523,9 @@ pub struct DetectResult {
 
     // The number of hot pixels detected by CedarDetect.
     pub hot_pixel_count: i32,
+
+    // The peak pixel value of the identified star candidates.
+    pub peak_star_pixel: u8,
 
     // Included if `focus_mode` is enabled.
     pub focus_aid: Option<FocusAid>,

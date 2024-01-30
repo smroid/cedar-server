@@ -497,6 +497,7 @@ impl MyCedar {
             let mut main_bmp_buf = Vec::<u8>::new();
             let image = &captured_image.image;
             main_bmp_buf.reserve((width * height) as usize);
+            // TODO: scale/gamma image
             image.write_to(&mut Cursor::new(&mut main_bmp_buf),
                            ImageOutputFormat::Bmp).unwrap();
             frame_result.image = Some(Image{
@@ -509,6 +510,7 @@ impl MyCedar {
             let binned_image = &detect_result.binned_image;
             let (binned_width, binned_height) = binned_image.dimensions();
             binned_bmp_buf.reserve((binned_width * binned_height) as usize);
+            // TODO: scale/gamma image
             binned_image.write_to(&mut Cursor::new(&mut binned_bmp_buf),
                                   ImageOutputFormat::Bmp).unwrap();
             frame_result.image = Some(Image{
