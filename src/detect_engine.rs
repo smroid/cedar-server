@@ -39,6 +39,10 @@ struct DetectState {
     // If true, use auto exposure.
     auto_exposure: bool,
 
+    // For auto_exposure in focus mode, what is the target value of the
+    // brightest pixel in the center region?
+    brightness_goal: u8,
+
     // Zero means go fast as images are captured.
     update_interval: Duration,
 
@@ -94,6 +98,7 @@ impl DetectEngine {
             state: Arc::new(Mutex::new(DetectState{
                 frame_id: None,
                 auto_exposure,
+                brightness_goal: 128,
                 update_interval,
                 detection_sigma: 8.0,
                 detection_max_size: 8,
@@ -125,6 +130,13 @@ impl DetectEngine {
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
+    }
+
+    pub fn set_brightness_goal(&mut self, brightness_goal: u8) {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.brightness_goal = brightness_goal;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
     }
 
     pub fn set_update_interval(&mut self, update_interval: Duration)
@@ -272,6 +284,7 @@ impl DetectEngine {
         let mut last_result_time: Option<Instant> = None;
         loop {
             let auto_exposure: bool;
+            let brightness_goal: u8;
             let update_interval: Duration;
             let sigma: f32;
             let max_size: i32;
@@ -281,6 +294,7 @@ impl DetectEngine {
             {
                 let mut locked_state = state.lock().unwrap();
                 auto_exposure = locked_state.auto_exposure;
+                brightness_goal = locked_state.brightness_goal;
                 update_interval = locked_state.update_interval;
                 sigma = locked_state.detection_sigma;
                 max_size = locked_state.detection_max_size;
@@ -351,32 +365,27 @@ impl DetectEngine {
                     &image, &center_region, noise_estimate, sigma);
                 let mut peak_value = 1_u8;  // Avoid div0 below.
                 let histogram = &roi_summary.histogram;
-                for bin in 2..256 {
+                for bin in (1..256).rev() {
                     if histogram[bin] > 0 {
                         peak_value = bin as u8;
+                        break;
                     }
                 }
                 if auto_exposure {
                     // Adjust exposure time based on peak value of center_region.
-                    let peak_value_goal = 220;
+
                     // Compute how much to scale the previous exposure
                     // integration time to move towards the goal. Assumes linear
                     // detector response.
-                    let correction_factor =
-                        if peak_value == 255 {
-                            // We don't know how overexposed we are. Cut the
-                            // exposure time in half.
-                            0.5
-                        } else {
-                            // Move proportionally towards the goal.
-                            peak_value_goal as f32 / peak_value as f32
-                        };
+
+                    // Move proportionally towards the goal.
+                    let correction_factor = brightness_goal as f32 / peak_value as f32;
                     // Don't adjust exposure time too often, is a bit janky
                     // because the camera re-initializes.
                     if correction_factor < 0.7 || correction_factor > 1.3 {
                         new_exposure_duration_secs =
                             prev_exposure_duration_secs * correction_factor;
-                        // Bound focus mode exposure duration to 0.01ms..1s.
+                        // Bound focus mode exposure duration to given limits.
                         new_exposure_duration_secs = f32::max(
                             new_exposure_duration_secs,
                             min_exposure_duration.as_secs_f32());
@@ -408,6 +417,7 @@ impl DetectEngine {
                 focus_aid = Some(FocusAid{
                     center_region,
                     center_peak_position: peak_position,
+                    center_peak_value: peak_value,
                     peak_image,
                     peak_image_region: peak_region,
                 });
@@ -423,11 +433,14 @@ impl DetectEngine {
                     locked_state.eta = Some(Instant::now() + detect_duration);
                 }
             }
-            let (stars, hot_pixel_count, binned_image, peak_star_pixel) =
+            let (stars, hot_pixel_count, binned_image, mut peak_star_pixel) =
                 get_stars_from_image(&image, noise_estimate,
                                      sigma, max_size as u32,
                                      /*use_binned_image=*/true,
                                      /*return_binned_image=*/true);
+            if stars.len() == 0 {
+                peak_star_pixel = 255;
+            }
             let elapsed = process_start_time.elapsed();
             state.lock().unwrap().detect_latency_stats.add_value(elapsed.as_secs_f64());
 
@@ -524,7 +537,8 @@ pub struct DetectResult {
     // The number of hot pixels detected by CedarDetect.
     pub hot_pixel_count: i32,
 
-    // The peak pixel value of the identified star candidates.
+    // The peak pixel value of star_candidates. If star_candidates is empty,
+    // this value is fixed to 255.
     pub peak_star_pixel: u8,
 
     // Included if `focus_mode` is enabled.
@@ -545,6 +559,9 @@ pub struct FocusAid {
 
     // See the corresponding field in FrameResult.
     pub center_peak_position: (f32, f32),
+
+    // See the corresponding field in FrameResult.
+    pub center_peak_value: u8,
 
     // A small full resolution crop of `captured_image` centered at
     // `center_peak_position`.
