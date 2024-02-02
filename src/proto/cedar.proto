@@ -168,7 +168,8 @@ message FrameResult {
   // Information returned regardless of `operating_mode`.
 
   // The image from which information in this FrameResult is derived. Can be
-  // omitted or binned according to the FrameRequest.
+  // omitted or binned according to the FrameRequest. Note that this image
+  // has stretch/gamma applied for better visibility of dark features.
   optional Image image = 3;
 
   // The star candidates detected by CedarDetect; ordered by brightest
