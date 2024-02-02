@@ -28,6 +28,7 @@ use cedar::cedar::{Accuracy, ActionRequest, CalibrationData,
                    ProcessingStats, Rectangle, StarCentroid};
 use ::cedar::calibrator::Calibrator;
 use ::cedar::detect_engine::DetectEngine;
+use ::cedar::scale_image::scale_image;
 use ::cedar::solve_engine::{PlateSolution, SolveEngine};
 use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
@@ -484,6 +485,10 @@ impl MyCedar {
                     None
                 },
             },
+            center_peak_value: match &detect_result.focus_aid {
+                Some(fa) => Some(fa.center_peak_value as i32),
+                None => None,
+            },
             // These are set below.
             center_peak_image: None,
             plate_solution: None,
@@ -493,13 +498,18 @@ impl MyCedar {
         };
 
         // Populate `image` if requested.
+        let peak_value = match &detect_result.focus_aid {
+            Some(fa) => fa.center_peak_value,
+            None => detect_result.peak_star_pixel,
+        };
+        let gamma = 0.5;
         if main_image_mode == ImageMode::Default as i32 {
             let mut main_bmp_buf = Vec::<u8>::new();
             let image = &captured_image.image;
             main_bmp_buf.reserve((width * height) as usize);
-            // TODO: scale/gamma image
-            image.write_to(&mut Cursor::new(&mut main_bmp_buf),
-                           ImageOutputFormat::Bmp).unwrap();
+            let scaled_image = scale_image(image, peak_value, gamma);
+            scaled_image.write_to(&mut Cursor::new(&mut main_bmp_buf),
+                                  ImageOutputFormat::Bmp).unwrap();
             frame_result.image = Some(Image{
                 binning_factor: 1,
                 rectangle: Some(image_rectangle),
@@ -510,8 +520,8 @@ impl MyCedar {
             let binned_image = &detect_result.binned_image;
             let (binned_width, binned_height) = binned_image.dimensions();
             binned_bmp_buf.reserve((binned_width * binned_height) as usize);
-            // TODO: scale/gamma image
-            binned_image.write_to(&mut Cursor::new(&mut binned_bmp_buf),
+            let scaled_image = scale_image(binned_image, peak_value, gamma);
+            scaled_image.write_to(&mut Cursor::new(&mut binned_bmp_buf),
                                   ImageOutputFormat::Bmp).unwrap();
             frame_result.image = Some(Image{
                 binning_factor: 2,
@@ -669,15 +679,25 @@ impl MyCedar {
             (self.base_star_count_goal as f32 * multiplier) as i32);
         locked_detect_engine.set_sigma(
             self.base_detection_sigma as f32 * multiplier).unwrap();
+
+        // In setup mode, we aim auto-exposure towards a value lower than 255, to allow
+        // exposure times to be faster. The accuracy multiplier is used to raise or lower
+        // this value.
+        let base_brightness_goal = 128;  // Probably don't need a command line arg for this.
+        let mut adjusted_brightness_goal = base_brightness_goal as f32 * multiplier;
+        if adjusted_brightness_goal > 255.0 {
+            adjusted_brightness_goal = 255.0;
+        }
+        locked_detect_engine.set_brightness_goal(adjusted_brightness_goal as u8);
     }
 }
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about=None)]
 struct Args {
-    /// Path to tetra3_server.py script. Either set this on
-    /// command line or set up a symlink. Note that PYPATH must
-    /// be set to include the tetra3.py library location.
+    /// Path to tetra3_server.py script. Either set this on command line or set
+    /// up a symlink. Note that PYPATH must be set to include the tetra3.py
+    /// library location.
     #[arg(long, default_value = "./tetra3_server.py")]
     tetra3_script: String,
 
@@ -713,6 +733,8 @@ struct Args {
     /// (multiplier ranging from 0.5 to 1.4).
     #[arg(long, default_value = "8.0")]
     sigma: f32,
+
+    // TODO: sigma_min
 }
 
 // Adapted from

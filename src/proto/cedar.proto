@@ -201,6 +201,9 @@ message FrameResult {
   // resolution image coordinates.
   optional ImageCoord center_peak_position = 12;
 
+  // The pixel value at the center_peak_positino.
+  optional int32 center_peak_value = 6;
+
   // A small full resolution crop of `image` centered at `center_peak_position`.
   optional Image center_peak_image = 13;
 
