@@ -29,7 +29,7 @@ pub struct DetectEngine {
     state: Arc<Mutex<DetectState>>,
 
     // Executes worker().
-    worker_thread: Option<tokio::task::JoinHandle<()>>,
+    worker_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 // State shared between worker thread and the DetectEngine methods.
@@ -204,7 +204,7 @@ impl DetectEngine {
         if self.worker_thread.is_some() &&
             self.worker_thread.as_ref().unwrap().is_finished()
         {
-            self.worker_thread.take().unwrap().await.unwrap();
+            self.worker_thread.take().unwrap().join().unwrap();
         }
         // Start worker thread if terminated or not yet started.
         if self.worker_thread.is_none() {
@@ -212,9 +212,25 @@ impl DetectEngine {
             let max_exposure_duration = self.max_exposure_duration;
             let cloned_state = self.state.clone();
             let cloned_camera = self.camera.clone();
-            self.worker_thread = Some(tokio::task::spawn(async move {
-                DetectEngine::worker(min_exposure_duration, max_exposure_duration,
-                                     cloned_state, cloned_camera).await;
+
+            // The DetectEngine::worker() function is async because it uses the
+            // camera interface, which is async. Note however that worker()
+            // logic calls the non-async get_stars_from_image() function, which
+            // takes ~10ms in release builds and ~200ms in debug builds. Such
+            // compute durations are well beyond the guidelines for running
+            // async code without an .await yield point.
+            //
+            // We thus run DetectEngine::worker() on its own async runtime. See
+            // https://thenewstack.io/using-rustlangs-async-tokio-runtime-for-cpu-bound-tasks/
+            self.worker_thread = Some(std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("detect_engine")
+                    .build().unwrap();
+                runtime.block_on(async move {
+                    DetectEngine::worker(min_exposure_duration, max_exposure_duration,
+                                         cloned_state, cloned_camera).await;
+                });
             }));
         }
         // Get the most recently posted result; wait if there is none yet or the
@@ -271,7 +287,7 @@ impl DetectEngine {
     pub async fn stop(&mut self) {
         if self.worker_thread.is_some() {
             self.state.lock().unwrap().stop_request = true;
-            self.worker_thread.take().unwrap().await.unwrap();
+            self.worker_thread.take().unwrap().join().unwrap();
         }
     }
 

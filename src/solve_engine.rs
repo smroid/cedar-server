@@ -371,13 +371,11 @@ impl SolveEngine {
     /// re-start processing, at the expense of that first get_next_result() call
     /// taking longer than usual.
     pub async fn stop(&mut self) {
-        let start = Instant::now();
         if self.worker_thread.is_some() {
             self.tetra3_subprocess.send_interrupt_signal();
             self.state.lock().unwrap().stop_request = true;
             self.worker_thread.take().unwrap().await.unwrap();
         }
-        info!("solve engine stopped in {:?}", start.elapsed());  // TEMPORARY
     }
 
     async fn worker(
