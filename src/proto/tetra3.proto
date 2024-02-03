@@ -26,6 +26,16 @@ message SolveRequest {
   optional float match_max_error = 12;
 }
 
+enum SolveStatus {
+  UNSPECIFIED = 0;
+
+  MATCH_FOUND = 1;
+  NO_MATCH = 2;  // No match was found after exhausive search.
+  TIMEOUT = 3;  // 'solve_timeout' was reached before a match could be found.
+  CANCELLED = 4;  // Solve was cancelled before a match could be found.
+  TOO_FEW = 5;  // Too few 'star_centroids' were supplied so matching was not attempted.
+}
+
 message SolveResult {
   optional CelestialCoord image_center_coords = 1;
   optional float roll = 2;
@@ -41,12 +51,14 @@ message SolveResult {
   repeated CelestialCoord target_coords = 12;
   repeated MatchedStar matched_stars = 13;
 
-  // If SolveFromCentroids() fails, all of the SolveResult fields
-  // will be omitted except for 'solve_time', and the reason for
-  // the failure will be given here.
-  optional string failure_reason = 14;
+  // If SolveFromCentroids() fails, all of the SolveResult fields will be
+  // omitted except for 'solve_time' and 'status', and the reason for the
+  // failure will be given here.
+  optional SolveStatus status = 14;
 }
 
+// A location in full resolution image coordinates. (0.5, 0.5) corresponds to
+// the center of the image's upper left pixel.
 message ImageCoord {
   float x = 1;
   float y = 2;
@@ -65,6 +77,6 @@ message MatchedStar {
 }
 
 service Tetra3 {
-  // The gRPC deadline is used to set the Tetra3 solve timeout.
+  // The gRPC deadline is ignored; instead use SolveRequest.solve_timeout.
   rpc SolveFromCentroids(SolveRequest) returns (SolveResult);
 }

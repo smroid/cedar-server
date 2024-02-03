@@ -1,6 +1,8 @@
 fix mode switch jank
 - cap sleeps
-- interrupt long detect and/or solve?
+- interrupt long detect?
+
+on-screen "calibrating" when exiting setup mode, until calibration is done
 
 cedar-detect get info for ROI: include noise measure, background estimate
 
