@@ -67,7 +67,6 @@ struct MyCedar {
     calibration_data: tokio::sync::Mutex<CalibrationData>,
     operation_settings: Mutex<OperationSettings>,
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-    _tetra3_subprocess: Tetra3Subprocess,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     base_star_count_goal: i32,
@@ -633,9 +632,8 @@ impl MyCedar {
             calibration_data: tokio::sync::Mutex::new(
                 CalibrationData{..Default::default()}),
             detect_engine: detect_engine.clone(),
-            _tetra3_subprocess: Tetra3Subprocess::new(
-                tetra3_script, tetra3_database).unwrap(),
             solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
+                Tetra3Subprocess::new(tetra3_script, tetra3_database).unwrap(),
                 detect_engine.clone(), position.clone(),
                 tetra3_uds,
                 /*update_interval=*/Duration::ZERO,
