@@ -1,6 +1,5 @@
 fix mode switch jank
 - cap sleeps
-- interrupt long detect?
 
 on-screen "calibrating" when exiting setup mode, until calibration is done
 
