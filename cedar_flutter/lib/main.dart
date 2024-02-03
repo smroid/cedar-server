@@ -168,7 +168,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _accuracy = response.operationSettings.accuracy.toInt();
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
-      if (!plateSolution.hasFailureReason()) {
+      if (plateSolution.status == SolveStatus.MATCH_FOUND) {
         _hasSolution = true;
         if (plateSolution.targetCoords.isNotEmpty) {
           _solutionRA = plateSolution.targetCoords.first.ra;
