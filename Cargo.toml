@@ -19,7 +19,7 @@ canonical-error = "0.1.0"
 clap = { version = "4.3.19", features = ["derive"] }
 futures = "0.3.30"
 http-body = "1.0.0"
-hyper = { version = "0.14.27", features = ["http1", "http2"] }
+hyper = { version = "0.14.28", features = ["http1", "http2"] }
 image = "0.24.6"
 imageproc = "0.23.0"
 log = "0.4.19"
