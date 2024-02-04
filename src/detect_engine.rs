@@ -1,7 +1,7 @@
 use camera_service::abstract_camera::{AbstractCamera, CapturedImage};
 
-use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use canonical_error::CanonicalError;
@@ -30,6 +30,9 @@ pub struct DetectEngine {
 
     // Executes worker().
     worker_thread: Option<std::thread::JoinHandle<()>>,
+
+    // Signaled at worker_thread exit.
+    worker_done: Arc<AtomicBool>,
 }
 
 // State shared between worker thread and the DetectEngine methods.
@@ -111,6 +114,7 @@ impl DetectEngine {
                 stop_request: false,
             })),
             worker_thread: None,
+            worker_done: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -201,10 +205,9 @@ impl DetectEngine {
     /// Returns: the processed result along with its frame_id value.
     pub async fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> DetectResult {
         // Has the worker terminated for some reason?
-        if self.worker_thread.is_some() &&
-            self.worker_thread.as_ref().unwrap().is_finished()
-        {
-            self.worker_thread.take().unwrap().join().unwrap();
+        if self.worker_done.load(Ordering::Relaxed) {
+            self.worker_done.store(false, Ordering::Relaxed);
+            self.worker_thread = None;
         }
         // Start worker thread if terminated or not yet started.
         if self.worker_thread.is_none() {
@@ -212,6 +215,7 @@ impl DetectEngine {
             let max_exposure_duration = self.max_exposure_duration;
             let cloned_state = self.state.clone();
             let cloned_camera = self.camera.clone();
+            let cloned_done = self.worker_done.clone();
 
             // The DetectEngine::worker() function is async because it uses the
             // camera interface, which is async. Note however that worker()
@@ -229,7 +233,7 @@ impl DetectEngine {
                     .build().unwrap();
                 runtime.block_on(async move {
                     DetectEngine::worker(min_exposure_duration, max_exposure_duration,
-                                         cloned_state, cloned_camera).await;
+                                         cloned_state, cloned_camera, cloned_done).await;
                 });
             }));
         }
@@ -287,14 +291,22 @@ impl DetectEngine {
     pub async fn stop(&mut self) {
         if self.worker_thread.is_some() {
             self.state.lock().unwrap().stop_request = true;
-            self.worker_thread.take().unwrap().join().unwrap();
+            loop {
+                if self.worker_done.load(Ordering::Relaxed) {
+                    self.worker_done.store(false, Ordering::Relaxed);
+                    self.worker_thread = None;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
         }
     }
 
     async fn worker(min_exposure_duration: Duration,
                     max_exposure_duration: Duration,
                     state: Arc<Mutex<DetectState>>,
-                    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>) {
+                    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
+                    done: Arc<AtomicBool>) {
         info!("Starting detect engine");
         // Keep track of when we started the detect cycle.
         let mut last_result_time: Option<Instant> = None;
@@ -321,6 +333,7 @@ impl DetectEngine {
                 if locked_state.stop_request {
                     info!("Stopping detect engine");
                     locked_state.stop_request = false;
+                    done.store(true, Ordering::Relaxed);
                     return;  // Exit thread.
                 }
             }
@@ -351,9 +364,7 @@ impl DetectEngine {
                 match locked_camera.capture_image(frame_id).await {
                     Ok((img, id)) => {
                         captured_image = img;
-                        let mut locked_state = state.lock().unwrap();
-                        let locked_state_mut = locked_state.deref_mut();
-                        locked_state_mut.frame_id = Some(id);
+                        state.lock().unwrap().frame_id = Some(id);
                     }
                     Err(e) => {
                         error!("Error capturing image: {}", &e.to_string());
@@ -510,6 +521,7 @@ impl DetectEngine {
                     Err(e) => {
                         error!("Error updating exposure duration: {}",
                                &e.to_string());
+                        done.store(true, Ordering::Relaxed);
                         return;  // Abandon thread execution!
                     }
                 }
