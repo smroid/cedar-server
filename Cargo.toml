@@ -39,6 +39,7 @@ tower-http = { version = "0.4.3", features = ["fs", "cors"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 chrono = "0.4.31"
+ctrlc = "3.4.2"
 
 [build-dependencies]
 tonic-build = "0.9"
