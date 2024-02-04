@@ -62,6 +62,10 @@ fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
 }
 
 struct MyCedar {
+    state: Arc<tokio::sync::Mutex<CedarState>>,
+}
+
+struct CedarState {
     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
     fixed_settings: Mutex<FixedSettings>,
     calibration_data: tokio::sync::Mutex<CalibrationData>,
@@ -99,129 +103,151 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings not implemented for session_name."));
         }
-        Ok(tonic::Response::new(self.fixed_settings.lock().unwrap().clone()))
+        Ok(tonic::Response::new(
+            self.state.lock().await.fixed_settings.lock().unwrap().clone()))
     }
 
     async fn update_operation_settings(
         &self, request: tonic::Request<OperationSettings>)
         -> Result<tonic::Response<OperationSettings>, tonic::Status>
     {
-        let req: OperationSettings = request.into_inner();
-        if req.operating_mode.is_some() {
-            let operating_mode = req.operating_mode.unwrap();
-            if operating_mode !=
-                self.operation_settings.lock().unwrap().operating_mode.unwrap()
-            {
-                self.operation_settings.lock().unwrap().operating_mode =
-                    Some(operating_mode);
-                if operating_mode == OperatingMode::Setup as i32 {
-                    self.solve_engine.lock().await.stop().await;
-                    self.detect_engine.lock().await.set_focus_mode(true);
-                    self.reset_session_stats().await;
-                    match self.set_pre_calibration_defaults().await {
-                        Ok(()) => {},
-                        Err(x) => { return Err(tonic_status(x)); }
+        let cloned_state = self.state.clone();
+        // See notes below.
+        let task_handle = tokio::task::spawn(async move {
+            let locked_state = cloned_state.lock().await;
+            let req: OperationSettings = request.into_inner();
+            if req.operating_mode.is_some() {
+                let operating_mode = req.operating_mode.unwrap();
+                if operating_mode !=
+                    locked_state.operation_settings.lock().unwrap().operating_mode.unwrap()
+                {
+                    locked_state.operation_settings.lock().unwrap().operating_mode =
+                        Some(operating_mode);
+                    if operating_mode == OperatingMode::Setup as i32 {
+                        locked_state.solve_engine.lock().await.stop().await;
+                        locked_state.detect_engine.lock().await.set_focus_mode(true);
+                        Self::reset_session_stats(&*locked_state).await;
+                        match Self::set_pre_calibration_defaults(&*locked_state).await {
+                            Ok(()) => {},
+                            Err(x) => { return Err(tonic_status(x)); }
+                        }
+                    } else if operating_mode == OperatingMode::Operate as i32 {
+                        // TODO: stop detect and solve engines?
+                        // locked_state.solve_engine.lock().await.stop().await;
+                        // locked_state.detect_engine.lock().await.stop().await;
+                        match Self::calibrate(&*locked_state).await {
+                            Ok(()) => {},
+                            Err(x) => { return Err(tonic_status(x)); }
+                        }
+                        locked_state.detect_engine.lock().await.set_focus_mode(false);
+                        // TODO: start solve engine?
+                        // locked_state.solve_engine.lock().await.start().await;
+                    } else {
+                        return Err(tonic::Status::invalid_argument(
+                            format!("Got invalid operating_mode: {}.", operating_mode)));
                     }
-                } else if operating_mode == OperatingMode::Operate as i32 {
-                    // TODO: stop detect and solve engines?
-                    // self.solve_engine.lock().await.stop().await;
-                    // self.detect_engine.lock().await.stop().await;
-                    match self.calibrate().await {
-                        Ok(()) => {},
-                        Err(x) => { return Err(tonic_status(x)); }
-                    }
-                    self.detect_engine.lock().await.set_focus_mode(false);
-                    // TODO: start solve engine?
-                    // self.solve_engine.lock().await.start().await;
-                } else {
-                    return Err(tonic::Status::invalid_argument(
-                        format!("Got invalid operating_mode: {}.", operating_mode)));
                 }
             }
-        }
-        if req.exposure_time.is_some() {
-            let exp_time = req.exposure_time.unwrap();
-            if exp_time.seconds < 0 || exp_time.nanos < 0 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got negative exposure_time: {}.", exp_time)));
+            if req.exposure_time.is_some() {
+                let exp_time = req.exposure_time.unwrap();
+                if exp_time.seconds < 0 || exp_time.nanos < 0 {
+                    return Err(tonic::Status::invalid_argument(
+                        format!("Got negative exposure_time: {}.", exp_time)));
+                }
+                let std_duration = std::time::Duration::try_from(exp_time.clone()).unwrap();
+                match Self::set_exposure_time(&*locked_state, std_duration).await {
+                    Ok(()) => (),
+                    Err(x) => { return Err(tonic_status(x)); }
+                }
+                locked_state.operation_settings.lock().unwrap().exposure_time =
+                    Some(exp_time);
             }
-            let std_duration = std::time::Duration::try_from(exp_time.clone()).unwrap();
-            match self.set_exposure_time(std_duration).await {
-                Ok(()) => (),
-                Err(x) => { return Err(tonic_status(x)); }
+            if req.accuracy.is_some() {
+                let accuracy = req.accuracy.unwrap();
+                locked_state.operation_settings.lock().unwrap().accuracy = Some(accuracy);
+                Self::update_accuracy_adjusted_params(&*locked_state).await;
             }
-            self.operation_settings.lock().unwrap().exposure_time = Some(exp_time);
-        }
-        if req.accuracy.is_some() {
-            let accuracy = req.accuracy.unwrap();
-            self.operation_settings.lock().unwrap().accuracy = Some(accuracy);
-            self.update_accuracy_adjusted_params().await;
-        }
-        if req.detection_max_size.is_some() {
-            let max_size = req.detection_max_size.unwrap();
-            if max_size <= 0 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got non-positive detection_max_size: {}.", max_size)));
+            if req.detection_max_size.is_some() {
+                let max_size = req.detection_max_size.unwrap();
+                if max_size <= 0 {
+                    return Err(tonic::Status::invalid_argument(
+                        format!("Got non-positive detection_max_size: {}.", max_size)));
+                }
+                match Self::set_detection_max_size(&*locked_state, max_size).await {
+                    Ok(()) => (),
+                    Err(x) => { return Err(tonic_status(x)); }
+                }
+                locked_state.operation_settings.lock().unwrap().detection_max_size =
+                    Some(max_size);
             }
-            match self.set_detection_max_size(max_size).await {
-                Ok(()) => (),
-                Err(x) => { return Err(tonic_status(x)); }
+            if req.update_interval.is_some() {
+                let update_interval = req.update_interval.unwrap();
+                if update_interval.seconds < 0 || update_interval.nanos < 0 {
+                    return Err(tonic::Status::invalid_argument(
+                        format!("Got negative update_interval: {}.", update_interval)));
+                }
+                let std_duration = std::time::Duration::try_from(
+                    update_interval.clone()).unwrap();
+                match Self::set_update_interval(&*locked_state, std_duration).await {
+                    Ok(()) => (),
+                    Err(x) => { return Err(tonic_status(x)); }
+                }
+                locked_state.operation_settings.lock().unwrap().update_interval =
+                    Some(update_interval);
             }
-            self.operation_settings.lock().unwrap().detection_max_size = Some(max_size);
-        }
-        if req.update_interval.is_some() {
-            let update_interval = req.update_interval.unwrap();
-            if update_interval.seconds < 0 || update_interval.nanos < 0 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got negative update_interval: {}.", update_interval)));
+            if req.dwell_update_interval.is_some() {
+                return Err(tonic::Status::unimplemented(
+                    "rpc UpdateOperationSettings not implemented for dwell_update_interval."));
             }
-            let std_duration = std::time::Duration::try_from(
-                update_interval.clone()).unwrap();
-            match self.set_update_interval(std_duration).await {
-                Ok(()) => (),
-                Err(x) => { return Err(tonic_status(x)); }
+            if req.log_dwelled_positions.is_some() {
+                return Err(tonic::Status::unimplemented(
+                    "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
             }
-            self.operation_settings.lock().unwrap().update_interval =
-                Some(update_interval);
-        }
-        if req.dwell_update_interval.is_some() {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateOperationSettings not implemented for dwell_update_interval."));
-        }
-        if req.log_dwelled_positions.is_some() {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
-        }
 
-        Ok(tonic::Response::new(self.operation_settings.lock().unwrap().clone()))
+            let val = Ok(tonic::Response::new(
+                locked_state.operation_settings.lock().unwrap().clone()));
+            val
+        });
+
+        // Note: we spawned a separate task to handle the operation settings
+        // update because the transition from SETUP -> OPERATE mode involves a
+        // call to Self::calibrate() which can take several seconds. If the gRPC
+        // client aborts the RPC (e.g. due to timeout), we want the calibration
+        // and state updates (i.e. detect engine's focus_mode, our
+        // operating_mode) to be completed properly.
+        //
+        // The spawned task runs to completion even if the RPC handler task
+        // aborts.
+        // TODO: maybe don't join the task_handle? Just return immediately, and
+        // arrange for get_frame() to return a FrameResult with a "calibration
+        // will be completed by XYZ time" indication.
+        task_handle.await.expect("error reaping update_operation_settings() task handle")
     }
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let req: FrameRequest = request.into_inner();
-        let prev_frame_id = req.prev_frame_id;
-        let main_image_mode = req.main_image_mode;
+        let locked_state = self.state.lock().await;
 
-        // TODO: what should we do with the client's RPC timeout? Perhaps our
-        // call to get_next_frame() can be passed a deadline?
-
-        let frame_result = self.get_next_frame(prev_frame_id, main_image_mode).await;
+        let frame_result = Self::get_next_frame(
+            &*locked_state, req.prev_frame_id, req.main_image_mode).await;
         Ok(tonic::Response::new(frame_result))
-    }  // get_frame().
+    }
 
     async fn initiate_action(&self, request: tonic::Request<ActionRequest>)
                              -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req: ActionRequest = request.into_inner();
+        let locked_state = self.state.lock().await;
         if req.capture_boresight.unwrap_or(false) {
             let operating_mode =
-                self.operation_settings.lock().unwrap().operating_mode.or(
+                locked_state.operation_settings.lock().unwrap().operating_mode.or(
                     Some(OperatingMode::Setup as i32)).unwrap();
             if operating_mode != OperatingMode::Setup as i32 {
                 return Err(tonic::Status::failed_precondition(
                     format!("Not in Setup mode: {:?}.", operating_mode)));
             }
-            let solve_engine = &mut self.solve_engine.lock().await;
-            let cpp = self.center_peak_position.lock().unwrap();
+            let solve_engine = &mut locked_state.solve_engine.lock().await;
+            let cpp = locked_state.center_peak_position.lock().unwrap();
             match solve_engine.set_target_pixel(
                 match cpp.as_ref() {
                     Some(pos) => Some(tetra3_server::ImageCoord{
@@ -235,7 +261,7 @@ impl Cedar for MyCedar {
             }
         }
         if req.delete_boresight.unwrap_or(false) {
-            let solve_engine = &mut self.solve_engine.lock().await;
+            let solve_engine = &mut locked_state.solve_engine.lock().await;
             match solve_engine.set_target_pixel(None) {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
@@ -256,10 +282,10 @@ impl Cedar for MyCedar {
             }
         }
         if req.reset_session_stats.unwrap_or(false) {
-            self.reset_session_stats().await;
+            Self::reset_session_stats(&*locked_state).await;
         }
         if req.save_image.unwrap_or(false) {
-            let solve_engine = &mut self.solve_engine.lock().await;
+            let solve_engine = &mut locked_state.solve_engine.lock().await;
             match solve_engine.save_image().await {
                 Ok(()) => (),
                 Err(x) => { return Err(tonic_status(x)); }
@@ -270,59 +296,52 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
-    async fn set_exposure_time(&self, exposure_time: std::time::Duration)
+    async fn set_exposure_time(state: &CedarState, exposure_time: std::time::Duration)
                                -> Result<(), CanonicalError> {
-        let detect_engine = &mut self.detect_engine.lock().await;
-        detect_engine.set_exposure_time(exposure_time).await
+        state.detect_engine.lock().await.set_exposure_time(exposure_time).await
     }
 
-    async fn set_detection_max_size(&self, max_size: i32)
+    async fn set_detection_max_size(state: &CedarState, max_size: i32)
                                     -> Result<(), CanonicalError> {
-        let detect_engine = &mut self.detect_engine.lock().await;
-        detect_engine.set_max_size(max_size)
+        state.detect_engine.lock().await.set_max_size(max_size)
     }
 
-    async fn set_update_interval(&self, update_interval: std::time::Duration)
+    async fn set_update_interval(state: &CedarState, update_interval: std::time::Duration)
                                  -> Result<(), CanonicalError> {
-        {
-            let detect_engine = &mut self.detect_engine.lock().await;
-            detect_engine.set_update_interval(update_interval)?;
-        }
-        let solve_engine = &mut self.solve_engine.lock().await;
-        solve_engine.set_update_interval(update_interval)
+        state.detect_engine.lock().await.set_update_interval(update_interval)?;
+        state.solve_engine.lock().await.set_update_interval(update_interval)
     }
 
-    async fn reset_session_stats(&self) {
-        self.detect_engine.lock().await.reset_session_stats();
-        self.solve_engine.lock().await.reset_session_stats();
-        self.overall_latency_stats.lock().unwrap().reset_session();
+    async fn reset_session_stats(state: &CedarState) {
+        state.detect_engine.lock().await.reset_session_stats();
+        state.solve_engine.lock().await.reset_session_stats();
+        state.overall_latency_stats.lock().unwrap().reset_session();
     }
 
     // Called when entering SETUP mode.
-    async fn set_pre_calibration_defaults(&self) -> Result<(), CanonicalError> {
-        {
-            let mut locked_camera = self.camera.lock().await;
-            let gain = locked_camera.optimal_gain();
-            locked_camera.set_gain(gain)?;
-            locked_camera.set_offset(Offset::new(3))?;
-        }
-        let mut locked_solve_engine = self.solve_engine.lock().await;
+    async fn set_pre_calibration_defaults(state: &CedarState) -> Result<(), CanonicalError> {
+        let mut locked_camera = state.camera.lock().await;
+        let gain = locked_camera.optimal_gain();
+        locked_camera.set_gain(gain)?;
+        locked_camera.set_offset(Offset::new(3))?;
+
+        let mut locked_solve_engine = state.solve_engine.lock().await;
         locked_solve_engine.set_fov_estimate(/*fov_estimate=*/None)?;
         locked_solve_engine.set_distortion(0.0)?;
         locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
-        *self.calibration_data.lock().await = CalibrationData{..Default::default()};
+        *state.calibration_data.lock().await = CalibrationData{..Default::default()};
         Ok(())
     }
 
     // Called when entering OPERATE mode.
-    async fn calibrate(&self) -> Result<(), CanonicalError> {
-        let locked_calibrator = self.calibrator.lock().await;
-        let mut locked_calibration_data = self.calibration_data.lock().await;
+    async fn calibrate(state: &CedarState) -> Result<(), CanonicalError> {
+        let locked_calibrator = state.calibrator.lock().await;
+        let mut locked_calibration_data = state.calibration_data.lock().await;
         locked_calibration_data.calibration_time = Some(prost_types::Timestamp::try_from(
                 SystemTime::now()).unwrap());
 
         // What was the final exposure duration coming out of SETUP mode?
-        let setup_exposure_duration = self.camera.lock().await.get_exposure_duration();
+        let setup_exposure_duration = state.camera.lock().await.get_exposure_duration();
 
         let offset = match locked_calibrator.calibrate_offset().await {
             Ok(o) => o,
@@ -331,20 +350,20 @@ impl MyCedar {
                 Offset::new(3)  // Sane fallback value.
             }
         };
-        self.camera.lock().await.set_offset(offset)?;
+        state.camera.lock().await.set_offset(offset)?;
         locked_calibration_data.camera_offset = Some(offset.value());
 
         // For calibrations, use statically configured sigma value, not adjusted
         // by accuracy setting.
-        let detection_sigma = self.base_detection_sigma;
+        let detection_sigma = state.base_detection_sigma;
         let detection_max_size;
         {
-            let op_settings = self.operation_settings.lock().unwrap();
+            let op_settings = state.operation_settings.lock().unwrap();
             detection_max_size = op_settings.detection_max_size.unwrap();
         }
         let exp_duration = match locked_calibrator.calibrate_exposure_duration(
             setup_exposure_duration,
-            self.detect_engine.lock().await.get_star_count_goal(),
+            state.detect_engine.lock().await.get_star_count_goal(),
             detection_sigma, detection_max_size).await {
             Ok(ed) => ed,
             Err(e) => {
@@ -353,25 +372,25 @@ impl MyCedar {
                 setup_exposure_duration  // Sane fallback value.
             }
         };
-        self.camera.lock().await.set_exposure_duration(exp_duration)?;
+        state.camera.lock().await.set_exposure_duration(exp_duration)?;
         locked_calibration_data.target_exposure_time =
             Some(prost_types::Duration::try_from(exp_duration).unwrap());
-        self.detect_engine.lock().await.set_calibrated_exposure_duration(
+        state.detect_engine.lock().await.set_calibrated_exposure_duration(
             exp_duration);
 
         match locked_calibrator.calibrate_optical(
-            self.solve_engine.clone(), exp_duration,
+            state.solve_engine.clone(), exp_duration,
             detection_sigma, detection_max_size).await
         {
             Ok((fov, distortion, solve_duration)) => {
                 locked_calibration_data.fov_horizontal = Some(fov);
                 locked_calibration_data.lens_distortion = Some(distortion);
-                let sensor_width_mm = self.camera.lock().await.sensor_size().0;
+                let sensor_width_mm = state.camera.lock().await.sensor_size().0;
                 let lens_fl_mm =
                     sensor_width_mm / (2.0 * (fov/2.0).to_radians()).tan();
                 locked_calibration_data.lens_fl_mm = Some(lens_fl_mm);
                 let pixel_width_mm =
-                    sensor_width_mm / self.camera.lock().await.dimensions().0 as f32;
+                    sensor_width_mm / state.camera.lock().await.dimensions().0 as f32;
                 locked_calibration_data.pixel_angular_size =
                     Some((pixel_width_mm / lens_fl_mm).atan().to_degrees());
 
@@ -379,7 +398,7 @@ impl MyCedar {
                     std::cmp::min(
                         std::cmp::max(solve_duration * 10, Duration::from_millis(500)),
                         Duration::from_secs(2));  // TODO: max solve time cmd line arg
-                let mut locked_solve_engine = self.solve_engine.lock().await;
+                let mut locked_solve_engine = state.solve_engine.lock().await;
                 locked_solve_engine.set_fov_estimate(Some(fov))?;
                 locked_solve_engine.set_distortion(distortion)?;
                 locked_solve_engine.set_solve_timeout(solve_timeout)?;
@@ -388,7 +407,7 @@ impl MyCedar {
                 warn!{"Error while calibrating optics: {:?}", e};
                 locked_calibration_data.fov_horizontal = None;
                 locked_calibration_data.lens_distortion = None;
-                let mut locked_solve_engine = self.solve_engine.lock().await;
+                let mut locked_solve_engine = state.solve_engine.lock().await;
                 locked_solve_engine.set_fov_estimate(None)?;
                 locked_solve_engine.set_distortion(0.0)?;
                 locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
@@ -398,10 +417,10 @@ impl MyCedar {
         Ok(())
     }
 
-    async fn get_next_frame(&self, prev_frame_id: Option<i32>, main_image_mode: i32)
+    async fn get_next_frame(state: &CedarState, prev_frame_id: Option<i32>, main_image_mode: i32)
                             -> FrameResult {
         // Be mutually exclusive with calibrate().
-        let locked_calibration_data = self.calibration_data.lock().await;
+        let locked_calibration_data = state.calibration_data.lock().await;
 
         // Always populated.
         let detect_result;
@@ -413,20 +432,20 @@ impl MyCedar {
         // TODO: if calibrating, return a result saying so and giving the ETA
         // for the calibration to complete.
 
-        if self.operation_settings.lock().unwrap().operating_mode.unwrap() ==
+        if state.operation_settings.lock().unwrap().operating_mode.unwrap() ==
             OperatingMode::Setup as i32
         {
             detect_result =
-                self.detect_engine.lock().await.get_next_result(prev_frame_id).await;
+                state.detect_engine.lock().await.get_next_result(prev_frame_id).await;
         } else {
             plate_solution =
-                Some(self.solve_engine.lock().await.get_next_result(prev_frame_id).await);
+                Some(state.solve_engine.lock().await.get_next_result(prev_frame_id).await);
             let psr = plate_solution.as_ref().unwrap();
             tetra3_solve_result = psr.tetra3_solve_result.clone();
             solve_finish_time = psr.solve_finish_time;
             detect_result = psr.detect_result.clone();
         }
-        let boresight_position = self.solve_engine.lock().await.target_pixel().expect(
+        let boresight_position = state.solve_engine.lock().await.target_pixel().expect(
             "solve_engine.target_pixel() should not fail");
 
         let captured_image = &detect_result.captured_image;
@@ -451,7 +470,7 @@ impl MyCedar {
         let mut frame_result = FrameResult {
             frame_id: detect_result.frame_id,
             calibration_data: Some(locked_calibration_data.clone()),
-            operation_settings: Some(self.operation_settings.lock().unwrap().clone()),
+            operation_settings: Some(state.operation_settings.lock().unwrap().clone()),
             image: None,  // Is set below.
             star_candidates: centroids,
             exposure_time: Some(prost_types::Duration::try_from(
@@ -479,11 +498,11 @@ impl MyCedar {
                         x: fa.center_peak_position.0 as f32,
                         y: fa.center_peak_position.1 as f32,
                     };
-                    *self.center_peak_position.lock().unwrap() = Some(ic.clone());
+                    *state.center_peak_position.lock().unwrap() = Some(ic.clone());
                     Some(ic)
                 },
                 None => {
-                    *self.center_peak_position.lock().unwrap() = None;
+                    *state.center_peak_position.lock().unwrap() = None;
                     None
                 },
             },
@@ -562,7 +581,7 @@ impl MyCedar {
                     warn!("Clock may have gone backwards: {:?}", e)
                 },
                 Ok(d) => {
-                    self.overall_latency_stats.lock().unwrap().add_value(
+                    state.overall_latency_stats.lock().unwrap().add_value(
                         d.as_secs_f64());
                 }
             }
@@ -571,7 +590,7 @@ impl MyCedar {
             let stats = &mut frame_result.processing_stats.as_mut().unwrap();
             let plate_solution = &plate_solution.as_ref().unwrap();
             stats.overall_latency =
-                Some(self.overall_latency_stats.lock().unwrap().value_stats.clone());
+                Some(state.overall_latency_stats.lock().unwrap().value_stats.clone());
             stats.solve_interval = Some(plate_solution.solve_interval_stats.clone());
             stats.solve_latency = Some(plate_solution.solve_latency_stats.clone());
             stats.solve_attempt_fraction =
@@ -601,7 +620,7 @@ impl MyCedar {
             /*auto_exposure=*/true,
             /*focus_mode_enabled=*/true,
             stats_capacity)));
-        let cedar = MyCedar {
+        let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
             fixed_settings: Mutex::new(FixedSettings {
                 observer_location: None,
@@ -641,24 +660,29 @@ impl MyCedar {
             center_peak_position: Arc::new(Mutex::new(None)),
             overall_latency_stats: Mutex::new(
                 ValueStatsAccumulator::new(stats_capacity)),
+        }));
+        let cedar = MyCedar {
+            state: state.clone(),
         };
         // Set pre-calibration defaults on camera.
-        match cedar.set_pre_calibration_defaults().await {
+        let locked_state = state.lock().await;
+        match Self::set_pre_calibration_defaults(&*locked_state).await {
             Ok(()) => (),
             Err(x) => {
                 warn!("Could not set default settings on camera {:?}", x)
             }
         }
-        cedar.set_detection_max_size(
-            cedar.operation_settings.lock().unwrap().detection_max_size.unwrap())
+        Self::set_detection_max_size(
+            &*locked_state,
+            locked_state.operation_settings.lock().unwrap().detection_max_size.unwrap())
             .await.unwrap();
-        cedar.update_accuracy_adjusted_params().await;
+        Self::update_accuracy_adjusted_params(&*locked_state).await;
 
         cedar
     }
 
-    async fn update_accuracy_adjusted_params(&self) {
-        let accuracy: i32 = self.operation_settings.lock().unwrap().accuracy.unwrap();
+    async fn update_accuracy_adjusted_params(state: &CedarState) {
+        let accuracy: i32 = state.operation_settings.lock().unwrap().accuracy.unwrap();
         // https://stackoverflow.com/questions/28028854/how-do-i-match-enum-values-with-an-integer
         let acc_enum: Accuracy = unsafe { ::std::mem::transmute(accuracy) };
         let multiplier = match acc_enum {
@@ -668,11 +692,11 @@ impl MyCedar {
             Accuracy::Accurate => 1.4,
             _ => 1.0,
         };
-        let mut locked_detect_engine = self.detect_engine.lock().await;
+        let mut locked_detect_engine = state.detect_engine.lock().await;
         locked_detect_engine.set_star_count_goal(
-            (self.base_star_count_goal as f32 * multiplier) as i32);
+            (state.base_star_count_goal as f32 * multiplier) as i32);
         locked_detect_engine.set_sigma(
-            self.base_detection_sigma as f32 * multiplier).unwrap();
+            state.base_detection_sigma as f32 * multiplier).unwrap();
 
         // In setup mode, we aim auto-exposure towards a value lower than 255, to allow
         // exposure times to be faster. The accuracy multiplier is used to raise or lower
@@ -769,6 +793,32 @@ async fn main() {
     };
 
     let shared_position = Arc::new(Mutex::new(CelestialPosition::new()));
+
+    // Apparently when a client cancels a gRPC request (e.g. timeout), the
+    // corresponding server-side tokio task is cancelled. Per
+    // https://docs.rs/tokio/latest/tokio/task/index.html#cancellation
+    //   "When tasks are shut down, it will stop running at whichever .await it
+    //   has yielded at. All local variables are destroyed by running their
+    //   destructor."
+    //
+    // In our code, this can have grave consequences. Consider:
+    //   <acquire resource>
+    //   foobar().await;
+    //   <release resource>
+    // Because of task cancellation, we might never regain control after the
+    // .await, and thus not release the resource.
+    //
+    // Because tokio guarantees that locals are destroyed (I verified this),
+    // RAII should be used to guard against control never coming back from
+    // .await:
+    //   <acquire resource in RAII object, with release on drop>
+    //   foobar().await;
+    //
+    // Another precaution is to spawn a separate task to run long-lived or
+    // transactional operations, such that if the RPC's task gets cancelled,
+    // the spawned task will detach and run to completion.
+    // See: https://greptime.com/blogs/2023-01-12-hidden-control-flow
+    //      https://github.com/hyperium/tonic/issues/981
 
     // Build the gRPC service.
     let grpc = tonic::transport::Server::builder()
