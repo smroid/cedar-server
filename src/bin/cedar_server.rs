@@ -123,11 +123,13 @@ impl Cedar for MyCedar {
                         Err(x) => { return Err(tonic_status(x)); }
                     }
                 } else if operating_mode == OperatingMode::Operate as i32 {
+                    // TODO: stop detect and solve engines?
                     match self.calibrate().await {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
                     }
                     self.detect_engine.lock().await.set_focus_mode(false);
+                    // TODO: start solve engine (need new method).
                 } else {
                     return Err(tonic::Status::invalid_argument(
                         format!("Got invalid operating_mode: {}.", operating_mode)));
@@ -302,10 +304,8 @@ impl MyCedar {
             locked_camera.set_offset(Offset::new(3))?;
         }
         let mut locked_solve_engine = self.solve_engine.lock().await;
-        locked_solve_engine.set_fov_estimate(/*fov_estimate=*/None,
-                                             /*fov_max_error*/None)?;
+        locked_solve_engine.set_fov_estimate(/*fov_estimate=*/None)?;
         locked_solve_engine.set_distortion(0.0)?;
-        locked_solve_engine.set_match_max_error(0.005)?;
         locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
         *self.calibration_data.lock().await = CalibrationData{..Default::default()};
         Ok(())
@@ -373,11 +373,12 @@ impl MyCedar {
                     Some((pixel_width_mm / lens_fl_mm).atan().to_degrees());
 
                 let solve_timeout =
-                    std::cmp::max(solve_duration * 10, Duration::from_millis(500));
+                    std::cmp::min(
+                        std::cmp::max(solve_duration * 10, Duration::from_millis(500)),
+                        Duration::from_secs(2));  // TODO: max solve time cmd line arg
                 let mut locked_solve_engine = self.solve_engine.lock().await;
-                locked_solve_engine.set_fov_estimate(Some(fov), Some(fov/10.0))?;
+                locked_solve_engine.set_fov_estimate(Some(fov))?;
                 locked_solve_engine.set_distortion(distortion)?;
-                locked_solve_engine.set_match_max_error(0.002)?;
                 locked_solve_engine.set_solve_timeout(solve_timeout)?;
             }
             Err(e) => {
@@ -385,9 +386,8 @@ impl MyCedar {
                 locked_calibration_data.fov_horizontal = None;
                 locked_calibration_data.lens_distortion = None;
                 let mut locked_solve_engine = self.solve_engine.lock().await;
-                locked_solve_engine.set_fov_estimate(None, None)?;
+                locked_solve_engine.set_fov_estimate(None)?;
                 locked_solve_engine.set_distortion(0.0)?;
-                locked_solve_engine.set_match_max_error(0.005)?;
                 locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
             }
         };
@@ -397,34 +397,31 @@ impl MyCedar {
 
     async fn get_next_frame(&self, prev_frame_id: Option<i32>, main_image_mode: i32)
                             -> FrameResult {
+        // Be mutually exclusive with calibrate().
+        let locked_calibration_data = self.calibration_data.lock().await;
+
         // Always populated.
         let detect_result;
-        let boresight_position;
         // Populated only in OperatingMode::Operate mode.
         let mut tetra3_solve_result: Option<SolveResultProto> = None;
         let mut plate_solution: Option<PlateSolution> = None;
         let mut solve_finish_time: Option<SystemTime> = None;
-
-        // Be mutually exclusive with calibrate().
-        let locked_calibration_data = self.calibration_data.lock().await;
 
         if self.operation_settings.lock().unwrap().operating_mode.unwrap() ==
             OperatingMode::Setup as i32
         {
             detect_result =
                 self.detect_engine.lock().await.get_next_result(prev_frame_id).await;
-            boresight_position = self.solve_engine.lock().await.target_pixel().expect(
-                "solve_engine.target_pixel() should not fail");
         } else {
-            let locked_solve_engine = &mut self.solve_engine.lock().await;
-            plate_solution = Some(locked_solve_engine.get_next_result(prev_frame_id).await);
-            tetra3_solve_result =
-                plate_solution.as_ref().unwrap().tetra3_solve_result.clone();
-            solve_finish_time = plate_solution.as_ref().unwrap().solve_finish_time;
-            detect_result = plate_solution.as_ref().unwrap().detect_result.clone();
-            boresight_position = locked_solve_engine.target_pixel().expect(
-                "solve_engine.target_pixel() should not fail");
+            plate_solution =
+                Some(self.solve_engine.lock().await.get_next_result(prev_frame_id).await);
+            let psr = plate_solution.as_ref().unwrap();
+            tetra3_solve_result = psr.tetra3_solve_result.clone();
+            solve_finish_time = psr.solve_finish_time;
+            detect_result = psr.detect_result.clone();
         }
+        let boresight_position = self.solve_engine.lock().await.target_pixel().expect(
+            "solve_engine.target_pixel() should not fail");
 
         let captured_image = &detect_result.captured_image;
         let (width, height) = captured_image.image.dimensions();
@@ -501,34 +498,27 @@ impl MyCedar {
             Some(fa) => fa.center_peak_value,
             None => detect_result.peak_star_pixel,
         };
-        let gamma = 0.5;
-        if main_image_mode == ImageMode::Default as i32 {
-            let mut main_bmp_buf = Vec::<u8>::new();
-            let image = &captured_image.image;
-            main_bmp_buf.reserve((width * height) as usize);
-            let scaled_image = scale_image(image, peak_value, gamma);
-            scaled_image.write_to(&mut Cursor::new(&mut main_bmp_buf),
+        let mut disp_image = &captured_image.image;
+        let mut binning_factor = 1;
+        if main_image_mode == ImageMode::Binned as i32 {
+            disp_image = &detect_result.binned_image;
+            binning_factor = 2;
+        }
+        if main_image_mode != ImageMode::Omit as i32 {
+            let mut bmp_buf = Vec::<u8>::new();
+            let (width, height) = disp_image.dimensions();
+            bmp_buf.reserve((width * height) as usize);
+            let scaled_image = scale_image(disp_image, peak_value, /*gamma=*/0.7);
+            scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
                                   ImageOutputFormat::Bmp).unwrap();
             frame_result.image = Some(Image{
-                binning_factor: 1,
-                rectangle: Some(image_rectangle),
-                image_data: main_bmp_buf,
-            });
-        } else if main_image_mode == ImageMode::Binned as i32 {
-            let mut binned_bmp_buf = Vec::<u8>::new();
-            let binned_image = &detect_result.binned_image;
-            let (binned_width, binned_height) = binned_image.dimensions();
-            binned_bmp_buf.reserve((binned_width * binned_height) as usize);
-            let scaled_image = scale_image(binned_image, peak_value, gamma);
-            scaled_image.write_to(&mut Cursor::new(&mut binned_bmp_buf),
-                                  ImageOutputFormat::Bmp).unwrap();
-            frame_result.image = Some(Image{
-                binning_factor: 2,
+                binning_factor,
                 // Rectangle is always in full resolution coordinates.
                 rectangle: Some(image_rectangle),
-                image_data: binned_bmp_buf,
+                image_data: bmp_buf,
             });
         }
+
         if detect_result.focus_aid.is_some() {
             // Populate `center_peak_image`.
             let mut center_peak_bmp_buf = Vec::<u8>::new();
@@ -539,7 +529,7 @@ impl MyCedar {
             let (center_peak_width, center_peak_height) =
                 center_peak_image.dimensions();
             center_peak_bmp_buf.reserve(
-                (2 * center_peak_width * center_peak_height) as usize);
+                (center_peak_width * center_peak_height) as usize);
             center_peak_image.write_to(&mut Cursor::new(&mut center_peak_bmp_buf),
                                        ImageOutputFormat::Bmp).unwrap();
             frame_result.center_peak_image = Some(Image{
@@ -733,6 +723,7 @@ struct Args {
     sigma: f32,
 
     // TODO: sigma_min
+    // TODO: max solve time
 }
 
 // Adapted from

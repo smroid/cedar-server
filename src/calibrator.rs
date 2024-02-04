@@ -10,7 +10,7 @@ use canonical_error::{CanonicalError, failed_precondition_error};
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
 use crate::solve_engine::SolveEngine;
-use crate::tetra3_server::{ImageCoord, SolveRequest};
+use crate::tetra3_server::{ImageCoord, SolveRequest, SolveStatus};
 
 pub struct Calibrator {
     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
@@ -125,6 +125,7 @@ impl Calibrator {
     }
 
     // Result is FOV (degrees), lens distortion, solve duration.
+    // TODO: pass solve_timeout
     pub async fn calibrate_optical(&self,
                                    solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
                                    exposure_duration: Duration,
@@ -173,13 +174,24 @@ impl Calibrator {
         let solve_result_proto = solve_engine.lock().await.solve(solve_request).await?;
         let solve_duration = std::time::Duration::try_from(
             solve_result_proto.solve_time.unwrap()).unwrap();
-        if solve_result_proto.image_center_coords.is_some() {
+        if solve_result_proto.status.unwrap() == SolveStatus::MatchFound as i32 {
             return Ok((solve_result_proto.fov.unwrap(),
                        solve_result_proto.distortion.unwrap(),
                        solve_duration));
         } else {
+            // https://stackoverflow.com/questions/28028854/how-do-i-match-enum-values-with-an-integer
+            let status_enum: SolveStatus =
+                unsafe { ::std::mem::transmute(solve_result_proto.status.unwrap()) };
             return Err(failed_precondition_error(
-                format!("No plate solution; elapsed time {:?}",
+                format!("No plate solution ({}); elapsed time {:?}",
+                        match status_enum {
+                            SolveStatus::Unspecified => "unknown",
+                            SolveStatus::MatchFound => "matched",
+                            SolveStatus::NoMatch => "no match",
+                            SolveStatus::Timeout => "timeout",
+                            SolveStatus::Cancelled => "cancelled",
+                            SolveStatus::TooFew => "too few stars",
+                        },
                         solve_duration).as_str()));
         }
     }
