@@ -124,12 +124,15 @@ impl Cedar for MyCedar {
                     }
                 } else if operating_mode == OperatingMode::Operate as i32 {
                     // TODO: stop detect and solve engines?
+                    // self.solve_engine.lock().await.stop().await;
+                    // self.detect_engine.lock().await.stop().await;
                     match self.calibrate().await {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
                     }
                     self.detect_engine.lock().await.set_focus_mode(false);
-                    // TODO: start solve engine (need new method).
+                    // TODO: start solve engine?
+                    // self.solve_engine.lock().await.start().await;
                 } else {
                     return Err(tonic::Status::invalid_argument(
                         format!("Got invalid operating_mode: {}.", operating_mode)));
@@ -406,6 +409,9 @@ impl MyCedar {
         let mut tetra3_solve_result: Option<SolveResultProto> = None;
         let mut plate_solution: Option<PlateSolution> = None;
         let mut solve_finish_time: Option<SystemTime> = None;
+
+        // TODO: if calibrating, return a result saying so and giving the ETA
+        // for the calibration to complete.
 
         if self.operation_settings.lock().unwrap().operating_mode.unwrap() ==
             OperatingMode::Setup as i32
