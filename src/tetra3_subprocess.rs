@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Child, Stdio, ChildStdout, ChildStderr};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -15,6 +16,8 @@ use canonical_error::{CanonicalError, failed_precondition_error};
 //   to info!/warn! logs.
 // * If the subprocess unexpectedly exits, log to error! and re-start
 //   the subprocess.
+// * We install a ^C handler, and ensure that the subprocess is killed
+//   before we exit.
 
 pub struct Tetra3Subprocess {
     tetra3_script_path: OsString,
@@ -90,7 +93,15 @@ impl Tetra3Subprocess {
             }
         })
     }
+
     fn make_wait_worker(&mut self, mut child: Child) {
+        let got_signal = Arc::new(AtomicBool::new(false));
+        let got_signal2 = got_signal.clone();
+        ctrlc::set_handler(move || {
+            info!("Got control-c");
+            got_signal2.store(true, Ordering::Relaxed);
+        }).unwrap();
+
         let tetra3_script_path = self.tetra3_script_path.clone();
         let tetra3_database = self.tetra3_database.clone();
         let pid = self.pid.clone();
@@ -99,15 +110,34 @@ impl Tetra3Subprocess {
             loop {
                 let stdout_worker = Self::make_stdout_worker(child.stdout.take().unwrap());
                 let stderr_worker = Self::make_stderr_worker(child.stderr.take().unwrap());
-                let status = child.wait().expect("Unexpected child.wait() error");
+                let child_status;
+                loop {
+                    if got_signal.load(Ordering::Relaxed) {
+                        info!("Killing {:?}", tetra3_script_path);
+                        child.kill().unwrap();
+                        info!("Exiting");
+                        std::process::exit(-1);
+                    }
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            child_status = status;
+                            break;
+                        },
+                        Ok(None) => {
+                            thread::sleep(Duration::from_millis(10));
+                            continue;  // Wait again for signal or child exit.
+                        },
+                        Err(e) => panic!("Unexpected child.wait() error {:?}", e),
+                    }
+                }
                 stdout_worker.join().unwrap();
                 stderr_worker.join().unwrap();
                 if *stopping.lock().unwrap() {
                     info!("Tetra3 subprocess stopped");
                     break;
                 }
-                error!("Tetra3 subprocess unexpectedly exited with status={:?}; will respawn",
-                       status);
+                error!("Tetra3 unexpectedly exited with status={:?}; will respawn",
+                       child_status);
                 // Re-spawn subprocess.
                 child = Self::make_child(&tetra3_script_path, &tetra3_database).unwrap();
                 *pid.lock().unwrap() = child.id();
