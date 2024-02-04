@@ -234,22 +234,9 @@ impl SolveEngine {
     /// has the same id value.
     /// Returns: the processed result along with its frame_id value.
     pub async fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> PlateSolution {
-        // Has the worker terminated for some reason?
-        if self.worker_thread.is_some() &&
-            self.worker_thread.as_ref().unwrap().is_finished()
-        {
-            self.worker_thread.take().unwrap().await.unwrap();
-        }
         // Start worker thread if terminated or not yet started.
-        if self.worker_thread.is_none() {
-            let cloned_client = self.client.clone();
-            let cloned_state = self.state.clone();
-            let cloned_detect_engine = self.detect_engine.clone();
-            self.worker_thread = Some(tokio::task::spawn(async move {
-                SolveEngine::worker(cloned_client, cloned_state,
-                                    cloned_detect_engine).await;
-            }));
-        }
+        self.start().await;
+
         // Get the most recently posted result; wait if there is none yet or the
         // currently posted result is the same as the one the caller has already
         // obtained.
@@ -332,6 +319,24 @@ impl SolveEngine {
                 return Err(failed_precondition_error(
                     format!("Error invoking plate solver: {:?}", e).as_str()));
             },
+        }
+    }
+
+    pub async fn start(&mut self) {
+        // Has the worker terminated for some reason?
+        if self.worker_thread.is_some() &&
+            self.worker_thread.as_ref().unwrap().is_finished()
+        {
+            self.worker_thread.take().unwrap().await.unwrap();
+        }
+        if self.worker_thread.is_none() {
+            let cloned_client = self.client.clone();
+            let cloned_state = self.state.clone();
+            let cloned_detect_engine = self.detect_engine.clone();
+            self.worker_thread = Some(tokio::task::spawn(async move {
+                SolveEngine::worker(cloned_client, cloned_state,
+                                    cloned_detect_engine).await;
+            }));
         }
     }
 
