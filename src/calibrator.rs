@@ -125,10 +125,10 @@ impl Calibrator {
     }
 
     // Result is FOV (degrees), lens distortion, solve duration.
-    // TODO: pass solve_timeout
     pub async fn calibrate_optical(&self,
                                    solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
                                    exposure_duration: Duration,
+                                   solve_timeout: Duration,
                                    detection_sigma: f32, detection_max_size: i32)
                                    -> Result<(f32, f32, Duration), CanonicalError> {
         // Goal: find the field of view, lens distortion, and representative
@@ -139,8 +139,7 @@ impl Calibrator {
         // Approach:
         // * Grab an image, detect the stars.
         // * Do a plate solution with no FOV estimate and distortion estimate.
-        //   Use a generous match_max_error value and a very generous
-        //   solve_timeout.
+        //   Use a generous match_max_error value and a generous solve_timeout.
         let _restore_settings = RestoreSettings::new(self.camera.clone());
 
         self.camera.lock().await.set_exposure_duration(exposure_duration)?;
@@ -158,9 +157,8 @@ impl Calibrator {
         let mut solve_request = SolveRequest::default();
         solve_request.fov_estimate = None;
         solve_request.fov_max_error = None;
-        solve_request.solve_timeout = Some(prost_types::Duration {
-            seconds: 5, nanos: 0,
-        });
+        solve_request.solve_timeout =
+            Some(prost_types::Duration::try_from(solve_timeout).unwrap());
         solve_request.distortion = Some(0.0);
         solve_request.return_matches = false;
         solve_request.match_max_error = Some(0.005);
