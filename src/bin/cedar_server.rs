@@ -3,13 +3,13 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use camera_service::abstract_camera::{AbstractCamera, Offset};
 use camera_service::asi_camera;
 use camera_service::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
-use image::ImageOutputFormat;
+use image::{GrayImage, ImageOutputFormat};
 use image::io::Reader as ImageReader;
 
 use clap::Parser;
@@ -68,11 +68,20 @@ struct MyCedar {
 struct CedarState {
     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
     fixed_settings: Mutex<FixedSettings>,
-    calibration_data: tokio::sync::Mutex<CalibrationData>,
+    calibration_data: Arc<tokio::sync::Mutex<CalibrationData>>,
     operation_settings: Mutex<OperationSettings>,
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
+
+    // This is the most recent display image returned by get_frame().
+    scaled_image: Option<Arc<GrayImage>>,
+
+    calibrating: bool,
+    // Relevant only if calibration is underway (`calibration_image` is present).
+    calibration_start: Instant,
+    calibration_duration_estimate: Duration,
+
     base_star_count_goal: i32,
     base_detection_sigma: f32,
 
@@ -109,128 +118,148 @@ impl Cedar for MyCedar {
 
     async fn update_operation_settings(
         &self, request: tonic::Request<OperationSettings>)
-        -> Result<tonic::Response<OperationSettings>, tonic::Status>
-    {
-        let cloned_state = self.state.clone();
-        // See notes below.
-        let task_handle = tokio::task::spawn(async move {
-            let locked_state = cloned_state.lock().await;
-            let req: OperationSettings = request.into_inner();
-            if req.operating_mode.is_some() {
-                let operating_mode = req.operating_mode.unwrap();
-                if operating_mode !=
-                    locked_state.operation_settings.lock().unwrap().operating_mode.unwrap()
-                {
+        -> Result<tonic::Response<OperationSettings>, tonic::Status> {
+        let req: OperationSettings = request.into_inner();
+        if req.operating_mode.is_some() {
+            let operating_mode = req.operating_mode.unwrap();
+            if operating_mode != self.state.lock().await.
+                operation_settings.lock().unwrap().operating_mode.unwrap()
+            {
+                if operating_mode == OperatingMode::Setup as i32 {
+                    // Enter SETUP mode.
+                    let locked_state = self.state.lock().await;
+                    locked_state.solve_engine.lock().await.stop().await;
+                    locked_state.detect_engine.lock().await.set_focus_mode(true);
+                    Self::reset_session_stats(&*locked_state).await;
+                    match Self::set_pre_calibration_defaults(&*locked_state).await {
+                        Ok(()) => {},
+                        Err(x) => { return Err(tonic_status(x)); }
+                    }
                     locked_state.operation_settings.lock().unwrap().operating_mode =
                         Some(operating_mode);
-                    if operating_mode == OperatingMode::Setup as i32 {
-                        locked_state.solve_engine.lock().await.stop().await;
-                        locked_state.detect_engine.lock().await.set_focus_mode(true);
-                        Self::reset_session_stats(&*locked_state).await;
-                        match Self::set_pre_calibration_defaults(&*locked_state).await {
+                } else if operating_mode == OperatingMode::Operate as i32 {
+                    // Enter OPERATE mode.
+
+                    // The SETUP -> OPERATE mode change invovles a call to
+                    // calibrate() which can take several seconds. If the gRPC
+                    // client aborts the RPC (e.g. due to timeout), we want the
+                    // calibration and state updates (i.e. detect engine's
+                    // focus_mode, our operating_mode) to be completed properly.
+                    //
+                    // The spawned task runs to completion even if the RPC
+                    // handler task aborts.
+                    //
+                    // Note that below we return immediately rather than joining
+                    // the task_handle. We arrange for get_frame() to return a
+                    // FrameResult with a information about the ongoing
+                    // calibration.
+                    let state = self.state.clone();
+                    let _task_handle = tokio::task::spawn(async move {
+                        let solve_timeout = Duration::from_secs(5);
+                        {
+                            let mut locked_state = state.lock().await;
+                            locked_state.solve_engine.lock().await.stop().await;
+                            locked_state.detect_engine.lock().await.stop().await;
+                            locked_state.calibrating = true;
+                            locked_state.calibration_data.lock().await.calibration_time =
+                                Some(prost_types::Timestamp::try_from(
+                                    SystemTime::now()).unwrap());
+                            locked_state.calibration_start = Instant::now();
+                            locked_state.calibration_duration_estimate =
+                                Duration::from_secs(1) + solve_timeout;
+                        }
+                        match Self::calibrate(state.clone(), solve_timeout).await {
                             Ok(()) => {},
                             Err(x) => { return Err(tonic_status(x)); }
                         }
-                    } else if operating_mode == OperatingMode::Operate as i32 {
-                        // TODO: stop detect and solve engines?
-                        // locked_state.solve_engine.lock().await.stop().await;
-                        // locked_state.detect_engine.lock().await.stop().await;
-                        match Self::calibrate(&*locked_state).await {
-                            Ok(()) => {},
-                            Err(x) => { return Err(tonic_status(x)); }
-                        }
+                        let mut locked_state = state.lock().await;
+                        locked_state.calibrating = false;
                         locked_state.detect_engine.lock().await.set_focus_mode(false);
-                        // TODO: start solve engine?
-                        // locked_state.solve_engine.lock().await.start().await;
-                    } else {
-                        return Err(tonic::Status::invalid_argument(
-                            format!("Got invalid operating_mode: {}.", operating_mode)));
-                    }
-                }
-            }
-            if req.exposure_time.is_some() {
-                let exp_time = req.exposure_time.unwrap();
-                if exp_time.seconds < 0 || exp_time.nanos < 0 {
-                    return Err(tonic::Status::invalid_argument(
-                        format!("Got negative exposure_time: {}.", exp_time)));
-                }
-                let std_duration = std::time::Duration::try_from(exp_time.clone()).unwrap();
-                match Self::set_exposure_time(&*locked_state, std_duration).await {
-                    Ok(()) => (),
-                    Err(x) => { return Err(tonic_status(x)); }
-                }
-                locked_state.operation_settings.lock().unwrap().exposure_time =
-                    Some(exp_time);
-            }
-            if req.accuracy.is_some() {
-                let accuracy = req.accuracy.unwrap();
-                locked_state.operation_settings.lock().unwrap().accuracy = Some(accuracy);
-                Self::update_accuracy_adjusted_params(&*locked_state).await;
-            }
-            if req.detection_max_size.is_some() {
-                let max_size = req.detection_max_size.unwrap();
-                if max_size <= 0 {
-                    return Err(tonic::Status::invalid_argument(
-                        format!("Got non-positive detection_max_size: {}.", max_size)));
-                }
-                match Self::set_detection_max_size(&*locked_state, max_size).await {
-                    Ok(()) => (),
-                    Err(x) => { return Err(tonic_status(x)); }
-                }
-                locked_state.operation_settings.lock().unwrap().detection_max_size =
-                    Some(max_size);
-            }
-            if req.update_interval.is_some() {
-                let update_interval = req.update_interval.unwrap();
-                if update_interval.seconds < 0 || update_interval.nanos < 0 {
-                    return Err(tonic::Status::invalid_argument(
-                        format!("Got negative update_interval: {}.", update_interval)));
-                }
-                let std_duration = std::time::Duration::try_from(
-                    update_interval.clone()).unwrap();
-                match Self::set_update_interval(&*locked_state, std_duration).await {
-                    Ok(()) => (),
-                    Err(x) => { return Err(tonic_status(x)); }
-                }
-                locked_state.operation_settings.lock().unwrap().update_interval =
-                    Some(update_interval);
-            }
-            if req.dwell_update_interval.is_some() {
-                return Err(tonic::Status::unimplemented(
-                    "rpc UpdateOperationSettings not implemented for dwell_update_interval."));
-            }
-            if req.log_dwelled_positions.is_some() {
-                return Err(tonic::Status::unimplemented(
-                    "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
-            }
+                        locked_state.solve_engine.lock().await.start().await;
+                        let mut locked_op_settings =
+                            locked_state.operation_settings.lock().unwrap();
+                        locked_op_settings.operating_mode = Some(operating_mode);
 
-            let val = Ok(tonic::Response::new(
-                locked_state.operation_settings.lock().unwrap().clone()));
-            val
-        });
+                        Ok(tonic::Response::new(locked_op_settings.clone()))
+                    });
+                    // Let _task_handle go out of scope, detaching the spawned
+                    // calibration task to complete regardless of a possible RPC
+                    // timeout.
+                } else {
+                    return Err(tonic::Status::invalid_argument(
+                        format!("Got invalid operating_mode: {}.", operating_mode)));
+                }
+            }
+        }
+        if req.exposure_time.is_some() {
+            let exp_time = req.exposure_time.unwrap();
+            if exp_time.seconds < 0 || exp_time.nanos < 0 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got negative exposure_time: {}.", exp_time)));
+            }
+            let std_duration = std::time::Duration::try_from(exp_time.clone()).unwrap();
+            let locked_state = self.state.lock().await;
+            match Self::set_exposure_time(&*locked_state, std_duration).await {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+            locked_state.operation_settings.lock().unwrap().exposure_time =
+                Some(exp_time);
+        }
+        if req.accuracy.is_some() {
+            let accuracy = req.accuracy.unwrap();
+            let locked_state = self.state.lock().await;
+            locked_state.operation_settings.lock().unwrap().accuracy = Some(accuracy);
+            Self::update_accuracy_adjusted_params(&*locked_state).await;
+        }
+        if req.detection_max_size.is_some() {
+            let max_size = req.detection_max_size.unwrap();
+            if max_size <= 0 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got non-positive detection_max_size: {}.", max_size)));
+            }
+            let locked_state = self.state.lock().await;
+            match Self::set_detection_max_size(&*locked_state, max_size).await {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+            locked_state.operation_settings.lock().unwrap().detection_max_size =
+                Some(max_size);
+        }
+        if req.update_interval.is_some() {
+            let update_interval = req.update_interval.unwrap();
+            if update_interval.seconds < 0 || update_interval.nanos < 0 {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got negative update_interval: {}.", update_interval)));
+            }
+            let std_duration = std::time::Duration::try_from(
+                update_interval.clone()).unwrap();
+            let locked_state = self.state.lock().await;
+            match Self::set_update_interval(&*locked_state, std_duration).await {
+                Ok(()) => (),
+                Err(x) => { return Err(tonic_status(x)); }
+            }
+            locked_state.operation_settings.lock().unwrap().update_interval =
+                Some(update_interval);
+        }
+        if req.dwell_update_interval.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for dwell_update_interval."));
+        }
+        if req.log_dwelled_positions.is_some() {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
+        }
 
-        // Note: we spawned a separate task to handle the operation settings
-        // update because the transition from SETUP -> OPERATE mode involves a
-        // call to Self::calibrate() which can take several seconds. If the gRPC
-        // client aborts the RPC (e.g. due to timeout), we want the calibration
-        // and state updates (i.e. detect engine's focus_mode, our
-        // operating_mode) to be completed properly.
-        //
-        // The spawned task runs to completion even if the RPC handler task
-        // aborts.
-        // TODO: maybe don't join the task_handle? Just return immediately, and
-        // arrange for get_frame() to return a FrameResult with a "calibration
-        // will be completed by XYZ time" indication.
-        task_handle.await.expect("error reaping update_operation_settings() task handle")
-    }
+        Ok(tonic::Response::new(
+            self.state.lock().await.operation_settings.lock().unwrap().clone()))
+   }
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let req: FrameRequest = request.into_inner();
-        let locked_state = self.state.lock().await;
-
         let frame_result = Self::get_next_frame(
-            &*locked_state, req.prev_frame_id, req.main_image_mode).await;
+            self.state.clone(), req.prev_frame_id, req.main_image_mode).await;
         Ok(tonic::Response::new(frame_result))
     }
 
@@ -334,37 +363,50 @@ impl MyCedar {
     }
 
     // Called when entering OPERATE mode.
-    async fn calibrate(state: &CedarState) -> Result<(), CanonicalError> {
-        let locked_calibrator = state.calibrator.lock().await;
-        let mut locked_calibration_data = state.calibration_data.lock().await;
-        locked_calibration_data.calibration_time = Some(prost_types::Timestamp::try_from(
-                SystemTime::now()).unwrap());
+    async fn calibrate(state: Arc<tokio::sync::Mutex<CedarState>>,
+                       solve_timeout: Duration)
+                       -> Result<(), CanonicalError> {
+        let setup_exposure_duration;
+        let detection_sigma;
+        let detection_max_size;
+        let star_count_goal;
+        let camera;
+        let calibrator;
+        let calibration_data;
+        let detect_engine;
+        let solve_engine;
+        {
+            let locked_state = state.lock().await;
+            camera = locked_state.camera.clone();
+            calibrator = locked_state.calibrator.clone();
+            calibration_data = locked_state.calibration_data.clone();
+            detect_engine = locked_state.detect_engine.clone();
+            solve_engine = locked_state.solve_engine.clone();
 
-        // What was the final exposure duration coming out of SETUP mode?
-        let setup_exposure_duration = state.camera.lock().await.get_exposure_duration();
+            // What was the final exposure duration coming out of SETUP mode?
+            setup_exposure_duration = camera.lock().await.get_exposure_duration();
 
-        let offset = match locked_calibrator.calibrate_offset().await {
+            // For calibrations, use statically configured sigma value, not adjusted
+            // by accuracy setting.
+            detection_sigma = locked_state.base_detection_sigma;
+            detection_max_size =
+                locked_state.operation_settings.lock().unwrap().detection_max_size.unwrap();
+            star_count_goal = detect_engine.lock().await.get_star_count_goal();
+        }
+        let offset = match calibrator.lock().await.calibrate_offset().await
+        {
             Ok(o) => o,
             Err(e) => {
                 warn!{"Error while calibrating offset: {:?}, using 3", e};
                 Offset::new(3)  // Sane fallback value.
             }
         };
-        state.camera.lock().await.set_offset(offset)?;
-        locked_calibration_data.camera_offset = Some(offset.value());
+        camera.lock().await.set_offset(offset)?;
+        calibration_data.lock().await.camera_offset = Some(offset.value());
 
-        // For calibrations, use statically configured sigma value, not adjusted
-        // by accuracy setting.
-        let detection_sigma = state.base_detection_sigma;
-        let detection_max_size;
-        {
-            let op_settings = state.operation_settings.lock().unwrap();
-            detection_max_size = op_settings.detection_max_size.unwrap();
-        }
-        let exp_duration = match locked_calibrator.calibrate_exposure_duration(
-            setup_exposure_duration,
-            state.detect_engine.lock().await.get_star_count_goal(),
-            detection_sigma, detection_max_size).await {
+        let exp_duration = match calibrator.lock().await.calibrate_exposure_duration(
+            setup_exposure_duration, star_count_goal, detection_sigma,
+            detection_max_size).await {
             Ok(ed) => ed,
             Err(e) => {
                 warn!{"Error while calibrating exposure duration: {:?}, using {:?}",
@@ -372,232 +414,249 @@ impl MyCedar {
                 setup_exposure_duration  // Sane fallback value.
             }
         };
-        state.camera.lock().await.set_exposure_duration(exp_duration)?;
-        locked_calibration_data.target_exposure_time =
+        camera.lock().await.set_exposure_duration(exp_duration)?;
+        calibration_data.lock().await.target_exposure_time =
             Some(prost_types::Duration::try_from(exp_duration).unwrap());
-        state.detect_engine.lock().await.set_calibrated_exposure_duration(
-            exp_duration);
+        detect_engine.lock().await.set_calibrated_exposure_duration(exp_duration);
 
-        match locked_calibrator.calibrate_optical(
-            state.solve_engine.clone(), exp_duration,
-            detection_sigma, detection_max_size).await
+        match calibrator.lock().await.calibrate_optical(
+            solve_engine.clone(), exp_duration, solve_timeout, detection_sigma,
+            detection_max_size).await
         {
             Ok((fov, distortion, solve_duration)) => {
+                let mut locked_calibration_data = calibration_data.lock().await;
                 locked_calibration_data.fov_horizontal = Some(fov);
                 locked_calibration_data.lens_distortion = Some(distortion);
-                let sensor_width_mm = state.camera.lock().await.sensor_size().0;
+                let sensor_width_mm = camera.lock().await.sensor_size().0;
                 let lens_fl_mm =
                     sensor_width_mm / (2.0 * (fov/2.0).to_radians()).tan();
                 locked_calibration_data.lens_fl_mm = Some(lens_fl_mm);
                 let pixel_width_mm =
-                    sensor_width_mm / state.camera.lock().await.dimensions().0 as f32;
+                    sensor_width_mm / camera.lock().await.dimensions().0 as f32;
                 locked_calibration_data.pixel_angular_size =
                     Some((pixel_width_mm / lens_fl_mm).atan().to_degrees());
 
-                let solve_timeout =
+                let operation_solve_timeout =
                     std::cmp::min(
                         std::cmp::max(solve_duration * 10, Duration::from_millis(500)),
                         Duration::from_secs(2));  // TODO: max solve time cmd line arg
-                let mut locked_solve_engine = state.solve_engine.lock().await;
+                let mut locked_solve_engine = solve_engine.lock().await;
                 locked_solve_engine.set_fov_estimate(Some(fov))?;
                 locked_solve_engine.set_distortion(distortion)?;
-                locked_solve_engine.set_solve_timeout(solve_timeout)?;
+                locked_solve_engine.set_solve_timeout(operation_solve_timeout)?;
             }
             Err(e) => {
+                let mut locked_calibration_data = calibration_data.lock().await;
                 warn!{"Error while calibrating optics: {:?}", e};
                 locked_calibration_data.fov_horizontal = None;
                 locked_calibration_data.lens_distortion = None;
-                let mut locked_solve_engine = state.solve_engine.lock().await;
+                let mut locked_solve_engine = solve_engine.lock().await;
                 locked_solve_engine.set_fov_estimate(None)?;
                 locked_solve_engine.set_distortion(0.0)?;
+                // TODO: pass this in? Should come from command line, maybe is
+                // max solve time.
                 locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
             }
         };
-        info!("Calibration result: {:?}", locked_calibration_data);
+        info!("Calibration result: {:?}", calibration_data.lock().await);
         Ok(())
     }
 
-    async fn get_next_frame(state: &CedarState, prev_frame_id: Option<i32>, main_image_mode: i32)
+    async fn get_next_frame(state: Arc<tokio::sync::Mutex<CedarState>>,
+                            prev_frame_id: Option<i32>, main_image_mode: i32)
                             -> FrameResult {
-        // Be mutually exclusive with calibrate().
-        let locked_calibration_data = state.calibration_data.lock().await;
+        let mut binning_factor = 1;
+        if main_image_mode == ImageMode::Binned as i32 {
+            binning_factor = 2;
+        }
 
-        // Always populated.
-        let detect_result;
-        // Populated only in OperatingMode::Operate mode.
-        let mut tetra3_solve_result: Option<SolveResultProto> = None;
-        let mut plate_solution: Option<PlateSolution> = None;
-        let mut solve_finish_time: Option<SystemTime> = None;
+        let mut frame_result = FrameResult {..Default::default()};
 
-        // TODO: if calibrating, return a result saying so and giving the ETA
-        // for the calibration to complete.
+        if state.lock().await.calibrating {
+            let locked_state = state.lock().await;
+            frame_result.calibrating = true;
+            let time_spent_calibrating = locked_state.calibration_start.elapsed();
+            let mut fraction =
+                time_spent_calibrating.as_secs_f32() /
+                locked_state.calibration_duration_estimate.as_secs_f32();
+            if fraction > 1.0 {
+                fraction = 1.0;
+            }
+            frame_result.calibration_progress = Some(fraction);
 
-        if state.operation_settings.lock().unwrap().operating_mode.unwrap() ==
-            OperatingMode::Setup as i32
-        {
-            detect_result =
-                state.detect_engine.lock().await.get_next_result(prev_frame_id).await;
+            if let Some(img) = &locked_state.scaled_image {
+                let (width, height) = locked_state.camera.lock().await.dimensions();
+                let image_rectangle = Rectangle{
+                    origin_x: 0, origin_y: 0,
+                    width: width as i32,
+                    height: height as i32,
+                };
+                let (scaled_width, scaled_height) = img.dimensions();
+                let mut bmp_buf = Vec::<u8>::new();
+                bmp_buf.reserve((scaled_width * scaled_height) as usize);
+                img.write_to(&mut Cursor::new(&mut bmp_buf),
+                             ImageOutputFormat::Bmp).unwrap();
+                frame_result.image = Some(Image{
+                    binning_factor,
+                    // Rectangle is always in full resolution coordinates.
+                    rectangle: Some(image_rectangle),
+                    image_data: bmp_buf,
+                });
+            }
         } else {
-            plate_solution =
-                Some(state.solve_engine.lock().await.get_next_result(prev_frame_id).await);
-            let psr = plate_solution.as_ref().unwrap();
-            tetra3_solve_result = psr.tetra3_solve_result.clone();
-            solve_finish_time = psr.solve_finish_time;
-            detect_result = psr.detect_result.clone();
-        }
-        let boresight_position = state.solve_engine.lock().await.target_pixel().expect(
-            "solve_engine.target_pixel() should not fail");
+            // Populated only in OperatingMode::Operate mode.
+            let mut tetra3_solve_result: Option<SolveResultProto> = None;
+            let mut plate_solution: Option<PlateSolution> = None;
+            let mut solve_finish_time: Option<SystemTime> = None;
 
-        let captured_image = &detect_result.captured_image;
-        let (width, height) = captured_image.image.dimensions();
-        let image_rectangle = Rectangle{
-            origin_x: 0, origin_y: 0,
-            width: width as i32,
-            height: height as i32,
-        };
+            let detect_result;
+            if state.lock().await.operation_settings.lock().unwrap().operating_mode.unwrap() ==
+                OperatingMode::Setup as i32
+            {
+                detect_result = state.lock().await.detect_engine.lock().await.
+                    get_next_result(prev_frame_id).await;
+            } else {
+                plate_solution = Some(state.lock().await.solve_engine.lock().await.
+                                      get_next_result(prev_frame_id).await);
+                let psr = plate_solution.as_ref().unwrap();
+                tetra3_solve_result = psr.tetra3_solve_result.clone();
+                solve_finish_time = psr.solve_finish_time;
+                detect_result = psr.detect_result.clone();
+            }
 
-        let mut centroids = Vec::<StarCentroid>::new();
-        for star in &detect_result.star_candidates {
-            centroids.push(StarCentroid{
-                centroid_position: Some(ImageCoord {
-                    x: star.centroid_x, y: star.centroid_y,
-                }),
-                brightness: star.brightness,
-                num_saturated: star.num_saturated as i32,
-            });
-        }
+            frame_result.frame_id = detect_result.frame_id;
+            let captured_image = &detect_result.captured_image;
+            let (width, height) = captured_image.image.dimensions();
+            let image_rectangle = Rectangle{
+                origin_x: 0, origin_y: 0,
+                width: width as i32,
+                height: height as i32,
+            };
+            frame_result.exposure_time = Some(prost_types::Duration::try_from(
+                captured_image.capture_params.exposure_duration).unwrap());
+            frame_result.capture_time = Some(prost_types::Timestamp::try_from(
+                captured_image.readout_time).unwrap());
+            frame_result.camera_temperature_celsius = captured_image.temperature.0 as f32;
 
-        let mut frame_result = FrameResult {
-            frame_id: detect_result.frame_id,
-            calibration_data: Some(locked_calibration_data.clone()),
-            operation_settings: Some(state.operation_settings.lock().unwrap().clone()),
-            image: None,  // Is set below.
-            star_candidates: centroids,
-            exposure_time: Some(prost_types::Duration::try_from(
-                captured_image.capture_params.exposure_duration).unwrap()),
-            processing_stats: None,  // Is set below.
-            capture_time: Some(prost_types::Timestamp::try_from(
-                captured_image.readout_time).unwrap()),
-            camera_temperature_celsius: captured_image.temperature.0 as f32,
-            boresight_position: match boresight_position {
-                Some(bs) => Some(ImageCoord{x: bs.x, y: bs.y}),
-                None => None,
-            },
-            center_region: match &detect_result.focus_aid {
-                Some(fa) => Some(Rectangle {
+            let mut centroids = Vec::<StarCentroid>::new();
+            for star in &detect_result.star_candidates {
+                centroids.push(StarCentroid{
+                    centroid_position: Some(ImageCoord {
+                        x: star.centroid_x, y: star.centroid_y,
+                    }),
+                    brightness: star.brightness,
+                    num_saturated: star.num_saturated as i32,
+                });
+            }
+            frame_result.star_candidates = centroids;
+
+            let peak_value;
+            if let Some(fa) = &detect_result.focus_aid {
+                peak_value = fa.center_peak_value;
+                frame_result.center_region = Some(Rectangle {
                     origin_x: fa.center_region.left(),
                     origin_y: fa.center_region.top(),
                     width: fa.center_region.width() as i32,
-                    height: fa.center_region.height() as i32,
-                }),
-                None => None,
-            },
-            center_peak_position: match &detect_result.focus_aid {
-                Some(fa) => {
-                    let ic = ImageCoord {
-                        x: fa.center_peak_position.0 as f32,
-                        y: fa.center_peak_position.1 as f32,
-                    };
-                    *state.center_peak_position.lock().unwrap() = Some(ic.clone());
-                    Some(ic)
-                },
-                None => {
-                    *state.center_peak_position.lock().unwrap() = None;
-                    None
-                },
-            },
-            center_peak_value: match &detect_result.focus_aid {
-                Some(fa) => Some(fa.center_peak_value as i32),
-                None => None,
-            },
-            // These are set below.
-            center_peak_image: None,
-            plate_solution: None,
-            camera_motion: None,
-            ra_rate: None,
-            dec_rate: None,
-        };
+                    height: fa.center_region.height() as i32});
 
-        // Populate `image` if requested.
-        let peak_value = match &detect_result.focus_aid {
-            Some(fa) => fa.center_peak_value,
-            None => detect_result.peak_star_pixel,
-        };
-        let mut disp_image = &captured_image.image;
-        let mut binning_factor = 1;
-        if main_image_mode == ImageMode::Binned as i32 {
-            disp_image = &detect_result.binned_image;
-            binning_factor = 2;
-        }
-        if main_image_mode != ImageMode::Omit as i32 {
-            let mut bmp_buf = Vec::<u8>::new();
-            let (width, height) = disp_image.dimensions();
-            bmp_buf.reserve((width * height) as usize);
-            let scaled_image = scale_image(disp_image, peak_value, /*gamma=*/0.7);
-            scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
-                                  ImageOutputFormat::Bmp).unwrap();
-            frame_result.image = Some(Image{
-                binning_factor,
-                // Rectangle is always in full resolution coordinates.
-                rectangle: Some(image_rectangle),
-                image_data: bmp_buf,
-            });
-        }
+                let ic = ImageCoord {
+                    x: fa.center_peak_position.0 as f32,
+                    y: fa.center_peak_position.1 as f32,
+                };
+                *state.lock().await.center_peak_position.lock().unwrap() = Some(ic.clone());
+                frame_result.center_peak_position = Some(ic);
+                frame_result.center_peak_value = Some(fa.center_peak_value as i32);
 
-        if detect_result.focus_aid.is_some() {
-            // Populate `center_peak_image`.
-            let mut center_peak_bmp_buf = Vec::<u8>::new();
-            let center_peak_image =
-                &detect_result.focus_aid.as_ref().unwrap().peak_image;
-            let peak_image_region =
-                &detect_result.focus_aid.as_ref().unwrap().peak_image_region;
-            let (center_peak_width, center_peak_height) =
-                center_peak_image.dimensions();
-            center_peak_bmp_buf.reserve(
-                (center_peak_width * center_peak_height) as usize);
-            center_peak_image.write_to(&mut Cursor::new(&mut center_peak_bmp_buf),
-                                       ImageOutputFormat::Bmp).unwrap();
-            frame_result.center_peak_image = Some(Image{
-                binning_factor: 1,
-                rectangle: Some(Rectangle{
-                    origin_x: peak_image_region.left(),
-                    origin_y: peak_image_region.top(),
-                    width: peak_image_region.width() as i32,
-                    height: peak_image_region.height() as i32,
-                }),
-                image_data: center_peak_bmp_buf,
-            });
-        }
-        frame_result.processing_stats = Some(ProcessingStats {
-            detect_latency: Some(detect_result.detect_latency_stats),
-            ..Default::default()
-        });
-        if tetra3_solve_result.is_some() {
-            // Overall latency is time between image acquisition and completion
-            // of the plate solve attempt.
-            match solve_finish_time.unwrap().duration_since(
-                captured_image.readout_time) {
-                Err(e) => {
-                    warn!("Clock may have gone backwards: {:?}", e)
-                },
-                Ok(d) => {
-                    state.overall_latency_stats.lock().unwrap().add_value(
-                        d.as_secs_f64());
-                }
+                // Populate `center_peak_image`.
+                let mut center_peak_bmp_buf = Vec::<u8>::new();
+                let center_peak_image = &fa.peak_image;
+                let peak_image_region = &fa.peak_image_region;
+                let (center_peak_width, center_peak_height) =
+                    center_peak_image.dimensions();
+                center_peak_bmp_buf.reserve(
+                    (center_peak_width * center_peak_height) as usize);
+                center_peak_image.write_to(&mut Cursor::new(&mut center_peak_bmp_buf),
+                                           ImageOutputFormat::Bmp).unwrap();
+                frame_result.center_peak_image = Some(Image{
+                    binning_factor: 1,
+                    rectangle: Some(Rectangle{
+                        origin_x: peak_image_region.left(),
+                        origin_y: peak_image_region.top(),
+                        width: peak_image_region.width() as i32,
+                        height: peak_image_region.height() as i32,
+                    }),
+                    image_data: center_peak_bmp_buf,
+                });
+            } else {
+                peak_value = detect_result.peak_star_pixel;
+                *state.lock().await.center_peak_position.lock().unwrap() = None;
             }
-            frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
 
-            let stats = &mut frame_result.processing_stats.as_mut().unwrap();
-            let plate_solution = &plate_solution.as_ref().unwrap();
-            stats.overall_latency =
-                Some(state.overall_latency_stats.lock().unwrap().value_stats.clone());
-            stats.solve_interval = Some(plate_solution.solve_interval_stats.clone());
-            stats.solve_latency = Some(plate_solution.solve_latency_stats.clone());
-            stats.solve_attempt_fraction =
-                Some(plate_solution.solve_attempt_stats.clone());
-            stats.solve_success_fraction =
-                Some(plate_solution.solve_success_stats.clone());
+            // Populate `image` if requested.
+            let mut disp_image = &captured_image.image;
+            if main_image_mode == ImageMode::Binned as i32 {
+                disp_image = &detect_result.binned_image;
+            }
+            if main_image_mode != ImageMode::Omit as i32 {
+                let mut bmp_buf = Vec::<u8>::new();
+                let (width, height) = disp_image.dimensions();
+                bmp_buf.reserve((width * height) as usize);
+                let scaled_image = scale_image(disp_image, peak_value, /*gamma=*/0.7);
+                // Save most recent display image.
+                state.lock().await.scaled_image = Some(Arc::new(scaled_image.clone()));
+                scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
+                                      ImageOutputFormat::Bmp).unwrap();
+                frame_result.image = Some(Image{
+                    binning_factor,
+                    // Rectangle is always in full resolution coordinates.
+                    rectangle: Some(image_rectangle),
+                    image_data: bmp_buf,
+                });
+            }
+
+            frame_result.processing_stats = Some(ProcessingStats {
+                detect_latency: Some(detect_result.detect_latency_stats),
+                ..Default::default()
+            });
+            if tetra3_solve_result.is_some() {
+                // Overall latency is time between image acquisition and completion
+                // of the plate solve attempt.
+                match solve_finish_time.unwrap().duration_since(
+                    captured_image.readout_time) {
+                    Err(e) => {
+                        warn!("Clock may have gone backwards: {:?}", e)
+                    },
+                    Ok(d) => {
+                        state.lock().await.overall_latency_stats.lock().unwrap().add_value(
+                            d.as_secs_f64());
+                    }
+                }
+                frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
+
+                let stats = &mut frame_result.processing_stats.as_mut().unwrap();
+                let plate_solution = &plate_solution.as_ref().unwrap();
+                stats.overall_latency =
+                    Some(state.lock().await.overall_latency_stats.lock().unwrap().value_stats.clone());
+                stats.solve_interval = Some(plate_solution.solve_interval_stats.clone());
+                stats.solve_latency = Some(plate_solution.solve_latency_stats.clone());
+                stats.solve_attempt_fraction =
+                    Some(plate_solution.solve_attempt_stats.clone());
+                stats.solve_success_fraction =
+                    Some(plate_solution.solve_success_stats.clone());
+            }
         }
+
+        let boresight_position =
+            state.lock().await.solve_engine.lock().await.target_pixel().expect(
+                "solve_engine.target_pixel() should not fail");
+        frame_result.boresight_position = match boresight_position {
+            Some(bs) => Some(ImageCoord{x: bs.x, y: bs.y}),
+            None => None,
+        };
+        frame_result.calibration_data =
+            Some(state.lock().await.calibration_data.lock().await.clone());
+        frame_result.operation_settings =
+            Some(state.lock().await.operation_settings.lock().unwrap().clone());
 
         frame_result
     }
@@ -644,8 +703,8 @@ impl MyCedar {
                 }),
                 log_dwelled_positions: Some(false),
             }),
-            calibration_data: tokio::sync::Mutex::new(
-                CalibrationData{..Default::default()}),
+            calibration_data: Arc::new(tokio::sync::Mutex::new(
+                CalibrationData{..Default::default()})),
             detect_engine: detect_engine.clone(),
             solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
                 Tetra3Subprocess::new(tetra3_script, tetra3_database).unwrap(),
@@ -655,6 +714,10 @@ impl MyCedar {
                 stats_capacity).await.unwrap())),
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
+            scaled_image: None,
+            calibrating: false,
+            calibration_start: Instant::now(),
+            calibration_duration_estimate: Duration::MAX,
             base_star_count_goal,
             base_detection_sigma,
             center_peak_position: Arc::new(Mutex::new(None)),
