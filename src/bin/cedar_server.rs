@@ -76,6 +76,9 @@ struct CedarState {
 
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
+    // Full resolution dimensions.
+    width: u32,
+    height: u32,
 
     calibrating: bool,
     // Relevant only if calibration is underway (`calibration_image` is present).
@@ -154,20 +157,22 @@ impl Cedar for MyCedar {
                     // FrameResult with a information about the ongoing
                     // calibration.
                     let state = self.state.clone();
+                    let solve_timeout = Duration::from_secs(5);
+                    state.lock().await.calibrating = true;
+                    state.lock().await.calibration_start = Instant::now();
+                    state.lock().await.calibrating = true;
+                    state.lock().await.calibration_duration_estimate =
+                        Duration::from_secs(2) + solve_timeout;
                     let _task_handle = tokio::task::spawn(async move {
-                        let solve_timeout = Duration::from_secs(5);
                         {
-                            let mut locked_state = state.lock().await;
+                            let locked_state = state.lock().await;
                             locked_state.solve_engine.lock().await.stop().await;
                             locked_state.detect_engine.lock().await.stop().await;
-                            locked_state.calibrating = true;
                             locked_state.calibration_data.lock().await.calibration_time =
                                 Some(prost_types::Timestamp::try_from(
                                     SystemTime::now()).unwrap());
-                            locked_state.calibration_start = Instant::now();
-                            locked_state.calibration_duration_estimate =
-                                Duration::from_secs(1) + solve_timeout;
                         }
+                        // No locks held.
                         match Self::calibrate(state.clone(), solve_timeout).await {
                             Ok(()) => {},
                             Err(x) => { return Err(tonic_status(x)); }
@@ -485,11 +490,10 @@ impl MyCedar {
             frame_result.calibration_progress = Some(fraction);
 
             if let Some(img) = &locked_state.scaled_image {
-                let (width, height) = locked_state.camera.lock().await.dimensions();
                 let image_rectangle = Rectangle{
                     origin_x: 0, origin_y: 0,
-                    width: width as i32,
-                    height: height as i32,
+                    width: locked_state.width as i32,
+                    height: locked_state.height as i32,
                 };
                 let (scaled_width, scaled_height) = img.dimensions();
                 let mut bmp_buf = Vec::<u8>::new();
@@ -503,149 +507,151 @@ impl MyCedar {
                     image_data: bmp_buf,
                 });
             }
-        } else {
-            // Populated only in OperatingMode::Operate mode.
-            let mut tetra3_solve_result: Option<SolveResultProto> = None;
-            let mut plate_solution: Option<PlateSolution> = None;
-            let mut solve_finish_time: Option<SystemTime> = None;
-
-            let detect_result;
-            if state.lock().await.operation_settings.lock().unwrap().operating_mode.unwrap() ==
-                OperatingMode::Setup as i32
-            {
-                detect_result = state.lock().await.detect_engine.lock().await.
-                    get_next_result(prev_frame_id).await;
-            } else {
-                plate_solution = Some(state.lock().await.solve_engine.lock().await.
-                                      get_next_result(prev_frame_id).await);
-                let psr = plate_solution.as_ref().unwrap();
-                tetra3_solve_result = psr.tetra3_solve_result.clone();
-                solve_finish_time = psr.solve_finish_time;
-                detect_result = psr.detect_result.clone();
-            }
-
-            frame_result.frame_id = detect_result.frame_id;
-            let captured_image = &detect_result.captured_image;
-            let (width, height) = captured_image.image.dimensions();
-            let image_rectangle = Rectangle{
-                origin_x: 0, origin_y: 0,
-                width: width as i32,
-                height: height as i32,
-            };
-            frame_result.exposure_time = Some(prost_types::Duration::try_from(
-                captured_image.capture_params.exposure_duration).unwrap());
-            frame_result.capture_time = Some(prost_types::Timestamp::try_from(
-                captured_image.readout_time).unwrap());
-            frame_result.camera_temperature_celsius = captured_image.temperature.0 as f32;
-
-            let mut centroids = Vec::<StarCentroid>::new();
-            for star in &detect_result.star_candidates {
-                centroids.push(StarCentroid{
-                    centroid_position: Some(ImageCoord {
-                        x: star.centroid_x, y: star.centroid_y,
-                    }),
-                    brightness: star.brightness,
-                    num_saturated: star.num_saturated as i32,
-                });
-            }
-            frame_result.star_candidates = centroids;
-
-            let peak_value;
-            if let Some(fa) = &detect_result.focus_aid {
-                peak_value = fa.center_peak_value;
-                frame_result.center_region = Some(Rectangle {
-                    origin_x: fa.center_region.left(),
-                    origin_y: fa.center_region.top(),
-                    width: fa.center_region.width() as i32,
-                    height: fa.center_region.height() as i32});
-
-                let ic = ImageCoord {
-                    x: fa.center_peak_position.0 as f32,
-                    y: fa.center_peak_position.1 as f32,
-                };
-                *state.lock().await.center_peak_position.lock().unwrap() = Some(ic.clone());
-                frame_result.center_peak_position = Some(ic);
-                frame_result.center_peak_value = Some(fa.center_peak_value as i32);
-
-                // Populate `center_peak_image`.
-                let mut center_peak_bmp_buf = Vec::<u8>::new();
-                let center_peak_image = &fa.peak_image;
-                let peak_image_region = &fa.peak_image_region;
-                let (center_peak_width, center_peak_height) =
-                    center_peak_image.dimensions();
-                center_peak_bmp_buf.reserve(
-                    (center_peak_width * center_peak_height) as usize);
-                center_peak_image.write_to(&mut Cursor::new(&mut center_peak_bmp_buf),
-                                           ImageOutputFormat::Bmp).unwrap();
-                frame_result.center_peak_image = Some(Image{
-                    binning_factor: 1,
-                    rectangle: Some(Rectangle{
-                        origin_x: peak_image_region.left(),
-                        origin_y: peak_image_region.top(),
-                        width: peak_image_region.width() as i32,
-                        height: peak_image_region.height() as i32,
-                    }),
-                    image_data: center_peak_bmp_buf,
-                });
-            } else {
-                peak_value = detect_result.peak_star_pixel;
-                *state.lock().await.center_peak_position.lock().unwrap() = None;
-            }
-
-            // Populate `image` if requested.
-            let mut disp_image = &captured_image.image;
-            if main_image_mode == ImageMode::Binned as i32 {
-                disp_image = &detect_result.binned_image;
-            }
-            if main_image_mode != ImageMode::Omit as i32 {
-                let mut bmp_buf = Vec::<u8>::new();
-                let (width, height) = disp_image.dimensions();
-                bmp_buf.reserve((width * height) as usize);
-                let scaled_image = scale_image(disp_image, peak_value, /*gamma=*/0.7);
-                // Save most recent display image.
-                state.lock().await.scaled_image = Some(Arc::new(scaled_image.clone()));
-                scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
-                                      ImageOutputFormat::Bmp).unwrap();
-                frame_result.image = Some(Image{
-                    binning_factor,
-                    // Rectangle is always in full resolution coordinates.
-                    rectangle: Some(image_rectangle),
-                    image_data: bmp_buf,
-                });
-            }
-
-            frame_result.processing_stats = Some(ProcessingStats {
-                detect_latency: Some(detect_result.detect_latency_stats),
-                ..Default::default()
-            });
-            if tetra3_solve_result.is_some() {
-                // Overall latency is time between image acquisition and completion
-                // of the plate solve attempt.
-                match solve_finish_time.unwrap().duration_since(
-                    captured_image.readout_time) {
-                    Err(e) => {
-                        warn!("Clock may have gone backwards: {:?}", e)
-                    },
-                    Ok(d) => {
-                        state.lock().await.overall_latency_stats.lock().unwrap().add_value(
-                            d.as_secs_f64());
-                    }
-                }
-                frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
-
-                let stats = &mut frame_result.processing_stats.as_mut().unwrap();
-                let plate_solution = &plate_solution.as_ref().unwrap();
-                stats.overall_latency =
-                    Some(state.lock().await.overall_latency_stats.lock().unwrap().value_stats.clone());
-                stats.solve_interval = Some(plate_solution.solve_interval_stats.clone());
-                stats.solve_latency = Some(plate_solution.solve_latency_stats.clone());
-                stats.solve_attempt_fraction =
-                    Some(plate_solution.solve_attempt_stats.clone());
-                stats.solve_success_fraction =
-                    Some(plate_solution.solve_success_stats.clone());
-            }
+            return frame_result;
         }
 
+        // Populated only in OperatingMode::Operate mode.
+        let mut tetra3_solve_result: Option<SolveResultProto> = None;
+        let mut plate_solution: Option<PlateSolution> = None;
+        let mut solve_finish_time: Option<SystemTime> = None;
+
+        let detect_result;
+        if state.lock().await.operation_settings.lock().unwrap().operating_mode.unwrap() ==
+            OperatingMode::Setup as i32
+        {
+            detect_result = state.lock().await.detect_engine.lock().await.
+                get_next_result(prev_frame_id).await;
+        } else {
+            plate_solution = Some(state.lock().await.solve_engine.lock().await.
+                                  get_next_result(prev_frame_id).await);
+            let psr = plate_solution.as_ref().unwrap();
+            tetra3_solve_result = psr.tetra3_solve_result.clone();
+            solve_finish_time = psr.solve_finish_time;
+            detect_result = psr.detect_result.clone();
+        }
+
+        frame_result.frame_id = detect_result.frame_id;
+        let captured_image = &detect_result.captured_image;
+        let (width, height) = captured_image.image.dimensions();
+        state.lock().await.width = width;
+        state.lock().await.height = height;
+        let image_rectangle = Rectangle{
+            origin_x: 0, origin_y: 0,
+            width: width as i32,
+            height: height as i32,
+        };
+        frame_result.exposure_time = Some(prost_types::Duration::try_from(
+            captured_image.capture_params.exposure_duration).unwrap());
+        frame_result.capture_time = Some(prost_types::Timestamp::try_from(
+            captured_image.readout_time).unwrap());
+        frame_result.camera_temperature_celsius = captured_image.temperature.0 as f32;
+
+        let mut centroids = Vec::<StarCentroid>::new();
+        for star in &detect_result.star_candidates {
+            centroids.push(StarCentroid{
+                centroid_position: Some(ImageCoord {
+                    x: star.centroid_x, y: star.centroid_y,
+                }),
+                brightness: star.brightness,
+                num_saturated: star.num_saturated as i32,
+            });
+        }
+        frame_result.star_candidates = centroids;
+
+        let peak_value;
+        if let Some(fa) = &detect_result.focus_aid {
+            peak_value = fa.center_peak_value;
+            frame_result.center_region = Some(Rectangle {
+                origin_x: fa.center_region.left(),
+                origin_y: fa.center_region.top(),
+                width: fa.center_region.width() as i32,
+                height: fa.center_region.height() as i32});
+
+            let ic = ImageCoord {
+                x: fa.center_peak_position.0 as f32,
+                y: fa.center_peak_position.1 as f32,
+            };
+            *state.lock().await.center_peak_position.lock().unwrap() = Some(ic.clone());
+            frame_result.center_peak_position = Some(ic);
+            frame_result.center_peak_value = Some(fa.center_peak_value as i32);
+
+            // Populate `center_peak_image`.
+            let mut center_peak_bmp_buf = Vec::<u8>::new();
+            let center_peak_image = &fa.peak_image;
+            let peak_image_region = &fa.peak_image_region;
+            let (center_peak_width, center_peak_height) =
+                center_peak_image.dimensions();
+            center_peak_bmp_buf.reserve(
+                (center_peak_width * center_peak_height) as usize);
+            center_peak_image.write_to(&mut Cursor::new(&mut center_peak_bmp_buf),
+                                       ImageOutputFormat::Bmp).unwrap();
+            frame_result.center_peak_image = Some(Image{
+                binning_factor: 1,
+                rectangle: Some(Rectangle{
+                    origin_x: peak_image_region.left(),
+                    origin_y: peak_image_region.top(),
+                    width: peak_image_region.width() as i32,
+                    height: peak_image_region.height() as i32,
+                }),
+                image_data: center_peak_bmp_buf,
+            });
+        } else {
+            peak_value = detect_result.peak_star_pixel;
+            *state.lock().await.center_peak_position.lock().unwrap() = None;
+        }
+
+        // Populate `image` if requested.
+        let mut disp_image = &captured_image.image;
+        if main_image_mode == ImageMode::Binned as i32 {
+            disp_image = &detect_result.binned_image;
+        }
+        if main_image_mode != ImageMode::Omit as i32 {
+            let mut bmp_buf = Vec::<u8>::new();
+            let (width, height) = disp_image.dimensions();
+            bmp_buf.reserve((width * height) as usize);
+            let scaled_image = scale_image(disp_image, peak_value, /*gamma=*/0.7);
+            // Save most recent display image.
+            state.lock().await.scaled_image = Some(Arc::new(scaled_image.clone()));
+            scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
+                                  ImageOutputFormat::Bmp).unwrap();
+            frame_result.image = Some(Image{
+                binning_factor,
+                // Rectangle is always in full resolution coordinates.
+                rectangle: Some(image_rectangle),
+                image_data: bmp_buf,
+            });
+        }
+
+        frame_result.processing_stats = Some(ProcessingStats {
+            detect_latency: Some(detect_result.detect_latency_stats),
+            ..Default::default()
+        });
+        if tetra3_solve_result.is_some() {
+            // Overall latency is time between image acquisition and completion
+            // of the plate solve attempt.
+            match solve_finish_time.unwrap().duration_since(
+                captured_image.readout_time) {
+                Err(e) => {
+                    warn!("Clock may have gone backwards: {:?}", e)
+                },
+                Ok(d) => {
+                    state.lock().await.overall_latency_stats.lock().unwrap().add_value(
+                        d.as_secs_f64());
+                }
+            }
+            frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
+
+            let stats = &mut frame_result.processing_stats.as_mut().unwrap();
+            let plate_solution = &plate_solution.as_ref().unwrap();
+            stats.overall_latency =
+                Some(state.lock().await.overall_latency_stats.lock().unwrap().value_stats.clone());
+            stats.solve_interval = Some(plate_solution.solve_interval_stats.clone());
+            stats.solve_latency = Some(plate_solution.solve_latency_stats.clone());
+            stats.solve_attempt_fraction =
+                Some(plate_solution.solve_attempt_stats.clone());
+            stats.solve_success_fraction =
+                Some(plate_solution.solve_success_stats.clone());
+        }
         let boresight_position =
             state.lock().await.solve_engine.lock().await.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
@@ -715,6 +721,8 @@ impl MyCedar {
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
             scaled_image: None,
+            width: 0,
+            height: 0,
             calibrating: false,
             calibration_start: Instant::now(),
             calibration_duration_estimate: Duration::MAX,
