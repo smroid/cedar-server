@@ -150,6 +150,10 @@ class _MyHomePageState extends State<MyHomePage> {
   // Arcsec.
   double _solutionRMSE = 0.0;
 
+  // Calibration happens when _setupMode transitions to false.
+  bool _calibrating = false;
+  double _calibrationProgress = 0.7;
+
   // Values set from on-screen controls.
   bool _doRefreshes = false;
   int _expSettingMs = 0; // 0 is auto-exposure.
@@ -165,7 +169,15 @@ class _MyHomePageState extends State<MyHomePage> {
     _stars = response.starCandidates;
     _numStars = _stars.length;
     _hasSolution = false;
-    _accuracy = response.operationSettings.accuracy.toInt();
+    _calibrating = response.calibrating;
+    if (response.calibrating) {
+      _calibrationProgress = response.calibrationProgress;
+    }
+    if (response.hasOperationSettings()) {
+      _accuracy = response.operationSettings.accuracy.toInt();
+      _expSettingMs =
+          durationToMs(response.operationSettings.exposureTime).toInt();
+    }
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
       if (plateSolution.status == SolveStatus.MATCH_FOUND) {
@@ -204,8 +216,6 @@ class _MyHomePageState extends State<MyHomePage> {
     if (response.hasExposureTime()) {
       _exposureTimeMs = durationToMs(response.exposureTime);
     }
-    _expSettingMs =
-        durationToMs(response.operationSettings.exposureTime).toInt();
     if (response.hasCenterPeakImage()) {
       _centerPeakImageBytes =
           Uint8List.fromList(response.centerPeakImage.imageData);
@@ -249,7 +259,8 @@ class _MyHomePageState extends State<MyHomePage> {
   // Issue repeated request/response RPCs.
   Future<void> refreshStateFromServer() async {
     await Future.doWhile(() async {
-      await Future.delayed(const Duration(milliseconds: 10));
+      var delay = _calibrating ? 100 : 10;
+      await Future.delayed(Duration(milliseconds: delay));
       await getFrameFromServer();
       return _doRefreshes;
     });
@@ -325,6 +336,10 @@ class _MyHomePageState extends State<MyHomePage> {
     await initiateAction(request);
   }
 
+  Future<void> cancelCalibration() async {
+    await setOperatingMode(/*setup=*/ true);
+  }
+
   Widget runSwitch() {
     return Switch(
         value: _doRefreshes,
@@ -365,7 +380,7 @@ class _MyHomePageState extends State<MyHomePage> {
         ],
       ),
       _setupMode
-          ? const SizedBox(height: 2)
+          ? Container()
           : Column(
               children: <Widget>[
                 Text(sprintf("%.4f", [_solutionRA])),
@@ -378,7 +393,7 @@ class _MyHomePageState extends State<MyHomePage> {
               ],
             ),
       _setupMode
-          ? const SizedBox(height: 2)
+          ? Container()
           : Column(
               children: <Widget>[
                 const Text("Fast              Accurate"),
@@ -432,7 +447,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     captureBoresight();
                   }),
             ])
-          : const SizedBox(height: 2),
+          : Container(),
       Column(children: <Widget>[
         OutlinedButton(
             child: const Text("Save image"),
@@ -457,18 +472,47 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
-  Widget imageStack() {
+  Widget calibratingPacifier() {
+    return Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          const Text("Calibrating",
+              style: TextStyle(
+                  fontSize: 20,
+                  backgroundColor: Colors.black,
+                  color: Colors.red)),
+          const SizedBox(height: 15),
+          CircularProgressIndicator(
+              value: _calibrationProgress, color: Colors.red),
+          const SizedBox(height: 15),
+          TextButton(
+            onPressed: () {
+              cancelCalibration();
+            },
+            style: TextButton.styleFrom(
+                backgroundColor: Colors.black, foregroundColor: Colors.red),
+            child: const Text('Cancel'),
+          ),
+        ]);
+  }
+
+  Widget imageStack(BuildContext context) {
     return Stack(
       alignment: Alignment.topRight,
       children: <Widget>[
-        _prevFrameId != -1 ? mainImage() : const SizedBox(height: 2),
+        _prevFrameId != -1 ? mainImage() : Container(),
         _prevFrameId != -1 && _setupMode
             ? dart_widgets.Image.memory(_centerPeakImageBytes,
                 height: _centerPeakHeight.toDouble() * 3,
                 width: _centerPeakWidth.toDouble() * 3,
                 fit: BoxFit.fill,
                 gaplessPlayback: true)
-            : const SizedBox(height: 2),
+            : Container(),
+        _calibrating
+            ? Positioned.fill(
+                child: Align(
+                    alignment: Alignment.center, child: calibratingPacifier()))
+            : Container(),
       ],
     );
   }
@@ -478,14 +522,14 @@ class _MyHomePageState extends State<MyHomePage> {
       return Column(
         children: <Widget>[
           Row(children: controls()),
-          imageStack(),
+          imageStack(context),
         ],
       );
     } else {
       // Landscape
       return Row(
         children: <Widget>[
-          imageStack(),
+          imageStack(context),
           Column(children: controls()),
         ],
       );
