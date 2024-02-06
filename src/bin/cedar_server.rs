@@ -129,6 +129,7 @@ impl Cedar for MyCedar {
             if operating_mode == OperatingMode::Setup as i32 &&
                 self.state.lock().await.calibrating
             {
+                // Cancel the calibration by sending an interrupt to Tetra3.
                 let locked_state = self.state.lock().await;
                 locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
                 return Ok(tonic::Response::new(
