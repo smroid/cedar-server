@@ -6,7 +6,9 @@ use imageproc::stats::histogram;
 use log::warn;
 
 use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
-use canonical_error::{CanonicalError, failed_precondition_error};
+use canonical_error::{CanonicalError,
+                      aborted_error, failed_precondition_error, internal_error,
+                      deadline_exceeded_error, unknown_error};
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
 use crate::solve_engine::SolveEngine;
@@ -147,12 +149,6 @@ impl Calibrator {
             /*frame_id=*/None, detection_sigma, detection_max_size).await?;
         let (width, height) = image.dimensions();
 
-        let num_stars_detected = stars.len();
-        if num_stars_detected < 4 {
-            return Err(failed_precondition_error(
-                format!("Too few stars detected ({})", num_stars_detected).as_str()))
-        }
-
         // Set up SolveRequest.
         let mut solve_request = SolveRequest::default();
         solve_request.fov_estimate = None;
@@ -176,21 +172,19 @@ impl Calibrator {
             return Ok((solve_result_proto.fov.unwrap(),
                        solve_result_proto.distortion.unwrap(),
                        solve_duration));
-        } else {
-            // https://stackoverflow.com/questions/28028854/how-do-i-match-enum-values-with-an-integer
-            let status_enum: SolveStatus =
-                unsafe { ::std::mem::transmute(solve_result_proto.status.unwrap()) };
-            return Err(failed_precondition_error(
-                format!("No plate solution ({}); elapsed time {:?}",
-                        match status_enum {
-                            SolveStatus::Unspecified => "unknown",
-                            SolveStatus::MatchFound => "matched",
-                            SolveStatus::NoMatch => "no match",
-                            SolveStatus::Timeout => "timeout",
-                            SolveStatus::Cancelled => "cancelled",
-                            SolveStatus::TooFew => "too few stars",
-                        },
-                        solve_duration).as_str()));
+        }
+        // https://stackoverflow.com/questions/28028854/how-do-i-match-enum-values-with-an-integer
+        let status_enum: SolveStatus =
+            unsafe { ::std::mem::transmute(solve_result_proto.status.unwrap()) };
+        let msg = format!("SolveStatus::{:?}: elapsed time {:?}",
+                          status_enum, solve_duration);
+        match status_enum {
+            SolveStatus::Unspecified => Err(unknown_error(msg.as_str())),
+            SolveStatus::MatchFound => Err(internal_error(msg.as_str())),
+            SolveStatus::NoMatch => Err(failed_precondition_error(msg.as_str())),
+            SolveStatus::Timeout => Err(deadline_exceeded_error(msg.as_str())),
+            SolveStatus::Cancelled => Err(aborted_error(msg.as_str())),
+            SolveStatus::TooFew => Err(failed_precondition_error(msg.as_str())),
         }
     }
 
