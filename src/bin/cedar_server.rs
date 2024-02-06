@@ -71,6 +71,7 @@ struct CedarState {
     calibration_data: Arc<tokio::sync::Mutex<CalibrationData>>,
     operation_settings: Mutex<OperationSettings>,
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
+    tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
 
@@ -125,6 +126,14 @@ impl Cedar for MyCedar {
         let req: OperationSettings = request.into_inner();
         if req.operating_mode.is_some() {
             let operating_mode = req.operating_mode.unwrap();
+            if operating_mode == OperatingMode::Setup as i32 &&
+                self.state.lock().await.calibrating
+            {
+                let locked_state = self.state.lock().await;
+                locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+                return Ok(tonic::Response::new(
+                    locked_state.operation_settings.lock().unwrap().clone()));
+            }
             if operating_mode != self.state.lock().await.
                 operation_settings.lock().unwrap().operating_mode.unwrap()
             {
@@ -173,19 +182,35 @@ impl Cedar for MyCedar {
                                     SystemTime::now()).unwrap());
                         }
                         // No locks held.
-                        match Self::calibrate(state.clone(), solve_timeout).await {
-                            Ok(()) => {},
-                            Err(x) => { return Err(tonic_status(x)); }
-                        }
-                        let mut locked_state = state.lock().await;
-                        locked_state.calibrating = false;
-                        locked_state.detect_engine.lock().await.set_focus_mode(false);
-                        locked_state.solve_engine.lock().await.start().await;
-                        let mut locked_op_settings =
-                            locked_state.operation_settings.lock().unwrap();
-                        locked_op_settings.operating_mode = Some(operating_mode);
+                        let cal_result = Self::calibrate(state.clone(), solve_timeout).await;
 
-                        Ok(tonic::Response::new(locked_op_settings.clone()))
+                        state.lock().await.calibrating = false;
+                        match cal_result {
+                            Ok(()) => {},
+                            Err(x) => {
+                                if x.code == CanonicalErrorCode::Aborted {
+                                    let locked_state = state.lock().await;
+                                    let locked_op_settings =
+                                        locked_state.operation_settings.lock().unwrap();
+                                    // Stay in setup mode.
+                                    assert!(locked_op_settings.operating_mode ==
+                                            Some(OperatingMode::Setup as i32));
+                                    return Ok(
+                                        tonic::Response::new(locked_op_settings.clone()));
+                                } else {
+                                    return Err(tonic_status(x));
+                                }
+                            }
+                        }
+                        {
+                            let locked_state = state.lock().await;
+                            locked_state.detect_engine.lock().await.set_focus_mode(false);
+                            locked_state.solve_engine.lock().await.start().await;
+                            locked_state.operation_settings.lock().unwrap().operating_mode =
+                                Some(operating_mode);
+                            return Ok(tonic::Response::new(
+                                locked_state.operation_settings.lock().unwrap().clone()));
+                        }
                     });
                     // Let _task_handle go out of scope, detaching the spawned
                     // calibration task to complete regardless of a possible RPC
@@ -452,7 +477,6 @@ impl MyCedar {
             }
             Err(e) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
-                warn!{"Error while calibrating optics: {:?}", e};
                 locked_calibration_data.fov_horizontal = None;
                 locked_calibration_data.lens_distortion = None;
                 let mut locked_solve_engine = solve_engine.lock().await;
@@ -461,6 +485,11 @@ impl MyCedar {
                 // TODO: pass this in? Should come from command line, maybe is
                 // max solve time.
                 locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
+                if e.code == CanonicalErrorCode::Aborted {
+                    return Err(e);
+                } else {
+                    warn!{"Error while calibrating optics: {:?}", e};
+                }
             }
         };
         info!("Calibration result: {:?}", calibration_data.lock().await);
@@ -685,6 +714,8 @@ impl MyCedar {
             /*auto_exposure=*/true,
             /*focus_mode_enabled=*/true,
             stats_capacity)));
+        let tetra3_subprocess = Arc::new(Mutex::new(
+            Tetra3Subprocess::new(tetra3_script, tetra3_database).unwrap()));
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
             fixed_settings: Mutex::new(FixedSettings {
@@ -712,9 +743,9 @@ impl MyCedar {
             calibration_data: Arc::new(tokio::sync::Mutex::new(
                 CalibrationData{..Default::default()})),
             detect_engine: detect_engine.clone(),
+            tetra3_subprocess: tetra3_subprocess.clone(),
             solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
-                Tetra3Subprocess::new(tetra3_script, tetra3_database).unwrap(),
-                detect_engine.clone(), position.clone(),
+                tetra3_subprocess.clone(), detect_engine.clone(), position.clone(),
                 tetra3_uds,
                 /*update_interval=*/Duration::ZERO,
                 stats_capacity).await.unwrap())),

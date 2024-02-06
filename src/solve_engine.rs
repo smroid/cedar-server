@@ -21,7 +21,7 @@ use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
 pub struct SolveEngine {
-    tetra3_subprocess: Tetra3Subprocess,
+    tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
 
     // Our connection to the tetra3 gRPC server.
     client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
@@ -111,7 +111,7 @@ impl SolveEngine {
         }
     }
 
-    pub async fn new(tetra3_subprocess: Tetra3Subprocess,
+    pub async fn new(tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
                      detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
                      position: Arc<Mutex<CelestialPosition>>,
                      tetra3_server_address: String,
@@ -346,7 +346,7 @@ impl SolveEngine {
     /// taking longer than usual.
     pub async fn stop(&mut self) {
         if self.worker_thread.is_some() {
-            self.tetra3_subprocess.send_interrupt_signal();
+            self.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
             self.state.lock().unwrap().stop_request = true;
             self.worker_thread.take().unwrap().await.unwrap();
         }
