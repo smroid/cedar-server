@@ -177,6 +177,8 @@ class _MyHomePageState extends State<MyHomePage> {
       _accuracy = response.operationSettings.accuracy.toInt();
       _expSettingMs =
           durationToMs(response.operationSettings.exposureTime).toInt();
+      _setupMode =
+          response.operationSettings.operatingMode == OperatingMode.SETUP;
     }
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
@@ -203,15 +205,12 @@ class _MyHomePageState extends State<MyHomePage> {
       _boresightPosition = null;
     }
     if (response.hasCenterRegion()) {
-      _setupMode = true;
       var cr = response.centerRegion;
       _centerRegion = Rect.fromLTWH(
           cr.originX.toDouble() / _binFactor,
           cr.originY.toDouble() / _binFactor,
           cr.width.toDouble() / _binFactor,
           cr.height.toDouble() / _binFactor);
-    } else {
-      _setupMode = false;
     }
     if (response.hasExposureTime()) {
       _exposureTimeMs = durationToMs(response.exposureTime);
@@ -379,6 +378,19 @@ class _MyHomePageState extends State<MyHomePage> {
           ),
         ],
       ),
+      Column(
+        children: <Widget>[
+          const Text("Fast              Accurate"),
+          Slider(
+            min: 1,
+            max: 4,
+            value: _accuracy.toDouble(),
+            onChanged: (double value) {
+              setAccuracy(value.toInt());
+            },
+          ),
+        ],
+      ),
       _setupMode
           ? Container()
           : Column(
@@ -389,21 +401,6 @@ class _MyHomePageState extends State<MyHomePage> {
                 Container(
                   margin: const EdgeInsets.all(10),
                   child: const Text("RA/DEC/RMSE"),
-                ),
-              ],
-            ),
-      _setupMode
-          ? Container()
-          : Column(
-              children: <Widget>[
-                const Text("Fast              Accurate"),
-                Slider(
-                  min: 1,
-                  max: 4,
-                  value: _accuracy.toDouble(),
-                  onChanged: (double value) {
-                    setAccuracy(value.toInt());
-                  },
                 ),
               ],
             ),
@@ -529,8 +526,8 @@ class _MyHomePageState extends State<MyHomePage> {
       // Landscape
       return Row(
         children: <Widget>[
-          imageStack(context),
           Column(children: controls()),
+          imageStack(context),
         ],
       );
     }
