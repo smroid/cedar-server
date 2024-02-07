@@ -537,6 +537,10 @@ class _MyHomePageState extends State<MyHomePage> {
   Widget build(BuildContext context) {
     goFullScreen();
     // This method is rerun every time setState() is called.
-    return Scaffold(body: FittedBox(child: orientationLayout(context)));
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.title)),
+      body: FittedBox(child: orientationLayout(context)),
+      drawer: Drawer(),
+    );
   }
 }
