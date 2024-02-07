@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use image::GrayImage;
@@ -24,7 +24,9 @@ impl Calibrator {
         Calibrator{camera}
     }
 
-    pub async fn calibrate_offset(&self) -> Result<Offset, CanonicalError> {
+    pub async fn calibrate_offset(
+        &self, cancel_calibration: Arc<Mutex<bool>>)
+        -> Result<Offset, CanonicalError> {
         // Goal: find the minimum camera offset setting that avoids
         // black crush (too many zero-value pixels).
         //
@@ -45,6 +47,9 @@ impl Calibrator {
         let mut prev_frame_id: Option<i32> = None;
         let mut num_zero_pixels = 0;
         for mut offset in 0..=max_offset {
+            if *cancel_calibration.lock().unwrap() {
+                return Err(aborted_error("Cancelled during calibrate_offset()."));
+            }
             locked_camera.set_offset(Offset::new(offset))?;
             let (captured_image, frame_id) =
                 locked_camera.capture_image(prev_frame_id).await?;
@@ -65,7 +70,8 @@ impl Calibrator {
 
     pub async fn calibrate_exposure_duration(
         &self, setup_exposure_duration: Duration, star_count_goal: i32,
-        detection_sigma: f32, detection_max_size: i32)
+        detection_sigma: f32, detection_max_size: i32,
+        cancel_calibration: Arc<Mutex<bool>>)
         -> Result<Duration, CanonicalError> {
         // Goal: find the camera exposure duration that yields the desired
         // number of detected stars.
@@ -101,6 +107,10 @@ impl Calibrator {
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
             return Ok(Duration::from_secs_f32(scaled_exposure_duration_secs));
+        }
+        if *cancel_calibration.lock().unwrap() {
+            return Err(aborted_error(
+                "Cancelled during calibrate_exposure_duration()."));
         }
 
         // Iterate with the refined exposure duration.
