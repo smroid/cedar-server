@@ -82,6 +82,7 @@ struct CedarState {
     height: u32,
 
     calibrating: bool,
+    cancel_calibration: Arc<Mutex<bool>>,
     // Relevant only if calibration is underway (`calibration_image` is present).
     calibration_start: Instant,
     calibration_duration_estimate: Duration,
@@ -125,22 +126,18 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<OperationSettings>, tonic::Status> {
         let req: OperationSettings = request.into_inner();
         if req.operating_mode.is_some() {
-            let operating_mode = req.operating_mode.unwrap();
-            if operating_mode == OperatingMode::Setup as i32 &&
-                self.state.lock().await.calibrating
-            {
-                // Cancel the calibration by sending an interrupt to Tetra3.
+            let new_operating_mode = req.operating_mode.unwrap();
+            if new_operating_mode == OperatingMode::Setup as i32 {
                 let locked_state = self.state.lock().await;
-                locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
-                return Ok(tonic::Response::new(
-                    locked_state.operation_settings.lock().unwrap().clone()));
-            }
-            if operating_mode != self.state.lock().await.
-                operation_settings.lock().unwrap().operating_mode.unwrap()
-            {
-                if operating_mode == OperatingMode::Setup as i32 {
-                    // Enter SETUP mode.
-                    let locked_state = self.state.lock().await;
+                if locked_state.calibrating {
+                    // Cancel calibration.
+                    *locked_state.cancel_calibration.lock().unwrap() = true;
+                    locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+                }
+                if locked_state.operation_settings.lock().unwrap().operating_mode ==
+                    Some(OperatingMode::Operate as i32)
+                {
+                    // Transition: OPERATE -> SETUP mode.
                     locked_state.solve_engine.lock().await.stop().await;
                     locked_state.detect_engine.lock().await.set_focus_mode(true);
                     Self::reset_session_stats(&*locked_state).await;
@@ -149,10 +146,15 @@ impl Cedar for MyCedar {
                         Err(x) => { return Err(tonic_status(x)); }
                     }
                     locked_state.operation_settings.lock().unwrap().operating_mode =
-                        Some(operating_mode);
-                } else if operating_mode == OperatingMode::Operate as i32 {
-                    // Enter OPERATE mode.
-
+                        Some(OperatingMode::Setup as i32);
+                }
+            } else if new_operating_mode == OperatingMode::Operate as i32 {
+                let locked_state = self.state.lock().await;
+                if locked_state.operation_settings.lock().unwrap().operating_mode ==
+                    Some(OperatingMode::Setup as i32)
+                {
+                    // Transition: SETUP -> OPERATE mode.
+                    //
                     // The SETUP -> OPERATE mode change invovles a call to
                     // calibrate() which can take several seconds. If the gRPC
                     // client aborts the RPC (e.g. due to timeout), we want the
@@ -168,14 +170,15 @@ impl Cedar for MyCedar {
                     // calibration.
                     let state = self.state.clone();
                     let solve_timeout = Duration::from_secs(5);
-                    state.lock().await.calibrating = true;
-                    state.lock().await.calibration_start = Instant::now();
-                    state.lock().await.calibrating = true;
-                    state.lock().await.calibration_duration_estimate =
-                        Duration::from_secs(2) + solve_timeout;
-                    let _task_handle = tokio::task::spawn(async move {
+                    let _task_handle: tokio::task::JoinHandle<
+                            Result<tonic::Response<OperationSettings>, tonic::Status>> =
+                        tokio::task::spawn(async move {
                         {
-                            let locked_state = state.lock().await;
+                            let mut locked_state = state.lock().await;
+                            locked_state.calibrating = true;
+                            locked_state.calibration_start = Instant::now();
+                            locked_state.calibration_duration_estimate =
+                                Duration::from_secs(2) + solve_timeout;
                             locked_state.solve_engine.lock().await.stop().await;
                             locked_state.detect_engine.lock().await.stop().await;
                             locked_state.calibration_data.lock().await.calibration_time =
@@ -185,43 +188,38 @@ impl Cedar for MyCedar {
                         // No locks held.
                         let cal_result = Self::calibrate(state.clone(), solve_timeout).await;
 
-                        state.lock().await.calibrating = false;
                         match cal_result {
-                            Ok(()) => {},
+                            Ok(()) => {
+                                let mut locked_state = state.lock().await;
+                                locked_state.calibrating = false;
+                                *locked_state.cancel_calibration.lock().unwrap() = false;
+                                // Transition into Operate mode.
+                                locked_state.detect_engine.lock().await.set_focus_mode(false);
+                                locked_state.solve_engine.lock().await.start().await;
+                                locked_state.operation_settings.lock().unwrap().operating_mode =
+                                    Some(OperatingMode::Operate as i32);
+                            },
                             Err(x) => {
-                                if x.code == CanonicalErrorCode::Aborted {
-                                    let locked_state = state.lock().await;
-                                    let locked_op_settings =
-                                        locked_state.operation_settings.lock().unwrap();
-                                    // Stay in setup mode.
-                                    assert!(locked_op_settings.operating_mode ==
-                                            Some(OperatingMode::Setup as i32));
-                                    return Ok(
-                                        tonic::Response::new(locked_op_settings.clone()));
-                                } else {
-                                    return Err(tonic_status(x));
-                                }
+                                let mut locked_state = state.lock().await;
+                                locked_state.calibrating = false;
+                                *locked_state.cancel_calibration.lock().unwrap() = false;
+                                // The only error we expect is Aborted.
+                                assert!(x.code == CanonicalErrorCode::Aborted);
+                                // Stay in Setup mode.
                             }
                         }
-                        {
-                            let locked_state = state.lock().await;
-                            locked_state.detect_engine.lock().await.set_focus_mode(false);
-                            locked_state.solve_engine.lock().await.start().await;
-                            locked_state.operation_settings.lock().unwrap().operating_mode =
-                                Some(operating_mode);
-                            return Ok(tonic::Response::new(
-                                locked_state.operation_settings.lock().unwrap().clone()));
-                        }
+                        Ok(tonic::Response::new(
+                            state.lock().await.operation_settings.lock().unwrap().clone()))
                     });
                     // Let _task_handle go out of scope, detaching the spawned
                     // calibration task to complete regardless of a possible RPC
                     // timeout.
-                } else {
-                    return Err(tonic::Status::invalid_argument(
-                        format!("Got invalid operating_mode: {}.", operating_mode)));
                 }
+            } else {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Got invalid operating_mode: {}.", new_operating_mode)));
             }
-        }
+        }  // Update operating_mode.
         if req.exposure_time.is_some() {
             let exp_time = req.exposure_time.unwrap();
             if exp_time.seconds < 0 || exp_time.nanos < 0 {
@@ -393,7 +391,9 @@ impl MyCedar {
         Ok(())
     }
 
-    // Called when entering OPERATE mode.
+    // Called when entering OPERATE mode. This always succeeds (even if
+    // calibration fails), unless the callibration was cancelled in which
+    // case an ABORTED error is returned.
     async fn calibrate(state: Arc<tokio::sync::Mutex<CedarState>>,
                        solve_timeout: Duration)
                        -> Result<(), CanonicalError> {
@@ -403,6 +403,7 @@ impl MyCedar {
         let star_count_goal;
         let camera;
         let calibrator;
+        let cancel_calibration;
         let calibration_data;
         let detect_engine;
         let solve_engine;
@@ -410,6 +411,7 @@ impl MyCedar {
             let locked_state = state.lock().await;
             camera = locked_state.camera.clone();
             calibrator = locked_state.calibrator.clone();
+            cancel_calibration = locked_state.cancel_calibration.clone();
             calibration_data = locked_state.calibration_data.clone();
             detect_engine = locked_state.detect_engine.clone();
             solve_engine = locked_state.solve_engine.clone();
@@ -424,10 +426,14 @@ impl MyCedar {
                 locked_state.operation_settings.lock().unwrap().detection_max_size.unwrap();
             star_count_goal = detect_engine.lock().await.get_star_count_goal();
         }
-        let offset = match calibrator.lock().await.calibrate_offset().await
+        let offset = match calibrator.lock().await.calibrate_offset(
+            cancel_calibration.clone()).await
         {
             Ok(o) => o,
             Err(e) => {
+                if e.code == CanonicalErrorCode::Aborted {
+                    return Err(e);
+                }
                 warn!{"Error while calibrating offset: {:?}, using 3", e};
                 Offset::new(3)  // Sane fallback value.
             }
@@ -437,9 +443,12 @@ impl MyCedar {
 
         let exp_duration = match calibrator.lock().await.calibrate_exposure_duration(
             setup_exposure_duration, star_count_goal, detection_sigma,
-            detection_max_size).await {
+            detection_max_size, cancel_calibration.clone()).await {
             Ok(ed) => ed,
             Err(e) => {
+                if e.code == CanonicalErrorCode::Aborted {
+                    return Err(e);
+                }
                 warn!{"Error while calibrating exposure duration: {:?}, using {:?}",
                       e, setup_exposure_duration};
                 setup_exposure_duration  // Sane fallback value.
@@ -488,9 +497,8 @@ impl MyCedar {
                 locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
                 if e.code == CanonicalErrorCode::Aborted {
                     return Err(e);
-                } else {
-                    warn!{"Error while calibrating optics: {:?}", e};
                 }
+                warn!{"Error while calibrating optics: {:?}", e};
             }
         };
         info!("Calibration result: {:?}", calibration_data.lock().await);
@@ -756,6 +764,7 @@ impl MyCedar {
             width: 0,
             height: 0,
             calibrating: false,
+            cancel_calibration: Arc::new(Mutex::new(false)),
             calibration_start: Instant::now(),
             calibration_duration_estimate: Duration::MAX,
             base_star_count_goal,
