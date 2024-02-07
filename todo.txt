@@ -1,16 +1,6 @@
-fix mode switch jank
-- cap sleeps
-
-on-screen "calibrating" when exiting setup mode, until calibration is done
+add timing stats for serving phase
 
 cedar-detect get info for ROI: include noise measure, background estimate
-
-accuracy slider in setup mode: affects sigma as in operate mode; faster
-lowers autoexposure goal ADU; accurate raises autoexpsure ADU
-
-args: min sigma
-
-tighten up max exposure duration
 
 runtime stats (recent and session; button to clear session stats)
 

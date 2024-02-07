@@ -89,6 +89,7 @@ struct CedarState {
 
     base_star_count_goal: i32,
     base_detection_sigma: f32,
+    min_detection_sigma: f32,
 
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
@@ -714,6 +715,7 @@ impl MyCedar {
                      position: Arc<Mutex<CelestialPosition>>,
                      base_star_count_goal: i32,
                      base_detection_sigma: f32,
+                     min_detection_sigma: f32,
                      stats_capacity: usize) -> Self {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration,
@@ -769,6 +771,7 @@ impl MyCedar {
             calibration_duration_estimate: Duration::MAX,
             base_star_count_goal,
             base_detection_sigma,
+            min_detection_sigma,
             center_peak_position: Arc::new(Mutex::new(None)),
             overall_latency_stats: Mutex::new(
                 ValueStatsAccumulator::new(stats_capacity)),
@@ -807,8 +810,12 @@ impl MyCedar {
         let mut locked_detect_engine = state.detect_engine.lock().await;
         locked_detect_engine.set_star_count_goal(
             (state.base_star_count_goal as f32 * multiplier) as i32);
-        locked_detect_engine.set_sigma(
-            state.base_detection_sigma as f32 * multiplier).unwrap();
+
+        let mut sigma = state.base_detection_sigma as f32 * multiplier;
+        if sigma < state.min_detection_sigma {
+            sigma = state.min_detection_sigma;
+        }
+        locked_detect_engine.set_sigma(sigma).unwrap();
 
         // In setup mode, we aim auto-exposure towards a value lower than 255, to allow
         // exposure times to be faster. The accuracy multiplier is used to raise or lower
@@ -864,7 +871,11 @@ struct Args {
     #[arg(long, default_value = "8.0")]
     sigma: f32,
 
-    // TODO: sigma_min
+    /// Specifies a value below which `sigma` is not adjusted by the
+    /// OperationSettings.accuracy setting.
+    #[arg(long, default_value = "5.0")]
+    min_sigma: f32,
+
     // TODO: max solve time
 }
 
@@ -946,6 +957,7 @@ async fn main() {
                                                    shared_position.clone(),
                                                    args.star_count_goal,
                                                    args.sigma,
+                                                   args.min_sigma,
                                                    // TODO: arg for this?
                                                    /*stats_capacity=*/100).await))
         .into_service();
