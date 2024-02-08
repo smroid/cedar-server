@@ -1,6 +1,6 @@
 cedar-detect get info for ROI: include noise measure, background estimate
 
-runtime stats (recent and session; button to clear session stats)
+runtime stats (recent and session)
 
 camera connect error
 * better error message

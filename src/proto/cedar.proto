@@ -325,9 +325,9 @@ message ValueStats {
   // yet.
   optional DescriptiveStats recent = 1;
 
-  // Stats from the beginning of the session, or since the last session stats
-  // reset (see ActionRequest.reset_session_stats). Omitted if there are
-  // no results since session start or reset.
+  // Stats from the beginning of the session, or since the last transition
+  // from SETUP mode to OPERATE mode.
+  // Omitted if there are no results since session start or reset.
   optional DescriptiveStats session = 2;
 }
 
@@ -433,10 +433,6 @@ message ActionRequest {
   // Shut down the computer on which the Cedar server is running. Do this before
   // unplugging the power!
   optional bool shutdown_server = 3;
-
-  // Resets the `session` stats in all of the ValueStats being collected in
-  // `processing_stats` field of FrameResult.
-  optional bool reset_session_stats = 4;
 
   // Save the current image for debugging. The image is saved in TBD directory
   // on the server with the current date/time incorporated into the filename.
