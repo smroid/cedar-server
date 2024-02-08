@@ -119,6 +119,10 @@ class _MainImagePainter extends CustomPainter {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
+  _MyHomePageState() {
+    refreshStateFromServer();
+  }
+
   // Information from most recent FrameResult.
 
   // Image data, binned by server.
@@ -155,7 +159,7 @@ class _MyHomePageState extends State<MyHomePage> {
   double _calibrationProgress = 0.7;
 
   // Values set from on-screen controls.
-  bool _doRefreshes = false;
+  bool _doRefreshes = true;
   int _expSettingMs = 0; // 0 is auto-exposure.
 
   CedarClient? _client;
@@ -258,10 +262,12 @@ class _MyHomePageState extends State<MyHomePage> {
   // Issue repeated request/response RPCs.
   Future<void> refreshStateFromServer() async {
     await Future.doWhile(() async {
-      var delay = _calibrating ? 100 : 10;
+      var delay = _calibrating || !_doRefreshes ? 100 : 10;
       await Future.delayed(Duration(milliseconds: delay));
-      await getFrameFromServer();
-      return _doRefreshes;
+      if (_doRefreshes) {
+        await getFrameFromServer();
+      }
+      return true; // Forever!
     });
   }
 
@@ -339,45 +345,12 @@ class _MyHomePageState extends State<MyHomePage> {
     await setOperatingMode(/*setup=*/ true);
   }
 
-  Widget runSwitch() {
-    return Switch(
-        value: _doRefreshes,
-        onChanged: (bool value) {
-          setState(() {
-            _doRefreshes = value;
-            if (_doRefreshes) {
-              refreshStateFromServer();
-            }
-          });
-        }); // Switch
-  }
-
   Color starsSliderColor() {
     return _hasSolution ? const Color(0xff00c000) : const Color(0xff606060);
   }
 
-  List<Widget> controls() {
+  List<Widget> drawerControls() {
     return <Widget>[
-      Column(
-        children: <Widget>[
-          runSwitch(),
-          const Text("Run"),
-        ],
-      ),
-      Column(
-        children: <Widget>[
-          const Text("Stars detected"),
-          const Text(" 0       6      25     55    100"),
-          Slider(
-            min: 0,
-            max: 10,
-            value: math.min(10, math.sqrt(_numStars)),
-            onChanged: (double value) {},
-            activeColor: starsSliderColor(),
-            thumbColor: starsSliderColor(),
-          ),
-        ],
-      ),
       Column(
         children: <Widget>[
           const Text("Fast              Accurate"),
@@ -385,25 +358,15 @@ class _MyHomePageState extends State<MyHomePage> {
             min: 1,
             max: 4,
             value: _accuracy.toDouble(),
-            onChanged: (double value) {
-              setAccuracy(value.toInt());
+            onChanged: (double value) => {
+              setState(() {
+                _accuracy = value.toInt();
+                setAccuracy(value.toInt());
+              })
             },
           ),
         ],
       ),
-      _setupMode
-          ? Container()
-          : Column(
-              children: <Widget>[
-                Text(sprintf("%.4f", [_solutionRA])),
-                Text(sprintf("%.4f", [_solutionDec])),
-                Text(sprintf("%.2f", [_solutionRMSE])),
-                Container(
-                  margin: const EdgeInsets.all(10),
-                  child: const Text("RA/DEC/RMSE"),
-                ),
-              ],
-            ),
       Column(
         children: <Widget>[
           NumberPicker(
@@ -423,6 +386,25 @@ class _MyHomePageState extends State<MyHomePage> {
           Text(sprintf("Exp time %.1f", [_exposureTimeMs])),
         ],
       ),
+      Column(children: <Widget>[
+        OutlinedButton(
+            child: const Text("Save image"),
+            onPressed: () {
+              saveImage();
+            }),
+      ]),
+      Column(children: <Widget>[
+        OutlinedButton(
+            child: const Text("Shutdown"),
+            onPressed: () {
+              shutdownDialog();
+            }),
+      ]),
+    ];
+  }
+
+  List<Widget> controls() {
+    return <Widget>[
       Column(children: <Widget>[
         _setupMode
             ? OutlinedButton(
@@ -445,20 +427,36 @@ class _MyHomePageState extends State<MyHomePage> {
                   }),
             ])
           : Container(),
+    ];
+  }
+
+  List<Widget> dataItems() {
+    return <Widget>[
       Column(children: <Widget>[
-        OutlinedButton(
-            child: const Text("Save image"),
-            onPressed: () {
-              saveImage();
-            }),
+        const Text("Stars detected"),
+        const Text(" 0       6      25     55    100"),
+        Slider(
+          min: 0,
+          max: 10,
+          value: math.min(10, math.sqrt(_numStars)),
+          onChanged: (double value) {},
+          activeColor: starsSliderColor(),
+          thumbColor: starsSliderColor(),
+        )
       ]),
-      Column(children: <Widget>[
-        OutlinedButton(
-            child: const Text("Shutdown"),
-            onPressed: () {
-              shutdownDialog();
-            }),
-      ]),
+      _setupMode
+          ? Container()
+          : Column(
+              children: <Widget>[
+                Text(sprintf("%.4f", [_solutionRA])),
+                Text(sprintf("%.4f", [_solutionDec])),
+                Text(sprintf("%.2f", [_solutionRMSE])),
+                Container(
+                  margin: const EdgeInsets.all(10),
+                  child: const Text("RA/DEC/RMSE"),
+                ),
+              ],
+            ),
     ];
   }
 
@@ -520,6 +518,7 @@ class _MyHomePageState extends State<MyHomePage> {
         children: <Widget>[
           Row(children: controls()),
           imageStack(context),
+          Row(children: dataItems()),
         ],
       );
     } else {
@@ -528,6 +527,7 @@ class _MyHomePageState extends State<MyHomePage> {
         children: <Widget>[
           Column(children: controls()),
           imageStack(context),
+          Column(children: dataItems()),
         ],
       );
     }
@@ -540,7 +540,13 @@ class _MyHomePageState extends State<MyHomePage> {
     return Scaffold(
       appBar: AppBar(title: Text(widget.title)),
       body: FittedBox(child: orientationLayout(context)),
-      drawer: Drawer(),
+      onDrawerChanged: (isOpened) {
+        _doRefreshes = !isOpened;
+      },
+      drawer: Drawer(
+          width: 200,
+          child:
+              ListView(padding: EdgeInsets.zero, children: drawerControls())),
     );
   }
 }
