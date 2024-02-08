@@ -298,7 +298,7 @@ impl Cedar for MyCedar {
     async fn initiate_action(&self, request: tonic::Request<ActionRequest>)
                              -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req: ActionRequest = request.into_inner();
-        let mut locked_state = self.state.lock().await;
+        let locked_state = self.state.lock().await;
         if req.capture_boresight.unwrap_or(false) {
             let operating_mode =
                 locked_state.operation_settings.lock().unwrap().operating_mode.or(
@@ -341,10 +341,6 @@ impl Cedar for MyCedar {
                     return Err(tonic::Status::failed_precondition(
                         format!("sudo shutdown error: {:?}.", error_str)));
             }
-        }
-        if req.reset_session_stats.unwrap_or(false) {
-            Self::reset_session_stats(locked_state.deref_mut()).await;
-            // Self::reset_session_stats(&*locked_state).await;
         }
         if req.save_image.unwrap_or(false) {
             let solve_engine = &mut locked_state.solve_engine.lock().await;
