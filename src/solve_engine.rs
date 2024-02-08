@@ -506,7 +506,7 @@ impl SolveEngine {
                 detect_result,
                 tetra3_solve_result,
                 solve_finish_time,
-                processing_duration: process_start_time.elapsed(),
+                processing_duration: elapsed,
                 solve_interval_stats: locked_state.solve_interval_stats.value_stats.clone(),
                 solve_latency_stats: locked_state.solve_latency_stats.value_stats.clone(),
                 solve_attempt_stats: locked_state.solve_attempt_stats.value_stats.clone(),

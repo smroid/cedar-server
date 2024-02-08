@@ -313,6 +313,11 @@ message ProcessingStats {
   // The fraction of plate solve attempts that succeed. Only the 'mean' is
   // meaningful.
   ValueStats solve_success_fraction = 6;
+
+  // How much time (in seconds) is spent preparing the FrameResult to be
+  // returned. This includes time spent e.g. applying gamma to the display
+  // image.
+  ValueStats serve_latency = 7;
 }
 
 message ValueStats {

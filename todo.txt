@@ -1,8 +1,10 @@
-add timing stats for serving phase
-
 cedar-detect get info for ROI: include noise measure, background estimate
 
 runtime stats (recent and session; button to clear session stats)
+
+camera connect error
+* better error message
+* recovery?
 
 view server log
 
@@ -33,6 +35,5 @@ UI:
 * slide-out settings/controls
 * night vision theme
 * pause updates when control is visible
-* box around inset zoomed star in setup mode
 
 IOS

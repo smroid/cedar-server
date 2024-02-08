@@ -1,5 +1,6 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
+use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -94,7 +95,8 @@ struct CedarState {
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
 
-    overall_latency_stats: Mutex<ValueStatsAccumulator>,
+    serve_latency_stats: ValueStatsAccumulator,
+    overall_latency_stats: ValueStatsAccumulator,
 }
 
 #[tonic::async_trait]
@@ -129,7 +131,7 @@ impl Cedar for MyCedar {
         if req.operating_mode.is_some() {
             let new_operating_mode = req.operating_mode.unwrap();
             if new_operating_mode == OperatingMode::Setup as i32 {
-                let locked_state = self.state.lock().await;
+                let mut locked_state = self.state.lock().await;
                 if locked_state.calibrating {
                     // Cancel calibration.
                     *locked_state.cancel_calibration.lock().unwrap() = true;
@@ -141,7 +143,7 @@ impl Cedar for MyCedar {
                     // Transition: OPERATE -> SETUP mode.
                     locked_state.solve_engine.lock().await.stop().await;
                     locked_state.detect_engine.lock().await.set_focus_mode(true);
-                    Self::reset_session_stats(&*locked_state).await;
+                    Self::reset_session_stats(locked_state.deref_mut()).await;
                     match Self::set_pre_calibration_defaults(&*locked_state).await {
                         Ok(()) => {},
                         Err(x) => { return Err(tonic_status(x)); }
@@ -296,7 +298,7 @@ impl Cedar for MyCedar {
     async fn initiate_action(&self, request: tonic::Request<ActionRequest>)
                              -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req: ActionRequest = request.into_inner();
-        let locked_state = self.state.lock().await;
+        let mut locked_state = self.state.lock().await;
         if req.capture_boresight.unwrap_or(false) {
             let operating_mode =
                 locked_state.operation_settings.lock().unwrap().operating_mode.or(
@@ -341,7 +343,8 @@ impl Cedar for MyCedar {
             }
         }
         if req.reset_session_stats.unwrap_or(false) {
-            Self::reset_session_stats(&*locked_state).await;
+            Self::reset_session_stats(locked_state.deref_mut()).await;
+            // Self::reset_session_stats(&*locked_state).await;
         }
         if req.save_image.unwrap_or(false) {
             let solve_engine = &mut locked_state.solve_engine.lock().await;
@@ -371,10 +374,11 @@ impl MyCedar {
         state.solve_engine.lock().await.set_update_interval(update_interval)
     }
 
-    async fn reset_session_stats(state: &CedarState) {
+    async fn reset_session_stats(state: &mut CedarState) {
         state.detect_engine.lock().await.reset_session_stats();
         state.solve_engine.lock().await.reset_session_stats();
-        state.overall_latency_stats.lock().unwrap().reset_session();
+        state.serve_latency_stats.reset_session();
+        state.overall_latency_stats.reset_session();
     }
 
     // Called when entering SETUP mode.
@@ -509,6 +513,8 @@ impl MyCedar {
     async fn get_next_frame(state: Arc<tokio::sync::Mutex<CedarState>>,
                             prev_frame_id: Option<i32>, main_image_mode: i32)
                             -> FrameResult {
+        let overall_start_time = Instant::now();
+
         let mut binning_factor = 1;
         if main_image_mode == ImageMode::Binned as i32 {
             binning_factor = 2;
@@ -552,7 +558,6 @@ impl MyCedar {
         // Populated only in OperatingMode::Operate mode.
         let mut tetra3_solve_result: Option<SolveResultProto> = None;
         let mut plate_solution: Option<PlateSolution> = None;
-        let mut solve_finish_time: Option<SystemTime> = None;
 
         let detect_result;
         if state.lock().await.operation_settings.lock().unwrap().operating_mode.unwrap() ==
@@ -565,9 +570,9 @@ impl MyCedar {
                                   get_next_result(prev_frame_id).await);
             let psr = plate_solution.as_ref().unwrap();
             tetra3_solve_result = psr.tetra3_solve_result.clone();
-            solve_finish_time = psr.solve_finish_time;
             detect_result = psr.detect_result.clone();
         }
+        let serve_start_time = Instant::now();
 
         frame_result.frame_id = detect_result.frame_id;
         let captured_image = &detect_result.captured_image;
@@ -665,43 +670,39 @@ impl MyCedar {
             detect_latency: Some(detect_result.detect_latency_stats),
             ..Default::default()
         });
+        let mut locked_state = state.lock().await;
+        let serve_elapsed = serve_start_time.elapsed();
+        let overall_elapsed = overall_start_time.elapsed();
+        locked_state.serve_latency_stats.add_value(serve_elapsed.as_secs_f64());
+        locked_state.overall_latency_stats.add_value(overall_elapsed.as_secs_f64());
+
         if tetra3_solve_result.is_some() {
-            // Overall latency is time between image acquisition and completion
-            // of the plate solve attempt.
-            match solve_finish_time.unwrap().duration_since(
-                captured_image.readout_time) {
-                Err(e) => {
-                    warn!("Clock may have gone backwards: {:?}", e)
-                },
-                Ok(d) => {
-                    state.lock().await.overall_latency_stats.lock().unwrap().add_value(
-                        d.as_secs_f64());
-                }
-            }
             frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
 
             let stats = &mut frame_result.processing_stats.as_mut().unwrap();
             let plate_solution = &plate_solution.as_ref().unwrap();
             stats.overall_latency =
-                Some(state.lock().await.overall_latency_stats.lock().unwrap().value_stats.clone());
+                Some(locked_state.overall_latency_stats.value_stats.clone());
             stats.solve_interval = Some(plate_solution.solve_interval_stats.clone());
             stats.solve_latency = Some(plate_solution.solve_latency_stats.clone());
             stats.solve_attempt_fraction =
                 Some(plate_solution.solve_attempt_stats.clone());
             stats.solve_success_fraction =
                 Some(plate_solution.solve_success_stats.clone());
+            stats.serve_latency =
+                Some(locked_state.serve_latency_stats.value_stats.clone());
         }
         let boresight_position =
-            state.lock().await.solve_engine.lock().await.target_pixel().expect(
+            locked_state.solve_engine.lock().await.target_pixel().expect(
                 "solve_engine.target_pixel() should not fail");
         frame_result.boresight_position = match boresight_position {
             Some(bs) => Some(ImageCoord{x: bs.x, y: bs.y}),
             None => None,
         };
         frame_result.calibration_data =
-            Some(state.lock().await.calibration_data.lock().await.clone());
+            Some(locked_state.calibration_data.lock().await.clone());
         frame_result.operation_settings =
-            Some(state.lock().await.operation_settings.lock().unwrap().clone());
+            Some(locked_state.operation_settings.lock().unwrap().clone());
 
         frame_result
     }
@@ -773,8 +774,8 @@ impl MyCedar {
             base_detection_sigma,
             min_detection_sigma,
             center_peak_position: Arc::new(Mutex::new(None)),
-            overall_latency_stats: Mutex::new(
-                ValueStatsAccumulator::new(stats_capacity)),
+            serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
+            overall_latency_stats: ValueStatsAccumulator::new(stats_capacity),
         }));
         let cedar = MyCedar {
             state: state.clone(),
