@@ -662,31 +662,31 @@ impl MyCedar {
             });
         }
 
-        frame_result.processing_stats = Some(ProcessingStats {
-            detect_latency: Some(detect_result.detect_latency_stats),
-            ..Default::default()
-        });
         let mut locked_state = state.lock().await;
-        let serve_elapsed = serve_start_time.elapsed();
-        let overall_elapsed = overall_start_time.elapsed();
-        locked_state.serve_latency_stats.add_value(serve_elapsed.as_secs_f64());
-        locked_state.overall_latency_stats.add_value(overall_elapsed.as_secs_f64());
+        locked_state.serve_latency_stats.add_value(
+            serve_start_time.elapsed().as_secs_f64());
+        locked_state.overall_latency_stats.add_value(
+            overall_start_time.elapsed().as_secs_f64());
 
+        frame_result.processing_stats =
+            Some(ProcessingStats{..Default::default()});
+        let stats = &mut frame_result.processing_stats.as_mut().unwrap();
+        stats.detect_latency = Some(detect_result.detect_latency_stats);
+        stats.serve_latency =
+            Some(locked_state.serve_latency_stats.value_stats.clone());
+        stats.overall_latency =
+            Some(locked_state.overall_latency_stats.value_stats.clone());
+        if plate_solution.is_some() {
+            let psr = &plate_solution.as_ref().unwrap();
+            stats.solve_interval = Some(psr.solve_interval_stats.clone());
+            stats.solve_latency = Some(psr.solve_latency_stats.clone());
+            stats.solve_attempt_fraction =
+                Some(psr.solve_attempt_stats.clone());
+            stats.solve_success_fraction =
+                Some(psr.solve_success_stats.clone());
+        }
         if tetra3_solve_result.is_some() {
             frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
-
-            let stats = &mut frame_result.processing_stats.as_mut().unwrap();
-            let plate_solution = &plate_solution.as_ref().unwrap();
-            stats.overall_latency =
-                Some(locked_state.overall_latency_stats.value_stats.clone());
-            stats.solve_interval = Some(plate_solution.solve_interval_stats.clone());
-            stats.solve_latency = Some(plate_solution.solve_latency_stats.clone());
-            stats.solve_attempt_fraction =
-                Some(plate_solution.solve_attempt_stats.clone());
-            stats.solve_success_fraction =
-                Some(plate_solution.solve_success_stats.clone());
-            stats.serve_latency =
-                Some(locked_state.serve_latency_stats.value_stats.clone());
         }
         let boresight_position =
             locked_state.solve_engine.lock().await.target_pixel().expect(

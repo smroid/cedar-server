@@ -1,16 +1,24 @@
 cedar-detect get info for ROI: include noise measure, background estimate
 
-runtime stats (recent and session)
-
 camera connect error
 * better error message
 * recovery?
 
 view server log
 
+calibration data
+
+vignetting calibration
+
+FITS support for saved images?
+
 time/location from phone
 
-session handling
+observer session handling
+
+logging
+* server log to linux-standard place
+* observer log is separate
 
 command line options for camera binning: yes, no, auto.
 
@@ -32,8 +40,31 @@ broaden camera support
 multi camera support (choose which)
 
 UI:
+* operation controls
+  - accuracy slider (main screen? in drawer?)
+  - exposure control (in drawer)
+  - save alignment (main screen in setup mode)
+  - save image (in drawer)
+  - shutdown (in drawer)
+  - setup / exit setup: main screen. Setup/Run as a switch?
+* display calibration info (dismissable popup)
+* status icons:
+  - stars detected (good number)
+  - plate solved
+  - dwelling
+    - tracking vs. fixed mount
+  - polar advice available
+* eliminate run switch
 * slide-out settings/controls
+  - pause updates when drawer open
+* right side live information displays
+  - detected star count slider (always present)
+  - ra/dec/rmse (selectable; decimal vs hms, dms)
+  - perf stats (selectable, basic+detailed)
+
+Settings:
+* update rate (non-dwell, dwell)
 * night vision theme
-* pause updates when control is visible
+* decimal ra/dec vs hms, dms
 
 IOS
