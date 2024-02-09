@@ -154,6 +154,9 @@ class _MyHomePageState extends State<MyHomePage> {
   // Arcsec.
   double _solutionRMSE = 0.0;
 
+  CalibrationData? _calibrationData;
+  ProcessingStats? _processingStats;
+
   // Calibration happens when _setupMode transitions to false.
   bool _calibrating = false;
   double _calibrationProgress = 0.7;
@@ -183,6 +186,12 @@ class _MyHomePageState extends State<MyHomePage> {
           durationToMs(response.operationSettings.exposureTime).toInt();
       _setupMode =
           response.operationSettings.operatingMode == OperatingMode.SETUP;
+    }
+    if (response.hasCalibrationData()) {
+      _calibrationData = response.calibrationData;
+    }
+    if (response.hasProcessingStats()) {
+      _processingStats = response.processingStats;
     }
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
@@ -349,6 +358,10 @@ class _MyHomePageState extends State<MyHomePage> {
     return _hasSolution ? const Color(0xff00c000) : const Color(0xff606060);
   }
 
+  Color coordTextColor() {
+    return _hasSolution ? Colors.red : const Color(0xff606060);
+  }
+
   List<Widget> drawerControls() {
     return <Widget>[
       Column(
@@ -384,6 +397,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     })
                   }),
           Text(sprintf("Exp time %.1f", [_exposureTimeMs])),
+          const SizedBox(height: 15),
         ],
       ),
       Column(children: <Widget>[
@@ -393,6 +407,7 @@ class _MyHomePageState extends State<MyHomePage> {
               saveImage();
             }),
       ]),
+      const SizedBox(height: 15),
       Column(children: <Widget>[
         OutlinedButton(
             child: const Text("Shutdown"),
@@ -418,6 +433,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   setOperatingMode(/*setup=*/ true);
                 })
       ]),
+      const SizedBox(width: 15, height: 15),
       _setupMode
           ? Column(children: <Widget>[
               OutlinedButton(
@@ -444,17 +460,53 @@ class _MyHomePageState extends State<MyHomePage> {
           thumbColor: starsSliderColor(),
         )
       ]),
+      const SizedBox(width: 15, height: 15),
       _setupMode
           ? Container()
           : Column(
               children: <Widget>[
-                Text(sprintf("%.4f", [_solutionRA])),
-                Text(sprintf("%.4f", [_solutionDec])),
-                Text(sprintf("%.2f", [_solutionRMSE])),
-                Container(
-                  margin: const EdgeInsets.all(10),
-                  child: const Text("RA/DEC/RMSE"),
-                ),
+                Text(sprintf("RA  %.4f", [_solutionRA]),
+                    style: TextStyle(color: coordTextColor())),
+                Text(sprintf("DEC %.4f", [_solutionDec]),
+                    style: TextStyle(color: coordTextColor())),
+                Text(sprintf("err %.2f", [_solutionRMSE]),
+                    style: TextStyle(color: coordTextColor())),
+              ],
+            ),
+      const SizedBox(width: 15, height: 15),
+      _setupMode || _processingStats == null
+          ? Container()
+          : Column(
+              children: <Widget>[
+                Text(sprintf("Solve interval  %.1f ms",
+                    [_processingStats!.solveInterval.recent.mean * 1000])),
+                Text(sprintf("Detect latency  %.1f ms",
+                    [_processingStats!.detectLatency.recent.mean * 1000])),
+                Text(sprintf("Solve latency  %.1f ms",
+                    [_processingStats!.solveLatency.recent.mean * 1000])),
+                Text(sprintf("Serve latency  %.1f ms",
+                    [_processingStats!.serveLatency.recent.mean * 1000])),
+                Text(sprintf("Solve attempt  %2d%%", [
+                  (_processingStats!.solveAttemptFraction.recent.mean * 100)
+                      .toInt()
+                ])),
+                Text(sprintf("Solve success  %d%%", [
+                  (_processingStats!.solveSuccessFraction.recent.mean * 100)
+                      .toInt()
+                ])),
+              ],
+            ),
+      const SizedBox(width: 15, height: 15),
+      _setupMode || _processingStats == null
+          ? Container()
+          : Column(
+              children: <Widget>[
+                Text(sprintf("Offset %d", [_calibrationData!.cameraOffset])),
+                Text(
+                    sprintf("FOV %.1f deg", [_calibrationData!.fovHorizontal])),
+                Text(sprintf("Lens %.1f mm", [_calibrationData!.lensFlMm])),
+                Text(sprintf("Exp time %.1f ",
+                    [durationToMs(_calibrationData!.targetExposureTime)])),
               ],
             ),
     ];
@@ -517,7 +569,9 @@ class _MyHomePageState extends State<MyHomePage> {
       return Column(
         children: <Widget>[
           Row(children: controls()),
+          const SizedBox(width: 15, height: 15),
           imageStack(context),
+          const SizedBox(width: 15, height: 15),
           Row(children: dataItems()),
         ],
       );
@@ -526,7 +580,9 @@ class _MyHomePageState extends State<MyHomePage> {
       return Row(
         children: <Widget>[
           Column(children: controls()),
+          const SizedBox(width: 15, height: 15),
           imageStack(context),
+          const SizedBox(width: 15, height: 15),
           Column(children: dataItems()),
         ],
       );
