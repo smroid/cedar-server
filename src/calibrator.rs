@@ -36,6 +36,9 @@ impl Calibrator {
         // * Use 1ms exposures.
         // * Starting at offset=0, as long as >0.1% of pixels have zero
         //   value, increase the offset.
+        if *cancel_calibration.lock().unwrap() {
+            return Err(aborted_error("Cancelled during calibrate_offset()."));
+        }
         let _restore_settings = RestoreSettings::new(self.camera.clone());
         let mut locked_camera = self.camera.lock().await;
 
@@ -88,6 +91,10 @@ impl Calibrator {
         //     return it.
         //   * If not close to the goal, scale the exposure duration and
         //     do one more exposure/detect/scale.
+        if *cancel_calibration.lock().unwrap() {
+            return Err(aborted_error(
+                "Cancelled during calibrate_exposure_duration()."));
+        }
         let _restore_settings = RestoreSettings::new(self.camera.clone());
 
         self.camera.lock().await.set_exposure_duration(setup_exposure_duration)?;
