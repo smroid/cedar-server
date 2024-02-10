@@ -449,16 +449,18 @@ class _MyHomePageState extends State<MyHomePage> {
   List<Widget> dataItems() {
     return <Widget>[
       Column(children: <Widget>[
-        const Text("Stars detected"),
-        const Text(" 0       6      25     55    100"),
-        Slider(
-          min: 0,
-          max: 10,
-          value: math.min(10, math.sqrt(_numStars)),
-          onChanged: (double value) {},
-          activeColor: starsSliderColor(),
-          thumbColor: starsSliderColor(),
-        )
+        SizedBox(
+            width: 130,
+            height: 30,
+            child: Slider(
+              min: 0,
+              max: 10,
+              value: math.min(10, math.sqrt(_numStars)),
+              onChanged: (double value) {},
+              activeColor: starsSliderColor(),
+              thumbColor: starsSliderColor(),
+            )),
+        Text("$_numStars stars"),
       ]),
       const SizedBox(width: 15, height: 15),
       _setupMode
