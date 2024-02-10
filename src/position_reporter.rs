@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
+use log::info;
 use ascom_alpaca::{ASCOMResult, Server};
-use ascom_alpaca::api::{AlignmentMode, CargoServerInfo, Device, EquatorialSystem, Telescope};
+use ascom_alpaca::api::{AlignmentMode, Axis, CargoServerInfo,
+                        Device, EquatorialSystem, Telescope};
 use async_trait::async_trait;
 
 #[derive(Default, Debug)]
@@ -83,7 +85,38 @@ impl Telescope for MyTelescope {
         Ok(locked_position.ra / 15.0)
     }
 
+    async fn can_move_axis(&self, _axis: Axis) -> ASCOMResult<bool> {
+        info!("can_move_axis");  // TEMPORARY
+        Ok(false)
+    }
+
+    async fn can_slew_async(&self) -> ASCOMResult<bool> {
+        info!("can_slew_async");  // TEMPORARY
+        Ok(true)
+    }
+
+    async fn slew_to_coordinates_async(&self, right_ascension: f64, declination: f64)
+                                       -> ASCOMResult {
+        info!("slew_to_coordinates_async ra {} dec {}",
+              right_ascension, declination);  // TEMPORARY
+        Ok(())
+    }
+
+    async fn slewing(&self) -> ASCOMResult<bool> {
+        // info!("slewing");  // TEMPORARY
+        Ok(false)
+    }
+
+    async fn abort_slew(&self) -> ASCOMResult {
+        info!("abort_slew");  // TEMPORARY
+        Ok(())
+    }
+
     async fn tracking(&self) -> ASCOMResult<bool> {
+        // TODO: sense whether solve results are fixed or moving at sideral rate.
+        Ok(false)
+    }
+    async fn can_set_tracking(&self) -> ASCOMResult<bool> {
         Ok(false)
     }
 }
