@@ -421,17 +421,17 @@ class _MyHomePageState extends State<MyHomePage> {
   List<Widget> controls() {
     return <Widget>[
       Column(children: <Widget>[
-        _setupMode
-            ? OutlinedButton(
-                child: const Text("Exit setup"),
-                onPressed: () {
-                  setOperatingMode(/*setup=*/ false);
-                })
-            : OutlinedButton(
-                child: const Text("Setup"),
-                onPressed: () {
-                  setOperatingMode(/*setup=*/ true);
-                })
+        Row(children: <Widget>[
+          const Text("Setup"),
+          Switch(
+              value: !_setupMode,
+              onChanged: (bool value) {
+                setState(() {
+                  setOperatingMode(/*setup=*/ !value);
+                });
+              }),
+          const Text("Run"),
+        ])
       ]),
       const SizedBox(width: 15, height: 15),
       _setupMode
@@ -442,7 +442,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     captureBoresight();
                   }),
             ])
-          : Container(),
+          : const SizedBox(width: 105, height: 45),
     ];
   }
 
