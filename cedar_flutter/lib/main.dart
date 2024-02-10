@@ -465,11 +465,11 @@ class _MyHomePageState extends State<MyHomePage> {
           ? Container()
           : Column(
               children: <Widget>[
-                Text(sprintf("RA  %.4f", [_solutionRA]),
+                Text(sprintf("RA  %.4f°", [_solutionRA]),
                     style: TextStyle(color: coordTextColor())),
-                Text(sprintf("DEC %.4f", [_solutionDec]),
+                Text(sprintf("DEC %.4f°", [_solutionDec]),
                     style: TextStyle(color: coordTextColor())),
-                Text(sprintf("err %.2f", [_solutionRMSE]),
+                Text(sprintf("err %.2f''", [_solutionRMSE]),
                     style: TextStyle(color: coordTextColor())),
               ],
             ),
@@ -501,11 +501,9 @@ class _MyHomePageState extends State<MyHomePage> {
           ? Container()
           : Column(
               children: <Widget>[
-                Text(sprintf("Offset %d", [_calibrationData!.cameraOffset])),
-                Text(
-                    sprintf("FOV %.1f deg", [_calibrationData!.fovHorizontal])),
+                Text(sprintf("FOV %.1f°", [_calibrationData!.fovHorizontal])),
                 Text(sprintf("Lens %.1f mm", [_calibrationData!.lensFlMm])),
-                Text(sprintf("Exp time %.1f ",
+                Text(sprintf("Exp time %.1f ms",
                     [durationToMs(_calibrationData!.targetExposureTime)])),
               ],
             ),
