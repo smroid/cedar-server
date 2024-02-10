@@ -153,7 +153,7 @@ enum ImageMode {
   BINNED = 2;
 }
 
-// Next tag: 24.
+// Next tag: 25.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
@@ -172,21 +172,21 @@ message FrameResult {
   // has stretch/gamma applied for better visibility of dark features.
   optional Image image = 3;
 
-  // The star candidates detected by CedarDetect; ordered by brightest
-  // first.
-  repeated StarCentroid star_candidates = 4;
-
   // The camera exposure integration time for `image`.
   google.protobuf.Duration exposure_time = 7;
-
-  // Information about Cedar's performance.
-  ProcessingStats processing_stats = 8;
 
   // The time at which `image` was captured.
   google.protobuf.Timestamp capture_time = 9;
 
   // The camera temperature when `image` was captured.
   float camera_temperature_celsius = 10;
+
+  // The star candidates detected by CedarDetect; ordered by brightest
+  // first.
+  repeated StarCentroid star_candidates = 4;
+
+  // Information about Cedar's performance.
+  ProcessingStats processing_stats = 8;
 
   // The position in image coordinates of the captured boresight. Absent if
   // no boresight has been captured. See ActionRequest.capture_boresight.
@@ -236,6 +236,10 @@ message FrameResult {
   // (negative). Unit is degrees per second. Omitted if `camera_motion` is
   // MOTION_TYPE_UNKNOWN.
   optional float dec_rate = 20;
+
+  // If present, SkySafari is requesting that the telescope's pointing should be
+  // changed.
+  optional SlewRequest slew_requst = 24;
 
   // advice
   // * polar alignment (operation mode only)
@@ -403,6 +407,22 @@ enum MotionType {
   DWELL_TRACKED = 3;
 }
 
+// Describes a telescope motion request from SkySafari.
+message SlewRequest {
+  // Identifies the target coordinate of the telescope motion request.
+  optional tetra3_server.CelestialCoord target = 1;
+
+  // The distance, in degrees, between the boresight and the target.
+  optional float target_distance = 2;
+
+  // The position angle (degrees) from the boresight to the target. If the
+  // target is above the boresight in image coordinates, the position angle is
+  // zero. Positive target_angle values go counter-clockwise from image "up", so
+  // a target_angle value of 90 degrees means the target is to the left of the
+  // boresight in the image.
+  optional float target_angle = 3;
+}
+
 message PolarAlignmentAdvice {
   // Estimate of alt/az error of polar axis. Not available for non-tracking
   // mount (auto-detected).
@@ -433,6 +453,9 @@ message ActionRequest {
   // Shut down the computer on which the Cedar server is running. Do this before
   // unplugging the power!
   optional bool shutdown_server = 3;
+
+  // Tells SkySafari that the slew is finished (or discontinued).
+  optional bool stop_slew = 4;
 
   // Save the current image for debugging. The image is saved in TBD directory
   // on the server with the current date/time incorporated into the filename.

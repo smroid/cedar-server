@@ -338,6 +338,10 @@ impl Cedar for MyCedar {
                         format!("sudo shutdown error: {:?}.", error_str)));
             }
         }
+        if req.stop_slew.unwrap_or(false) {
+            return Err(tonic::Status::unimplemented(
+                "ActionRequest.stop_slew not yet implemented."));
+        }
         if req.save_image.unwrap_or(false) {
             let solve_engine = &mut locked_state.solve_engine.lock().await;
             match solve_engine.save_image().await {
@@ -695,6 +699,8 @@ impl MyCedar {
             Some(locked_state.calibration_data.lock().await.clone());
         frame_result.operation_settings =
             Some(locked_state.operation_settings.lock().unwrap().clone());
+
+        // TODO: slew_request from position_reporter.
 
         frame_result
     }
