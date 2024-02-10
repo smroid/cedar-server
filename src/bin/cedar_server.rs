@@ -144,9 +144,8 @@ impl Cedar for MyCedar {
                     locked_state.solve_engine.lock().await.stop().await;
                     locked_state.detect_engine.lock().await.set_focus_mode(true);
                     Self::reset_session_stats(locked_state.deref_mut()).await;
-                    match Self::set_pre_calibration_defaults(&*locked_state).await {
-                        Ok(()) => {},
-                        Err(x) => { return Err(tonic_status(x)); }
+                    if let Err(x) = Self::set_pre_calibration_defaults(&*locked_state).await {
+                        return Err(tonic_status(x));
                     }
                     locked_state.operation_settings.lock().unwrap().operating_mode =
                         Some(OperatingMode::Setup as i32);
@@ -176,44 +175,41 @@ impl Cedar for MyCedar {
                     let _task_handle: tokio::task::JoinHandle<
                             Result<tonic::Response<OperationSettings>, tonic::Status>> =
                         tokio::task::spawn(async move {
-                        {
-                            let mut locked_state = state.lock().await;
-                            locked_state.calibrating = true;
-                            locked_state.calibration_start = Instant::now();
-                            locked_state.calibration_duration_estimate =
-                                Duration::from_secs(2) + solve_timeout;
-                            locked_state.solve_engine.lock().await.stop().await;
-                            locked_state.detect_engine.lock().await.stop().await;
-                            locked_state.calibration_data.lock().await.calibration_time =
-                                Some(prost_types::Timestamp::try_from(
-                                    SystemTime::now()).unwrap());
-                        }
-                        // No locks held.
-                        let cal_result = Self::calibrate(state.clone(), solve_timeout).await;
-
-                        match cal_result {
-                            Ok(()) => {
+                            {
                                 let mut locked_state = state.lock().await;
-                                locked_state.calibrating = false;
+                                locked_state.calibrating = true;
+                                locked_state.calibration_start = Instant::now();
+                                locked_state.calibration_duration_estimate =
+                                    Duration::from_secs(2) + solve_timeout;
+                                locked_state.solve_engine.lock().await.stop().await;
+                                locked_state.detect_engine.lock().await.stop().await;
+                                locked_state.calibration_data.lock().await.calibration_time =
+                                    Some(prost_types::Timestamp::try_from(
+                                        SystemTime::now()).unwrap());
+                            }
+                            // No locks held.
+                            let cal_result = Self::calibrate(state.clone(), solve_timeout).await;
+                            if let Err(x) = cal_result {
+                                // The only error we expect is Aborted.
+                                assert!(x.code == CanonicalErrorCode::Aborted);
+                            }
+
+                            let mut locked_state = state.lock().await;
+                            locked_state.calibrating = false;
+                            if *locked_state.cancel_calibration.lock().unwrap() {
+                                // Calibration was cancelled. Stay in Setup mode.
                                 *locked_state.cancel_calibration.lock().unwrap() = false;
+                            } else {
                                 // Transition into Operate mode.
                                 locked_state.detect_engine.lock().await.set_focus_mode(false);
                                 locked_state.solve_engine.lock().await.start().await;
                                 locked_state.operation_settings.lock().unwrap().operating_mode =
                                     Some(OperatingMode::Operate as i32);
-                            },
-                            Err(x) => {
-                                let mut locked_state = state.lock().await;
-                                locked_state.calibrating = false;
-                                *locked_state.cancel_calibration.lock().unwrap() = false;
-                                // The only error we expect is Aborted.
-                                assert!(x.code == CanonicalErrorCode::Aborted);
-                                // Stay in Setup mode.
                             }
-                        }
-                        Ok(tonic::Response::new(
-                            state.lock().await.operation_settings.lock().unwrap().clone()))
-                    });
+                            let result = tonic::Response::new(
+                                locked_state.operation_settings.lock().unwrap().clone());
+                            Ok(result)
+                        });
                     // Let _task_handle go out of scope, detaching the spawned
                     // calibration task to complete regardless of a possible RPC
                     // timeout.
