@@ -26,7 +26,7 @@ use cedar::cedar::cedar_server::{Cedar, CedarServer};
 use cedar::cedar::{Accuracy, ActionRequest, CalibrationData,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
                    Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
-                   ProcessingStats, Rectangle, StarCentroid};
+                   ProcessingStats, Rectangle, SlewRequest, StarCentroid};
 use ::cedar::calibrator::Calibrator;
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::scale_image::scale_image;
@@ -35,7 +35,7 @@ use ::cedar::position_reporter::{TelescopePosition, create_alpaca_server};
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 use ::cedar::value_stats::ValueStatsAccumulator;
 use ::cedar::tetra3_server;
-use ::cedar::tetra3_server::SolveResult as SolveResultProto;
+use ::cedar::tetra3_server::{CelestialCoord, SolveResult as SolveResultProto};
 
 use self::multiplex_service::MultiplexService;
 
@@ -75,6 +75,7 @@ struct CedarState {
     tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
+    telescope_position: Arc<Mutex<TelescopePosition>>,
 
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
@@ -700,7 +701,27 @@ impl MyCedar {
         frame_result.operation_settings =
             Some(locked_state.operation_settings.lock().unwrap().clone());
 
-        // TODO: slew_request from position_reporter.
+        let telescope_position = locked_state.telescope_position.lock().unwrap();
+        if telescope_position.slew_active {
+            let mut image_pos: Option<ImageCoord> = None;
+            if let Some(ref ps) = frame_result.plate_solution {
+                if ps.target_sky_to_image_coords.len() > 0 {
+                    let img_coord = &ps.target_sky_to_image_coords[0];
+                    if img_coord.x >= 0.0 {
+                        image_pos = Some(ImageCoord{x: img_coord.x,
+                                                    y: img_coord.y});
+                    }
+                }
+            }
+            frame_result.slew_request = Some(SlewRequest{
+                target: Some(CelestialCoord{
+                    ra: telescope_position.slew_target_ra as f32,
+                    dec: telescope_position.slew_target_dec as f32}),
+                target_distance: 0.0,  // TODO
+                target_angle: 0.0,  // TODO
+                image_pos
+            });
+        }
 
         frame_result
     }
@@ -761,6 +782,7 @@ impl MyCedar {
                 stats_capacity).await.unwrap())),
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
+            telescope_position: telescope_position.clone(),
             scaled_image: None,
             width: 0,
             height: 0,
