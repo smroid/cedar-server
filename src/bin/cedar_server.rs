@@ -741,7 +741,7 @@ impl MyCedar {
                 accuracy: Some(Accuracy::Balanced.into()),
                 // TODO: command line arg for detection_max_size. Or
                 // figure out how to calibrate it.
-                detection_max_size: Some(8),
+                detection_max_size: Some(10),
                 update_interval: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
