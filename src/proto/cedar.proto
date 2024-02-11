@@ -239,7 +239,7 @@ message FrameResult {
 
   // If present, SkySafari is requesting that the telescope's pointing should be
   // changed.
-  optional SlewRequest slew_requst = 24;
+  optional SlewRequest slew_request = 24;
 
   // advice
   // * polar alignment (operation mode only)
@@ -410,17 +410,21 @@ enum MotionType {
 // Describes a telescope motion request from SkySafari.
 message SlewRequest {
   // Identifies the target coordinate of the telescope motion request.
-  optional tetra3_server.CelestialCoord target = 1;
+  tetra3_server.CelestialCoord target = 1;
 
   // The distance, in degrees, between the boresight and the target.
-  optional float target_distance = 2;
+  float target_distance = 2;
 
   // The position angle (degrees) from the boresight to the target. If the
   // target is above the boresight in image coordinates, the position angle is
   // zero. Positive target_angle values go counter-clockwise from image "up", so
   // a target_angle value of 90 degrees means the target is to the left of the
   // boresight in the image.
-  optional float target_angle = 3;
+  float target_angle = 3;
+
+  // Position in FrameResult.image of the target. Omitted if the target is
+  // not in the field of view.
+  optional ImageCoord image_pos = 4;
 }
 
 message PolarAlignmentAdvice {
@@ -459,6 +463,7 @@ message ActionRequest {
 
   // Save the current image for debugging. The image is saved in TBD directory
   // on the server with the current date/time incorporated into the filename.
+  // TODO: return filename? Provide rename action?
   optional bool save_image = 5;
 }
 
