@@ -55,6 +55,21 @@ proto_duration.Duration msToDuration(int ms) {
   return duration;
 }
 
+void _drawCross(Canvas canvas, Offset center, double radius, double thickness) {
+  canvas.drawLine(
+      center.translate(-radius, 0),
+      center.translate(radius, 0),
+      Paint()
+        ..color = Colors.red
+        ..strokeWidth = thickness);
+  canvas.drawLine(
+      center.translate(0, -radius),
+      center.translate(0, radius),
+      Paint()
+        ..color = Colors.red
+        ..strokeWidth = thickness);
+}
+
 class _MainImagePainter extends CustomPainter {
   final _MyHomePageState state;
 
@@ -65,26 +80,18 @@ class _MainImagePainter extends CustomPainter {
     const double hairline = 0.5;
     const double thin = 1;
     const double thick = 2;
-    // Draw search box within which we search for the brightest star for
-    // focusing.
-    double crossRadius = state._boresightPosition == null ? 4 : 8;
-    double crossThickness = state._boresightPosition == null ? hairline : thin;
     var center = state._boresightPosition ?? state._centerRegion.center;
-    // Make a cross at the boresight position (if any) or else the center of
-    // the search box (which is overall image center.
-    canvas.drawLine(
-        center.translate(-crossRadius, 0),
-        center.translate(crossRadius, 0),
-        Paint()
-          ..color = Colors.red
-          ..strokeWidth = crossThickness);
-    canvas.drawLine(
-        center.translate(0, -crossRadius),
-        center.translate(0, crossRadius),
-        Paint()
-          ..color = Colors.red
-          ..strokeWidth = crossThickness);
+    if (state._slewRequest == null) {
+      // Make a cross at the boresight position (if any) or else the image
+      // center.
+      double crossRadius = state._boresightPosition == null ? 4 : 8;
+      double crossThickness =
+          state._boresightPosition == null ? hairline : thin;
+      _drawCross(canvas, center, crossRadius, crossThickness);
+    }
     if (state._setupMode) {
+      // Draw search box within which we search for the brightest star for
+      // focusing.
       canvas.drawRect(
           state._centerRegion,
           Paint()
@@ -108,6 +115,25 @@ class _MainImagePainter extends CustomPainter {
               ..color = Colors.red
               ..strokeWidth = hairline
               ..style = PaintingStyle.stroke);
+      }
+    }
+    if (state._slewRequest != null) {
+      for (var radius in [40.0, 20.0, 10.0]) {
+        canvas.drawCircle(
+            center,
+            radius,
+            Paint()
+              ..color = Colors.red
+              ..strokeWidth = thin
+              ..style = PaintingStyle.stroke);
+      }
+      _drawCross(canvas, center, 40, thin);
+      var slew = state._slewRequest;
+      if (slew!.hasImagePos()) {
+        var imagePos = slew.imagePos;
+        var offset = Offset(
+            imagePos.x / state._binFactor, imagePos.y / state._binFactor);
+        _drawCross(canvas, offset, 10, thin);
       }
     }
   }
@@ -157,6 +183,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   CalibrationData? _calibrationData;
   ProcessingStats? _processingStats;
+  SlewRequest? _slewRequest;
 
   // Calibration happens when _setupMode transitions to false.
   bool _calibrating = false;
@@ -188,12 +215,11 @@ class _MyHomePageState extends State<MyHomePage> {
       _setupMode =
           response.operationSettings.operatingMode == OperatingMode.SETUP;
     }
-    if (response.hasCalibrationData()) {
-      _calibrationData = response.calibrationData;
-    }
-    if (response.hasProcessingStats()) {
-      _processingStats = response.processingStats;
-    }
+    _calibrationData =
+        response.hasCalibrationData() ? response.calibrationData : null;
+    _processingStats =
+        response.hasProcessingStats() ? response.processingStats : null;
+    _slewRequest = response.hasSlewRequest() ? response.slewRequest : null;
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
       if (plateSolution.status == SolveStatus.MATCH_FOUND) {
