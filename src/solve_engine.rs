@@ -12,7 +12,7 @@ use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
 use tower::service_fn;
 
-use crate::position_reporter::CelestialPosition;
+use crate::position_reporter::TelescopePosition;
 use crate::tetra3_server::{ImageCoord, SolveRequest, SolveResult as SolveResultProto,
                            SolveStatus};
 use crate::tetra3_server::tetra3_client::Tetra3Client;
@@ -68,7 +68,7 @@ struct SolveState {
     plate_solution: Option<PlateSolution>,
 
     // We post our solution here (SkySafari telescope interface).
-    position: Arc<Mutex<CelestialPosition>>,
+    telescope_position: Arc<Mutex<TelescopePosition>>,
 
     // Set by stop(); the worker thread exits when it sees this.
     stop_request: bool,
@@ -113,7 +113,7 @@ impl SolveEngine {
 
     pub async fn new(tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
                      detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-                     position: Arc<Mutex<CelestialPosition>>,
+                     telescope_position: Arc<Mutex<TelescopePosition>>,
                      tetra3_server_address: String,
                      update_interval: Duration, stats_capacity: usize)
                      -> Result<Self, CanonicalError> {
@@ -138,7 +138,7 @@ impl SolveEngine {
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 plate_solution: None,
-                position,
+                telescope_position,
                 stop_request: false,
             })),
             detect_engine,
@@ -478,7 +478,7 @@ impl SolveEngine {
             let mut locked_state = state.lock().unwrap();
             if tetra3_solve_result.is_none() {
                 locked_state.solve_attempt_stats.add_value(0.0);
-                locked_state.position.lock().unwrap().valid = false;
+                locked_state.telescope_position.lock().unwrap().boresight_valid = false;
             } else {
                 locked_state.solve_attempt_stats.add_value(1.0);
                 let tsr = tetra3_solve_result.as_ref().unwrap();
@@ -491,13 +491,13 @@ impl SolveEngine {
                     } else {
                         coords = tsr.image_center_coords.as_ref().unwrap().clone();
                     }
-                    let mut position = locked_state.position.lock().unwrap();
-                    position.ra = coords.ra as f64;
-                    position.dec = coords.dec as f64;
-                    position.valid = true;
+                    let mut position = locked_state.telescope_position.lock().unwrap();
+                    position.boresight_ra = coords.ra as f64;
+                    position.boresight_dec = coords.dec as f64;
+                    position.boresight_valid = true;
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
-                    locked_state.position.lock().unwrap().valid = false;
+                    locked_state.telescope_position.lock().unwrap().boresight_valid = false;
                 }
                 locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
             }

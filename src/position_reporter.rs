@@ -7,35 +7,35 @@ use ascom_alpaca::api::{AlignmentMode, Axis, CargoServerInfo,
 use async_trait::async_trait;
 
 #[derive(Default, Debug)]
-pub struct CelestialPosition {
+pub struct TelescopePosition {
     // Both in degrees.
-    pub ra: f64,  // 0..360
-    pub dec: f64, // -90..90
+    pub boresight_ra: f64,  // 0..360
+    pub boresight_dec: f64, // -90..90
 
-    // If true, ra/dec are current. If false, ra/dec are stale.
-    pub valid: bool,
+    // If true, boresight_ra/boresight_dec are current. If false, they are stale.
+    pub boresight_valid: bool,
+}
+
+impl TelescopePosition {
+    pub fn new() -> Self {
+        // Sky Safari doesn't display (0.0, 0.0).
+        TelescopePosition{boresight_ra: 180.0, boresight_dec: 0.0, ..Default::default()}
+    }
+}
+
+#[derive(Default, Debug)]
+struct MyTelescope {
+    position: Arc<Mutex<TelescopePosition>>,
 
     // SkySafari does not provide a way to signal that the ra/dec values are
     // not valid. We instead "animate" the reported ra/dec position during
     // times of invalidity.
-    updates_while_invalid: i32,
-}
-
-impl CelestialPosition {
-    pub fn new() -> Self {
-        // Sky Safari doesn't display (0.0, 0.0).
-        CelestialPosition{ra: 180.0, dec: 0.0, ..Default::default()}
-    }
-}
-
-#[derive(Debug)]
-pub struct MyTelescope {
-    position: Arc<Mutex<CelestialPosition>>
+    updates_while_invalid: Mutex<i32>,
 }
 
 impl MyTelescope {
-    pub fn new(position: Arc<Mutex<CelestialPosition>>) -> Self {
-        MyTelescope{ position }
+    pub fn new(position: Arc<Mutex<TelescopePosition>>) -> Self {
+        MyTelescope{ position, updates_while_invalid: Mutex::new(0) }
     }
 }
 
@@ -60,29 +60,29 @@ impl Telescope for MyTelescope {
 
     // Degrees.
     async fn declination(&self) -> ASCOMResult<f64> {
-        let mut locked_position = self.position.lock().unwrap();
-        if locked_position.valid {
-            Ok(locked_position.dec)
-        } else {
-            // Sky Safari does not respond to error returns. To indicate
-            // the position data is stale, we "wiggle" the position.
-            locked_position.updates_while_invalid += 1;
-            if locked_position.updates_while_invalid & 1 == 0 {
-                if locked_position.dec > 0.0 {
-                    Ok(locked_position.dec - 0.1)
-                } else {
-                    Ok(locked_position.dec + 0.1)
-                }
+        let locked_position = self.position.lock().unwrap();
+        if locked_position.boresight_valid {
+            return Ok(locked_position.boresight_dec);
+        }
+        // Sky Safari does not respond to error returns. To indicate
+        // the position data is stale, we "wiggle" the position.
+        let mut locked_updates = self.updates_while_invalid.lock().unwrap();
+        *locked_updates += 1;
+        if *locked_updates & 1 == 0 {
+            if locked_position.boresight_dec > 0.0 {
+                Ok(locked_position.boresight_dec - 0.1)
             } else {
-                Ok(locked_position.dec)
+                Ok(locked_position.boresight_dec + 0.1)
             }
+        } else {
+            Ok(locked_position.boresight_dec)
         }
     }
 
     // Hours.
     async fn right_ascension(&self) -> ASCOMResult<f64> {
         let locked_position = self.position.lock().unwrap();
-        Ok(locked_position.ra / 15.0)
+        Ok(locked_position.boresight_ra / 15.0)
     }
 
     async fn can_move_axis(&self, _axis: Axis) -> ASCOMResult<bool> {
@@ -121,7 +121,7 @@ impl Telescope for MyTelescope {
     }
 }
 
-pub fn create_alpaca_server(position: Arc<Mutex<CelestialPosition>>) -> Server {
+pub fn create_alpaca_server(position: Arc<Mutex<TelescopePosition>>) -> Server {
     let mut server = Server {
         info: CargoServerInfo!(),
         ..Default::default()
