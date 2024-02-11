@@ -105,7 +105,7 @@ impl Telescope for MyTelescope {
         info!("slew_to_coordinates_async ra {} dec {}",
               right_ascension, declination);  // TEMPORARY
         let mut locked_position = self.telescope_position.lock().unwrap();
-        locked_position.slew_target_ra = right_ascension;
+        locked_position.slew_target_ra = right_ascension * 15.0;
         locked_position.slew_target_dec = declination;
         locked_position.slew_active = true;
         Ok(())

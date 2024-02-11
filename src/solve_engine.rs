@@ -13,7 +13,8 @@ use tokio::net::UnixStream;
 use tower::service_fn;
 
 use crate::position_reporter::TelescopePosition;
-use crate::tetra3_server::{ImageCoord, SolveRequest, SolveResult as SolveResultProto,
+use crate::tetra3_server::{CelestialCoord, ImageCoord, SolveRequest,
+                           SolveResult as SolveResultProto,
                            SolveStatus};
 use crate::tetra3_server::tetra3_client::Tetra3Client;
 use crate::tetra3_subprocess::Tetra3Subprocess;
@@ -67,7 +68,9 @@ struct SolveState {
 
     plate_solution: Option<PlateSolution>,
 
-    // We post our solution here (SkySafari telescope interface).
+    // We post our solution here (SkySafari telescope interface). We also sense
+    // an active slew operation here so we can use the plate solver to translate
+    // the slew target to image coordinates (if it is currently in the FOV).
     telescope_position: Arc<Mutex<TelescopePosition>>,
 
     // Set by stop(); the worker thread exits when it sees this.
@@ -426,6 +429,13 @@ impl SolveEngine {
                     solve_request.target_pixels.push(
                         locked_state.target_pixel.as_ref().unwrap().clone());
                 }
+                let telescope_position =
+                    locked_state.telescope_position.lock().unwrap();
+                if telescope_position.slew_active {
+                    solve_request.target_sky_coords.push(
+                        CelestialCoord{ra: telescope_position.slew_target_ra as f32,
+                                       dec: telescope_position.slew_target_dec as f32});
+                }
                 solve_request.distortion = Some(locked_state.distortion);
                 solve_request.return_matches = locked_state.return_matches;
                 frame_id = locked_state.frame_id;
@@ -491,10 +501,11 @@ impl SolveEngine {
                     } else {
                         coords = tsr.image_center_coords.as_ref().unwrap().clone();
                     }
-                    let mut position = locked_state.telescope_position.lock().unwrap();
-                    position.boresight_ra = coords.ra as f64;
-                    position.boresight_dec = coords.dec as f64;
-                    position.boresight_valid = true;
+                    let mut telescope_position =
+                        locked_state.telescope_position.lock().unwrap();
+                    telescope_position.boresight_ra = coords.ra as f64;
+                    telescope_position.boresight_dec = coords.dec as f64;
+                    telescope_position.boresight_valid = true;
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
                     locked_state.telescope_position.lock().unwrap().boresight_valid = false;

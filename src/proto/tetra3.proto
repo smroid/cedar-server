@@ -21,6 +21,7 @@ message SolveRequest {
   optional float match_threshold = 8;
   optional google.protobuf.Duration solve_timeout = 13;
   repeated ImageCoord target_pixels = 9;
+  repeated CelestialCoord target_sky_coords = 14;
   optional float distortion = 10;  // We don't support min/max.
   bool return_matches = 11;
   optional float match_max_error = 12;
@@ -48,7 +49,15 @@ message SolveResult {
   optional float epoch_proper_motion = 9;
   google.protobuf.Duration solve_time = 10;
   optional float cache_hit_fraction = 11;
+
+  // Celestial coordinates of SolveRequest.target_pixels.
   repeated CelestialCoord target_coords = 12;
+
+  // Image coordinates of SolveRequest.target_sky_coords. If a request's
+  // target_sky_coords entry is outside of the FOV, the corresponding
+  // entry here will be (-1,-1).
+  repeated ImageCoord target_sky_to_image_coords = 15;
+
   repeated MatchedStar matched_stars = 13;
 
   // If SolveFromCentroids() fails, all of the SolveResult fields will be
