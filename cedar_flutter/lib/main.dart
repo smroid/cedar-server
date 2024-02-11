@@ -150,6 +150,7 @@ class _MyHomePageState extends State<MyHomePage> {
   // Degrees.
   double _solutionRA = 0.0;
   double _solutionDec = 0.0;
+  double _solutionRoll = 0.0;
 
   // Arcsec.
   double _solutionRMSE = 0.0;
@@ -204,6 +205,7 @@ class _MyHomePageState extends State<MyHomePage> {
           _solutionRA = plateSolution.imageCenterCoords.ra;
           _solutionDec = plateSolution.imageCenterCoords.dec;
         }
+        _solutionRoll = plateSolution.roll;
         _solutionRMSE = plateSolution.rmse;
       }
     }
@@ -470,6 +472,8 @@ class _MyHomePageState extends State<MyHomePage> {
                 Text(sprintf("RA  %.4f°", [_solutionRA]),
                     style: TextStyle(color: coordTextColor())),
                 Text(sprintf("DEC %.4f°", [_solutionDec]),
+                    style: TextStyle(color: coordTextColor())),
+                Text(sprintf("roll  %.4f°", [_solutionRoll]),
                     style: TextStyle(color: coordTextColor())),
                 Text(sprintf("err %.2f''", [_solutionRMSE]),
                     style: TextStyle(color: coordTextColor())),
