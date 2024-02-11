@@ -506,6 +506,13 @@ impl DetectEngine {
                     new_exposure_duration_secs = f32::min(
                         new_exposure_duration_secs,
                         (calibrated_exposure_duration.unwrap() * 8).as_secs_f32());
+                    // Bound exposure duration to given limits.
+                    new_exposure_duration_secs = f32::max(
+                        new_exposure_duration_secs,
+                        min_exposure_duration.as_secs_f32());
+                    new_exposure_duration_secs = f32::min(
+                        new_exposure_duration_secs,
+                        max_exposure_duration.as_secs_f32());
                 }
             }
 
