@@ -8,12 +8,17 @@ use async_trait::async_trait;
 
 #[derive(Default, Debug)]
 pub struct TelescopePosition {
-    // Both in degrees.
+    // The telescope's boresight position is determined by Cedar.
     pub boresight_ra: f64,  // 0..360
     pub boresight_dec: f64, // -90..90
-
     // If true, boresight_ra/boresight_dec are current. If false, they are stale.
     pub boresight_valid: bool,
+
+    // A slew is initiated by SkySafari. The slew can be terminated either by
+    // SkySafari or Cedar.
+    pub slew_target_ra: f64,  // 0..360
+    pub slew_target_dec: f64, // -90..90
+    pub slew_active: bool,
 }
 
 impl TelescopePosition {
@@ -25,17 +30,17 @@ impl TelescopePosition {
 
 #[derive(Default, Debug)]
 struct MyTelescope {
-    position: Arc<Mutex<TelescopePosition>>,
+    telescope_position: Arc<Mutex<TelescopePosition>>,
 
-    // SkySafari does not provide a way to signal that the ra/dec values are
-    // not valid. We instead "animate" the reported ra/dec position during
-    // times of invalidity.
+    // SkySafari does not provide a way to signal that the boresight ra/dec
+    // values are not valid. We instead "animate" the reported ra/dec position
+    // when it is invalid.
     updates_while_invalid: Mutex<i32>,
 }
 
 impl MyTelescope {
-    pub fn new(position: Arc<Mutex<TelescopePosition>>) -> Self {
-        MyTelescope{ position, updates_while_invalid: Mutex::new(0) }
+    pub fn new(telescope_position: Arc<Mutex<TelescopePosition>>) -> Self {
+        MyTelescope{ telescope_position, updates_while_invalid: Mutex::new(0) }
     }
 }
 
@@ -60,7 +65,7 @@ impl Telescope for MyTelescope {
 
     // Degrees.
     async fn declination(&self) -> ASCOMResult<f64> {
-        let locked_position = self.position.lock().unwrap();
+        let locked_position = self.telescope_position.lock().unwrap();
         if locked_position.boresight_valid {
             return Ok(locked_position.boresight_dec);
         }
@@ -81,7 +86,7 @@ impl Telescope for MyTelescope {
 
     // Hours.
     async fn right_ascension(&self) -> ASCOMResult<f64> {
-        let locked_position = self.position.lock().unwrap();
+        let locked_position = self.telescope_position.lock().unwrap();
         Ok(locked_position.boresight_ra / 15.0)
     }
 
@@ -99,16 +104,23 @@ impl Telescope for MyTelescope {
                                        -> ASCOMResult {
         info!("slew_to_coordinates_async ra {} dec {}",
               right_ascension, declination);  // TEMPORARY
+        let mut locked_position = self.telescope_position.lock().unwrap();
+        locked_position.slew_target_ra = right_ascension;
+        locked_position.slew_target_dec = declination;
+        locked_position.slew_active = true;
         Ok(())
     }
 
     async fn slewing(&self) -> ASCOMResult<bool> {
-        // info!("slewing");  // TEMPORARY
-        Ok(false)
+        let locked_position = self.telescope_position.lock().unwrap();
+        // info!("slewing: {}", locked_position.slew_active);  // TEMPORARY
+        Ok(locked_position.slew_active)
     }
 
     async fn abort_slew(&self) -> ASCOMResult {
         info!("abort_slew");  // TEMPORARY
+        let mut locked_position = self.telescope_position.lock().unwrap();
+        locked_position.slew_active = false;
         Ok(())
     }
 
@@ -121,12 +133,13 @@ impl Telescope for MyTelescope {
     }
 }
 
-pub fn create_alpaca_server(position: Arc<Mutex<TelescopePosition>>) -> Server {
+pub fn create_alpaca_server(telescope_position: Arc<Mutex<TelescopePosition>>)
+                            -> Server {
     let mut server = Server {
         info: CargoServerInfo!(),
         ..Default::default()
     };
     server.listen_addr.set_port(11111);
-    server.devices.register(MyTelescope::new(position));
+    server.devices.register(MyTelescope::new(telescope_position));
     server
 }
