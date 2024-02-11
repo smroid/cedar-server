@@ -31,7 +31,7 @@ use ::cedar::calibrator::Calibrator;
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::scale_image::scale_image;
 use ::cedar::solve_engine::{PlateSolution, SolveEngine};
-use ::cedar::position_reporter::{CelestialPosition, create_alpaca_server};
+use ::cedar::position_reporter::{TelescopePosition, create_alpaca_server};
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 use ::cedar::value_stats::ValueStatsAccumulator;
 use ::cedar::tetra3_server;
@@ -711,7 +711,7 @@ impl MyCedar {
                      tetra3_database: String,
                      tetra3_uds: String,
                      camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
-                     position: Arc<Mutex<CelestialPosition>>,
+                     telescope_position: Arc<Mutex<TelescopePosition>>,
                      base_star_count_goal: i32,
                      base_detection_sigma: f32,
                      min_detection_sigma: f32,
@@ -755,8 +755,8 @@ impl MyCedar {
             detect_engine: detect_engine.clone(),
             tetra3_subprocess: tetra3_subprocess.clone(),
             solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
-                tetra3_subprocess.clone(), detect_engine.clone(), position.clone(),
-                tetra3_uds,
+                tetra3_subprocess.clone(), detect_engine.clone(),
+                telescope_position.clone(), tetra3_uds,
                 /*update_interval=*/Duration::ZERO,
                 stats_capacity).await.unwrap())),
             calibrator: Arc::new(tokio::sync::Mutex::new(
@@ -914,7 +914,7 @@ async fn main() {
         },
     };
 
-    let shared_position = Arc::new(Mutex::new(CelestialPosition::new()));
+    let shared_telescope_position = Arc::new(Mutex::new(TelescopePosition::new()));
 
     // Apparently when a client cancels a gRPC request (e.g. timeout), the
     // corresponding server-side tokio task is cancelled. Per
@@ -953,7 +953,7 @@ async fn main() {
                                                    args.tetra3_database,
                                                    args.tetra3_socket,
                                                    camera,
-                                                   shared_position.clone(),
+                                                   shared_telescope_position.clone(),
                                                    args.star_count_goal,
                                                    args.sigma,
                                                    args.min_sigma,
@@ -973,7 +973,7 @@ async fn main() {
 
     // Spin up ASCOM Alpaca server for reporting our RA/Dec solution as the
     // telescope position.
-    let alpaca_server = create_alpaca_server(shared_position);
+    let alpaca_server = create_alpaca_server(shared_telescope_position);
     let alpaca_server_future = alpaca_server.start();
 
     let (service_result, alpaca_result) = join!(service_future, alpaca_server_future);
