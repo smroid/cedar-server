@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use log::info;
 use ascom_alpaca::{ASCOMResult, Server};
 use ascom_alpaca::api::{AlignmentMode, Axis, CargoServerInfo,
                         Device, EquatorialSystem, Telescope};
@@ -91,19 +90,15 @@ impl Telescope for MyTelescope {
     }
 
     async fn can_move_axis(&self, _axis: Axis) -> ASCOMResult<bool> {
-        info!("can_move_axis");  // TEMPORARY
         Ok(false)
     }
 
     async fn can_slew_async(&self) -> ASCOMResult<bool> {
-        info!("can_slew_async");  // TEMPORARY
         Ok(true)
     }
 
     async fn slew_to_coordinates_async(&self, right_ascension: f64, declination: f64)
                                        -> ASCOMResult {
-        info!("slew_to_coordinates_async ra {} dec {}",
-              right_ascension, declination);  // TEMPORARY
         let mut locked_position = self.telescope_position.lock().unwrap();
         locked_position.slew_target_ra = right_ascension * 15.0;
         locked_position.slew_target_dec = declination;
@@ -113,12 +108,10 @@ impl Telescope for MyTelescope {
 
     async fn slewing(&self) -> ASCOMResult<bool> {
         let locked_position = self.telescope_position.lock().unwrap();
-        // info!("slewing: {}", locked_position.slew_active);  // TEMPORARY
         Ok(locked_position.slew_active)
     }
 
     async fn abort_slew(&self) -> ASCOMResult {
-        info!("abort_slew");  // TEMPORARY
         let mut locked_position = self.telescope_position.lock().unwrap();
         locked_position.slew_active = false;
         Ok(())
