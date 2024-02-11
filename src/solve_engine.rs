@@ -127,7 +127,7 @@ impl SolveEngine {
                 minimum_stars: 4,
                 fov_estimate: None,
                 match_radius: 0.01,
-                match_threshold: 0.001,
+                match_threshold: 0.0001,  // TODO: pass in from cmdline arg.
                 solve_timeout: Duration::from_secs(1),
                 target_pixel: None,
                 distortion: 0.0,
