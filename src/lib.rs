@@ -1,3 +1,4 @@
+pub mod astro_util;
 pub mod calibrator;
 pub mod detect_engine;
 pub mod position_reporter;
