@@ -412,18 +412,20 @@ message SlewRequest {
   // Identifies the target coordinate of the telescope motion request.
   tetra3_server.CelestialCoord target = 1;
 
-  // The distance, in degrees, between the boresight and the target.
-  float target_distance = 2;
+  // The distance, in degrees, between the boresight and the target. Omitted
+  // if there is no valid plate solution.
+  optional float target_distance = 2;
 
   // The position angle (degrees) from the boresight to the target. If the
   // target is above the boresight in image coordinates, the position angle is
   // zero. Positive target_angle values go counter-clockwise from image "up", so
   // a target_angle value of 90 degrees means the target is to the left of the
   // boresight in the image.
-  float target_angle = 3;
+  // Omitted if there is no valid plate solution.
+  optional float target_angle = 3;
 
   // Position in FrameResult.image of the target. Omitted if the target is
-  // not in the field of view.
+  // not in the field of view or there is no valid plate solution.
   optional ImageCoord image_pos = 4;
 }
 
