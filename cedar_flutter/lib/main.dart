@@ -1,5 +1,6 @@
 import 'dart:developer';
 import 'dart:math' as math;
+import 'package:cedar_flutter/draw_util.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -55,25 +56,14 @@ proto_duration.Duration msToDuration(int ms) {
   return duration;
 }
 
-void _drawCross(Canvas canvas, Offset center, double radius, double thickness) {
-  canvas.drawLine(
-      center.translate(-radius, 0),
-      center.translate(radius, 0),
-      Paint()
-        ..color = Colors.red
-        ..strokeWidth = thickness);
-  canvas.drawLine(
-      center.translate(0, -radius),
-      center.translate(0, radius),
-      Paint()
-        ..color = Colors.red
-        ..strokeWidth = thickness);
-}
-
 class _MainImagePainter extends CustomPainter {
   final _MyHomePageState state;
 
   _MainImagePainter(this.state);
+
+  double deg2rad(double deg) {
+    return deg / 180.0 * math.pi;
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -87,7 +77,7 @@ class _MainImagePainter extends CustomPainter {
       double crossRadius = state._boresightPosition == null ? 4 : 8;
       double crossThickness =
           state._boresightPosition == null ? hairline : thin;
-      _drawCross(canvas, center, crossRadius, crossThickness);
+      drawCross(canvas, center, crossRadius, crossThickness);
     }
     if (state._setupMode) {
       // Draw search box within which we search for the brightest star for
@@ -127,14 +117,46 @@ class _MainImagePainter extends CustomPainter {
               ..strokeWidth = thin
               ..style = PaintingStyle.stroke);
       }
-      _drawCross(canvas, center, 40, thin);
+      drawCross(canvas, center, 40, thin);
       var slew = state._slewRequest;
       if (slew!.hasImagePos()) {
         var imagePos = slew.imagePos;
         var offset = Offset(
             imagePos.x / state._binFactor, imagePos.y / state._binFactor);
-        _drawCross(canvas, offset, 10, thin);
+        drawGapCross(canvas, offset, 10, 5, thin);
       }
+
+      // At the appropriate angle from 'center', paint an indication
+      // of the distance to target.
+      var textDistance = 100;
+      // Transform north-reference angle to x-axis reference angle.
+      var targetAngle = slew.targetAngle + 90;
+      var pipX = center.dx + textDistance * math.cos(deg2rad(targetAngle));
+      var pipY = center.dy - textDistance * math.sin(deg2rad(targetAngle));
+      var pipOffset = Offset(pipX, pipY);
+
+      final textPainter = TextPainter(
+          text: TextSpan(
+              text: sprintf("%.1f°", [slew.targetDistance]),
+              style: const TextStyle(color: Colors.red, fontSize: 14)),
+          textDirection: TextDirection.ltr,
+          textAlign: TextAlign.center);
+      textPainter.layout();
+      textPainter.paint(canvas, pipOffset);
+
+      // Text(sprintf("Distance  %.4f°", [_slewRequest?.targetDistance]),
+      //     style: TextStyle(color: coordTextColor())),
+
+      // canvas.drawCircle(
+      //     Offset(pipX, pipY),
+      //     4,
+      //     Paint()
+      //       ..color = Colors.red
+      //       ..strokeWidth = hairline
+      //       ..style = PaintingStyle.stroke);
+
+      // slew.targetDistance
+      // slew.targetAngle
     }
   }
 
@@ -502,6 +524,21 @@ class _MyHomePageState extends State<MyHomePage> {
                 Text(sprintf("roll  %.4f°", [_solutionRoll]),
                     style: TextStyle(color: coordTextColor())),
                 Text(sprintf("err %.2f''", [_solutionRMSE]),
+                    style: TextStyle(color: coordTextColor())),
+              ],
+            ),
+      const SizedBox(width: 15, height: 15),
+      _slewRequest == null
+          ? Container()
+          : Column(
+              children: <Widget>[
+                Text(sprintf("Target RA  %.4f°", [_slewRequest?.target.ra]),
+                    style: TextStyle(color: coordTextColor())),
+                Text(sprintf("Target DEC %.4f°", [_slewRequest?.target.dec]),
+                    style: TextStyle(color: coordTextColor())),
+                Text(sprintf("Distance  %.4f°", [_slewRequest?.targetDistance]),
+                    style: TextStyle(color: coordTextColor())),
+                Text(sprintf("Angle %.2f°", [_slewRequest?.targetAngle]),
                     style: TextStyle(color: coordTextColor())),
               ],
             ),
