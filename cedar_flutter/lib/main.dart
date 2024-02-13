@@ -1,5 +1,6 @@
 import 'dart:developer';
 import 'dart:math' as math;
+import 'package:cedar_flutter/draw_slew_target.dart';
 import 'package:cedar_flutter/draw_util.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter/foundation.dart';
@@ -61,24 +62,11 @@ class _MainImagePainter extends CustomPainter {
 
   _MainImagePainter(this.state);
 
-  double deg2rad(double deg) {
-    return deg / 180.0 * math.pi;
-  }
-
   @override
   void paint(Canvas canvas, Size size) {
     const double hairline = 0.5;
     const double thin = 1;
     const double thick = 2;
-    var center = state._boresightPosition ?? state._centerRegion.center;
-    if (state._slewRequest == null) {
-      // Make a cross at the boresight position (if any) or else the image
-      // center.
-      double crossRadius = state._boresightPosition == null ? 4 : 8;
-      double crossThickness =
-          state._boresightPosition == null ? hairline : thin;
-      drawCross(canvas, center, crossRadius, crossThickness);
-    }
     if (state._setupMode) {
       // Draw search box within which we search for the brightest star for
       // focusing.
@@ -95,6 +83,7 @@ class _MainImagePainter extends CustomPainter {
             ..color = Colors.red
             ..strokeWidth = thin
             ..style = PaintingStyle.stroke);
+      // Draw circles around the detected stars.
       for (var star in state._stars) {
         var offset = Offset(star.centroidPosition.x / state._binFactor,
             star.centroidPosition.y / state._binFactor);
@@ -107,56 +96,23 @@ class _MainImagePainter extends CustomPainter {
               ..style = PaintingStyle.stroke);
       }
     }
+    var center = state._boresightPosition ?? state._centerRegion.center;
     if (state._slewRequest != null) {
-      for (var radius in [40.0, 20.0, 10.0]) {
-        canvas.drawCircle(
-            center,
-            radius,
-            Paint()
-              ..color = Colors.red
-              ..strokeWidth = thin
-              ..style = PaintingStyle.stroke);
-      }
-      drawCross(canvas, center, 40, thin);
       var slew = state._slewRequest;
+      Offset? posInImage;
       if (slew!.hasImagePos()) {
-        var imagePos = slew.imagePos;
-        var offset = Offset(
-            imagePos.x / state._binFactor, imagePos.y / state._binFactor);
-        drawGapCross(canvas, offset, 10, 5, thin);
+        posInImage = Offset(slew.imagePos.x / state._binFactor,
+            slew.imagePos.y / state._binFactor);
       }
-
-      // At the appropriate angle from 'center', paint an indication
-      // of the distance to target.
-      var textDistance = 100;
-      // Transform north-reference angle to x-axis reference angle.
-      var targetAngle = slew.targetAngle + 90;
-      var pipX = center.dx + textDistance * math.cos(deg2rad(targetAngle));
-      var pipY = center.dy - textDistance * math.sin(deg2rad(targetAngle));
-      var pipOffset = Offset(pipX, pipY);
-
-      final textPainter = TextPainter(
-          text: TextSpan(
-              text: sprintf("%.1f°", [slew.targetDistance]),
-              style: const TextStyle(color: Colors.red, fontSize: 14)),
-          textDirection: TextDirection.ltr,
-          textAlign: TextAlign.center);
-      textPainter.layout();
-      textPainter.paint(canvas, pipOffset);
-
-      // Text(sprintf("Distance  %.4f°", [_slewRequest?.targetDistance]),
-      //     style: TextStyle(color: coordTextColor())),
-
-      // canvas.drawCircle(
-      //     Offset(pipX, pipY),
-      //     4,
-      //     Paint()
-      //       ..color = Colors.red
-      //       ..strokeWidth = hairline
-      //       ..style = PaintingStyle.stroke);
-
-      // slew.targetDistance
-      // slew.targetAngle
+      drawSlewTarget(
+          canvas, center, posInImage, slew.targetDistance, slew.targetAngle);
+    } else {
+      // Make a cross at the boresight position (if any) or else the image
+      // center.
+      double crossRadius = state._boresightPosition == null ? 4 : 8;
+      double crossThickness =
+          state._boresightPosition == null ? hairline : thin;
+      drawCross(canvas, center, crossRadius, crossThickness);
     }
   }
 
