@@ -188,8 +188,9 @@ message FrameResult {
   // Information about Cedar's performance.
   ProcessingStats processing_stats = 8;
 
-  // The position in image coordinates of the captured boresight. Absent if
-  // no boresight has been captured. See ActionRequest.capture_boresight.
+  // The position in full resolution image coordinates of the captured
+  // boresight. Absent if no boresight has been captured. See
+  // ActionRequest.capture_boresight.
   optional ImageCoord boresight_position = 21;
 
   // When transitioning from SETUP mode to OPERATE mode, Cedar does a brief
@@ -424,8 +425,10 @@ message SlewRequest {
   // Omitted if there is no valid plate solution.
   optional float target_angle = 3;
 
-  // Position in FrameResult.image of the target. Omitted if the target is
-  // not in the field of view or there is no valid plate solution.
+  // Position of the target in FrameResult.image (in full image resolution
+  // coordinates).
+  // Omitted if the target is not in the field of view or there is no valid
+  // plate solution.
   optional ImageCoord image_pos = 4;
 }
 
