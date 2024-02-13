@@ -3,10 +3,15 @@ cedar-detect get info for ROI: include noise measure, background estimate
 camera connect error
 * better error message
 * recovery?
+  usbreset to the rescue
+* detect the need for USB reset during camera operation (time outs?)
+
+refine auto-exposure logic in operate mode:
+* apply accuracy multiplier to base exposure duration
+* reduce variation to 2 stops
+* when no stars detected, revert to base exposure duration
 
 view server log
-
-calibration data
 
 vignetting calibration
 
@@ -23,9 +28,9 @@ logging
 command line options for camera binning: yes, no, auto.
 
 goto support from SkySafari
-* visible instruction phone
 * aural cue from phone
 * alt/az vs equatorial?
+* need cancel button on cedar (SkySafari also has stop).
 
 update interval, reduce when dwelling, increase upon movement
 
@@ -41,30 +46,20 @@ multi camera support (choose which)
 
 UI:
 * operation controls
-  - accuracy slider (main screen? in drawer?)
-  - exposure control (in drawer)
-  - save alignment (main screen in setup mode)
-  - save image (in drawer)
-  - shutdown (in drawer)
-  - setup / exit setup: main screen. Setup/Run as a switch?
-* display calibration info (dismissable popup)
+  - save image: add confirmation+rename
 * status icons:
-  - stars detected (good number)
-  - plate solved
   - dwelling
     - tracking vs. fixed mount
   - polar advice available
-* eliminate run switch
-* slide-out settings/controls
-  - pause updates when drawer open
 * right side live information displays
-  - detected star count slider (always present)
-  - ra/dec/rmse (selectable; decimal vs hms, dms)
   - perf stats (selectable, basic+detailed)
 
 Settings:
 * update rate (non-dwell, dwell)
 * night vision theme
 * decimal ra/dec vs hms, dms
+
+Persistence of settings and preferences
+* some client side, some server side?
 
 IOS
