@@ -477,7 +477,7 @@ impl DetectEngine {
                     // >1 if we have more stars than goal; <1 if fewer stars than
                     // goal.
                     let star_goal_fraction =
-                        f32::max(num_stars_detected as f32, 1.0) / adjusted_star_count_goal;
+                        num_stars_detected as f32 / adjusted_star_count_goal;
                     // Don't adjust exposure time too often, is a bit janky because the
                     // camera re-initializes. Allow number of detected stars to greatly
                     // exceed goal, but don't allow much of a shortfall.
