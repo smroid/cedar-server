@@ -97,7 +97,7 @@ class _MainImagePainter extends CustomPainter {
       }
     }
     var center = state._boresightPosition ?? state._imageRegion.center;
-    if (state._slewRequest != null) {
+    if (state._slewRequest != null && !state._setupMode) {
       var slew = state._slewRequest;
       Offset? posInImage;
       if (slew!.hasImagePos()) {
@@ -488,7 +488,7 @@ class _MyHomePageState extends State<MyHomePage> {
               ],
             ),
       const SizedBox(width: 15, height: 15),
-      _slewRequest == null
+      _slewRequest == null || _setupMode
           ? Container()
           : Column(
               children: <Widget>[
