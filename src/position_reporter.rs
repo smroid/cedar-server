@@ -92,6 +92,11 @@ impl Telescope for MyTelescope {
     async fn can_move_axis(&self, _axis: Axis) -> ASCOMResult<bool> {
         Ok(false)
     }
+    // Even though we define 'can_move_axis()' as false, SkySafari still
+    // offers axis movement UI that calls move_axis().
+    async fn move_axis(&self, _axis: Axis, _rate: f64) -> ASCOMResult {
+        Ok(())  // Silently ignore.
+    }
 
     async fn can_slew_async(&self) -> ASCOMResult<bool> {
         Ok(true)
