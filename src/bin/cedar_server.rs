@@ -91,10 +91,6 @@ struct CedarState {
     calibration_start: Instant,
     calibration_duration_estimate: Duration,
 
-    base_star_count_goal: i32,
-    base_detection_sigma: f32,
-    min_detection_sigma: f32,
-
     // For boresight capturing.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
 
@@ -243,20 +239,6 @@ impl Cedar for MyCedar {
             locked_state.operation_settings.lock().unwrap().accuracy = Some(accuracy);
             Self::update_accuracy_adjusted_params(&*locked_state).await;
         }
-        if req.detection_max_size.is_some() {
-            let max_size = req.detection_max_size.unwrap();
-            if max_size <= 0 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got non-positive detection_max_size: {}.", max_size)));
-            }
-            let locked_state = self.state.lock().await;
-            match Self::set_detection_max_size(&*locked_state, max_size).await {
-                Ok(()) => (),
-                Err(x) => { return Err(tonic_status(x)); }
-            }
-            locked_state.operation_settings.lock().unwrap().detection_max_size =
-                Some(max_size);
-        }
         if req.update_interval.is_some() {
             let update_interval = req.update_interval.unwrap();
             if update_interval.seconds < 0 || update_interval.nanos < 0 {
@@ -362,11 +344,6 @@ impl MyCedar {
         state.detect_engine.lock().await.set_exposure_time(exposure_time).await
     }
 
-    async fn set_detection_max_size(state: &CedarState, max_size: i32)
-                                    -> Result<(), CanonicalError> {
-        state.detect_engine.lock().await.set_max_size(max_size)
-    }
-
     async fn set_update_interval(state: &CedarState, update_interval: std::time::Duration)
                                  -> Result<(), CanonicalError> {
         state.detect_engine.lock().await.set_update_interval(update_interval)?;
@@ -425,10 +402,10 @@ impl MyCedar {
 
             // For calibrations, use statically configured sigma value, not adjusted
             // by accuracy setting.
-            detection_sigma = locked_state.base_detection_sigma;
-            detection_max_size =
-                locked_state.operation_settings.lock().unwrap().detection_max_size.unwrap();
-            star_count_goal = detect_engine.lock().await.get_star_count_goal();
+            let locked_detect_engine = detect_engine.lock().await;
+            detection_sigma = locked_detect_engine.get_detection_sigma();
+            detection_max_size = locked_detect_engine.get_detection_max_size();
+            star_count_goal = locked_detect_engine.get_star_count_goal();
         }
         let offset = match calibrator.lock().await.calibrate_offset(
             cancel_calibration.clone()).await
@@ -763,8 +740,10 @@ impl MyCedar {
                      min_detection_sigma: f32,
                      stats_capacity: usize) -> Self {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
-            min_exposure_duration,
-            max_exposure_duration,
+            min_exposure_duration, max_exposure_duration,
+            min_detection_sigma, base_detection_sigma,
+            /*detection_max_size=*/10,  // TODO: command line arg?
+            base_star_count_goal,
             camera.clone(),
             /*update_interval=*/Duration::ZERO,
             /*auto_exposure=*/true,
@@ -785,9 +764,6 @@ impl MyCedar {
                     seconds: 0, nanos: 0,
                 }),
                 accuracy: Some(Accuracy::Balanced.into()),
-                // TODO: command line arg for detection_max_size. Or
-                // figure out how to calibrate it.
-                detection_max_size: Some(10),
                 update_interval: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
@@ -815,9 +791,6 @@ impl MyCedar {
             cancel_calibration: Arc::new(Mutex::new(false)),
             calibration_start: Instant::now(),
             calibration_duration_estimate: Duration::MAX,
-            base_star_count_goal,
-            base_detection_sigma,
-            min_detection_sigma,
             center_peak_position: Arc::new(Mutex::new(None)),
             serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
             overall_latency_stats: ValueStatsAccumulator::new(stats_capacity),
@@ -833,10 +806,6 @@ impl MyCedar {
                 warn!("Could not set default settings on camera {:?}", x)
             }
         }
-        Self::set_detection_max_size(
-            &*locked_state,
-            locked_state.operation_settings.lock().unwrap().detection_max_size.unwrap())
-            .await.unwrap();
         Self::update_accuracy_adjusted_params(&*locked_state).await;
 
         cedar
@@ -854,24 +823,7 @@ impl MyCedar {
             _ => 1.0,
         };
         let mut locked_detect_engine = state.detect_engine.lock().await;
-        locked_detect_engine.set_star_count_goal(
-            (state.base_star_count_goal as f32 * multiplier) as i32);
-
-        let mut sigma = state.base_detection_sigma as f32 * multiplier;
-        if sigma < state.min_detection_sigma {
-            sigma = state.min_detection_sigma;
-        }
-        locked_detect_engine.set_sigma(sigma).unwrap();
-
-        // In setup mode, we aim auto-exposure towards a value lower than 255, to allow
-        // exposure times to be faster. The accuracy multiplier is used to raise or lower
-        // this value.
-        let base_brightness_goal = 128;  // Probably don't need a command line arg for this.
-        let mut adjusted_brightness_goal = base_brightness_goal as f32 * multiplier;
-        if adjusted_brightness_goal > 255.0 {
-            adjusted_brightness_goal = 255.0;
-        }
-        locked_detect_engine.set_brightness_goal(adjusted_brightness_goal as u8);
+        locked_detect_engine.set_accuracy_multiplier(multiplier);
     }
 }
 

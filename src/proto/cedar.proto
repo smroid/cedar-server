@@ -77,13 +77,6 @@ message OperationSettings {
   //   solves from too few stars and more spurious detections.
   optional int32 accuracy = 3;
 
-  // CedarDetect clumps adjacent bright pixels to form a single star candidate. The
-  // `detection_max_size` argument governs how large a clump can be before it is
-  // rejected. Note that making `max_size` small can eliminate very bright stars
-  // that "bleed" to many surrounding pixels.
-  // Initial value is set from server config.
-  optional int32 detection_max_size = 12;
-
   // The desired time interval at which Cedar should replace its current frame
   // result. Default is zero, meaning go as fast as possible.
   optional google.protobuf.Duration update_interval = 7;
@@ -146,7 +139,7 @@ enum ImageMode {
   // Full resolution image will be returned.
   DEFAULT = 0;
 
-  // The image is omitted.
+  // The image is omitted. TODO: drop this
   OMIT = 1;
 
   // 2x2 binned image will be returned.

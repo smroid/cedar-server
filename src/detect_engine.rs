@@ -15,12 +15,22 @@ use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
 pub struct DetectEngine {
-    // Bounds the range of exposure durations to be set by setup mode
-    // auto-exposure.
-    // The set_exposure_time() function is not bound by these limits, nor
-    // is the operating mode auto-exposure.
+    // Bounds the range of exposure durations to be set by auto-exposure.
+    // The set_exposure_time() function is not bound by these limits.
     min_exposure_duration: Duration,
     max_exposure_duration: Duration,
+
+    // Parameters for star detection algorithm.
+    detection_min_sigma: f32,
+    detection_sigma: f32,
+    detection_max_size: i32,
+
+    // In operate mode (`focus_mode_enabled` is false), the auto-exposure
+    // algorithm uses this as the desired number of detected stars. The
+    // algorithm allows the number of detected stars to vary around the goal by
+    // a large amount to the high side (is OK to have more stars than needed)
+    // but only a small amount to the low side.
+    star_count_goal: i32,
 
     // Note: camera settings can be adjusted behind our back.
     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
@@ -42,32 +52,22 @@ struct DetectState {
     // If true, use auto exposure.
     auto_exposure: bool,
 
-    // For auto_exposure in focus mode, what is the target value of the
-    // brightest pixel in the center region?
-    brightness_goal: u8,
-
     // Zero means go fast as images are captured.
     update_interval: Duration,
 
-    // Parameters for star detection algorithm.
-    detection_sigma: f32,
-    detection_max_size: i32,
-
     // True means populate `DetectResult.focus_aid` info.
     focus_mode_enabled: bool,
-
-    // In operate mode (`focus_mode_enabled` is false), the auto-exposure
-    // algorithm uses this as the desired number of detected stars. The
-    // algorithm allows the number of detected stars to vary around the goal by
-    // a large amount to the high side (is OK to have more stars than needed)
-    // but only a small amount to the low side.
-    star_count_goal: i32,
 
     // When using auto exposure in operate mode, this is the exposure duration
     // determined (by calibration) to yield `star_count_goal` detected stars.
     // Auto exposure logic will only deviate from this by a bounded amount.
     // None if calibration result is not yet available.
     calibrated_exposure_duration: Option<Duration>,
+
+    // Value used to alter operating constants. A value >1 means the detection
+    // logic and/or auto exposure system should be biased towards more accurate
+    // operation; a value < 1 instead favors speed. Range is roughly [0.5 .. 1.5].
+    accuracy_multiplier: f32,
 
     detect_latency_stats: ValueStatsAccumulator,
 
@@ -90,6 +90,10 @@ impl Drop for DetectEngine {
 impl DetectEngine {
     pub fn new(min_exposure_duration: Duration,
                max_exposure_duration: Duration,
+               detection_min_sigma: f32,
+               detection_sigma: f32,
+               detection_max_size: i32,
+               star_count_goal: i32,
                camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                update_interval: Duration, auto_exposure: bool,
                focus_mode_enabled: bool, stats_capacity: usize)
@@ -97,17 +101,18 @@ impl DetectEngine {
         DetectEngine{
             min_exposure_duration,
             max_exposure_duration,
+            detection_min_sigma,
+            detection_sigma,
+            detection_max_size,
+            star_count_goal,
             camera: camera.clone(),
             state: Arc::new(Mutex::new(DetectState{
                 frame_id: None,
                 auto_exposure,
-                brightness_goal: 128,
                 update_interval,
-                detection_sigma: 8.0,
-                detection_max_size: 8,
                 focus_mode_enabled,
-                star_count_goal: 20,
                 calibrated_exposure_duration: None,
+                accuracy_multiplier: 1.0,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 detect_result: None,
@@ -136,35 +141,10 @@ impl DetectEngine {
         Ok(())
     }
 
-    pub fn set_brightness_goal(&mut self, brightness_goal: u8) {
-        let mut locked_state = self.state.lock().unwrap();
-        locked_state.brightness_goal = brightness_goal;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-    }
-
     pub fn set_update_interval(&mut self, update_interval: Duration)
                                -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.update_interval = update_interval;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-        Ok(())
-    }
-
-    pub fn set_sigma(&mut self, sigma: f32) -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
-        locked_state.detection_sigma = sigma;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-        Ok(())
-    }
-
-    // Note that `max_size` is always in full-resolution units.
-    pub fn set_max_size(&mut self, max_size: i32)
-                        -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
-        locked_state.detection_max_size = max_size;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
@@ -177,19 +157,27 @@ impl DetectEngine {
         // it finishes the current interval.
     }
 
-    pub fn get_star_count_goal(&self) -> i32 {
-        return self.state.lock().unwrap().star_count_goal;
+    pub fn get_detection_sigma(&self) -> f32 {
+        return self.detection_sigma;
     }
-    pub fn set_star_count_goal(&mut self, star_count_goal: i32) {
-        self.state.lock().unwrap().star_count_goal = star_count_goal;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
+    pub fn get_detection_max_size(&self) -> i32 {
+        return self.detection_max_size;
+    }
+    pub fn get_star_count_goal(&self) -> i32 {
+        return self.star_count_goal;
     }
 
     pub fn set_calibrated_exposure_duration(
         &mut self, calibrated_exposure_duration: Duration) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.calibrated_exposure_duration = Some(calibrated_exposure_duration);
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+    }
+
+    pub fn set_accuracy_multiplier(&mut self, accuracy_multiplier: f32) {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.accuracy_multiplier = accuracy_multiplier;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -213,6 +201,10 @@ impl DetectEngine {
         if self.worker_thread.is_none() {
             let min_exposure_duration = self.min_exposure_duration;
             let max_exposure_duration = self.max_exposure_duration;
+            let detection_min_sigma = self.detection_min_sigma;
+            let detection_sigma = self.detection_sigma;
+            let detection_max_size = self.detection_max_size;
+            let star_count_goal = self.star_count_goal;
             let cloned_state = self.state.clone();
             let cloned_camera = self.camera.clone();
             let cloned_done = self.worker_done.clone();
@@ -232,8 +224,10 @@ impl DetectEngine {
                     .thread_name("detect_engine")
                     .build().unwrap();
                 runtime.block_on(async move {
-                    DetectEngine::worker(min_exposure_duration, max_exposure_duration,
-                                         cloned_state, cloned_camera, cloned_done).await;
+                    DetectEngine::worker(
+                        min_exposure_duration, max_exposure_duration,
+                        detection_min_sigma, detection_sigma, detection_max_size,
+                        star_count_goal, cloned_state, cloned_camera, cloned_done).await;
                 });
             }));
         }
@@ -304,6 +298,10 @@ impl DetectEngine {
 
     async fn worker(min_exposure_duration: Duration,
                     max_exposure_duration: Duration,
+                    detection_min_sigma: f32,
+                    detection_sigma: f32,
+                    detection_max_size: i32,
+                    star_count_goal: i32,
                     state: Arc<Mutex<DetectState>>,
                     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                     done: Arc<AtomicBool>) {
@@ -312,30 +310,24 @@ impl DetectEngine {
         let mut last_result_time: Option<Instant> = None;
         loop {
             let auto_exposure: bool;
-            let brightness_goal: u8;
             let update_interval: Duration;
-            let sigma: f32;
-            let max_size: i32;
             let focus_mode_enabled: bool;
-            let star_count_goal: i32;
             let calibrated_exposure_duration: Option<Duration>;
+            let accuracy_multiplier: f32;
             {
                 let mut locked_state = state.lock().unwrap();
-                auto_exposure = locked_state.auto_exposure;
-                brightness_goal = locked_state.brightness_goal;
-                update_interval = locked_state.update_interval;
-                sigma = locked_state.detection_sigma;
-                max_size = locked_state.detection_max_size;
-                focus_mode_enabled = locked_state.focus_mode_enabled;
-                star_count_goal = locked_state.star_count_goal;
-                calibrated_exposure_duration =
-                    locked_state.calibrated_exposure_duration;
                 if locked_state.stop_request {
                     info!("Stopping detect engine");
                     locked_state.stop_request = false;
                     done.store(true, Ordering::Relaxed);
                     return;  // Exit thread.
                 }
+                auto_exposure = locked_state.auto_exposure;
+                update_interval = locked_state.update_interval;
+                focus_mode_enabled = locked_state.focus_mode_enabled;
+                calibrated_exposure_duration =
+                    locked_state.calibrated_exposure_duration;
+                accuracy_multiplier = locked_state.accuracy_multiplier;
             }
             // Is it time to generate the next DetectResult?
             let now = Instant::now();
@@ -389,7 +381,7 @@ impl DetectEngine {
             let mut focus_aid: Option<FocusAid> = None;
             if focus_mode_enabled {
                 let roi_summary = summarize_region_of_interest(
-                    &image, &center_region, noise_estimate, sigma);
+                    &image, &center_region, noise_estimate, detection_sigma);
                 let mut peak_value = 1_u8;  // Avoid div0 below.
                 let histogram = &roi_summary.histogram;
                 for bin in (1..256).rev() {
@@ -401,25 +393,21 @@ impl DetectEngine {
                 if auto_exposure {
                     // Adjust exposure time based on peak value of center_region.
 
+                    // For auto_exposure in focus mode, what is the target value
+                    // of the brightest pixel in the center region?
+                    let brightness_goal = 128.0 * accuracy_multiplier;
+
                     // Compute how much to scale the previous exposure
                     // integration time to move towards the goal. Assumes linear
                     // detector response.
 
                     // Move proportionally towards the goal.
-                    let correction_factor = brightness_goal as f32 / peak_value as f32;
+                    let correction_factor = brightness_goal / peak_value as f32;
                     // Don't adjust exposure time too often, is a bit janky
                     // because the camera re-initializes.
                     if correction_factor < 0.7 || correction_factor > 1.3 {
                         new_exposure_duration_secs =
                             prev_exposure_duration_secs * correction_factor;
-                        // Bound focus mode exposure duration to given limits.
-                        new_exposure_duration_secs = f32::max(
-                            new_exposure_duration_secs,
-                            min_exposure_duration.as_secs_f32());
-                        new_exposure_duration_secs = f32::min(
-                            new_exposure_duration_secs,
-                            max_exposure_duration.as_secs_f32());
-                        // Camera exposure duration is updated below.
                     }
                 }  // auto_exposure
 
@@ -460,9 +448,11 @@ impl DetectEngine {
                     locked_state.eta = Some(Instant::now() + detect_duration);
                 }
             }
+            let adjusted_sigma = f32::max(detection_sigma * accuracy_multiplier,
+                                          detection_min_sigma);
             let (stars, hot_pixel_count, binned_image, mut peak_star_pixel) =
                 get_stars_from_image(&image, noise_estimate,
-                                     sigma, max_size as u32,
+                                     adjusted_sigma, detection_max_size as u32,
                                      /*use_binned_image=*/true,
                                      /*return_binned_image=*/true);
             if stars.len() == 0 {
@@ -474,62 +464,72 @@ impl DetectEngine {
             if !focus_mode_enabled && auto_exposure &&
                 calibrated_exposure_duration.is_some()
             {
+                let adjusted_star_count_goal =
+                    star_count_goal as f32 * accuracy_multiplier;
+                let adjusted_exposure_duration_secs =
+                    calibrated_exposure_duration.unwrap().as_secs_f32() * accuracy_multiplier;
+
                 let num_stars_detected = stars.len();
-                // >1 if we have more stars than goal; <1 if fewer stars than
-                // goal.
-                let star_goal_fraction =
-                    f32::max(num_stars_detected as f32, 1.0) / star_count_goal as f32;
-                // Don't adjust exposure time too often, is a bit janky because the
-                // camera re-initializes. Allow number of detected stars to greatly
-                // exceed goal, but don't allow much of a shortfall.
-                if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
-                    // What is the relationship between exposure time and number
-                    // of stars detected?
-                    // * If we increase the exposure time by 2.5x, we'll be able
-                    //   to detect stars 40% as bright. This corresponds to an
-                    //   increase of one stellar magnitude.
-                    // * Per https://www.hnsky.org/star_count, at mag=5 a one
-                    //   magnitude increase corresponds to around 3x the number
-                    //   of stars.
-                    // * 2.5x and 3x are "close enough", so we model the number
-                    //   of detectable stars as being simply proportional to the
-                    //   exposure time. This is OK because we'll only be varying
-                    //   the exposure time a modest amount relative to the
-                    //   calibrated_exposure_duration.
-                    new_exposure_duration_secs =
-                        prev_exposure_duration_secs / star_goal_fraction;
-                    // Bound exposure duration to be within three stops of
-                    // calibrated_exposure_duration.
-                    new_exposure_duration_secs = f32::max(
-                        new_exposure_duration_secs,
-                        (calibrated_exposure_duration.unwrap() / 8).as_secs_f32());
-                    new_exposure_duration_secs = f32::min(
-                        new_exposure_duration_secs,
-                        (calibrated_exposure_duration.unwrap() * 8).as_secs_f32());
-                    // Bound exposure duration to given limits.
-                    new_exposure_duration_secs = f32::max(
-                        new_exposure_duration_secs,
-                        min_exposure_duration.as_secs_f32());
-                    new_exposure_duration_secs = f32::min(
-                        new_exposure_duration_secs,
-                        max_exposure_duration.as_secs_f32());
+                if num_stars_detected == 0 {
+                    // Revert to safety: use adjusted calibrated exposure duration.
+                    new_exposure_duration_secs = adjusted_exposure_duration_secs;
+                } else {
+                    // >1 if we have more stars than goal; <1 if fewer stars than
+                    // goal.
+                    let star_goal_fraction =
+                        f32::max(num_stars_detected as f32, 1.0) / adjusted_star_count_goal;
+                    // Don't adjust exposure time too often, is a bit janky because the
+                    // camera re-initializes. Allow number of detected stars to greatly
+                    // exceed goal, but don't allow much of a shortfall.
+                    if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
+                        // What is the relationship between exposure time and number
+                        // of stars detected?
+                        // * If we increase the exposure time by 2.5x, we'll be able
+                        //   to detect stars 40% as bright. This corresponds to an
+                        //   increase of one stellar magnitude.
+                        // * Per https://www.hnsky.org/star_count, at mag=5 a one
+                        //   magnitude increase corresponds to around 3x the number
+                        //   of stars.
+                        // * 2.5x and 3x are "close enough", so we model the number
+                        //   of detectable stars as being simply proportional to the
+                        //   exposure time. This is OK because we'll only be varying
+                        //   the exposure time a modest amount relative to the
+                        //   adjusted_exposure_duration.
+                        new_exposure_duration_secs =
+                            prev_exposure_duration_secs / star_goal_fraction;
+                        // Bound exposure duration to be within two stops of
+                        // adjusted_exposure_duration.
+                        new_exposure_duration_secs = f32::max(
+                            new_exposure_duration_secs,
+                            adjusted_exposure_duration_secs / 4.0);
+                        new_exposure_duration_secs = f32::min(
+                            new_exposure_duration_secs,
+                            adjusted_exposure_duration_secs * 4.0);
+                    }
                 }
             }
 
             // Update camera exposure time if auto-exposure calls for an
             // adjustment.
-            if prev_exposure_duration_secs != new_exposure_duration_secs {
-                debug!("Setting new exposure duration {}s",
-                       new_exposure_duration_secs);
-                let mut locked_camera = camera.lock().await;
-                match locked_camera.set_exposure_duration(
-                    Duration::from_secs_f32(new_exposure_duration_secs)) {
-                    Ok(()) => (),
-                    Err(e) => {
-                        error!("Error updating exposure duration: {}",
-                               &e.to_string());
-                        done.store(true, Ordering::Relaxed);
-                        return;  // Abandon thread execution!
+            if auto_exposure {
+                // Bound auto-exposure duration to given limits.
+                new_exposure_duration_secs = f32::max(new_exposure_duration_secs,
+                                                      min_exposure_duration.as_secs_f32());
+                new_exposure_duration_secs = f32::min(new_exposure_duration_secs,
+                                                      max_exposure_duration.as_secs_f32());
+                if prev_exposure_duration_secs != new_exposure_duration_secs {
+                    debug!("Setting new exposure duration {}s",
+                           new_exposure_duration_secs);
+                    let mut locked_camera = camera.lock().await;
+                    match locked_camera.set_exposure_duration(
+                        Duration::from_secs_f32(new_exposure_duration_secs)) {
+                        Ok(()) => (),
+                        Err(e) => {
+                            error!("Error updating exposure duration: {}",
+                                   &e.to_string());
+                            done.store(true, Ordering::Relaxed);
+                            return;  // Abandon thread execution!
+                        }
                     }
                 }
             }
