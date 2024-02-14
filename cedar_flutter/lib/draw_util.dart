@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 void drawCross(Canvas canvas, Offset center, double radius, double thickness) {
@@ -41,4 +42,43 @@ void drawGapCross(Canvas canvas, Offset center, double radius, double gapRadius,
       Paint()
         ..color = Colors.red
         ..strokeWidth = thickness);
+}
+
+void drawText(Canvas canvas, Offset pos, String text) {
+  final textPainter = TextPainter(
+      text: TextSpan(
+          text: text, style: const TextStyle(color: Colors.red, fontSize: 14)),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center);
+  textPainter.layout();
+  textPainter.paint(canvas, pos);
+}
+
+void drawArrow(Canvas canvas, Offset start, double length, double angleRad,
+    String text, double thickness) {
+  var end = Offset(start.dx + length * math.cos(angleRad),
+      start.dy - length * math.sin(angleRad));
+
+  // Adapted from https://stackoverflow.com/questions/72714333
+  // (flutter-how-do-i-make-arrow-lines-with-canvas).
+  final paint = Paint()
+    ..color = Colors.red
+    ..strokeWidth = thickness;
+  canvas.drawLine(start, end, paint);
+  const arrowSize = 12;
+  const arrowAngle = 25 * math.pi / 180;
+
+  final path = Path();
+  path.moveTo(end.dx - arrowSize * math.cos(angleRad - arrowAngle),
+      end.dy + arrowSize * math.sin(angleRad - arrowAngle));
+  path.lineTo(end.dx, end.dy);
+  path.lineTo(end.dx - arrowSize * math.cos(angleRad + arrowAngle),
+      end.dy + arrowSize * math.sin(angleRad + arrowAngle));
+  path.close();
+  canvas.drawPath(path, paint);
+  if (text.isNotEmpty) {
+    var textPos = Offset(start.dx + (length + 20) * math.cos(angleRad) - 10,
+        start.dy - (length + 20) * math.sin(angleRad) - 10);
+    drawText(canvas, textPos, text);
+  }
 }
