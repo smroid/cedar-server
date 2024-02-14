@@ -96,7 +96,7 @@ class _MainImagePainter extends CustomPainter {
               ..style = PaintingStyle.stroke);
       }
     }
-    var center = state._boresightPosition ?? state._centerRegion.center;
+    var center = state._boresightPosition ?? state._imageRegion.center;
     if (state._slewRequest != null) {
       var slew = state._slewRequest;
       Offset? posInImage;
@@ -131,6 +131,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   // Image data, binned by server.
   Uint8List _imageBytes = Uint8List(1);
+  late Rect _imageRegion; // Scaled by _binFactor.
   int _binFactor = 1;
 
   bool _setupMode = false;
@@ -213,10 +214,13 @@ class _MyHomePageState extends State<MyHomePage> {
         _solutionRMSE = plateSolution.rmse;
       }
     }
-    if (response.hasImage()) {
-      _imageBytes = Uint8List.fromList(response.image.imageData);
-      _binFactor = response.image.binningFactor;
-    }
+    _imageBytes = Uint8List.fromList(response.image.imageData);
+    _binFactor = response.image.binningFactor;
+    _imageRegion = Rect.fromLTWH(
+        0,
+        0,
+        response.image.rectangle.width.toDouble() / _binFactor,
+        response.image.rectangle.height.toDouble() / _binFactor);
     if (response.hasBoresightPosition()) {
       _boresightPosition = Offset(response.boresightPosition.x / _binFactor,
           response.boresightPosition.y / _binFactor);
