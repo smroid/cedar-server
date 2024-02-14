@@ -620,27 +620,25 @@ impl MyCedar {
             *state.lock().await.center_peak_position.lock().unwrap() = None;
         }
 
-        // Populate `image` if requested.
+        // Populate `image` as requested.
         let mut disp_image = &captured_image.image;
         if main_image_mode == ImageMode::Binned as i32 {
             disp_image = &detect_result.binned_image;
         }
-        if main_image_mode != ImageMode::Omit as i32 {
-            let mut bmp_buf = Vec::<u8>::new();
-            let (width, height) = disp_image.dimensions();
-            bmp_buf.reserve((width * height) as usize);
-            let scaled_image = scale_image(disp_image, peak_value, /*gamma=*/0.7);
-            // Save most recent display image.
-            state.lock().await.scaled_image = Some(Arc::new(scaled_image.clone()));
-            scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
-                                  ImageOutputFormat::Bmp).unwrap();
-            frame_result.image = Some(Image{
-                binning_factor,
-                // Rectangle is always in full resolution coordinates.
-                rectangle: Some(image_rectangle),
-                image_data: bmp_buf,
-            });
-        }
+        let mut bmp_buf = Vec::<u8>::new();
+        let (width, height) = disp_image.dimensions();
+        bmp_buf.reserve((width * height) as usize);
+        let scaled_image = scale_image(disp_image, peak_value, /*gamma=*/0.7);
+        // Save most recent display image.
+        state.lock().await.scaled_image = Some(Arc::new(scaled_image.clone()));
+        scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
+                              ImageOutputFormat::Bmp).unwrap();
+        frame_result.image = Some(Image{
+            binning_factor,
+            // Rectangle is always in full resolution coordinates.
+            rectangle: Some(image_rectangle),
+            image_data: bmp_buf,
+        });
 
         let mut locked_state = state.lock().await;
         locked_state.serve_latency_stats.add_value(

@@ -139,11 +139,8 @@ enum ImageMode {
   // Full resolution image will be returned.
   DEFAULT = 0;
 
-  // The image is omitted. TODO: drop this
-  OMIT = 1;
-
   // 2x2 binned image will be returned.
-  BINNED = 2;
+  BINNED = 1;
 }
 
 // Next tag: 25.
@@ -161,9 +158,9 @@ message FrameResult {
   // Information returned regardless of `operating_mode`.
 
   // The image from which information in this FrameResult is derived. Can be
-  // omitted or binned according to the FrameRequest. Note that this image
-  // has stretch/gamma applied for better visibility of dark features.
-  optional Image image = 3;
+  // binned according to the FrameRequest. Note that this image has
+  // stretch/gamma applied for better visibility of dark features.
+  Image image = 3;
 
   // The camera exposure integration time for `image`.
   google.protobuf.Duration exposure_time = 7;
