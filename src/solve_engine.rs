@@ -20,6 +20,7 @@ use crate::tetra3_server::tetra3_client::Tetra3Client;
 use crate::tetra3_subprocess::Tetra3Subprocess;
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
+use crate::astro_util::{angular_separation, position_angle};
 
 pub struct SolveEngine {
     tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
@@ -397,6 +398,7 @@ impl SolveEngine {
             let mut solve_request = SolveRequest::default();
             let minimum_stars;
             let frame_id;
+            let mut slew_request = None;
             {
                 let locked_state = state.lock().unwrap();
                 minimum_stars = locked_state.minimum_stars;
@@ -432,9 +434,12 @@ impl SolveEngine {
                 let telescope_position =
                     locked_state.telescope_position.lock().unwrap();
                 if telescope_position.slew_active {
-                    solve_request.target_sky_coords.push(
+                    let target =
                         CelestialCoord{ra: telescope_position.slew_target_ra as f32,
-                                       dec: telescope_position.slew_target_dec as f32});
+                                       dec: telescope_position.slew_target_dec as f32};
+                    slew_request = Some(cedar::SlewRequest{
+                        target: Some(target.clone()), ..Default::default()});
+                    solve_request.target_sky_coords.push(target);
                 }
                 solve_request.distortion = Some(locked_state.distortion);
                 solve_request.return_matches = locked_state.return_matches;
@@ -506,6 +511,35 @@ impl SolveEngine {
                     telescope_position.boresight_ra = coords.ra as f64;
                     telescope_position.boresight_dec = coords.dec as f64;
                     telescope_position.boresight_valid = true;
+
+                    if let Some(ref mut slew_req) = slew_request {
+                        let bs_ra = coords.ra.to_radians() as f64;
+                        let bs_dec = coords.dec.to_radians() as f64;
+                        let st_ra =
+                            slew_req.target.as_ref().unwrap().ra.to_radians() as f64;
+                        let st_dec =
+                            slew_req.target.as_ref().unwrap().dec.to_radians() as f64;
+                        slew_req.target_distance = Some(angular_separation(
+                            bs_ra, bs_dec, st_ra, st_dec).to_degrees() as f32);
+
+                        let mut angle = (position_angle(
+                            bs_ra, bs_dec, st_ra, st_dec).to_degrees() as f32 +
+                                         tsr.roll.unwrap()) % 360.0;
+                        // Arrange for angle to be 0..360.
+                        if angle < 0.0 {
+                            angle += 360.0;
+                        }
+                        slew_req.target_angle = Some(angle);
+
+                        if tsr.target_sky_to_image_coords.len() > 0 {
+                            let img_coord = &tsr.target_sky_to_image_coords[0];
+                            if img_coord.x >= 0.0 {
+                                slew_req.image_pos =
+                                    Some(cedar::ImageCoord{x: img_coord.x,
+                                                           y: img_coord.y});
+                            }
+                        }
+                    }
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
                     locked_state.telescope_position.lock().unwrap().boresight_valid = false;
@@ -516,6 +550,7 @@ impl SolveEngine {
             locked_state.plate_solution = Some(PlateSolution{
                 detect_result,
                 tetra3_solve_result,
+                slew_request,
                 solve_finish_time,
                 processing_duration: elapsed,
                 solve_interval_stats: locked_state.solve_interval_stats.value_stats.clone(),
@@ -535,6 +570,10 @@ pub struct PlateSolution {
     // The plate solution for `detect_result`. Omitted if a solve was not
     // attempted.
     pub tetra3_solve_result: Option<SolveResultProto>,
+
+    // If the TelescopePosition has an active slew request, we populate
+    // 'slew_request' with its information.
+    pub slew_request: Option<cedar::SlewRequest>,
 
     // Time at which the plate solve completed. Omitted if a solve was not
     // attempted.
