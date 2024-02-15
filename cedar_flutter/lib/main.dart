@@ -315,6 +315,12 @@ class _MyHomePageState extends State<MyHomePage> {
     await initiateAction(request);
   }
 
+  Future<void> stopSlew() async {
+    var request = ActionRequest();
+    request.stopSlew = true;
+    await initiateAction(request);
+  }
+
   Future<void> setOperatingMode(bool setup) async {
     var request = OperationSettings();
     request.operatingMode = setup ? OperatingMode.SETUP : OperatingMode.OPERATE;
@@ -456,9 +462,21 @@ class _MyHomePageState extends State<MyHomePage> {
                     captureBoresight();
                   }),
             ])
-          : const SizedBox(width: 105, height: 45),
+          : const SizedBox(width: 105, height: 32),
+      const SizedBox(width: 15, height: 15),
+      _slewRequest != null && !_setupMode
+          ? Column(children: <Widget>[
+              OutlinedButton(
+                  child: const Text("End goto"),
+                  onPressed: () {
+                    stopSlew();
+                  }),
+            ])
+          : const SizedBox(width: 105, height: 32),
     ];
   }
+
+  // _slewRequest == null || _setupMode
 
   List<Widget> dataItems() {
     return <Widget>[
