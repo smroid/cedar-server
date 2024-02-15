@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 use canonical_error::{CanonicalError, failed_precondition_error, invalid_argument_error};
 use chrono::{DateTime, Local, Utc};
 use image::GrayImage;
-use log::{error, info};
+use log::{debug, error};
 use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
 use tower::service_fn;
@@ -360,7 +360,7 @@ impl SolveEngine {
         client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
         state: Arc<Mutex<SolveState>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>) {
-        info!("Starting solve engine");
+        debug!("Starting solve engine");
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
         loop {
@@ -369,7 +369,7 @@ impl SolveEngine {
                 let mut locked_state = state.lock().unwrap();
                 update_interval = locked_state.update_interval;
                 if locked_state.stop_request {
-                    info!("Stopping solve engine");
+                    debug!("Stopping solve engine");
                     locked_state.stop_request = false;
                     return;  // Exit thread.
                 }
