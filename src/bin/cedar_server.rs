@@ -15,7 +15,7 @@ use image::io::Reader as ImageReader;
 
 use clap::Parser;
 use axum::Router;
-use log::{info, warn};
+use log::{debug, info, warn};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
 use tracing_subscriber;
@@ -479,7 +479,7 @@ impl MyCedar {
                 warn!{"Error while calibrating optics: {:?}", e};
             }
         };
-        info!("Calibration result: {:?}", calibration_data.lock().await);
+        debug!("Calibration result: {:?}", calibration_data.lock().await);
         Ok(())
     }
 

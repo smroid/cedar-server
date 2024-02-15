@@ -8,7 +8,7 @@ use canonical_error::CanonicalError;
 use image::{GenericImageView, GrayImage};
 use imageproc::contrast;
 use imageproc::rect::Rect;
-use log::{debug, error, info};
+use log::{debug, error};
 use cedar_detect::algorithm::{StarDescription, estimate_noise_from_image,
                               get_stars_from_image, summarize_region_of_interest};
 use crate::value_stats::ValueStatsAccumulator;
@@ -305,7 +305,7 @@ impl DetectEngine {
                     state: Arc<Mutex<DetectState>>,
                     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                     done: Arc<AtomicBool>) {
-        info!("Starting detect engine");
+        debug!("Starting detect engine");
         // Keep track of when we started the detect cycle.
         let mut last_result_time: Option<Instant> = None;
         loop {
@@ -317,7 +317,7 @@ impl DetectEngine {
             {
                 let mut locked_state = state.lock().unwrap();
                 if locked_state.stop_request {
-                    info!("Stopping detect engine");
+                    debug!("Stopping detect engine");
                     locked_state.stop_request = false;
                     done.store(true, Ordering::Relaxed);
                     return;  // Exit thread.
