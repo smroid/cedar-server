@@ -59,6 +59,7 @@ message SolveResult {
   repeated ImageCoord target_sky_to_image_coords = 15;
 
   repeated MatchedStar matched_stars = 13;
+  repeated ImageCoord pattern_centroids = 16;
 
   // If SolveFromCentroids() fails, all of the SolveResult fields will be
   // omitted except for 'solve_time' and 'status', and the reason for the
