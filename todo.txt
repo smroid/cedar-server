@@ -6,7 +6,11 @@ camera connect error
   usbreset to the rescue
 * detect the need for USB reset during camera operation (time outs?)
 
-slew target display: arrow length proportional to target distance
+show centroids/matches/pattern stars in operate mode. Except when slewing?
+
+when no plate solution:
+* dim data
+* after N seconds, drop data display
 
 view server log
 
