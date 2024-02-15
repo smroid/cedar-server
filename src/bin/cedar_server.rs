@@ -75,6 +75,7 @@ struct CedarState {
     tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
+    telescope_position: Arc<Mutex<TelescopePosition>>,
 
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
@@ -321,8 +322,7 @@ impl Cedar for MyCedar {
             }
         }
         if req.stop_slew.unwrap_or(false) {
-            return Err(tonic::Status::unimplemented(
-                "ActionRequest.stop_slew not yet implemented."));
+            locked_state.telescope_position.lock().unwrap().slew_active = false;
         }
         if req.save_image.unwrap_or(false) {
             let solve_engine = &mut locked_state.solve_engine.lock().await;
@@ -733,6 +733,7 @@ impl MyCedar {
                 stats_capacity).await.unwrap())),
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
+            telescope_position: telescope_position.clone(),
             scaled_image: None,
             width: 0,
             height: 0,
