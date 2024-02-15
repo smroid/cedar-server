@@ -83,19 +83,42 @@ class _MainImagePainter extends CustomPainter {
             ..color = Colors.red
             ..strokeWidth = thin
             ..style = PaintingStyle.stroke);
-      // Draw circles around the detected stars.
-      for (var star in state._stars) {
-        var offset = Offset(star.centroidPosition.x / state._binFactor,
-            star.centroidPosition.y / state._binFactor);
-        canvas.drawCircle(
-            offset,
-            4,
-            Paint()
-              ..color = Colors.red
-              ..strokeWidth = hairline
-              ..style = PaintingStyle.stroke);
-      }
     }
+    // Draw circles around the detected stars.
+    for (var star in state._stars) {
+      var offset = Offset(star.centroidPosition.x / state._binFactor,
+          star.centroidPosition.y / state._binFactor);
+      canvas.drawCircle(
+          offset,
+          3,
+          Paint()
+            ..color = Colors.red
+            ..strokeWidth = hairline
+            ..style = PaintingStyle.stroke);
+    }
+    // if (!state._setupMode && state._hasSolution) {
+    //   for (var match in state._solutionMatches!) {
+    //     var offset = Offset(match.imageCoord.x / state._binFactor,
+    //         match.imageCoord.y / state._binFactor);
+    //     canvas.drawRect(
+    //         Rect.fromCenter(center: offset, width: 8, height: 8),
+    //         Paint()
+    //           ..color = Colors.red
+    //           ..strokeWidth = hairline
+    //           ..style = PaintingStyle.stroke);
+    //   }
+    //   for (var centroid in state._solutionCentroids!) {
+    //     var offset = Offset(
+    //         centroid.dx / state._binFactor, centroid.dy / state._binFactor);
+    //     canvas.drawRect(
+    //         Rect.fromCenter(center: offset, width: 8, height: 8),
+    //         Paint()
+    //           ..color = Colors.red
+    //           ..strokeWidth = thick
+    //           ..style = PaintingStyle.stroke);
+    //   }
+    // }
+
     var center = state._boresightPosition ?? state._imageRegion.center;
     if (state._slewRequest != null && !state._setupMode && state._hasSolution) {
       var slew = state._slewRequest;
@@ -154,6 +177,8 @@ class _MyHomePageState extends State<MyHomePage> {
   double _exposureTimeMs = 0.0;
   bool _hasSolution = false;
 
+  List<MatchedStar>? _solutionMatches;
+  List<Offset>? _solutionCentroids;
   // Degrees.
   double _solutionRA = 0.0;
   double _solutionDec = 0.0;
@@ -206,6 +231,11 @@ class _MyHomePageState extends State<MyHomePage> {
       SolveResult plateSolution = response.plateSolution;
       if (plateSolution.status == SolveStatus.MATCH_FOUND) {
         _hasSolution = true;
+        _solutionMatches = plateSolution.matchedStars;
+        _solutionCentroids = <Offset>[];
+        for (var centroid in plateSolution.patternCentroids) {
+          _solutionCentroids!.add(Offset(centroid.x, centroid.y));
+        }
         if (plateSolution.targetCoords.isNotEmpty) {
           _solutionRA = plateSolution.targetCoords.first.ra;
           _solutionDec = plateSolution.targetCoords.first.dec;
