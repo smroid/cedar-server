@@ -97,15 +97,17 @@ class _MainImagePainter extends CustomPainter {
       }
     }
     var center = state._boresightPosition ?? state._imageRegion.center;
-    if (state._slewRequest != null && !state._setupMode) {
+    if (state._slewRequest != null && !state._setupMode && state._hasSolution) {
       var slew = state._slewRequest;
       Offset? posInImage;
       if (slew!.hasImagePos()) {
         posInImage = Offset(slew.imagePos.x / state._binFactor,
             slew.imagePos.y / state._binFactor);
       }
-      drawSlewTarget(
-          canvas, center, posInImage, slew.targetDistance, slew.targetAngle);
+      // How many display pixels is one degree FOV?
+      final oneDegFov = state._imageRegion.width / state._solutionFOV;
+      drawSlewTarget(canvas, center, oneDegFov, posInImage, slew.targetDistance,
+          slew.targetAngle);
     } else {
       // Make a cross at the boresight position (if any) or else the image
       // center.
@@ -156,6 +158,7 @@ class _MyHomePageState extends State<MyHomePage> {
   double _solutionRA = 0.0;
   double _solutionDec = 0.0;
   double _solutionRoll = 0.0;
+  double _solutionFOV = 0.0;
 
   // Arcsec.
   double _solutionRMSE = 0.0;
@@ -212,6 +215,7 @@ class _MyHomePageState extends State<MyHomePage> {
         }
         _solutionRoll = plateSolution.roll;
         _solutionRMSE = plateSolution.rmse;
+        _solutionFOV = plateSolution.fov;
       }
     }
     _imageBytes = Uint8List.fromList(response.image.imageData);
@@ -496,10 +500,17 @@ class _MyHomePageState extends State<MyHomePage> {
                     style: TextStyle(color: coordTextColor())),
                 Text(sprintf("Target DEC %.4f°", [_slewRequest?.target.dec]),
                     style: TextStyle(color: coordTextColor())),
-                Text(sprintf("Distance  %.4f°", [_slewRequest?.targetDistance]),
-                    style: TextStyle(color: coordTextColor())),
-                Text(sprintf("Angle %.2f°", [_slewRequest?.targetAngle]),
-                    style: TextStyle(color: coordTextColor())),
+                _hasSolution
+                    ? Column(children: <Widget>[
+                        Text(
+                            sprintf("Distance  %.4f°",
+                                [_slewRequest?.targetDistance]),
+                            style: TextStyle(color: coordTextColor())),
+                        Text(
+                            sprintf("Angle %.2f°", [_slewRequest?.targetAngle]),
+                            style: TextStyle(color: coordTextColor())),
+                      ])
+                    : Container(),
               ],
             ),
       const SizedBox(width: 15, height: 15),
@@ -532,8 +543,6 @@ class _MyHomePageState extends State<MyHomePage> {
               children: <Widget>[
                 Text(sprintf("FOV %.1f°", [_calibrationData!.fovHorizontal])),
                 Text(sprintf("Lens %.1f mm", [_calibrationData!.lensFlMm])),
-                Text(sprintf("Exp time %.1f ms",
-                    [durationToMs(_calibrationData!.targetExposureTime)])),
               ],
             ),
     ];

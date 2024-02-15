@@ -11,20 +11,25 @@ double _deg2rad(double deg) {
   return deg / 180.0 * math.pi;
 }
 
-void _drawBullseye(Canvas canvas, Offset boresight) {
+void _drawBullseye(Canvas canvas, Offset boresight, double radius) {
   // Draw center bullseye.
   canvas.drawCircle(
       boresight,
-      40,
+      radius,
       Paint()
         ..color = Colors.red
-        ..strokeWidth = _hairline
+        ..strokeWidth = _thin
         ..style = PaintingStyle.stroke);
-  drawGapCross(canvas, boresight, 40, 9, _hairline);
+  drawGapCross(canvas, boresight, radius, 9, _hairline);
 }
 
-void drawSlewTarget(Canvas canvas, Offset boresight, Offset? slewTarget,
-    double targetDistance, double targetAngle) {
+void drawSlewTarget(
+    Canvas canvas,
+    Offset boresight,
+    double boresightDiameterPix,
+    Offset? slewTarget,
+    double targetDistance,
+    double targetAngle) {
   var distanceText = "";
   if (targetDistance > 1) {
     distanceText = sprintf("%.1f°", [targetDistance]);
@@ -53,8 +58,10 @@ void drawSlewTarget(Canvas canvas, Offset boresight, Offset? slewTarget,
     drawGapCross(canvas, slewTarget, 10, 3, _thick);
     // Draw a bullseye at the boresight position, annotated with the target
     // distance.
-    _drawBullseye(canvas, boresight);
-    final textPos = Offset(boresight.dx - 50, boresight.dy - 50);
+    final bsRadius = boresightDiameterPix / 2;
+    _drawBullseye(canvas, boresight, bsRadius);
+    final textPos =
+        Offset(boresight.dx - bsRadius - 10, boresight.dy - bsRadius - 10);
     drawText(canvas, textPos, distanceText);
   }
 }
