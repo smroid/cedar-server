@@ -190,9 +190,8 @@ impl Calibrator {
                        solve_result_proto.distortion.unwrap(),
                        solve_duration));
         }
-        // https://stackoverflow.com/questions/28028854/how-do-i-match-enum-values-with-an-integer
-        let status_enum: SolveStatus =
-            unsafe { ::std::mem::transmute(solve_result_proto.status.unwrap()) };
+        let status_enum =
+            SolveStatus::try_from(solve_result_proto.status.unwrap()).unwrap();
         let msg = format!("SolveStatus::{:?}: elapsed time {:?}",
                           status_enum, solve_duration);
         match status_enum {

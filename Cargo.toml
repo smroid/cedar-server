@@ -24,16 +24,15 @@ image = "0.24.6"
 imageproc = "0.23.0"
 log = "0.4.19"
 medians = "3.0.5"
-prost = "0.11"
-prost-build = "0.11.9"
-prost-types = "0.11.9"
+prost = "0.12.3"
+prost-types = "0.12.3"
 rolling-stats = "0.7.0"
 cedar_detect = { version = "0.4.0", path = "../cedar-detect" }
 statistical = "1.0.0"
 tokio = { version = "1.35.1", features = ["macros", "rt-multi-thread"] }
 tokio-stream = "0.1.14"
-tonic = "0.9"
-tonic-web = "0.9.2"
+tonic = "0.11"
+tonic-web = "0.11.0"
 tower = { version = "0.4.13", features = ["full"] }
 tower-http = { version = "0.4.3", features = ["fs", "cors"] }
 tracing = "0.1.40"
@@ -42,8 +41,8 @@ chrono = "0.4.31"
 ctrlc = "3.4.2"
 
 [build-dependencies]
-tonic-build = "0.9"
-prost-build = "0.11.9"
+tonic-build = "0.11"
+prost-build = "0.12.3"
 
 [profile.dev]
 panic = 'abort'
