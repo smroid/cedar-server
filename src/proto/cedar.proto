@@ -75,7 +75,7 @@ message OperationSettings {
   //   lower detection sigma threshold to find more stars despite shorter
   //   exposures. Benefit: faster cycle time. Drawback: risk of failed plate
   //   solves from too few stars and more spurious detections.
-  optional int32 accuracy = 3;
+  optional Accuracy accuracy = 3;
 
   // The desired time interval at which Cedar should replace its current frame
   // result. Default is zero, meaning go as fast as possible.
@@ -121,6 +121,42 @@ enum Accuracy {
   ACCURATE = 4;
 }
 
+// User interface preferences that are stored durably on the server.
+message Preferences {
+  // How the user interface should display celestial coordinates.
+  optional CelestialCoordFormat celestial_coord_format = 1;
+
+  // Diameter (in degrees) of the boresight circle displayed while slewing
+  // to a target.
+  optional float slew_bullseye_size = 2;
+
+  // If true, the UI should favor red highlights instead of white.
+  optional bool night_vision_theme = 3;
+
+  // If true, the UI continuously displays (some) Cedar performance statistics.
+  optional bool show_perf_stats = 4;
+
+  // TODO: save image format (bmp, tiff, jpg, webp, FITS)
+}
+
+enum CelestialCoordFormat {
+  FORMAT_UNSPECIFIED = 0;
+
+  // Both right ascension and declination should be formatted as
+  // decimal. Right ascension from 0..360, declination from -90..90.
+  // Example:
+  // RA  = 182.3345 degrees
+  // DEC = 34.2351 degrees
+  DECIMAL = 1;
+
+  // Right ascension should be formatted as hours/minutes/seconds;
+  // declination as degrees/minutes/seconds. The example values given
+  // above would be:
+  // RA  = 12h 9m 20.28s
+  // DEC = 34d 14m 6.36s
+  HMS_DMS = 2;
+}
+
 message FrameRequest {
   // This is the frame_id of the previous FrameResult obtained by the requesting
   // client. If provided, GetFrame() will block until this is no longer the
@@ -143,11 +179,14 @@ enum ImageMode {
   BINNED = 1;
 }
 
-// Next tag: 25.
+// Next tag: 26.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
   int32 frame_id = 1;
+
+  // The current user interface preferences stored on the server.
+  Preferences preferences = 25;
 
   // The Cedar settings in effect for this frame.
   OperationSettings operation_settings = 2;
@@ -513,6 +552,13 @@ service Cedar {
   // To get the current settings without making any changes, pass an empty
   // OperationSettings request.
   rpc UpdateOperationSettings(OperationSettings) returns (OperationSettings);
+
+  // Changes zero or more of Cedar's user interface preferences. If a field is
+  // omitted from the supplied Preferences, that preference is not updated.
+  // Returns the Preferences after any updates have been applied. To get the
+  // current preferences without making any changes, pass an empty Preferences
+  // request.
+  rpc UpdatePreferences(Preferences) returns (Preferences);
 
   // Obtains the most recent Cedar computation result. Blocks if necessary to
   // wait for a new result (see FrameRequest's `prev_frame_id` field).

@@ -26,7 +26,7 @@ use cedar::cedar::cedar_server::{Cedar, CedarServer};
 use cedar::cedar::{Accuracy, ActionRequest, CalibrationData,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
                    Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
-                   ProcessingStats, Rectangle, StarCentroid};
+                   ProcessingStats, Rectangle, StarCentroid, Preferences};
 use ::cedar::calibrator::Calibrator;
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::scale_image::scale_image;
@@ -265,6 +265,12 @@ impl Cedar for MyCedar {
         Ok(tonic::Response::new(
             self.state.lock().await.operation_settings.lock().unwrap().clone()))
    }
+
+    async fn update_preferences(
+        &self, _request: tonic::Request<Preferences>)
+        -> Result<tonic::Response<Preferences>, tonic::Status> {
+        Err(tonic::Status::unimplemented("rpc UpdatePreferences not yet implemented"))
+    }
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
