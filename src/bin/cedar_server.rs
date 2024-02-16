@@ -762,9 +762,8 @@ impl MyCedar {
     }
 
     async fn update_accuracy_adjusted_params(state: &CedarState) {
-        let accuracy: i32 = state.operation_settings.lock().unwrap().accuracy.unwrap();
-        // https://stackoverflow.com/questions/28028854/how-do-i-match-enum-values-with-an-integer
-        let acc_enum: Accuracy = unsafe { ::std::mem::transmute(accuracy) };
+        let accuracy = state.operation_settings.lock().unwrap().accuracy.unwrap();
+        let acc_enum = Accuracy::try_from(accuracy).unwrap();
         let multiplier = match acc_enum {
             Accuracy::Fastest => 0.5,
             Accuracy::Faster => 0.7,
