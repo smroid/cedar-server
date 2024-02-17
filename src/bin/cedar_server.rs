@@ -518,6 +518,8 @@ impl MyCedar {
         let mut frame_result = FrameResult {..Default::default()};
         frame_result.preferences =
             Some(state.lock().await.preferences.lock().unwrap().clone());
+        frame_result.operation_settings =
+            Some(state.lock().await.operation_settings.lock().unwrap().clone());
 
         if state.lock().await.calibrating {
             let locked_state = state.lock().await;
@@ -696,8 +698,6 @@ impl MyCedar {
         }
         frame_result.calibration_data =
             Some(locked_state.calibration_data.lock().await.clone());
-        frame_result.operation_settings =
-            Some(locked_state.operation_settings.lock().unwrap().clone());
 
         frame_result
     }
