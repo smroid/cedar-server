@@ -224,8 +224,8 @@ message FrameResult {
 
   // When transitioning from SETUP mode to OPERATE mode, Cedar does a brief
   // sky/camera calibration. During calibration most FrameResult fields are
-  // omitted. Fields present are: operation_settings, image, calibrating,
-  // and calibration_progress.
+  // omitted. Fields present are: preferences, operation_settings, image,
+  // calibrating, and calibration_progress.
   bool calibrating = 22;
 
   // When `calibrating` is true, this field is an estimate of the progress of
