@@ -39,6 +39,8 @@ dependencies:
   sprintf: ^7.0.0
   fixnum: 1.1.0
   numberpicker: ^2.1.2
+  settings_ui: ^2.0.2
+  provider: ^6.1.1
 
 dev_dependencies:
   flutter_test:
