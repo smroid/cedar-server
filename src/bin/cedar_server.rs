@@ -110,15 +110,15 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<FixedSettings>, tonic::Status>
     {
         let req: FixedSettings = request.into_inner();
-        if req.observer_location.is_some() {
+        if let Some(_observer_location) = req.observer_location {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings not implemented for observer_location."));
         }
-        if req.client_time.is_some() {
+        if let Some(_client_time) = req.client_time {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings not implemented for client_time."));
         }
-        if req.session_name.is_some() {
+        if let Some(_session_name) = req.session_name {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings not implemented for session_name."));
         }
@@ -130,8 +130,7 @@ impl Cedar for MyCedar {
         &self, request: tonic::Request<OperationSettings>)
         -> Result<tonic::Response<OperationSettings>, tonic::Status> {
         let req: OperationSettings = request.into_inner();
-        if req.operating_mode.is_some() {
-            let new_operating_mode = req.operating_mode.unwrap();
+        if let Some(new_operating_mode) = req.operating_mode {
             if new_operating_mode == OperatingMode::Setup as i32 {
                 let mut locked_state = self.state.lock().await;
                 if locked_state.calibrating {
@@ -221,8 +220,7 @@ impl Cedar for MyCedar {
                     format!("Got invalid operating_mode: {}.", new_operating_mode)));
             }
         }  // Update operating_mode.
-        if req.exposure_time.is_some() {
-            let exp_time = req.exposure_time.unwrap();
+        if let Some(exp_time) = req.exposure_time {
             if exp_time.seconds < 0 || exp_time.nanos < 0 {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got negative exposure_time: {}.", exp_time)));
@@ -235,14 +233,12 @@ impl Cedar for MyCedar {
             locked_state.operation_settings.lock().unwrap().exposure_time =
                 Some(exp_time);
         }
-        if req.accuracy.is_some() {
-            let accuracy = req.accuracy.unwrap();
+        if let Some(accuracy) = req.accuracy {
             let locked_state = self.state.lock().await;
             locked_state.operation_settings.lock().unwrap().accuracy = Some(accuracy);
             Self::update_accuracy_adjusted_params(&*locked_state).await;
         }
-        if req.update_interval.is_some() {
-            let update_interval = req.update_interval.unwrap();
+        if let Some(update_interval) = req.update_interval {
             if update_interval.seconds < 0 || update_interval.nanos < 0 {
                 return Err(tonic::Status::invalid_argument(
                     format!("Got negative update_interval: {}.", update_interval)));
@@ -256,11 +252,11 @@ impl Cedar for MyCedar {
             locked_state.operation_settings.lock().unwrap().update_interval =
                 Some(update_interval);
         }
-        if req.dwell_update_interval.is_some() {
+        if let Some(_dwell_update_interval) = req.dwell_update_interval {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateOperationSettings not implemented for dwell_update_interval."));
         }
-        if req.log_dwelled_positions.is_some() {
+        if let Some(_log_dwelled_positions) = req.log_dwelled_positions {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
         }
