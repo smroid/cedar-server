@@ -113,9 +113,11 @@ class _MainImagePainter extends CustomPainter {
         posInImage = Offset(slew.imagePos.x / state._binFactor,
             slew.imagePos.y / state._binFactor);
       }
-      // How many display pixels is one degree FOV?
-      final oneDegFov = state._imageRegion.width / state._solutionFOV;
-      drawSlewTarget(canvas, center, oneDegFov, posInImage, slew.targetDistance,
+      // How many display pixels is the telescope FOV?
+      final scopeFov = state._preferences!.slewBullseyeSize *
+          state._imageRegion.width /
+          state._solutionFOV;
+      drawSlewTarget(canvas, center, scopeFov, posInImage, slew.targetDistance,
           slew.targetAngle);
     } else {
       // Make a cross at the boresight position (if any) or else the image
@@ -463,9 +465,13 @@ class _MyHomePageState extends State<MyHomePage> {
             }),
       ]),
       const SizedBox(height: 15),
-      IconButton(
+      TextButton.icon(
+          label: const Text("Preferences"),
           icon: const Icon(Icons.settings),
           onPressed: () {
+            // Dismiss drawer screen, so when user exits out of settings we go
+            // back to main display.
+            Navigator.of(context).pop();
             Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -478,7 +484,6 @@ class _MyHomePageState extends State<MyHomePage> {
     return <Widget>[
       Consumer<SettingsModel>(
         builder: (context, settings, child) {
-          // log("settings consumer builder");
           final newPrefs = settings.preferencesProto;
           var prefsDiff = newPrefs.deepCopy();
           if (_preferences != null &&
@@ -511,7 +516,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     captureBoresight();
                   }),
             ])
-          : const SizedBox(width: 105, height: 32),
+          : const SizedBox(width: 140, height: 32),
       const SizedBox(width: 15, height: 15),
       _slewRequest != null && !_setupMode
           ? Column(children: <Widget>[
@@ -523,6 +528,37 @@ class _MyHomePageState extends State<MyHomePage> {
             ])
           : const SizedBox(width: 105, height: 32),
     ];
+  }
+
+  String formatRightAscension(double ra) {
+    if (_preferences?.celestialCoordFormat == CelestialCoordFormat.DECIMAL) {
+      return sprintf("%.4f°", [ra]);
+    } else {
+      int hours = (ra / 15.0).floor();
+      double fracHours = ra / 15.0 - hours;
+      int minutes = (fracHours * 60.0).floor();
+      double fracMinutes = fracHours * 60.0 - minutes;
+      double seconds = fracMinutes * 60;
+      return sprintf("%02dh %02dm %02.1fs", [hours, minutes, seconds]);
+    }
+  }
+
+  String formatDeclination(double dec) {
+    if (_preferences?.celestialCoordFormat == CelestialCoordFormat.DECIMAL) {
+      return sprintf("%.4f°", [dec]);
+    } else {
+      String sign = dec < 0 ? "-" : "+";
+      if (dec < 0) {
+        dec = -dec;
+      }
+      int degrees = dec.floor();
+      double fracDegrees = dec - degrees;
+      int minutes = (fracDegrees * 60.0).floor();
+      double fracMinutes = fracDegrees * 60.0 - minutes;
+      double seconds = fracMinutes * 60;
+      return sprintf(
+          "%s%02d° %02d' %02.1f''", [sign, degrees, minutes, seconds]);
+    }
   }
 
   List<Widget> dataItems() {
@@ -546,9 +582,9 @@ class _MyHomePageState extends State<MyHomePage> {
           ? Container()
           : Column(
               children: <Widget>[
-                Text(sprintf("RA  %.4f°", [_solutionRA]),
+                Text(sprintf("RA  %s", [formatRightAscension(_solutionRA)]),
                     style: TextStyle(color: coordTextColor())),
-                Text(sprintf("DEC %.4f°", [_solutionDec]),
+                Text(sprintf("DEC %s", [formatDeclination(_solutionDec)]),
                     style: TextStyle(color: coordTextColor())),
                 Text(sprintf("roll  %.4f°", [_solutionRoll]),
                     style: TextStyle(color: coordTextColor())),
@@ -561,9 +597,13 @@ class _MyHomePageState extends State<MyHomePage> {
           ? Container()
           : Column(
               children: <Widget>[
-                Text(sprintf("Target RA  %.4f°", [_slewRequest?.target.ra]),
+                Text(
+                    sprintf("Target RA  %s",
+                        [formatRightAscension(_slewRequest!.target.ra)]),
                     style: TextStyle(color: coordTextColor())),
-                Text(sprintf("Target DEC %.4f°", [_slewRequest?.target.dec]),
+                Text(
+                    sprintf("Target DEC %s",
+                        [formatDeclination(_slewRequest!.target.dec)]),
                     style: TextStyle(color: coordTextColor())),
                 _hasSolution
                     ? Column(children: <Widget>[
@@ -579,7 +619,7 @@ class _MyHomePageState extends State<MyHomePage> {
               ],
             ),
       const SizedBox(width: 15, height: 15),
-      _setupMode || _processingStats == null
+      _setupMode || _processingStats == null || !_preferences!.showPerfStats
           ? Container()
           : Column(
               children: <Widget>[

@@ -60,8 +60,7 @@ void drawSlewTarget(
     // distance.
     final bsRadius = boresightDiameterPix / 2;
     _drawBullseye(canvas, boresight, bsRadius);
-    final textPos =
-        Offset(boresight.dx - bsRadius - 10, boresight.dy - bsRadius - 10);
+    final textPos = Offset(boresight.dx - bsRadius - 30, boresight.dy);
     drawText(canvas, textPos, distanceText);
   }
 }
