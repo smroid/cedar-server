@@ -194,7 +194,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _calibrationProgress = response.calibrationProgress;
     }
     if (response.hasOperationSettings()) {
-      _accuracy = response.operationSettings.accuracy.toInt();
+      _accuracy = response.operationSettings.accuracy.value;
       _expSettingMs =
           durationToMs(response.operationSettings.exposureTime).toInt();
       _setupMode =
@@ -337,7 +337,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> setAccuracy(int value) async {
     var request = OperationSettings();
-    request.accuracy = value;
+    request.accuracy = Accuracy.valueOf(value)!;
     await updateOperationSettings(request);
   }
 
