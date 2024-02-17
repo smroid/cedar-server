@@ -83,41 +83,19 @@ class _MainImagePainter extends CustomPainter {
             ..color = Colors.red
             ..strokeWidth = thin
             ..style = PaintingStyle.stroke);
+      // Draw circles around the detected stars.
+      for (var star in state._stars) {
+        var offset = Offset(star.centroidPosition.x / state._binFactor,
+            star.centroidPosition.y / state._binFactor);
+        canvas.drawCircle(
+            offset,
+            3,
+            Paint()
+              ..color = Colors.red
+              ..strokeWidth = hairline
+              ..style = PaintingStyle.stroke);
+      }
     }
-    // Draw circles around the detected stars.
-    for (var star in state._stars) {
-      var offset = Offset(star.centroidPosition.x / state._binFactor,
-          star.centroidPosition.y / state._binFactor);
-      canvas.drawCircle(
-          offset,
-          3,
-          Paint()
-            ..color = Colors.red
-            ..strokeWidth = hairline
-            ..style = PaintingStyle.stroke);
-    }
-    // if (!state._setupMode && state._hasSolution) {
-    //   for (var match in state._solutionMatches!) {
-    //     var offset = Offset(match.imageCoord.x / state._binFactor,
-    //         match.imageCoord.y / state._binFactor);
-    //     canvas.drawRect(
-    //         Rect.fromCenter(center: offset, width: 8, height: 8),
-    //         Paint()
-    //           ..color = Colors.red
-    //           ..strokeWidth = hairline
-    //           ..style = PaintingStyle.stroke);
-    //   }
-    //   for (var centroid in state._solutionCentroids!) {
-    //     var offset = Offset(
-    //         centroid.dx / state._binFactor, centroid.dy / state._binFactor);
-    //     canvas.drawRect(
-    //         Rect.fromCenter(center: offset, width: 8, height: 8),
-    //         Paint()
-    //           ..color = Colors.red
-    //           ..strokeWidth = thick
-    //           ..style = PaintingStyle.stroke);
-    //   }
-    // }
 
     var center = state._boresightPosition ?? state._imageRegion.center;
     if (state._slewRequest != null && !state._setupMode && state._hasSolution) {
@@ -405,7 +383,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Color starsSliderColor() {
-    return _hasSolution ? const Color(0xff00c000) : const Color(0xff606060);
+    return _hasSolution ? Colors.red : const Color(0xff606060);
   }
 
   Color coordTextColor() {
@@ -585,7 +563,9 @@ class _MyHomePageState extends State<MyHomePage> {
               ],
             ),
       const SizedBox(width: 15, height: 15),
-      _setupMode || _processingStats == null
+      _setupMode ||
+              _calibrationData == null ||
+              _calibrationData!.fovHorizontal == 0
           ? Container()
           : Column(
               children: <Widget>[
