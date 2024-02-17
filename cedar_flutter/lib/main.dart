@@ -2,12 +2,15 @@ import 'dart:developer';
 import 'dart:math' as math;
 import 'package:cedar_flutter/draw_slew_target.dart';
 import 'package:cedar_flutter/draw_util.dart';
+import 'package:cedar_flutter/settings.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
 import 'package:grpc/service_api.dart';
 import 'package:numberpicker/numberpicker.dart';
+import 'package:protobuf/protobuf.dart';
+import 'package:provider/provider.dart';
 import 'package:sprintf/sprintf.dart';
 import 'cedar.pbgrpc.dart';
 import 'tetra3.pb.dart';
@@ -18,7 +21,12 @@ import 'get_cedar_client_for_web.dart'
 // To generate release build: flutter build web
 
 void main() {
-  runApp(const MyApp());
+  runApp(
+    ChangeNotifierProvider(
+      create: (context) => SettingsModel(),
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -169,6 +177,7 @@ class _MyHomePageState extends State<MyHomePage> {
   CalibrationData? _calibrationData;
   ProcessingStats? _processingStats;
   SlewRequest? _slewRequest;
+  Preferences? _preferences;
 
   // Calibration happens when _setupMode transitions to false.
   bool _calibrating = false;
@@ -193,13 +202,14 @@ class _MyHomePageState extends State<MyHomePage> {
     if (response.calibrating) {
       _calibrationProgress = response.calibrationProgress;
     }
-    if (response.hasOperationSettings()) {
-      _accuracy = response.operationSettings.accuracy.value;
-      _expSettingMs =
-          durationToMs(response.operationSettings.exposureTime).toInt();
-      _setupMode =
-          response.operationSettings.operatingMode == OperatingMode.SETUP;
-    }
+    _preferences = response.preferences;
+    Provider.of<SettingsModel>(context, listen: false).preferencesProto =
+        _preferences!.deepCopy();
+    _accuracy = response.operationSettings.accuracy.value;
+    _expSettingMs =
+        durationToMs(response.operationSettings.exposureTime).toInt();
+    _setupMode =
+        response.operationSettings.operatingMode == OperatingMode.SETUP;
     _calibrationData =
         response.hasCalibrationData() ? response.calibrationData : null;
     _processingStats =
@@ -382,6 +392,15 @@ class _MyHomePageState extends State<MyHomePage> {
     await setOperatingMode(/*setup=*/ true);
   }
 
+  Future<void> updatePreferences(Preferences prefs) async {
+    try {
+      await client().updatePreferences(prefs,
+          options: CallOptions(timeout: const Duration(seconds: 10)));
+    } catch (e) {
+      log('Error: $e');
+    }
+  }
+
   Color starsSliderColor() {
     return _hasSolution ? Colors.red : const Color(0xff606060);
   }
@@ -443,11 +462,33 @@ class _MyHomePageState extends State<MyHomePage> {
               shutdownDialog();
             }),
       ]),
+      const SizedBox(height: 15),
+      IconButton(
+          icon: const Icon(Icons.settings),
+          onPressed: () {
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (context) => const SettingsScreen()));
+          }),
     ];
   }
 
   List<Widget> controls() {
     return <Widget>[
+      Consumer<SettingsModel>(
+        builder: (context, settings, child) {
+          // log("settings consumer builder");
+          final newPrefs = settings.preferencesProto;
+          var prefsDiff = newPrefs.deepCopy();
+          if (_preferences != null &&
+              diffPreferences(_preferences!, prefsDiff)) {
+            updatePreferences(prefsDiff);
+            _preferences = newPrefs.deepCopy();
+          }
+          return Container();
+        },
+      ),
       Column(children: <Widget>[
         Row(children: <Widget>[
           const Text("Setup"),
@@ -483,8 +524,6 @@ class _MyHomePageState extends State<MyHomePage> {
           : const SizedBox(width: 105, height: 32),
     ];
   }
-
-  // _slewRequest == null || _setupMode
 
   List<Widget> dataItems() {
     return <Widget>[
