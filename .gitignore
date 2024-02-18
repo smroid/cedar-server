@@ -36,4 +36,4 @@ cedar_webapp/windows
 # Symlink
 src/tetra3_server.py
 
-src/cedar_ui_prefs.toml
+src/cedar_ui_prefs.binpb
