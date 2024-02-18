@@ -88,8 +88,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
             SettingsTile.switchTile(
-              leading: const Icon(Icons.visibility),
-              title: const Text('Night vision mode'),
+              leading: const Icon(Icons.visibility, color: Colors.red),
+              title: const Text('Night vision theme'),
               initialValue: prefsProto.nightVisionTheme,
               onToggle: (value) {
                 setState(() {
