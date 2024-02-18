@@ -1,7 +1,8 @@
+use std::fs;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -19,6 +20,7 @@ use log::{debug, info, warn};
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
 use tracing_subscriber;
+use toml::{Table, Value};
 
 use futures::join;
 
@@ -81,6 +83,7 @@ struct CedarState {
     // operation; we reflect them out to all clients and persist them to a
     // server-side file.
     preferences: Mutex<Preferences>,
+    preferences_file: String,
 
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
@@ -263,7 +266,7 @@ impl Cedar for MyCedar {
 
         Ok(tonic::Response::new(
             self.state.lock().await.operation_settings.lock().unwrap().clone()))
-   }
+    }
 
     async fn update_preferences(
         &self, request: tonic::Request<Preferences>)
@@ -284,7 +287,20 @@ impl Cedar for MyCedar {
             locked_preferences.show_perf_stats = Some(show_perf);
         }
 
-        // TODO: persist changed preferences.
+        // Write updated preferences to file.
+        let prefs_path = Path::new(&locked_state.preferences_file);
+        let scratch_path = prefs_path.with_extension("tmp");
+
+        if let Err(e) = fs::write(
+            &scratch_path,
+            "# Cedar UI preferences, saved on each change. Do not edit.\n".to_owned() +
+                &Self::serialize_prefs(&locked_preferences)) {
+            warn!("Could not write file: {:?}", e);
+            return Ok(tonic::Response::new(locked_preferences.clone()));
+        }
+        if let Err(e) = fs::rename(scratch_path, prefs_path) {
+            warn!("Could not rename file: {:?}", e);
+        }
 
         Ok(tonic::Response::new(locked_preferences.clone()))
     }
@@ -702,6 +718,107 @@ impl MyCedar {
         frame_result
     }
 
+    fn serialize_prefs(prefs: &Preferences) -> String {
+        let mut prefs_table = Table::new();
+        let format_enum: CelestialCoordFormat = CelestialCoordFormat::try_from(
+            prefs.celestial_coord_format.unwrap()).unwrap();
+        prefs_table.insert(
+            "celestial_coord_format".to_string(),
+            Value::String(format_enum.as_str_name().to_string()));
+        prefs_table.insert(
+            "slew_bullseye_size".to_string(),
+            Value::Float(prefs.slew_bullseye_size.unwrap() as f64));
+        prefs_table.insert(
+            "night_vision_theme".to_string(),
+            Value::Boolean(prefs.night_vision_theme.unwrap()));
+        prefs_table.insert(
+            "show_perf_stats".to_string(),
+            Value::Boolean(prefs.show_perf_stats.unwrap()));
+        let mut top_table = Table::new();
+        top_table.insert("ui_preferences".to_string(), Value::Table(prefs_table));
+        return toml::to_string(&top_table).unwrap();
+    }
+
+    fn parse_prefs(prefs_bytes: Vec<u8>) -> Result<Preferences, CanonicalError> {
+        let mut preferences = Preferences{..Default::default()};
+
+        let prefs_str = String::from_utf8(prefs_bytes).unwrap();
+        let toml_table: Result<toml::Table, toml::de::Error> =
+            toml::from_str(prefs_str.as_str());
+        if let Err(e) = toml_table {
+            return Err(canonical_error::failed_precondition_error(
+                format!("Parse error {:?}", e).as_str()));
+        }
+        let toml_table = toml_table.unwrap();
+        let ui_preferences = toml_table.get("ui_preferences");
+        if ui_preferences.is_none() {
+            return Err(canonical_error::failed_precondition_error(
+                "Missing expected 'ui_preferences' section"));
+        }
+        let ui_preferences = ui_preferences.unwrap();
+
+        let coord_format = ui_preferences.get("celestial_coord_format");
+        if coord_format.is_none() {
+            return Err(canonical_error::failed_precondition_error(
+                "Missing expected 'celestial_coord_format' key"));
+        }
+        if let Value::String(coord_format_str) = coord_format.unwrap() {
+            let coord_format = CelestialCoordFormat::from_str_name(coord_format_str.as_str());
+            if coord_format.is_none() {
+                return Err(canonical_error::failed_precondition_error(
+                    format!("Unexpected 'celestial_coord_format' value: {:?}",
+                            coord_format_str).as_str()));
+            }
+            let coord_format = coord_format.unwrap();
+            preferences.celestial_coord_format = Some(coord_format as i32);
+        } else {
+            return Err(canonical_error::failed_precondition_error(
+                format!("Unexpected 'celestial_coord_format' type: {:?}",
+                        coord_format).as_str()));
+        }
+
+        let bullseye_size = ui_preferences.get("slew_bullseye_size");
+        if bullseye_size.is_none() {
+            return Err(canonical_error::failed_precondition_error(
+                "Missing expected 'slew_bullseye_size' key"));
+        }
+        if let Value::Float(bullseye_size_val) = bullseye_size.unwrap() {
+            preferences.slew_bullseye_size = Some(*bullseye_size_val as f32);
+        } else {
+            return Err(canonical_error::failed_precondition_error(
+                format!("Unexpected 'slew_bullseye_size' type: {:?}",
+                        bullseye_size).as_str()));
+        }
+
+        let night_vision = ui_preferences.get("night_vision_theme");
+        if night_vision.is_none() {
+            return Err(canonical_error::failed_precondition_error(
+                "Missing expected 'night_vision_theme' key"));
+        }
+        if let Value::Boolean(night_vision_val) = night_vision.unwrap() {
+            preferences.night_vision_theme = Some(*night_vision_val);
+        } else {
+            return Err(canonical_error::failed_precondition_error(
+                format!("Unexpected 'night_vision_theme' type: {:?}",
+                        night_vision).as_str()));
+        }
+
+        let show_perf = ui_preferences.get("show_perf_stats");
+        if show_perf.is_none() {
+            return Err(canonical_error::failed_precondition_error(
+                "Missing expected 'show_perf_stats' key"));
+        }
+        if let Value::Boolean(show_perf_val) = show_perf.unwrap() {
+            preferences.show_perf_stats = Some(*show_perf_val);
+        } else {
+            return Err(canonical_error::failed_precondition_error(
+                format!("Unexpected 'show_perf_stats' type: {:?}",
+                        show_perf).as_str()));
+        }
+
+        Ok(preferences)
+    }
+
     pub async fn new(min_exposure_duration: Duration,
                      max_exposure_duration: Duration,
                      tetra3_script: String,
@@ -709,6 +826,7 @@ impl MyCedar {
                      tetra3_uds: String,
                      camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                      telescope_position: Arc<Mutex<TelescopePosition>>,
+                     preferences_file: String,
                      base_star_count_goal: i32,
                      base_detection_sigma: f32,
                      min_detection_sigma: f32,
@@ -725,13 +843,27 @@ impl MyCedar {
             stats_capacity)));
         let tetra3_subprocess = Arc::new(Mutex::new(
             Tetra3Subprocess::new(tetra3_script, tetra3_database).unwrap()));
-        let preferences = Preferences{
+        let mut preferences = Preferences{
             celestial_coord_format: Some(CelestialCoordFormat::HmsDms.into()),
             slew_bullseye_size: Some(1.0),
             night_vision_theme: Some(false),
             show_perf_stats: Some(false),
         };
-        // TODO: load preferences from file.
+        // Load UI preferences file.
+        let prefs_path = Path::new(&preferences_file);
+        let bytes = fs::read(prefs_path);
+        if let Err(e) = bytes {
+            warn!("Could not read file: {:?}", e);
+        } else {
+            match Self::parse_prefs(bytes.unwrap()) {
+                Err(e) => {
+                    warn!("Could not parse preferences: {:?}", e);
+                },
+                Ok(p) => {
+                    preferences = p;
+                }
+            }
+        }
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
             fixed_settings: Mutex::new(FixedSettings {
@@ -765,8 +897,8 @@ impl MyCedar {
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
             telescope_position: telescope_position.clone(),
-            // TODO: initialize fresh or from loaded.
             preferences: Mutex::new(preferences),
+            preferences_file,
             scaled_image: None,
             width: 0,
             height: 0,
@@ -854,6 +986,10 @@ struct Args {
     #[arg(long, default_value = "5.0")]
     min_sigma: f32,
 
+    /// Path to UI preferences file.
+    #[arg(long, default_value = "./cedar_ui_prefs.toml")]
+    ui_prefs: String,
+
     // TODO: max solve time
 }
 
@@ -872,7 +1008,8 @@ fn parse_duration(arg: &str)
 async fn main() {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
-    info!("Using Tetra3 server {:?} listening at {:?}", args.tetra3_script, args.tetra3_socket);
+    info!("Using Tetra3 server {:?} listening at {:?}",
+          args.tetra3_script, args.tetra3_socket);
 
     // Build the static content web service.
     let rest = Router::new().nest_service(
@@ -933,6 +1070,7 @@ async fn main() {
                                                    args.tetra3_socket,
                                                    camera,
                                                    shared_telescope_position.clone(),
+                                                   args.ui_prefs,
                                                    args.star_count_goal,
                                                    args.sigma,
                                                    args.min_sigma,
