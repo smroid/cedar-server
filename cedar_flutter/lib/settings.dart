@@ -32,7 +32,7 @@ bool diffPreferences(Preferences prev, Preferences curr) {
 }
 
 class SettingsModel extends ChangeNotifier {
-  Preferences preferencesProto = Preferences();
+  Preferences preferencesProto = Preferences(slewBullseyeSize: 1);
 
   void updateCelestialCoordFormat(CelestialCoordFormat format) {
     preferencesProto.celestialCoordFormat = format;
