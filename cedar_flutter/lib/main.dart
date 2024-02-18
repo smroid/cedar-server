@@ -588,7 +588,7 @@ class _MyHomePageState extends State<MyHomePage> {
               children: <Widget>[
                 Text(sprintf("RA %s", [formatRightAscension(_solutionRA)]),
                     style: TextStyle(color: coordTextColor())),
-                Text(sprintf("DEC %s", [formatDeclination(_solutionDec)]),
+                Text(sprintf("Dec %s", [formatDeclination(_solutionDec)]),
                     style: TextStyle(color: coordTextColor())),
                 Text(
                     sprintf("roll %.1f° err %.1f''",
@@ -607,7 +607,7 @@ class _MyHomePageState extends State<MyHomePage> {
                         [formatRightAscension(_slewRequest!.target.ra)]),
                     style: TextStyle(color: coordTextColor())),
                 Text(
-                    sprintf("DEC %s",
+                    sprintf("Dec %s",
                         [formatDeclination(_slewRequest!.target.dec)]),
                     style: TextStyle(color: coordTextColor())),
                 _hasSolution
