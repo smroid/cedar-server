@@ -36,12 +36,12 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Cedar',
+      title: 'Cedar Aim',
       theme: ThemeData(
         brightness: Brightness.dark,
         useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Cedar'),
+      home: const MyHomePage(title: 'Cedar Aim'),
     );
   }
 }
@@ -413,6 +413,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
   List<Widget> drawerControls() {
     return <Widget>[
+      const CloseButton(style: ButtonStyle(alignment: Alignment.topLeft)),
+      const SizedBox(height: 15),
       Column(
         children: <Widget>[
           const Text("Fast              Accurate"),
@@ -429,6 +431,7 @@ class _MyHomePageState extends State<MyHomePage> {
           ),
         ],
       ),
+      const SizedBox(height: 15),
       Column(
         children: <Widget>[
           NumberPicker(
@@ -445,10 +448,11 @@ class _MyHomePageState extends State<MyHomePage> {
                       setExpTime();
                     })
                   }),
-          Text(sprintf("Exp time %.1f", [_exposureTimeMs])),
+          Text(sprintf("Exp time %.1f ms", [_exposureTimeMs])),
           const SizedBox(height: 15),
         ],
       ),
+      const SizedBox(height: 15),
       Column(children: <Widget>[
         OutlinedButton(
             child: const Text("Save image"),
@@ -469,7 +473,7 @@ class _MyHomePageState extends State<MyHomePage> {
           label: const Text("Preferences"),
           icon: const Icon(Icons.settings),
           onPressed: () {
-            // Dismiss drawer screen, so when user exits out of settings we go
+            // Dismiss drawer, so when user exits out of settings we go
             // back to main display.
             Navigator.of(context).pop();
             Navigator.push(
@@ -482,6 +486,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
   List<Widget> controls() {
     return <Widget>[
+      // Fake widget to consume changes to preferences and issue RPC to the
+      // server.
       Consumer<SettingsModel>(
         builder: (context, settings, child) {
           final newPrefs = settings.preferencesProto;
@@ -508,57 +514,55 @@ class _MyHomePageState extends State<MyHomePage> {
         ])
       ]),
       const SizedBox(width: 15, height: 15),
-      _setupMode
-          ? Column(children: <Widget>[
-              OutlinedButton(
-                  child: const Text("Set alignment"),
-                  onPressed: () {
-                    captureBoresight();
-                  }),
-            ])
-          : const SizedBox(width: 140, height: 32),
-      const SizedBox(width: 15, height: 15),
-      _slewRequest != null && !_setupMode
-          ? Column(children: <Widget>[
-              OutlinedButton(
-                  child: const Text("End goto"),
-                  onPressed: () {
-                    stopSlew();
-                  }),
-            ])
-          : const SizedBox(width: 105, height: 32),
+      SizedBox(
+          width: 140,
+          height: 32,
+          child: _setupMode
+              ? Column(children: <Widget>[
+                  OutlinedButton(
+                      child: const Text("Set alignment"),
+                      onPressed: () {
+                        captureBoresight();
+                      }),
+                ])
+              : _slewRequest != null && !_setupMode
+                  ? Column(children: <Widget>[
+                      OutlinedButton(
+                          child: const Text("End goto"),
+                          onPressed: () {
+                            stopSlew();
+                          }),
+                    ])
+                  : Container()),
     ];
   }
 
   String formatRightAscension(double ra) {
     if (_preferences?.celestialCoordFormat == CelestialCoordFormat.DECIMAL) {
       return sprintf("%.4f°", [ra]);
-    } else {
-      int hours = (ra / 15.0).floor();
-      double fracHours = ra / 15.0 - hours;
-      int minutes = (fracHours * 60.0).floor();
-      double fracMinutes = fracHours * 60.0 - minutes;
-      double seconds = fracMinutes * 60;
-      return sprintf("%02dh %02dm %02.1fs", [hours, minutes, seconds]);
     }
+    int hours = (ra / 15.0).floor();
+    double fracHours = ra / 15.0 - hours;
+    int minutes = (fracHours * 60.0).floor();
+    double fracMinutes = fracHours * 60.0 - minutes;
+    double seconds = fracMinutes * 60;
+    return sprintf("%02dh %02dm %02.1fs", [hours, minutes, seconds]);
   }
 
   String formatDeclination(double dec) {
     if (_preferences?.celestialCoordFormat == CelestialCoordFormat.DECIMAL) {
       return sprintf("%.4f°", [dec]);
-    } else {
-      String sign = dec < 0 ? "-" : "+";
-      if (dec < 0) {
-        dec = -dec;
-      }
-      int degrees = dec.floor();
-      double fracDegrees = dec - degrees;
-      int minutes = (fracDegrees * 60.0).floor();
-      double fracMinutes = fracDegrees * 60.0 - minutes;
-      double seconds = fracMinutes * 60;
-      return sprintf(
-          "%s%02d° %02d' %02.1f''", [sign, degrees, minutes, seconds]);
     }
+    String sign = dec < 0 ? "-" : "+";
+    if (dec < 0) {
+      dec = -dec;
+    }
+    int degrees = dec.floor();
+    double fracDegrees = dec - degrees;
+    int minutes = (fracDegrees * 60.0).floor();
+    double fracMinutes = fracDegrees * 60.0 - minutes;
+    double seconds = fracMinutes * 60;
+    return sprintf("%s%02d° %02d' %02.1f''", [sign, degrees, minutes, seconds]);
   }
 
   List<Widget> dataItems() {
@@ -582,13 +586,13 @@ class _MyHomePageState extends State<MyHomePage> {
           ? Container()
           : Column(
               children: <Widget>[
-                Text(sprintf("RA  %s", [formatRightAscension(_solutionRA)]),
+                Text(sprintf("RA %s", [formatRightAscension(_solutionRA)]),
                     style: TextStyle(color: coordTextColor())),
                 Text(sprintf("DEC %s", [formatDeclination(_solutionDec)]),
                     style: TextStyle(color: coordTextColor())),
-                Text(sprintf("roll  %.4f°", [_solutionRoll]),
-                    style: TextStyle(color: coordTextColor())),
-                Text(sprintf("err %.2f''", [_solutionRMSE]),
+                Text(
+                    sprintf("roll %.1f° err %.1f''",
+                        [_solutionRoll, _solutionRMSE]),
                     style: TextStyle(color: coordTextColor())),
               ],
             ),
@@ -597,22 +601,23 @@ class _MyHomePageState extends State<MyHomePage> {
           ? Container()
           : Column(
               children: <Widget>[
+                Text("Goto target", style: TextStyle(color: coordTextColor())),
                 Text(
-                    sprintf("Target RA  %s",
+                    sprintf("RA %s",
                         [formatRightAscension(_slewRequest!.target.ra)]),
                     style: TextStyle(color: coordTextColor())),
                 Text(
-                    sprintf("Target DEC %s",
+                    sprintf("DEC %s",
                         [formatDeclination(_slewRequest!.target.dec)]),
                     style: TextStyle(color: coordTextColor())),
                 _hasSolution
                     ? Column(children: <Widget>[
                         Text(
-                            sprintf("Distance  %.4f°",
+                            sprintf("distance %.4f°",
                                 [_slewRequest?.targetDistance]),
                             style: TextStyle(color: coordTextColor())),
                         Text(
-                            sprintf("Angle %.2f°", [_slewRequest?.targetAngle]),
+                            sprintf("angle %.2f°", [_slewRequest?.targetAngle]),
                             style: TextStyle(color: coordTextColor())),
                       ])
                     : Container(),
