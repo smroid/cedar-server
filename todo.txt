@@ -6,11 +6,14 @@ camera connect error
   usbreset to the rescue
 * detect the need for USB reset during camera operation (time outs?)
 
-show centroids/matches/pattern stars in operate mode. Except when slewing?
+show matches/pattern stars in operate mode. Except when slewing?
+* make this a preference, is ugly
 
 when no plate solution:
 * dim data
 * after N seconds, drop data display
+
+detect engine-- gather stats on measured noise
 
 view server log
 
@@ -55,13 +58,8 @@ UI:
 * right side live information displays
   - perf stats (selectable, basic+detailed)
 
-Settings:
+Preferences:
 * update rate (non-dwell, dwell)
 * night vision theme
-* decimal ra/dec vs hms, dms
-* size of bullseye in slew mode (can match eyepiece FOV)
-
-Persistence of settings and preferences
-* some client side, some server side?
 
 IOS
