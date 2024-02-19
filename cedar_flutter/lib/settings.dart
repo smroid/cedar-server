@@ -103,9 +103,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             provider.updateHideAppBar(value);
                           });
                         }),
-                    title: const Text('Hide app bar'),
-                    trailing:
-                        const Icon(Icons.close_fullscreen, color: Colors.red)),
+                    title: const Text('Full screen'),
+                    trailing: const Icon(Icons.open_in_full)),
                 SettingsTile(
                   leading: Switch(
                       value: prefsProto.celestialCoordFormat ==
