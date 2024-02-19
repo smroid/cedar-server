@@ -766,8 +766,7 @@ class _MyHomePageState extends State<MyHomePage> {
         .preferencesProto
         .hideAppBar;
     if (hideAppBar) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
-      // goFullScreen();
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
     } else {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
           overlays: SystemUiOverlay.values);
