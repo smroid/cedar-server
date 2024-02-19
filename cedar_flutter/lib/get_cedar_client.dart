@@ -12,3 +12,6 @@ CedarClient getClient() {
         connectTimeout: Duration(seconds: 5)),
   ));
 }
+
+void goFullScreen() {}
+void cancelFullScreen() {}
