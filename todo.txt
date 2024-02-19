@@ -9,17 +9,20 @@ camera connect error
 show matches/pattern stars in operate mode. Except when slewing?
 * make this a preference, is ugly
 
-when no plate solution:
-* dim data
-* after N seconds, drop data display
-
 detect engine-- gather stats on measured noise
 
 view server log
 
 vignetting calibration
 
-FITS support for saved images?
+Wifi management
+* access point, provisioning
+* switching wifi mode
+* bluetooth?
+
+HTTPS
+
+FITS support for saved images? Other formats?
 
 time/location from phone
 
@@ -34,7 +37,6 @@ command line options for camera binning: yes, no, auto.
 goto support from SkySafari
 * aural cue from phone
 * alt/az vs equatorial?
-* need cancel button on cedar (SkySafari also has stop).
 
 update interval, reduce when dwelling, increase upon movement
 
@@ -55,11 +57,7 @@ UI:
   - dwelling
     - tracking vs. fixed mount
   - polar advice available
-* right side live information displays
-  - perf stats (selectable, basic+detailed)
 
 Preferences:
 * update rate (non-dwell, dwell)
-* night vision theme
 
-IOS
