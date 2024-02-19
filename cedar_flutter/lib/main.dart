@@ -766,10 +766,9 @@ class _MyHomePageState extends State<MyHomePage> {
         .preferencesProto
         .hideAppBar;
     if (hideAppBar) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
+      goFullScreen();
     } else {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
-          overlays: SystemUiOverlay.values);
+      cancelFullScreen();
     }
 
     // This method is rerun every time setState() is called.
