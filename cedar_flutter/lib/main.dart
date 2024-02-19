@@ -66,28 +66,30 @@ proto_duration.Duration msToDuration(int ms) {
 
 class _MainImagePainter extends CustomPainter {
   final _MyHomePageState state;
+  final BuildContext _context;
 
-  _MainImagePainter(this.state);
+  _MainImagePainter(this.state, this._context);
 
   @override
   void paint(Canvas canvas, Size size) {
     const double hairline = 0.5;
     const double thin = 1;
     const double thick = 2;
+    final Color color = Theme.of(_context).colorScheme.primary;
     if (state._setupMode) {
       // Draw search box within which we search for the brightest star for
       // focusing.
       canvas.drawRect(
           state._centerRegion,
           Paint()
-            ..color = Colors.red
+            ..color = color
             ..strokeWidth = thick
             ..style = PaintingStyle.stroke);
       // Draw box around location of the brightest star in search box.
       canvas.drawRect(
           state._centerPeakRegion,
           Paint()
-            ..color = Colors.red
+            ..color = color
             ..strokeWidth = thin
             ..style = PaintingStyle.stroke);
       // Draw circles around the detected stars.
@@ -98,7 +100,7 @@ class _MainImagePainter extends CustomPainter {
             offset,
             3,
             Paint()
-              ..color = Colors.red
+              ..color = color
               ..strokeWidth = hairline
               ..style = PaintingStyle.stroke);
       }
@@ -116,15 +118,15 @@ class _MainImagePainter extends CustomPainter {
       final scopeFov = state._preferences!.slewBullseyeSize *
           state._imageRegion.width /
           state._solutionFOV;
-      drawSlewTarget(canvas, center, scopeFov, posInImage, slew.targetDistance,
-          slew.targetAngle);
+      drawSlewTarget(canvas, color, center, scopeFov, posInImage,
+          slew.targetDistance, slew.targetAngle);
     } else {
       // Make a cross at the boresight position (if any) or else the image
       // center.
-      double crossRadius = state._boresightPosition == null ? 4 : 8;
+      double crossRadius = 8;
       double crossThickness =
           state._boresightPosition == null ? hairline : thin;
-      drawCross(canvas, center, crossRadius, crossThickness);
+      drawCross(canvas, color, center, crossRadius, crossThickness);
     }
   }
 
@@ -680,7 +682,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Widget mainImage() {
     return CustomPaint(
-      foregroundPainter: _MainImagePainter(this),
+      foregroundPainter: _MainImagePainter(this, context),
       child: dart_widgets.Image.memory(_imageBytes, gaplessPlayback: true),
     );
   }
