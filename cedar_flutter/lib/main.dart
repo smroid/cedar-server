@@ -758,15 +758,36 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+
   @override
   Widget build(BuildContext context) {
     goFullScreen();
+    bool hideAppBar = Provider.of<SettingsModel>(context, listen: false)
+        .preferencesProto
+        .hideAppBar;
+
     // This method is rerun every time setState() is called.
     return Scaffold(
+      key: _scaffoldKey,
       appBar: AppBar(
+          toolbarHeight: hideAppBar ? 0 : 56,
+          toolbarOpacity: hideAppBar ? 0.0 : 1.0,
           title: Text(widget.title),
           foregroundColor: Theme.of(context).colorScheme.primary),
-      body: FittedBox(child: orientationLayout(context)),
+      body: Stack(children: [
+        Positioned(
+            left: 8,
+            top: 0,
+            child: hideAppBar
+                ? IconButton(
+                    icon: const Icon(Icons.menu),
+                    onPressed: () {
+                      _scaffoldKey.currentState!.openDrawer();
+                    })
+                : Container()),
+        FittedBox(child: orientationLayout(context)),
+      ]),
       onDrawerChanged: (isOpened) {
         _doRefreshes = !isOpened;
       },
@@ -774,6 +795,7 @@ class _MyHomePageState extends State<MyHomePage> {
           width: 200,
           child:
               ListView(padding: EdgeInsets.zero, children: drawerControls())),
+      drawerEdgeDragWidth: 100,
     );
   }
 }

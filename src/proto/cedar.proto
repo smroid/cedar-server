@@ -136,6 +136,9 @@ message Preferences {
   // If true, the UI continuously displays (some) Cedar performance statistics.
   optional bool show_perf_stats = 4;
 
+  // If true, the UI app bar is hidden to allow full screen operation.
+  optional bool hide_app_bar = 5;
+
   // TODO: save image format (bmp, tiff, jpg, webp, FITS)
 }
 

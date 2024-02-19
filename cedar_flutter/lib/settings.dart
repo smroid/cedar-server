@@ -28,6 +28,11 @@ bool diffPreferences(Preferences prev, Preferences curr) {
   } else {
     curr.clearShowPerfStats();
   }
+  if (curr.hideAppBar != prev.hideAppBar) {
+    hasDiff = true;
+  } else {
+    curr.clearHideAppBar();
+  }
   return hasDiff;
 }
 
@@ -55,6 +60,11 @@ class SettingsModel extends ChangeNotifier {
 
   void updateShowPerfStats(bool enabled) {
     preferencesProto.showPerfStats = enabled;
+    notifyListeners();
+  }
+
+  void updateHideAppBar(bool hide) {
+    preferencesProto.hideAppBar = hide;
     notifyListeners();
   }
 }
@@ -85,6 +95,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 // settings_ui has a bug on Web where the 'trailing' element
                 // is not visible. We work around this by putting the important
                 // element (the control) in the 'leading' position.
+                SettingsTile(
+                    leading: Switch(
+                        value: prefsProto.hideAppBar,
+                        onChanged: (bool value) {
+                          setState(() {
+                            provider.updateHideAppBar(value);
+                          });
+                        }),
+                    title: const Text('Hide app bar'),
+                    trailing:
+                        const Icon(Icons.close_fullscreen, color: Colors.red)),
                 SettingsTile(
                   leading: Switch(
                       value: prefsProto.celestialCoordFormat ==
