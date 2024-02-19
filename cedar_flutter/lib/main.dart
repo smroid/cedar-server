@@ -519,7 +519,7 @@ class _MyHomePageState extends State<MyHomePage> {
       ]),
       const SizedBox(width: 15, height: 15),
       SizedBox(
-          width: 140,
+          width: 150,
           height: 32,
           child: _setupMode
               ? Column(children: <Widget>[
@@ -619,7 +619,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _setupMode
           ? Container()
           : SizedBox(
-              width: 140,
+              width: 150,
               height: 90,
               child: Column(
                 children: <Widget>[
