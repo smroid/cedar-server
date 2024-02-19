@@ -5,8 +5,8 @@ import 'package:cedar_flutter/draw_util.dart';
 import 'package:cedar_flutter/settings.dart';
 import 'package:cedar_flutter/themes.dart';
 import 'package:fixnum/fixnum.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
 import 'package:grpc/service_api.dart';
 import 'package:numberpicker/numberpicker.dart';
@@ -766,7 +766,11 @@ class _MyHomePageState extends State<MyHomePage> {
         .preferencesProto
         .hideAppBar;
     if (hideAppBar) {
-      goFullScreen();
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
+      // goFullScreen();
+    } else {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
+          overlays: SystemUiOverlay.values);
     }
 
     // This method is rerun every time setState() is called.
