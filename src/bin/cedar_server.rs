@@ -286,6 +286,9 @@ impl Cedar for MyCedar {
         if let Some(show_perf) = req.show_perf_stats {
             locked_preferences.show_perf_stats = Some(show_perf);
         }
+        if let Some(hide_app_bar) = req.hide_app_bar {
+            locked_preferences.hide_app_bar = Some(hide_app_bar);
+        }
 
         // Write updated preferences to file.
         let prefs_path = Path::new(&locked_state.preferences_file);
@@ -749,6 +752,7 @@ impl MyCedar {
             slew_bullseye_size: Some(1.0),
             night_vision_theme: Some(false),
             show_perf_stats: Some(false),
+            hide_app_bar: Some(false),
         };
         // Load UI preferences file.
         let prefs_path = Path::new(&preferences_file);
