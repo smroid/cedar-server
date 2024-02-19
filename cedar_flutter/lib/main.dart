@@ -519,7 +519,7 @@ class _MyHomePageState extends State<MyHomePage> {
       ]),
       const SizedBox(width: 15, height: 15),
       SizedBox(
-          width: 150,
+          width: 160,
           height: 32,
           child: _setupMode
               ? Column(children: <Widget>[
@@ -636,7 +636,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _slewRequest == null || _setupMode
           ? Container()
           : SizedBox(
-              width: 140,
+              width: 150,
               height: 110,
               child: Column(children: <Widget>[
                 primaryText("Goto target"),
