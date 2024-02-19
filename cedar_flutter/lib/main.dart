@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:cedar_flutter/draw_slew_target.dart';
 import 'package:cedar_flutter/draw_util.dart';
 import 'package:cedar_flutter/settings.dart';
+import 'package:cedar_flutter/themes.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -21,12 +22,13 @@ import 'get_cedar_client_for_web.dart'
 // To generate release build: flutter build web
 
 void main() {
-  runApp(
-    ChangeNotifierProvider(
-      create: (context) => SettingsModel(),
-      child: const MyApp(),
-    ),
-  );
+  runApp(MultiProvider(
+    providers: [
+      ChangeNotifierProvider(create: (context) => SettingsModel()),
+      ChangeNotifierProvider(create: (context) => ThemeModel()),
+    ],
+    child: const MyApp(),
+  ));
 }
 
 class MyApp extends StatelessWidget {
@@ -37,10 +39,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Cedar Aim',
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        useMaterial3: true,
-      ),
+      theme: Provider.of<ThemeModel>(context).currentTheme,
       home: const MyHomePage(title: 'Cedar Aim'),
     );
   }
@@ -203,6 +202,15 @@ class _MyHomePageState extends State<MyHomePage> {
     _calibrating = response.calibrating;
     if (response.calibrating) {
       _calibrationProgress = response.calibrationProgress;
+    }
+    if (_preferences == null ||
+        _preferences?.nightVisionTheme !=
+            response.preferences.nightVisionTheme) {
+      if (response.preferences.nightVisionTheme) {
+        Provider.of<ThemeModel>(context, listen: false).setNightVisionTheme();
+      } else {
+        Provider.of<ThemeModel>(context, listen: false).setNormalTheme();
+      }
     }
     _preferences = response.preferences;
     Provider.of<SettingsModel>(context, listen: false).preferencesProto =
@@ -403,17 +411,13 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
-  Color starsSliderColor() {
-    return _hasSolution ? Colors.red : const Color(0xff606060);
-  }
-
-  Color coordTextColor() {
-    return _hasSolution ? Colors.red : const Color(0xff606060);
-  }
-
   List<Widget> drawerControls() {
     return <Widget>[
-      const CloseButton(style: ButtonStyle(alignment: Alignment.topLeft)),
+      CloseButton(
+          style: ButtonStyle(
+              alignment: Alignment.topLeft,
+              iconColor: MaterialStatePropertyAll(
+                  Theme.of(context).colorScheme.primary))),
       const SizedBox(height: 15),
       Column(
         children: <Widget>[
@@ -502,7 +506,7 @@ class _MyHomePageState extends State<MyHomePage> {
       ),
       Column(children: <Widget>[
         Row(children: <Widget>[
-          const Text("Setup"),
+          primaryText("Setup"),
           Switch(
               value: !_setupMode,
               onChanged: (bool value) {
@@ -510,7 +514,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   setOperatingMode(/*setup=*/ !value);
                 });
               }),
-          const Text("Run"),
+          primaryText("Run"),
         ])
       ]),
       const SizedBox(width: 15, height: 15),
@@ -565,12 +569,33 @@ class _MyHomePageState extends State<MyHomePage> {
     return sprintf("%s%02d° %02d' %02.1f''", [sign, degrees, minutes, seconds]);
   }
 
-  List<Widget> dataItems() {
+  Color starsSliderColor() {
+    return _hasSolution
+        ? Theme.of(context).colorScheme.primary
+        : const Color(0xff606060);
+  }
+
+  Color solveTextColor() {
+    return _hasSolution
+        ? Theme.of(context).colorScheme.primary
+        : const Color(0xff606060);
+  }
+
+  Text primaryText(String val) {
+    return Text(val,
+        style: TextStyle(color: Theme.of(context).colorScheme.primary));
+  }
+
+  Text solveText(String val) {
+    return Text(val, style: TextStyle(color: solveTextColor()));
+  }
+
+  List<Widget> dataItems(BuildContext context) {
     return <Widget>[
       Column(children: <Widget>[
         SizedBox(
             width: 130,
-            height: 30,
+            height: 20,
             child: Slider(
               min: 0,
               max: 10,
@@ -579,82 +604,75 @@ class _MyHomePageState extends State<MyHomePage> {
               activeColor: starsSliderColor(),
               thumbColor: starsSliderColor(),
             )),
-        Text("$_numStars stars"),
+        primaryText("$_numStars stars"),
+        const SizedBox(width: 15, height: 15),
+        _calibrationData != null && _calibrationData!.fovHorizontal > 0
+            ? Column(children: <Widget>[
+                primaryText(
+                    sprintf("FOV %.1f°", [_calibrationData!.fovHorizontal])),
+                primaryText(
+                    sprintf("Lens %.1f mm", [_calibrationData!.lensFlMm])),
+              ])
+            : Container(),
       ]),
       const SizedBox(width: 15, height: 15),
       _setupMode
           ? Container()
-          : Column(
-              children: <Widget>[
-                Text(sprintf("RA %s", [formatRightAscension(_solutionRA)]),
-                    style: TextStyle(color: coordTextColor())),
-                Text(sprintf("Dec %s", [formatDeclination(_solutionDec)]),
-                    style: TextStyle(color: coordTextColor())),
-                Text(
-                    sprintf("roll %.1f° err %.1f''",
-                        [_solutionRoll, _solutionRMSE]),
-                    style: TextStyle(color: coordTextColor())),
-              ],
-            ),
+          : SizedBox(
+              width: 140,
+              height: 90,
+              child: Column(
+                children: <Widget>[
+                  primaryText("Plate solution"),
+                  solveText(
+                      sprintf("RA %s", [formatRightAscension(_solutionRA)])),
+                  solveText(
+                      sprintf("Dec %s", [formatDeclination(_solutionDec)])),
+                  solveText(sprintf(
+                      "roll %.1f° err %.1f''", [_solutionRoll, _solutionRMSE])),
+                ],
+              )),
       const SizedBox(width: 15, height: 15),
       _slewRequest == null || _setupMode
           ? Container()
-          : Column(
-              children: <Widget>[
-                Text("Goto target", style: TextStyle(color: coordTextColor())),
-                Text(
-                    sprintf("RA %s",
-                        [formatRightAscension(_slewRequest!.target.ra)]),
-                    style: TextStyle(color: coordTextColor())),
-                Text(
-                    sprintf("Dec %s",
-                        [formatDeclination(_slewRequest!.target.dec)]),
-                    style: TextStyle(color: coordTextColor())),
-                _hasSolution
-                    ? Column(children: <Widget>[
-                        Text(
-                            sprintf("distance %.4f°",
-                                [_slewRequest?.targetDistance]),
-                            style: TextStyle(color: coordTextColor())),
-                        Text(
-                            sprintf("angle %.2f°", [_slewRequest?.targetAngle]),
-                            style: TextStyle(color: coordTextColor())),
-                      ])
-                    : Container(),
-              ],
+          : SizedBox(
+              width: 140,
+              height: 110,
+              child: Column(children: <Widget>[
+                primaryText("Goto target"),
+                solveText(sprintf(
+                    "RA %s", [formatRightAscension(_slewRequest!.target.ra)])),
+                solveText(sprintf(
+                    "Dec %s", [formatDeclination(_slewRequest!.target.dec)])),
+                Column(children: <Widget>[
+                  solveText(sprintf(
+                      "distance %.4f°", [_slewRequest?.targetDistance])),
+                  solveText(
+                      sprintf("angle %.2f°", [_slewRequest?.targetAngle])),
+                ])
+              ]),
             ),
       const SizedBox(width: 15, height: 15),
       _setupMode || _processingStats == null || !_preferences!.showPerfStats
           ? Container()
           : Column(
               children: <Widget>[
-                Text(sprintf("Solve interval  %.1f ms",
+                primaryText(sprintf("Solve interval  %.1f ms",
                     [_processingStats!.solveInterval.recent.mean * 1000])),
-                Text(sprintf("Detect latency  %.1f ms",
+                primaryText(sprintf("Detect latency  %.1f ms",
                     [_processingStats!.detectLatency.recent.mean * 1000])),
-                Text(sprintf("Solve latency  %.1f ms",
+                primaryText(sprintf("Solve latency  %.1f ms",
                     [_processingStats!.solveLatency.recent.mean * 1000])),
-                Text(sprintf("Serve latency  %.1f ms",
+                primaryText(sprintf("Serve latency  %.1f ms",
                     [_processingStats!.serveLatency.recent.mean * 1000])),
-                Text(sprintf("Solve attempt  %2d%%", [
+                primaryText(sprintf("Solve attempt  %2d%%", [
                   (_processingStats!.solveAttemptFraction.recent.mean * 100)
                       .toInt()
                 ])),
-                Text(sprintf("Solve success  %d%%", [
+                primaryText(sprintf("Solve success  %d%%", [
                   (_processingStats!.solveSuccessFraction.recent.mean * 100)
                       .toInt()
                 ])),
-              ],
-            ),
-      const SizedBox(width: 15, height: 15),
-      _setupMode ||
-              _calibrationData == null ||
-              _calibrationData!.fovHorizontal == 0
-          ? Container()
-          : Column(
-              children: <Widget>[
-                Text(sprintf("FOV %.1f°", [_calibrationData!.fovHorizontal])),
-                Text(sprintf("Lens %.1f mm", [_calibrationData!.lensFlMm])),
               ],
             ),
     ];
@@ -667,25 +685,27 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
-  Widget calibratingPacifier() {
+  Widget calibratingPacifier(BuildContext context) {
     return Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
-          const Text("Calibrating",
+          Text("Calibrating",
               style: TextStyle(
                   fontSize: 20,
                   backgroundColor: Colors.black,
-                  color: Colors.red)),
+                  color: Theme.of(context).colorScheme.primary)),
           const SizedBox(height: 15),
           CircularProgressIndicator(
-              value: _calibrationProgress, color: Colors.red),
+              value: _calibrationProgress,
+              color: Theme.of(context).colorScheme.primary),
           const SizedBox(height: 15),
           TextButton(
             onPressed: () {
               cancelCalibration();
             },
             style: TextButton.styleFrom(
-                backgroundColor: Colors.black, foregroundColor: Colors.red),
+                backgroundColor: Colors.black,
+                foregroundColor: Theme.of(context).colorScheme.primary),
             child: const Text('Cancel'),
           ),
         ]);
@@ -706,7 +726,8 @@ class _MyHomePageState extends State<MyHomePage> {
         _calibrating
             ? Positioned.fill(
                 child: Align(
-                    alignment: Alignment.center, child: calibratingPacifier()))
+                    alignment: Alignment.center,
+                    child: calibratingPacifier(context)))
             : Container(),
       ],
     );
@@ -720,7 +741,7 @@ class _MyHomePageState extends State<MyHomePage> {
           const SizedBox(width: 15, height: 15),
           imageStack(context),
           const SizedBox(width: 15, height: 15),
-          Row(children: dataItems()),
+          Row(children: dataItems(context)),
         ],
       );
     } else {
@@ -731,7 +752,7 @@ class _MyHomePageState extends State<MyHomePage> {
           const SizedBox(width: 15, height: 15),
           imageStack(context),
           const SizedBox(width: 15, height: 15),
-          Column(children: dataItems()),
+          Column(children: dataItems(context)),
         ],
       );
     }
@@ -742,7 +763,9 @@ class _MyHomePageState extends State<MyHomePage> {
     goFullScreen();
     // This method is rerun every time setState() is called.
     return Scaffold(
-      appBar: AppBar(title: Text(widget.title)),
+      appBar: AppBar(
+          title: Text(widget.title),
+          foregroundColor: Theme.of(context).colorScheme.primary),
       body: FittedBox(child: orientationLayout(context)),
       onDrawerChanged: (isOpened) {
         _doRefreshes = !isOpened;
