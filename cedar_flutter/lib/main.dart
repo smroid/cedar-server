@@ -519,12 +519,12 @@ class _MyHomePageState extends State<MyHomePage> {
       ]),
       const SizedBox(width: 15, height: 15),
       SizedBox(
-          width: 160,
+          width: 120,
           height: 32,
           child: _setupMode
               ? Column(children: <Widget>[
                   OutlinedButton(
-                      child: const Text("Set alignment"),
+                      child: const FittedBox(child: Text("Set align")),
                       onPressed: () {
                         captureBoresight();
                       }),
@@ -619,7 +619,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _setupMode
           ? Container()
           : SizedBox(
-              width: 150,
+              width: 160,
               height: 90,
               child: Column(
                 children: <Widget>[
@@ -636,7 +636,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _slewRequest == null || _setupMode
           ? Container()
           : SizedBox(
-              width: 150,
+              width: 160,
               height: 110,
               child: Column(children: <Widget>[
                 primaryText("Goto target"),
