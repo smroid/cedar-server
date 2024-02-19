@@ -371,6 +371,7 @@ impl SolveEngine {
                 if locked_state.stop_request {
                     debug!("Stopping solve engine");
                     locked_state.stop_request = false;
+                    locked_state.telescope_position.lock().unwrap().boresight_valid = false;
                     return;  // Exit thread.
                 }
             }
