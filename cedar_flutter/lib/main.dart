@@ -762,10 +762,12 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    goFullScreen();
     bool hideAppBar = Provider.of<SettingsModel>(context, listen: false)
         .preferencesProto
         .hideAppBar;
+    if (hideAppBar) {
+      goFullScreen();
+    }
 
     // This method is rerun every time setState() is called.
     return Scaffold(
