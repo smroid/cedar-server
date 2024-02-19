@@ -82,13 +82,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 : const SettingsThemeData(),
             sections: [
               SettingsSection(title: const Text('Display'), tiles: [
+                // settings_ui has a bug on Web where the 'trailing' element
+                // is not visible. We work around this by putting the important
+                // element (the control) in the 'leading' position.
                 SettingsTile(
-                  leading: const Icon(Icons.numbers),
-                  title: Text(prefsProto.celestialCoordFormat ==
-                          CelestialCoordFormat.HMS_DMS
-                      ? 'RA/Dec format H.M.S/D.M.S'
-                      : 'RA/Dec format D.DD/D.DD'),
-                  trailing: Switch(
+                  leading: Switch(
                       value: prefsProto.celestialCoordFormat ==
                           CelestialCoordFormat.HMS_DMS,
                       onChanged: (bool value) {
@@ -98,32 +96,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               : CelestialCoordFormat.DECIMAL);
                         });
                       }),
+                  title: Text(prefsProto.celestialCoordFormat ==
+                          CelestialCoordFormat.HMS_DMS
+                      ? 'RA/Dec format H.M.S/D.M.S'
+                      : 'RA/Dec format D.DD/D.DD'),
+                  trailing: const Icon(Icons.numbers),
                 ),
                 SettingsTile(
-                  leading: const Icon(Icons.visibility, color: Colors.red),
-                  title: const Text('Night vision theme'),
-                  trailing: Switch(
+                  leading: Switch(
                       value: prefsProto.nightVisionTheme,
                       onChanged: (bool value) {
                         setState(() {
                           provider.updateNightVisionEnabled(value);
                         });
                       }),
+                  title: const Text('Night vision theme'),
+                  trailing: const Icon(Icons.visibility, color: Colors.red),
                 ),
                 SettingsTile(
-                  leading: const Icon(Icons.timer),
-                  title: const Text('Show performance stats'),
-                  trailing: Switch(
+                  leading: Switch(
                       value: prefsProto.showPerfStats,
                       onChanged: (bool value) {
                         setState(() {
                           provider.updateShowPerfStats(value);
                         });
                       }),
+                  title: const Text('Show performance stats'),
+                  trailing: const Icon(Icons.timer),
                 ),
                 SettingsTile(
-                  leading: const Icon(Icons.circle_outlined),
-                  trailing: Slider(
+                  leading: Slider(
                     min: 0.1,
                     max: 2.0,
                     divisions: 19,
@@ -136,6 +138,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   title: Text(sprintf(
                       'Telescope FOV  %.1f°', [prefsProto.slewBullseyeSize])),
+                  trailing: const Icon(Icons.circle_outlined),
                 ),
               ])
             ]));
