@@ -11,6 +11,17 @@ show matches/pattern stars in operate mode. Except when slewing?
 
 detect engine-- gather stats on measured noise
 
+interoperation with SkySafari
+* switch apps?
+* split screen?
+* picture-in-picture?
+
+help system
+* long press? (GestureDetector wrapped around a widget)
+* 'i' icons?
+
+frame rate slider in prefs
+
 view server log
 
 vignetting calibration
@@ -18,13 +29,13 @@ vignetting calibration
 Wifi management
 * access point, provisioning
 * switching wifi mode
-* bluetooth?
-
-HTTPS
+* bluetooth? disable if not using?
+* access point power level (save battery)
 
 FITS support for saved images? Other formats?
 
 time/location from phone
+* HTTPS for location
 
 observer session handling
 
@@ -34,9 +45,11 @@ logging
 
 command line options for camera binning: yes, no, auto.
 
+run camera in single exposure mode (instead of video) if update interval
+is long.
+
 goto support from SkySafari
 * aural cue from phone
-* alt/az vs equatorial?
 
 update interval, reduce when dwelling, increase upon movement
 
