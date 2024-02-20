@@ -562,7 +562,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   String formatRightAscension(double ra) {
     if (_preferences?.celestialCoordFormat == CelestialCoordFormat.DECIMAL) {
-      return sprintf("%.4f°", [ra]);
+      return sprintf("RA %.4f°", [ra]);
     }
     int hours = (ra / 15.0).floor();
     double fracHours = ra / 15.0 - hours;
@@ -574,7 +574,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   String formatDeclination(double dec) {
     if (_preferences?.celestialCoordFormat == CelestialCoordFormat.DECIMAL) {
-      return sprintf("%.4f°", [dec]);
+      return sprintf("Dec %.4f°", [dec]);
     }
     String sign = dec < 0 ? "-" : "+";
     if (dec < 0) {
@@ -638,37 +638,29 @@ class _MyHomePageState extends State<MyHomePage> {
       _setupMode
           ? Container()
           : SizedBox(
-              width: 160,
-              height: 90,
+              width: 120,
+              height: 80,
               child: Column(
                 children: <Widget>[
-                  primaryText("Plate solution"),
-                  solveText(
-                      sprintf("RA %s", [formatRightAscension(_solutionRA)])),
-                  solveText(
-                      sprintf("Dec %s", [formatDeclination(_solutionDec)])),
-                  solveText(sprintf(
-                      "roll %.1f° err %.1f''", [_solutionRoll, _solutionRMSE])),
+                  primaryText("Aim"),
+                  solveText(sprintf("%s", [formatRightAscension(_solutionRA)])),
+                  solveText(sprintf("%s", [formatDeclination(_solutionDec)])),
                 ],
               )),
       const SizedBox(width: 15, height: 15),
       _slewRequest == null || _setupMode
           ? Container()
           : SizedBox(
-              width: 160,
-              height: 110,
+              width: 120,
+              height: 80,
               child: Column(children: <Widget>[
-                primaryText("Goto target"),
+                primaryText("Target"),
                 solveText(sprintf(
-                    "RA %s", [formatRightAscension(_slewRequest!.target.ra)])),
+                    "%s", [formatRightAscension(_slewRequest!.target.ra)])),
                 solveText(sprintf(
-                    "Dec %s", [formatDeclination(_slewRequest!.target.dec)])),
-                Column(children: <Widget>[
-                  solveText(sprintf(
-                      "distance %.4f°", [_slewRequest?.targetDistance])),
-                  solveText(
-                      sprintf("angle %.2f°", [_slewRequest?.targetAngle])),
-                ])
+                    "%s", [formatDeclination(_slewRequest!.target.dec)])),
+                solveText(
+                    sprintf("%.1f° away", [_slewRequest?.targetDistance])),
               ]),
             ),
       const SizedBox(width: 15, height: 15),
@@ -676,19 +668,15 @@ class _MyHomePageState extends State<MyHomePage> {
           ? Container()
           : Column(
               children: <Widget>[
-                primaryText(sprintf("Solve interval  %.1f ms",
-                    [_processingStats!.solveInterval.recent.mean * 1000])),
-                primaryText(sprintf("Detect latency  %.1f ms",
+                primaryText(sprintf("Detect %.1f ms",
                     [_processingStats!.detectLatency.recent.mean * 1000])),
-                primaryText(sprintf("Solve latency  %.1f ms",
+                primaryText(sprintf("Solve %.1f ms",
                     [_processingStats!.solveLatency.recent.mean * 1000])),
-                primaryText(sprintf("Serve latency  %.1f ms",
-                    [_processingStats!.serveLatency.recent.mean * 1000])),
-                primaryText(sprintf("Solve attempt  %2d%%", [
+                primaryText(sprintf("Solve attempt %2d%%", [
                   (_processingStats!.solveAttemptFraction.recent.mean * 100)
                       .toInt()
                 ])),
-                primaryText(sprintf("Solve success  %d%%", [
+                primaryText(sprintf("Solve success %d%%", [
                   (_processingStats!.solveSuccessFraction.recent.mean * 100)
                       .toInt()
                 ])),
