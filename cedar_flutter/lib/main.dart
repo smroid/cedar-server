@@ -196,6 +196,12 @@ class _MyHomePageState extends State<MyHomePage> {
     return _client!;
   }
 
+  void _setStateFromOpSettings(OperationSettings opSettings) {
+    _accuracy = opSettings.accuracy.value;
+    _expSettingMs = durationToMs(opSettings.exposureTime).toInt();
+    _setupMode = opSettings.operatingMode == OperatingMode.SETUP;
+  }
+
   void setStateFromFrameResult(FrameResult response) {
     _prevFrameId = response.frameId;
     _stars = response.starCandidates;
@@ -213,11 +219,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _preferences = response.preferences;
     Provider.of<SettingsModel>(context, listen: false).preferencesProto =
         _preferences!.deepCopy();
-    _accuracy = response.operationSettings.accuracy.value;
-    _expSettingMs =
-        durationToMs(response.operationSettings.exposureTime).toInt();
-    _setupMode =
-        response.operationSettings.operatingMode == OperatingMode.SETUP;
+    _setStateFromOpSettings(response.operationSettings);
     _calibrationData =
         response.hasCalibrationData() ? response.calibrationData : null;
     _processingStats =
@@ -287,8 +289,11 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> updateOperationSettings(OperationSettings request) async {
     try {
-      await client().updateOperationSettings(request,
+      var newOpSettings = await client().updateOperationSettings(request,
           options: CallOptions(timeout: const Duration(seconds: 10)));
+      setState(() {
+        _setStateFromOpSettings(newOpSettings);
+      });
     } catch (e) {
       log('Error: $e');
     }
@@ -449,21 +454,28 @@ class _MyHomePageState extends State<MyHomePage> {
       const SizedBox(height: 15),
       Column(
         children: <Widget>[
+          primaryText("Exposure time"),
           NumberPicker(
-              axis: Axis.horizontal,
-              itemWidth: 40,
-              itemHeight: 30,
-              minValue: 0,
-              maxValue: 200,
-              step: 10,
-              value: _expSettingMs,
-              onChanged: (value) => {
-                    setState(() {
-                      _expSettingMs = value;
-                      setExpTime();
-                    })
-                  }),
-          Text(sprintf("Exp time %.1f ms", [_exposureTimeMs])),
+            axis: Axis.horizontal,
+            itemWidth: 40,
+            itemHeight: 30,
+            minValue: 0,
+            maxValue: 200,
+            step: 10,
+            value: _expSettingMs,
+            onChanged: (value) => {
+              setState(() {
+                _expSettingMs = value;
+                setExpTime();
+              })
+            },
+            textMapper: (numberText) {
+              return numberText == "0" ? "A" : numberText;
+            },
+          ),
+          _expSettingMs == 0
+              ? primaryText(sprintf("auto %.1f ms", [_exposureTimeMs]))
+              : primaryText(sprintf("%d ms", [_expSettingMs])),
           const SizedBox(height: 15),
         ],
       ),
