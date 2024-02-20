@@ -386,6 +386,9 @@ impl MyCedar {
 
     async fn set_update_interval(state: &CedarState, update_interval: std::time::Duration)
                                  -> Result<(), CanonicalError> {
+        // TODO: if the update interval is long, it might make sense to take the
+        // camera out of video mode and do individual captures. The main issue
+        // is whether this can lower power consumption.
         state.detect_engine.lock().await.set_update_interval(update_interval)?;
         state.solve_engine.lock().await.set_update_interval(update_interval)
     }
@@ -761,7 +764,13 @@ impl MyCedar {
             warn!("Could not read file {}: {:?}", preferences_file, e);
         } else {
             match Preferences::decode(bytes.unwrap().as_slice()) {
-                Ok(p) => {
+                Ok(mut p) => {
+                    if p.slew_bullseye_size.unwrap() < 0.1 {
+                        p.slew_bullseye_size = Some(0.1);
+                    }
+                    if p.slew_bullseye_size.unwrap() > 2.0 {
+                        p.slew_bullseye_size = Some(2.0);
+                    }
                     preferences = p;
                 }
                 Err(e) => {

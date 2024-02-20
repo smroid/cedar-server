@@ -78,12 +78,14 @@ message OperationSettings {
   optional Accuracy accuracy = 3;
 
   // The desired time interval at which Cedar should replace its current frame
-  // result. Default is zero, meaning go as fast as possible.
+  // result. Default is zero, meaning go as fast as possible. Ignored in SETUP
+  // mode.
   optional google.protobuf.Duration update_interval = 7;
 
   // In OPERATE mode, when Cedar detects that the camera is dwelling
   // (motionless) for more than some number of seconds, `dwell_update_interval`
-  // is used instead of `update_interval`. Default is 1sec.
+  // is used instead of `update_interval`. Default is 1sec. Ignored in SETUP
+  // mode.
   optional google.protobuf.Duration dwell_update_interval = 8;
 
   // If true, when Cedar detects that the camera is dwelling (motionless) for
