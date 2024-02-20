@@ -148,6 +148,7 @@ class _MyHomePageState extends State<MyHomePage> {
   late Rect _imageRegion; // Scaled by _binFactor.
   int _binFactor = 1;
 
+  OperationSettings? _operationSettings;
   bool _setupMode = false;
   int _accuracy = 3; // 1-4.
 
@@ -197,6 +198,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _setStateFromOpSettings(OperationSettings opSettings) {
+    _operationSettings = opSettings;
     _accuracy = opSettings.accuracy.value;
     _expSettingMs = durationToMs(opSettings.exposureTime).toInt();
     _setupMode = opSettings.operatingMode == OperatingMode.SETUP;
@@ -519,6 +521,12 @@ class _MyHomePageState extends State<MyHomePage> {
           if (_preferences != null &&
               diffPreferences(_preferences!, prefsDiff)) {
             updatePreferences(prefsDiff);
+          }
+          final newOpSettings = settings.opSettingsProto;
+          var opSettingsDiff = newOpSettings.deepCopy();
+          if (_operationSettings != null &&
+              diffOperationSettings(_operationSettings!, opSettingsDiff)) {
+            updateOperationSettings(opSettingsDiff);
           }
           return Container();
         },
