@@ -81,6 +81,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final provider = Provider.of<SettingsModel>(context, listen: false);
     final prefsProto = provider.preferencesProto;
+    // Need to inset the switches to match the slider.
+    const switchInset = 16.0;
     return Scaffold(
         appBar: AppBar(title: const Text('Preferences')),
         body: SettingsList(
@@ -96,69 +98,80 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 // is not visible. We work around this by putting the important
                 // element (the control) in the 'leading' position.
                 SettingsTile(
-                    leading: Switch(
+                  leading: Row(children: <Widget>[
+                    const SizedBox(width: switchInset, height: 10),
+                    Switch(
                         value: prefsProto.hideAppBar,
                         onChanged: (bool value) {
                           setState(() {
                             provider.updateHideAppBar(value);
                           });
-                        }),
-                    title: const Text('Full screen'),
-                    trailing: const Icon(Icons.open_in_full)),
+                        })
+                  ]),
+                  title: const Text('Full screen'),
+                ),
                 SettingsTile(
-                  leading: Switch(
-                      value: prefsProto.celestialCoordFormat ==
-                          CelestialCoordFormat.HMS_DMS,
-                      onChanged: (bool value) {
-                        setState(() {
-                          provider.updateCelestialCoordFormat(value
-                              ? CelestialCoordFormat.HMS_DMS
-                              : CelestialCoordFormat.DECIMAL);
-                        });
-                      }),
+                  leading: Row(children: <Widget>[
+                    const SizedBox(width: switchInset, height: 10),
+                    Switch(
+                        value: prefsProto.celestialCoordFormat ==
+                            CelestialCoordFormat.HMS_DMS,
+                        onChanged: (bool value) {
+                          setState(() {
+                            provider.updateCelestialCoordFormat(value
+                                ? CelestialCoordFormat.HMS_DMS
+                                : CelestialCoordFormat.DECIMAL);
+                          });
+                        })
+                  ]),
                   title: Text(prefsProto.celestialCoordFormat ==
                           CelestialCoordFormat.HMS_DMS
                       ? 'RA/Dec format H.M.S/D.M.S'
                       : 'RA/Dec format D.DD/D.DD'),
-                  trailing: const Icon(Icons.numbers),
                 ),
                 SettingsTile(
-                  leading: Switch(
-                      value: prefsProto.nightVisionTheme,
-                      onChanged: (bool value) {
-                        setState(() {
-                          provider.updateNightVisionEnabled(value);
-                        });
-                      }),
+                  leading: Row(children: <Widget>[
+                    const SizedBox(width: switchInset, height: 10),
+                    Switch(
+                        value: prefsProto.nightVisionTheme,
+                        onChanged: (bool value) {
+                          setState(() {
+                            provider.updateNightVisionEnabled(value);
+                          });
+                        })
+                  ]),
                   title: const Text('Night vision theme'),
-                  trailing: const Icon(Icons.visibility, color: Colors.red),
                 ),
                 SettingsTile(
-                  leading: Switch(
-                      value: prefsProto.showPerfStats,
-                      onChanged: (bool value) {
-                        setState(() {
-                          provider.updateShowPerfStats(value);
-                        });
-                      }),
+                  leading: Row(children: <Widget>[
+                    const SizedBox(width: switchInset, height: 10),
+                    Switch(
+                        value: prefsProto.showPerfStats,
+                        onChanged: (bool value) {
+                          setState(() {
+                            provider.updateShowPerfStats(value);
+                          });
+                        })
+                  ]),
                   title: const Text('Show performance stats'),
-                  trailing: const Icon(Icons.timer),
                 ),
                 SettingsTile(
-                  leading: Slider(
-                    min: 0.1,
-                    max: 2.0,
-                    divisions: 19,
-                    value: prefsProto.slewBullseyeSize,
-                    onChanged: (double value) {
-                      setState(() {
-                        provider.updateSlewBullseyeSize(value);
-                      });
-                    },
-                  ),
+                  leading: SizedBox(
+                      width: 140,
+                      height: 40,
+                      child: Slider(
+                        min: 0.1,
+                        max: 2.0,
+                        divisions: 19,
+                        value: prefsProto.slewBullseyeSize,
+                        onChanged: (double value) {
+                          setState(() {
+                            provider.updateSlewBullseyeSize(value);
+                          });
+                        },
+                      )),
                   title: Text(sprintf(
                       'Telescope FOV  %.1f°', [prefsProto.slewBullseyeSize])),
-                  trailing: const Icon(Icons.circle_outlined),
                 ),
               ])
             ]));

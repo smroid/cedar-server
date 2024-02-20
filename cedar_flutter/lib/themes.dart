@@ -31,13 +31,21 @@ ThemeData _nightVisionTheme() {
 
 class ThemeModel extends ChangeNotifier {
   ThemeData currentTheme = _normalTheme();
+  bool _isNightVisionTheme = false;
+
   void setNormalTheme() {
-    currentTheme = _normalTheme();
-    notifyListeners();
+    if (_isNightVisionTheme) {
+      currentTheme = _normalTheme();
+      _isNightVisionTheme = false;
+      notifyListeners();
+    }
   }
 
   void setNightVisionTheme() {
-    currentTheme = _nightVisionTheme();
-    notifyListeners();
+    if (!_isNightVisionTheme) {
+      currentTheme = _nightVisionTheme();
+      _isNightVisionTheme = true;
+      notifyListeners();
+    }
   }
 }
