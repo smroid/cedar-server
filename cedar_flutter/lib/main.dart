@@ -76,18 +76,18 @@ class _MainImagePainter extends CustomPainter {
     const double thin = 1;
     const double thick = 2;
     final Color color = Theme.of(_context).colorScheme.primary;
-    if (state._setupMode) {
+    if (state._setupMode && state._centerRegion != null) {
       // Draw search box within which we search for the brightest star for
       // focusing.
       canvas.drawRect(
-          state._centerRegion,
+          state._centerRegion as Rect,
           Paint()
             ..color = color
             ..strokeWidth = thick
             ..style = PaintingStyle.stroke);
       // Draw box around location of the brightest star in search box.
       canvas.drawRect(
-          state._centerPeakRegion,
+          state._centerPeakRegion as Rect,
           Paint()
             ..color = color
             ..strokeWidth = thin
@@ -153,12 +153,12 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Offset? _boresightPosition; // Scaled by main image's binning.
 
-  late Rect _centerRegion; // Scaled by main image's binning.
-  late Rect _centerPeakRegion; // Scaled by binning.
+  Rect? _centerRegion; // Scaled by main image's binning.
+  Rect? _centerPeakRegion; // Scaled by binning.
 
   int _centerPeakWidth = 0;
   int _centerPeakHeight = 0;
-  Uint8List _centerPeakImageBytes = Uint8List(1);
+  Uint8List? _centerPeakImageBytes;
 
   int _prevFrameId = -1;
   late List<StarCentroid> _stars;
@@ -205,14 +205,10 @@ class _MyHomePageState extends State<MyHomePage> {
     if (response.calibrating) {
       _calibrationProgress = response.calibrationProgress;
     }
-    if (_preferences == null ||
-        _preferences?.nightVisionTheme !=
-            response.preferences.nightVisionTheme) {
-      if (response.preferences.nightVisionTheme) {
-        Provider.of<ThemeModel>(context, listen: false).setNightVisionTheme();
-      } else {
-        Provider.of<ThemeModel>(context, listen: false).setNormalTheme();
-      }
+    if (response.preferences.nightVisionTheme) {
+      Provider.of<ThemeModel>(context, listen: false).setNightVisionTheme();
+    } else {
+      Provider.of<ThemeModel>(context, listen: false).setNormalTheme();
     }
     _preferences = response.preferences;
     Provider.of<SettingsModel>(context, listen: false).preferencesProto =
@@ -248,7 +244,9 @@ class _MyHomePageState extends State<MyHomePage> {
         _solutionFOV = plateSolution.fov;
       }
     }
-    _imageBytes = Uint8List.fromList(response.image.imageData);
+    if (response.hasImage()) {
+      _imageBytes = Uint8List.fromList(response.image.imageData);
+    }
     _binFactor = response.image.binningFactor;
     _imageRegion = Rect.fromLTWH(
         0,
@@ -315,7 +313,10 @@ class _MyHomePageState extends State<MyHomePage> {
   // Issue repeated request/response RPCs.
   Future<void> refreshStateFromServer() async {
     await Future.doWhile(() async {
-      var delay = _calibrating || !_doRefreshes ? 100 : 10;
+      var delay = 100;
+      if (_setupMode && !_calibrating && _doRefreshes) {
+        delay = 10; // Fast updates for focusing.
+      }
       await Future.delayed(Duration(milliseconds: delay));
       if (_doRefreshes) {
         await getFrameFromServer();
@@ -404,10 +405,18 @@ class _MyHomePageState extends State<MyHomePage> {
     await setOperatingMode(/*setup=*/ true);
   }
 
-  Future<void> updatePreferences(Preferences prefs) async {
+  Future<void> updatePreferences(Preferences changedPrefs) async {
     try {
-      await client().updatePreferences(prefs,
+      final newPrefs = await client().updatePreferences(changedPrefs,
           options: CallOptions(timeout: const Duration(seconds: 10)));
+      setState(() {
+        _preferences = newPrefs;
+        if (newPrefs.nightVisionTheme) {
+          Provider.of<ThemeModel>(context, listen: false).setNightVisionTheme();
+        } else {
+          Provider.of<ThemeModel>(context, listen: false).setNormalTheme();
+        }
+      });
     } catch (e) {
       log('Error: $e');
     }
@@ -479,9 +488,6 @@ class _MyHomePageState extends State<MyHomePage> {
           label: const Text("Preferences"),
           icon: const Icon(Icons.settings),
           onPressed: () {
-            // Dismiss drawer, so when user exits out of settings we go
-            // back to main display.
-            Navigator.of(context).pop();
             Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -501,7 +507,6 @@ class _MyHomePageState extends State<MyHomePage> {
           if (_preferences != null &&
               diffPreferences(_preferences!, prefsDiff)) {
             updatePreferences(prefsDiff);
-            _preferences = newPrefs.deepCopy();
           }
           return Container();
         },
@@ -718,8 +723,8 @@ class _MyHomePageState extends State<MyHomePage> {
       alignment: Alignment.topRight,
       children: <Widget>[
         _prevFrameId != -1 ? mainImage() : Container(),
-        _prevFrameId != -1 && _setupMode
-            ? dart_widgets.Image.memory(_centerPeakImageBytes,
+        _prevFrameId != -1 && _setupMode && _centerPeakImageBytes != null
+            ? dart_widgets.Image.memory(_centerPeakImageBytes!,
                 height: _centerPeakHeight.toDouble() * 3,
                 width: _centerPeakWidth.toDouble() * 3,
                 fit: BoxFit.fill,
