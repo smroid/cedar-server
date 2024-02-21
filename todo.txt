@@ -9,8 +9,6 @@ camera connect error
 show matches/pattern stars in operate mode. Except when slewing?
 * make this a preference, is ugly
 
-detect engine-- gather stats on measured noise
-
 interoperation with SkySafari
 * switch apps?
 * split screen?
