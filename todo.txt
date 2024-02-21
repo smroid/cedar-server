@@ -20,8 +20,6 @@ help system
 * long press? (GestureDetector wrapped around a widget)
 * 'i' icons?
 
-frame rate slider in prefs
-
 view server log
 
 vignetting calibration
@@ -51,8 +49,6 @@ is long.
 goto support from SkySafari
 * aural cue from phone
 
-update interval, reduce when dwelling, increase upon movement
-
 motion classification
 * capture RA/DEC when dwell starts
 * adjust update interval
@@ -74,7 +70,7 @@ UI:
 Preferences:
 * update rate (non-dwell, dwell)
 
-Object catalog
+Object catalog ("Cedar Sky")
 * selection criteria
 * rankings
 * annotations
