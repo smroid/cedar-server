@@ -576,8 +576,8 @@ class _MyHomePageState extends State<MyHomePage> {
     double fracHours = ra / 15.0 - hours;
     int minutes = (fracHours * 60.0).floor();
     double fracMinutes = fracHours * 60.0 - minutes;
-    double seconds = fracMinutes * 60;
-    return sprintf("%02dh %02dm %02.1fs", [hours, minutes, seconds]);
+    int seconds = (fracMinutes * 60).round();
+    return sprintf("%02dh %02dm %02ds", [hours, minutes, seconds]);
   }
 
   String formatDeclination(double dec) {
@@ -592,8 +592,8 @@ class _MyHomePageState extends State<MyHomePage> {
     double fracDegrees = dec - degrees;
     int minutes = (fracDegrees * 60.0).floor();
     double fracMinutes = fracDegrees * 60.0 - minutes;
-    double seconds = fracMinutes * 60;
-    return sprintf("%s%02d° %02d' %02.1f''", [sign, degrees, minutes, seconds]);
+    int seconds = (fracMinutes * 60).round();
+    return sprintf("%s%02d° %02d' %02d''", [sign, degrees, minutes, seconds]);
   }
 
   Color starsSliderColor() {
