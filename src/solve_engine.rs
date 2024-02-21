@@ -389,6 +389,7 @@ impl SolveEngine {
                     tokio::time::sleep(delay).await;
                     continue;
                 }
+                state.lock().unwrap().eta = None;
             }
 
             // Time to do a solve processing cycle.
