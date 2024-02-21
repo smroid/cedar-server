@@ -141,6 +141,10 @@ impl DetectEngine {
         Ok(())
     }
 
+    // Determines how often the detect engine operates (obtains an image, produces
+    // a DetectResult).
+    // An interval of zero means run continuously-- as soon as a DetectResult is
+    // produced, the next one is started.
     pub fn set_update_interval(&mut self, update_interval: Duration)
                                -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();

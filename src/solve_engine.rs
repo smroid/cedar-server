@@ -150,6 +150,10 @@ impl SolveEngine {
         })
     }
 
+    // Determines how often the detect engine operates (obtains a DetectResult,
+    // produces a PlateSolution).
+    // An interval of zero means run continuously-- as soon as a PlateSolution
+    // is produced, the next one is started.
     pub fn set_update_interval(&mut self, update_interval: Duration)
                                -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();

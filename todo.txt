@@ -74,3 +74,14 @@ UI:
 Preferences:
 * update rate (non-dwell, dwell)
 
+Object catalog
+* selection criteria
+* rankings
+* annotations
+* solar system object ephemeris
+
+Splash screen
+
+About page
+
+Help page
