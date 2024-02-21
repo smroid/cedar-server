@@ -346,6 +346,7 @@ impl DetectEngine {
                     tokio::time::sleep(delay).await;
                     continue;
                 }
+                state.lock().unwrap().eta = None;
             }
 
             // Time to do a detect processing cycle.
