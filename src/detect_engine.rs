@@ -141,6 +141,10 @@ impl DetectEngine {
         Ok(())
     }
 
+    // Determines how often the detect engine operates (obtains an image, produces
+    // a DetectResult).
+    // An interval of zero means run continuously-- as soon as a DetectResult is
+    // produced, the next one is started.
     pub fn set_update_interval(&mut self, update_interval: Duration)
                                -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();
@@ -153,9 +157,6 @@ impl DetectEngine {
     pub fn set_focus_mode(&mut self, enabled: bool) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.focus_mode_enabled = enabled;
-        // TODO: in focus mode, ignore update_interval and go as fast as
-        // possible.
-
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -342,6 +343,7 @@ impl DetectEngine {
                     tokio::time::sleep(delay).await;
                     continue;
                 }
+                state.lock().unwrap().eta = None;
             }
 
             // Time to do a detect processing cycle.
