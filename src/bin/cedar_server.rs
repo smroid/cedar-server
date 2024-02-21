@@ -145,6 +145,13 @@ impl Cedar for MyCedar {
                     Some(OperatingMode::Operate as i32)
                 {
                     // Transition: OPERATE -> SETUP mode.
+
+                    // In SETUP mode we run at full speed.
+                    if let Err(x) = Self::set_update_interval(
+                        &*locked_state, Duration::ZERO).await
+                    {
+                        return Err(tonic_status(x));
+                    }
                     locked_state.solve_engine.lock().await.stop().await;
                     locked_state.detect_engine.lock().await.set_focus_mode(true);
                     Self::reset_session_stats(locked_state.deref_mut()).await;
@@ -207,8 +214,23 @@ impl Cedar for MyCedar {
                                 // Transition into Operate mode.
                                 locked_state.detect_engine.lock().await.set_focus_mode(false);
                                 locked_state.solve_engine.lock().await.start().await;
-                                locked_state.operation_settings.lock().unwrap().operating_mode =
-                                    Some(OperatingMode::Operate as i32);
+                                // Restore OPERATE mode update interval.
+                                let std_duration;
+                                {
+                                    let mut locked_op_settings =
+                                        locked_state.operation_settings.lock().unwrap();
+                                    let update_interval =
+                                        locked_op_settings.update_interval.clone().unwrap();
+                                    std_duration = std::time::Duration::try_from(
+                                        update_interval).unwrap();
+                                    locked_op_settings.operating_mode =
+                                        Some(OperatingMode::Operate as i32);
+                                }
+                                if let Err(x) = Self::set_update_interval(
+                                    &*locked_state, std_duration).await
+                                {
+                                    return Err(tonic_status(x));
+                                }
                             }
                             let result = tonic::Response::new(
                                 locked_state.operation_settings.lock().unwrap().clone());
@@ -249,8 +271,12 @@ impl Cedar for MyCedar {
             let std_duration = std::time::Duration::try_from(
                 update_interval.clone()).unwrap();
             let locked_state = self.state.lock().await;
-            if let Err(x) = Self::set_update_interval(&*locked_state, std_duration).await {
-                return Err(tonic_status(x));
+            if locked_state.operation_settings.lock().unwrap().operating_mode ==
+                Some(OperatingMode::Operate as i32)
+            {
+                if let Err(x) = Self::set_update_interval(&*locked_state, std_duration).await {
+                    return Err(tonic_status(x));
+                }
             }
             locked_state.operation_settings.lock().unwrap().update_interval =
                 Some(update_interval);
@@ -389,6 +415,7 @@ impl MyCedar {
         // TODO: if the update interval is long, it might make sense to take the
         // camera out of video mode and do individual captures. The main issue
         // is whether this can lower power consumption.
+        state.camera.lock().await.set_update_interval(update_interval)?;
         state.detect_engine.lock().await.set_update_interval(update_interval)?;
         state.solve_engine.lock().await.set_update_interval(update_interval)
     }

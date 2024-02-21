@@ -157,9 +157,6 @@ impl DetectEngine {
     pub fn set_focus_mode(&mut self, enabled: bool) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.focus_mode_enabled = enabled;
-        // TODO: in focus mode, ignore update_interval and go as fast as
-        // possible.
-
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
