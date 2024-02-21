@@ -184,7 +184,7 @@ enum ImageMode {
   BINNED = 1;
 }
 
-// Next tag: 26.
+// Next tag: 27.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
@@ -218,6 +218,9 @@ message FrameResult {
   // The star candidates detected by CedarDetect; ordered by brightest
   // first.
   repeated StarCentroid star_candidates = 4;
+
+  // Estimate of the RMS noise of the full-resolution image.
+  float noise_estimate = 26;
 
   // Information about Cedar's performance.
   ProcessingStats processing_stats = 8;

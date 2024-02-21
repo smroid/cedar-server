@@ -546,6 +546,7 @@ impl DetectEngine {
                 captured_image: captured_image,
                 binned_image: Arc::new(binned_image.unwrap()),
                 star_candidates: stars,
+                noise_estimate,
                 hot_pixel_count: hot_pixel_count as i32,
                 peak_star_pixel,
                 focus_aid,
@@ -573,6 +574,9 @@ pub struct DetectResult {
     // The star candidates detected by CedarDetect; ordered by highest
     // StarDescription.mean_brightness first.
     pub star_candidates: Vec<StarDescription>,
+
+    // Estimate of the RMS noise of the full-resolution image.
+    pub noise_estimate: f32,
 
     // The number of hot pixels detected by CedarDetect.
     pub hot_pixel_count: i32,

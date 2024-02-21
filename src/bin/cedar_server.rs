@@ -651,6 +651,7 @@ impl MyCedar {
             });
         }
         frame_result.star_candidates = centroids;
+        frame_result.noise_estimate = detect_result.noise_estimate;
 
         let peak_value;
         if let Some(fa) = &detect_result.focus_aid {
