@@ -185,7 +185,12 @@ class _MyHomePageState extends State<MyHomePage> {
 
   // Calibration happens when _setupMode transitions to false.
   bool _calibrating = false;
-  double _calibrationProgress = 0.7;
+  double _calibrationProgress = 0.0;
+
+  // Transition from Operate mode back to Setup mode can take a second or
+  // so if the update rate setting is e.g.1 Hz. We put up a pacifier for this;
+  // define a flag so we can know when it is done.
+  bool _transitionToSetup = false;
 
   // Values set from on-screen controls.
   bool _doRefreshes = true;
@@ -202,6 +207,9 @@ class _MyHomePageState extends State<MyHomePage> {
     _accuracy = opSettings.accuracy.value;
     _expSettingMs = durationToMs(opSettings.exposureTime).toInt();
     _setupMode = opSettings.operatingMode == OperatingMode.SETUP;
+    if (_setupMode) {
+      _transitionToSetup = false;
+    }
   }
 
   void setStateFromFrameResult(FrameResult response) {
@@ -538,6 +546,9 @@ class _MyHomePageState extends State<MyHomePage> {
               value: !_setupMode,
               onChanged: (bool value) {
                 setState(() {
+                  if (!value) {
+                    _transitionToSetup = true;
+                  }
                   setOperatingMode(/*setup=*/ !value);
                 });
               }),
@@ -700,29 +711,33 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
-  Widget calibratingPacifier(BuildContext context) {
+  Widget pacifier(BuildContext context, bool calibrating) {
     return Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
-          Text("Calibrating",
-              style: TextStyle(
-                  fontSize: 20,
-                  backgroundColor: Colors.black,
-                  color: Theme.of(context).colorScheme.primary)),
+          calibrating
+              ? Text("Calibrating",
+                  style: TextStyle(
+                      fontSize: 20,
+                      backgroundColor: Colors.black,
+                      color: Theme.of(context).colorScheme.primary))
+              : Container(),
           const SizedBox(height: 15),
           CircularProgressIndicator(
-              value: _calibrationProgress,
+              value: calibrating ? _calibrationProgress : null,
               color: Theme.of(context).colorScheme.primary),
           const SizedBox(height: 15),
-          TextButton(
-            onPressed: () {
-              cancelCalibration();
-            },
-            style: TextButton.styleFrom(
-                backgroundColor: Colors.black,
-                foregroundColor: Theme.of(context).colorScheme.primary),
-            child: const Text('Cancel'),
-          ),
+          calibrating
+              ? TextButton(
+                  onPressed: () {
+                    cancelCalibration();
+                  },
+                  style: TextButton.styleFrom(
+                      backgroundColor: Colors.black,
+                      foregroundColor: Theme.of(context).colorScheme.primary),
+                  child: const Text('Cancel'),
+                )
+              : Container(),
         ]);
   }
 
@@ -738,11 +753,11 @@ class _MyHomePageState extends State<MyHomePage> {
                 fit: BoxFit.fill,
                 gaplessPlayback: true)
             : Container(),
-        _calibrating
+        _calibrating || _transitionToSetup
             ? Positioned.fill(
                 child: Align(
                     alignment: Alignment.center,
-                    child: calibratingPacifier(context)))
+                    child: pacifier(context, _calibrating)))
             : Container(),
       ],
     );
