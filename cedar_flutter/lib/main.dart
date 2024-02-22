@@ -226,10 +226,11 @@ class _MyHomePageState extends State<MyHomePage> {
     } else {
       Provider.of<ThemeModel>(context, listen: false).setNormalTheme();
     }
-    _preferences = response.preferences;
-    Provider.of<SettingsModel>(context, listen: false).preferencesProto =
-        _preferences!.deepCopy();
     _setStateFromOpSettings(response.operationSettings);
+    _preferences = response.preferences;
+    var settingsModel = Provider.of<SettingsModel>(context, listen: false);
+    settingsModel.preferencesProto = _preferences!.deepCopy();
+    settingsModel.opSettingsProto = _operationSettings!.deepCopy();
     _calibrationData =
         response.hasCalibrationData() ? response.calibrationData : null;
     _processingStats =
