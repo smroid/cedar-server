@@ -188,11 +188,14 @@ enum ImageMode {
   BINNED = 1;
 }
 
-// Next tag: 27.
+// Next tag: 28.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
   int32 frame_id = 1;
+
+  // The current FixedSettings on the server.
+  FixedSettings fixed_settings = 27;
 
   // The current user interface preferences stored on the server.
   Preferences preferences = 25;
@@ -236,8 +239,8 @@ message FrameResult {
 
   // When transitioning from SETUP mode to OPERATE mode, Cedar does a brief
   // sky/camera calibration. During calibration most FrameResult fields are
-  // omitted. Fields present are: preferences, operation_settings, image,
-  // calibrating, and calibration_progress.
+  // omitted. Fields present are: fixed_settings, preferences,
+  // operation_settings, image, calibrating, and calibration_progress.
   bool calibrating = 22;
 
   // When `calibrating` is true, this field is an estimate of the progress of
