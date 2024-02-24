@@ -2,6 +2,7 @@ import 'dart:developer';
 import 'dart:math' as math;
 import 'package:cedar_flutter/draw_slew_target.dart';
 import 'package:cedar_flutter/draw_util.dart';
+import 'package:cedar_flutter/exp_values.dart';
 import 'package:cedar_flutter/settings.dart';
 import 'package:cedar_flutter/themes.dart';
 import 'package:fixnum/fixnum.dart';
@@ -165,6 +166,7 @@ class _MyHomePageState extends State<MyHomePage> {
   late List<StarCentroid> _stars;
   int _numStars = 0;
   double _exposureTimeMs = 0.0;
+  int _maxExposureTimeMs = 0;
   bool _hasSolution = false;
 
   List<MatchedStar>? _solutionMatches;
@@ -216,6 +218,8 @@ class _MyHomePageState extends State<MyHomePage> {
     _prevFrameId = response.frameId;
     _stars = response.starCandidates;
     _numStars = _stars.length;
+    _maxExposureTimeMs =
+        durationToMs(response.fixedSettings.maxExposureTime).toInt();
     _hasSolution = false;
     _calibrating = response.calibrating;
     if (response.calibrating) {
@@ -468,21 +472,30 @@ class _MyHomePageState extends State<MyHomePage> {
           primaryText("Exposure time"),
           NumberPicker(
             axis: Axis.horizontal,
-            itemWidth: 40,
-            itemHeight: 30,
+            itemWidth: 50,
+            itemHeight: 40,
             minValue: 0,
-            maxValue: 200,
-            step: 10,
-            value: _expSettingMs,
+            maxValue: expMsToIndex(_maxExposureTimeMs),
+            value: _expSettingMs == 0 ? 0 : expMsToIndex(_expSettingMs),
             onChanged: (value) => {
               setState(() {
-                _expSettingMs = value;
+                _expSettingMs = value == 0 ? 0 : expMsFromIndex(value);
                 setExpTime();
               })
             },
             textMapper: (numberText) {
-              return numberText == "0" ? "A" : numberText;
+              int expIndex = int.parse(numberText);
+              if (expIndex == 0) {
+                return "auto";
+              }
+              int expMs = expMsFromIndex(expIndex);
+              if (expMs < 1000) {
+                return sprintf("%d", [expMs]);
+              } else {
+                return sprintf("%.1fs", [expMs / 1000]);
+              }
             },
+            // selectedTextStyle: TextStyle(fontSize: 20),
           ),
           _expSettingMs == 0
               ? primaryText(sprintf("auto %.1f ms", [_exposureTimeMs]))
