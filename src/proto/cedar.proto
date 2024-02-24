@@ -47,6 +47,10 @@ message FixedSettings {
   // positions, and when logging debugging captures (the latter should go
   // elsewhere?).
   optional string session_name = 5;
+
+  // The configured maximum exposure time. Note that this cannot be changed via
+  // the UpdateFixedSettings() RPC.
+  optional google.protobuf.Duration max_exposure_time = 6;
 }
 
 message LatLong {
