@@ -125,6 +125,10 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings not implemented for session_name."));
         }
+        if let Some(_max_exposure_time) = req.max_exposure_time {
+            return Err(tonic::Status::unimplemented(
+                "rpc UpdateFixedSettings cannot update max_exposure_time."));
+        }
         Ok(tonic::Response::new(
             self.state.lock().await.fixed_settings.lock().unwrap().clone()))
     }
@@ -812,6 +816,8 @@ impl MyCedar {
                 observer_location: None,
                 client_time: None,
                 session_name: None,
+                max_exposure_time: Some(
+                    prost_types::Duration::try_from(max_exposure_duration).unwrap()),
             }),
             operation_settings: Mutex::new(OperationSettings {
                 operating_mode: Some(OperatingMode::Setup as i32),
@@ -907,7 +913,7 @@ struct Args {
     min_exposure: Duration,
 
     /// Maximum exposure duration, seconds.
-    #[arg(long, value_parser = parse_duration, default_value = "1.0")]
+    #[arg(long, value_parser = parse_duration, default_value = "0.2")]
     max_exposure: Duration,
 
     /// Target number of detected stars for auto-exposure. This is altered by
