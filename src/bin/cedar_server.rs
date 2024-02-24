@@ -917,6 +917,8 @@ struct Args {
     min_exposure: Duration,
 
     /// Maximum exposure duration, seconds.
+    // For monochrome camera and f/1.4 lens, 200ms is a good maximum. For color
+    // camera and/or slower f/number, increase the maximum exposure accordingly.
     #[arg(long, value_parser = parse_duration, default_value = "0.2")]
     max_exposure: Duration,
 
