@@ -571,42 +571,46 @@ impl MyCedar {
         }
 
         let mut frame_result = FrameResult {..Default::default()};
-        frame_result.preferences =
-            Some(state.lock().await.preferences.lock().unwrap().clone());
-        frame_result.operation_settings =
-            Some(state.lock().await.operation_settings.lock().unwrap().clone());
-
-        if state.lock().await.calibrating {
+        {
             let locked_state = state.lock().await;
-            frame_result.calibrating = true;
-            let time_spent_calibrating = locked_state.calibration_start.elapsed();
-            let mut fraction =
-                time_spent_calibrating.as_secs_f32() /
-                locked_state.calibration_duration_estimate.as_secs_f32();
-            if fraction > 1.0 {
-                fraction = 1.0;
-            }
-            frame_result.calibration_progress = Some(fraction);
+            frame_result.fixed_settings =
+                Some(locked_state.fixed_settings.lock().unwrap().clone());
+            frame_result.preferences =
+                Some(locked_state.preferences.lock().unwrap().clone());
+            frame_result.operation_settings =
+                Some(locked_state.operation_settings.lock().unwrap().clone());
 
-            if let Some(img) = &locked_state.scaled_image {
-                let image_rectangle = Rectangle{
-                    origin_x: 0, origin_y: 0,
-                    width: locked_state.width as i32,
-                    height: locked_state.height as i32,
-                };
-                let (scaled_width, scaled_height) = img.dimensions();
-                let mut bmp_buf = Vec::<u8>::new();
-                bmp_buf.reserve((scaled_width * scaled_height) as usize);
-                img.write_to(&mut Cursor::new(&mut bmp_buf),
-                             ImageOutputFormat::Bmp).unwrap();
-                frame_result.image = Some(Image{
-                    binning_factor,
-                    // Rectangle is always in full resolution coordinates.
-                    rectangle: Some(image_rectangle),
-                    image_data: bmp_buf,
-                });
+            if locked_state.calibrating {
+                frame_result.calibrating = true;
+                let time_spent_calibrating = locked_state.calibration_start.elapsed();
+                let mut fraction =
+                    time_spent_calibrating.as_secs_f32() /
+                    locked_state.calibration_duration_estimate.as_secs_f32();
+                if fraction > 1.0 {
+                    fraction = 1.0;
+                }
+                frame_result.calibration_progress = Some(fraction);
+
+                if let Some(img) = &locked_state.scaled_image {
+                    let image_rectangle = Rectangle{
+                        origin_x: 0, origin_y: 0,
+                        width: locked_state.width as i32,
+                        height: locked_state.height as i32,
+                    };
+                    let (scaled_width, scaled_height) = img.dimensions();
+                    let mut bmp_buf = Vec::<u8>::new();
+                    bmp_buf.reserve((scaled_width * scaled_height) as usize);
+                    img.write_to(&mut Cursor::new(&mut bmp_buf),
+                                 ImageOutputFormat::Bmp).unwrap();
+                    frame_result.image = Some(Image{
+                        binning_factor,
+                        // Rectangle is always in full resolution coordinates.
+                        rectangle: Some(image_rectangle),
+                        image_data: bmp_buf,
+                    });
+                }
+                return frame_result;
             }
-            return frame_result;
         }
 
         // Populated only in OperatingMode::Operate mode.
