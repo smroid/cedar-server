@@ -31,7 +31,8 @@ void drawSlewTarget(
     double boresightDiameterPix,
     Offset? slewTarget,
     double targetDistance,
-    double targetAngle) {
+    double targetAngle,
+    {bool drawDistanceText = true}) {
   var distanceText = "";
   if (targetDistance > 1) {
     distanceText = sprintf("%.1f°", [targetDistance]);
@@ -63,7 +64,9 @@ void drawSlewTarget(
     // distance.
     final bsRadius = boresightDiameterPix / 2;
     _drawBullseye(canvas, color, boresight, bsRadius);
-    final textPos = Offset(boresight.dx - bsRadius - 30, boresight.dy);
-    drawText(canvas, color, textPos, distanceText);
+    if (drawDistanceText) {
+      final textPos = Offset(boresight.dx - bsRadius - 40, boresight.dy);
+      drawText(canvas, color, textPos, distanceText);
+    }
   }
 }
