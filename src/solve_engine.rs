@@ -6,7 +6,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use canonical_error::{CanonicalError, failed_precondition_error, invalid_argument_error};
 use chrono::{DateTime, Local, Utc};
-use image::GrayImage;
+use image::{GenericImageView, GrayImage};
+use imageproc::rect::Rect;
 use log::{debug, error};
 use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
@@ -20,6 +21,7 @@ use crate::tetra3_server::tetra3_client::Tetra3Client;
 use crate::tetra3_subprocess::Tetra3Subprocess;
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
+use crate::scale_image::scale_image_mut;
 use crate::astro_util::{angular_separation, position_angle};
 
 pub struct SolveEngine {
@@ -55,7 +57,7 @@ struct SolveState {
     match_radius: f32,
     match_threshold: f32,
     solve_timeout: Duration,
-    target_pixel: Option<ImageCoord>,
+    boresight_pixel: Option<ImageCoord>,
     distortion: f32,
     return_matches: bool,
 
@@ -133,7 +135,7 @@ impl SolveEngine {
                 match_radius: 0.01,
                 match_threshold: 0.0001,  // TODO: pass in from cmdline arg.
                 solve_timeout: Duration::from_secs(1),
-                target_pixel: None,
+                boresight_pixel: None,
                 distortion: 0.0,
                 return_matches: true,
                 solve_interval_stats: ValueStatsAccumulator::new(stats_capacity),
@@ -177,17 +179,17 @@ impl SolveEngine {
         Ok(())
     }
 
-    pub fn set_target_pixel(&mut self, target_pixel: Option<ImageCoord>)
+    pub fn set_boresight_pixel(&mut self, boresight_pixel: Option<ImageCoord>)
                                -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();
-        locked_state.target_pixel = target_pixel;
+        locked_state.boresight_pixel = boresight_pixel;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
     }
-    pub fn target_pixel(&self) -> Result<Option<ImageCoord>, CanonicalError> {
+    pub fn boresight_pixel(&self) -> Result<Option<ImageCoord>, CanonicalError> {
         let locked_state = self.state.lock().unwrap();
-        Ok(locked_state.target_pixel.clone())
+        Ok(locked_state.boresight_pixel.clone())
     }
 
     pub fn set_distortion(&mut self, distortion: f32)
@@ -405,6 +407,8 @@ impl SolveEngine {
             let minimum_stars;
             let frame_id;
             let mut slew_request = None;
+            let mut boresight_image: Option<GrayImage> = None;
+            let mut boresight_image_region: Option<Rect> = None;
             {
                 let locked_state = state.lock().unwrap();
                 minimum_stars = locked_state.minimum_stars;
@@ -433,9 +437,9 @@ impl SolveEngine {
                     nanos: (solve_timeout_frac * 1000000000.0) as i32,
                 });
 
-                if locked_state.target_pixel.is_some() {
+                if locked_state.boresight_pixel.is_some() {
                     solve_request.target_pixels.push(
-                        locked_state.target_pixel.as_ref().unwrap().clone());
+                        locked_state.boresight_pixel.as_ref().unwrap().clone());
                 }
                 let telescope_position =
                     locked_state.telescope_position.lock().unwrap();
@@ -540,9 +544,49 @@ impl SolveEngine {
                         if tsr.target_sky_to_image_coords.len() > 0 {
                             let img_coord = &tsr.target_sky_to_image_coords[0];
                             if img_coord.x >= 0.0 {
-                                slew_req.image_pos =
-                                    Some(cedar::ImageCoord{x: img_coord.x,
-                                                           y: img_coord.y});
+                                let target_image_coord =
+                                    cedar::ImageCoord{x: img_coord.x, y: img_coord.y};
+                                slew_req.image_pos = Some(target_image_coord.clone());
+
+                                // Is the target's image_pos close to the boresight's
+                                // image position?
+                                let boresight_pos;
+                                if let Some(bp) = &locked_state.boresight_pixel {
+                                    boresight_pos = bp.clone();
+                                } else {
+                                    boresight_pos = ImageCoord{
+                                        x: width as f32 / 2.0, y: height as f32 / 2.0};
+                                }
+                                let target_close_threshold =
+                                    std::cmp::min(width, height) as f32 / 12.0;
+	                        let target_boresight_distance =
+                                    ((target_image_coord.x - boresight_pos.x) *
+                                     (target_image_coord.x - boresight_pos.x) +
+                                     (target_image_coord.y - boresight_pos.y) *
+                                     (target_image_coord.y - boresight_pos.y)).sqrt();
+                                if target_boresight_distance < target_close_threshold {
+                                    let image_rect = Rect::at(0, 0).of_size(width, height);
+                                    // Get a sub-image centered on the boresight.
+                                    let bs_image_size = std::cmp::min(width, height) / 5;
+                                    boresight_image_region = Some(Rect::at(
+                                        boresight_pos.x as i32 - bs_image_size as i32/2,
+                                        boresight_pos.y as i32 - bs_image_size as i32/2)
+                                                                  .of_size(
+                                                                      bs_image_size as u32,
+                                                                      bs_image_size as u32));
+                                    boresight_image_region =
+                                        Some(boresight_image_region.
+                                             unwrap().intersect(image_rect).unwrap());
+                                    // We scale up the pixel values in the sub_image for good
+                                    // display visibility.
+                                    boresight_image = Some(
+                                        image.view(boresight_image_region.unwrap().left() as u32,
+                                                   boresight_image_region.unwrap().top() as u32,
+                                                   bs_image_size as u32,
+                                                   bs_image_size as u32).to_image());
+                                    scale_image_mut(boresight_image.as_mut().unwrap(),
+                                                    /*peak_pixel_value=*/None, /*gamma=*/0.7);
+                                }
                             }
                         }
                     }
@@ -557,6 +601,8 @@ impl SolveEngine {
                 detect_result,
                 tetra3_solve_result,
                 slew_request,
+                boresight_image,
+                boresight_image_region,
                 solve_finish_time,
                 processing_duration: elapsed,
                 solve_interval_stats: locked_state.solve_interval_stats.value_stats.clone(),
@@ -585,11 +631,11 @@ pub struct PlateSolution {
     // at the boresight. Brightness scaled to full range for visibility. This
     // is present if `slew_request` is present and the slew target is close to
     // the boresight.
-    // pub boresight_image: Option<GrayImage>,
+    pub boresight_image: Option<GrayImage>,
 
     // The location of `boresight_image`. Omitted if `boresight_image` is
     // omitted.
-    // pub boresight_image_region: Option<Rect>,
+    pub boresight_image_region: Option<Rect>,
 
     // Time at which the plate solve completed. Omitted if a solve was not
     // attempted.
