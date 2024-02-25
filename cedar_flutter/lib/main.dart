@@ -53,16 +53,20 @@ class MyHomePage extends StatefulWidget {
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-double durationToMs(proto_duration.Duration duration) {
+double _durationToMs(proto_duration.Duration duration) {
   return duration.seconds.toDouble() * 1000 +
       (duration.nanos.toDouble()) / 1000000;
 }
 
-proto_duration.Duration msToDuration(int ms) {
+proto_duration.Duration _msToDuration(int ms) {
   var duration = proto_duration.Duration();
   duration.seconds = Int64(ms ~/ 1000);
   duration.nanos = (ms * 1000000) % 1000000000;
   return duration;
+}
+
+double _deg2rad(double deg) {
+  return deg / 180.0 * math.pi;
 }
 
 class _MainImagePainter extends CustomPainter {
@@ -106,6 +110,13 @@ class _MainImagePainter extends CustomPainter {
       }
     }
 
+    // How many display pixels is the telescope FOV?
+    var scopeFov = 0.0;
+    if (!state._setupMode && state._hasSolution) {
+      scopeFov = state._preferences!.slewBullseyeSize *
+          state._imageRegion.width /
+          state._solutionFOV;
+    }
     if (state._slewRequest != null && !state._setupMode && state._hasSolution) {
       var slew = state._slewRequest;
       Offset? posInImage;
@@ -113,16 +124,26 @@ class _MainImagePainter extends CustomPainter {
         posInImage = Offset(slew.imagePos.x / state._binFactor,
             slew.imagePos.y / state._binFactor);
       }
-      // How many display pixels is the telescope FOV?
-      final scopeFov = state._preferences!.slewBullseyeSize *
-          state._imageRegion.width /
-          state._solutionFOV;
-      drawSlewTarget(canvas, color, state._boresightPosition, scopeFov,
-          posInImage, slew.targetDistance, slew.targetAngle);
+      drawSlewTarget(
+          canvas,
+          color,
+          state._boresightPosition,
+          scopeFov,
+          /*rollAngleRad=*/ _deg2rad(state._solutionRollAngle),
+          posInImage,
+          slew.targetDistance,
+          slew.targetAngle);
     } else {
       // Make a cross at the boresight position (if any) or else the image
       // center.
-      drawCross(canvas, color, state._boresightPosition, /*radius=*/ 8, thin);
+      if (state._setupMode || !state._hasSolution) {
+        drawCross(canvas, color, state._boresightPosition, /*radius=*/ 8,
+            /*rollAngleRad=*/ 0.0, thin, thin);
+      } else {
+        var rollAngleRad = _deg2rad(state._solutionRollAngle);
+        drawBullseye(canvas, color, state._boresightPosition, scopeFov / 2,
+            rollAngleRad);
+      }
     }
   }
 
@@ -158,8 +179,15 @@ class _OverlayImagePainter extends CustomPainter {
         _state._preferences!.slewBullseyeSize *
         _state._fullResImageRegion.width /
         _state._solutionFOV;
-    drawSlewTarget(canvas, color, overlayCenter, scopeFov, posInImage,
-        slew.targetDistance, slew.targetAngle,
+    drawSlewTarget(
+        canvas,
+        color,
+        overlayCenter,
+        scopeFov,
+        /*rollAngleRad=*/ _deg2rad(_state._solutionRollAngle),
+        posInImage,
+        slew.targetDistance,
+        slew.targetAngle,
         drawDistanceText: false);
   }
 
@@ -213,8 +241,8 @@ class _MyHomePageState extends State<MyHomePage> {
   // Degrees.
   double _solutionRA = 0.0;
   double _solutionDec = 0.0;
-  double _solutionRoll = 0.0;
-  double _solutionFOV = 0.0;
+  double _solutionRollAngle = 0.0; // Degrees.
+  double _solutionFOV = 0.0; // Degrees.
 
   // Arcsec.
   double _solutionRMSE = 0.0;
@@ -246,7 +274,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void _setStateFromOpSettings(OperationSettings opSettings) {
     _operationSettings = opSettings;
     _accuracy = opSettings.accuracy.value;
-    _expSettingMs = durationToMs(opSettings.exposureTime).toInt();
+    _expSettingMs = _durationToMs(opSettings.exposureTime).toInt();
     _setupMode = opSettings.operatingMode == OperatingMode.SETUP;
     if (_setupMode) {
       _transitionToSetup = false;
@@ -258,7 +286,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _stars = response.starCandidates;
     _numStars = _stars.length;
     _maxExposureTimeMs =
-        durationToMs(response.fixedSettings.maxExposureTime).toInt();
+        _durationToMs(response.fixedSettings.maxExposureTime).toInt();
     _hasSolution = false;
     _calibrating = response.calibrating;
     if (response.calibrating) {
@@ -295,7 +323,7 @@ class _MyHomePageState extends State<MyHomePage> {
           _solutionRA = plateSolution.imageCenterCoords.ra;
           _solutionDec = plateSolution.imageCenterCoords.dec;
         }
-        _solutionRoll = plateSolution.roll;
+        _solutionRollAngle = plateSolution.roll;
         _solutionRMSE = plateSolution.rmse;
         _solutionFOV = plateSolution.fov;
       }
@@ -327,7 +355,7 @@ class _MyHomePageState extends State<MyHomePage> {
           cr.height.toDouble() / _binFactor);
     }
     if (response.hasExposureTime()) {
-      _exposureTimeMs = durationToMs(response.exposureTime);
+      _exposureTimeMs = _durationToMs(response.exposureTime);
     }
     _centerPeakImageBytes = null;
     if (response.hasCenterPeakImage()) {
@@ -406,7 +434,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> setExpTime() async {
     var request = OperationSettings();
-    request.exposureTime = msToDuration(_expSettingMs);
+    request.exposureTime = _msToDuration(_expSettingMs);
     await updateOperationSettings(request);
   }
 
