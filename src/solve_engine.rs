@@ -578,8 +578,18 @@ pub struct PlateSolution {
     pub tetra3_solve_result: Option<SolveResultProto>,
 
     // If the TelescopePosition has an active slew request, we populate
-    // 'slew_request' with its information.
+    // `slew_request` with its information.
     pub slew_request: Option<cedar::SlewRequest>,
+
+    // A small full resolution crop of `detect_result.captured_image` centered
+    // at the boresight. Brightness scaled to full range for visibility. This
+    // is present if `slew_request` is present and the slew target is close to
+    // the boresight.
+    // pub boresight_image: Option<GrayImage>,
+
+    // The location of `boresight_image`. Omitted if `boresight_image` is
+    // omitted.
+    // pub boresight_image_region: Option<Rect>,
 
     // Time at which the plate solve completed. Omitted if a solve was not
     // attempted.

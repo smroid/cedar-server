@@ -433,7 +433,7 @@ impl DetectEngine {
                                                 peak_region.top() as u32,
                                                 sub_image_size as u32,
                                                 sub_image_size as u32).to_image();
-                scale_image_mut(&mut peak_image, peak_value, /*gamma=*/0.7);
+                scale_image_mut(&mut peak_image, Some(peak_value), /*gamma=*/0.7);
                 focus_aid = Some(FocusAid{
                     center_region,
                     center_peak_position: peak_position,
