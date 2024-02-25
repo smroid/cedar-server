@@ -233,9 +233,9 @@ message FrameResult {
   ProcessingStats processing_stats = 8;
 
   // The position in full resolution image coordinates of the captured
-  // boresight. Absent if no boresight has been captured. See
+  // boresight. If no boresight has been captured, is the image center. See
   // ActionRequest.capture_boresight.
-  optional ImageCoord boresight_position = 21;
+  ImageCoord boresight_position = 21;
 
   // When transitioning from SETUP mode to OPERATE mode, Cedar does a brief
   // sky/camera calibration. During calibration most FrameResult fields are
@@ -497,11 +497,6 @@ message ActionRequest {
   // `target_coords` entry to be included with each FrameResult
   // `plate_solution`.
   optional bool capture_boresight = 1;
-
-  // Drops the captured boresight, if any. The FrameResult `boresight_position`
-  // field is omitted, and the `plate_solution` field `target_coords` will be
-  // empty.
-  optional bool delete_boresight = 2;
 
   // Shut down the computer on which the Cedar server is running. Do this before
   // unplugging the power!

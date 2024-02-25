@@ -375,12 +375,6 @@ impl Cedar for MyCedar {
                 return Err(tonic_status(x));
             }
         }
-        if req.delete_boresight.unwrap_or(false) {
-            let solve_engine = &mut locked_state.solve_engine.lock().await;
-            if let Err(x) = solve_engine.set_target_pixel(None) {
-                return Err(tonic_status(x));
-            }
-        }
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
             std::thread::sleep(Duration::from_secs(2));
@@ -755,6 +749,10 @@ impl MyCedar {
                 "solve_engine.target_pixel() should not fail");
         if let Some(bs) = boresight_position {
             frame_result.boresight_position = Some(ImageCoord{x: bs.x, y: bs.y});
+        } else {
+            frame_result.boresight_position =
+                Some(ImageCoord{x: locked_state.width as f32 / 2.0,
+                                y: locked_state.height as f32 / 2.0});
         }
         frame_result.calibration_data =
             Some(locked_state.calibration_data.lock().await.clone());
@@ -917,6 +915,8 @@ struct Args {
     min_exposure: Duration,
 
     /// Maximum exposure duration, seconds.
+    // For monochrome camera and f/1.4 lens, 200ms is a good maximum. For color
+    // camera and/or slower f/number, increase the maximum exposure accordingly.
     #[arg(long, value_parser = parse_duration, default_value = "0.2")]
     max_exposure: Duration,
 
