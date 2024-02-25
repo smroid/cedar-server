@@ -6,11 +6,11 @@ use std::time::{Duration, Instant};
 
 use canonical_error::CanonicalError;
 use image::{GenericImageView, GrayImage};
-use imageproc::contrast;
 use imageproc::rect::Rect;
 use log::{debug, error};
 use cedar_detect::algorithm::{StarDescription, estimate_noise_from_image,
                               get_stars_from_image, summarize_region_of_interest};
+use crate::scale_image::scale_image_mut;
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
@@ -433,7 +433,7 @@ impl DetectEngine {
                                                 peak_region.top() as u32,
                                                 sub_image_size as u32,
                                                 sub_image_size as u32).to_image();
-                contrast::stretch_contrast_mut(&mut peak_image, 0, peak_value);
+                scale_image_mut(&mut peak_image, peak_value, /*gamma=*/0.7);
                 focus_aid = Some(FocusAid{
                     center_region,
                     center_peak_position: peak_position,
@@ -608,7 +608,7 @@ pub struct FocusAid {
     pub center_peak_value: u8,
 
     // A small full resolution crop of `captured_image` centered at
-    // `center_peak_position`.
+    // `center_peak_position`. Brightness scaled to full range for visibility.
     pub peak_image: GrayImage,
 
     // The location of `peak_image`.
