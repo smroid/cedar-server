@@ -370,7 +370,7 @@ impl Cedar for MyCedar {
                 None => None,
             };
             if let Err(x) =
-                locked_state.solve_engine.lock().await.set_target_pixel(target_arg)
+                locked_state.solve_engine.lock().await.set_boresight_pixel(target_arg)
             {
                 return Err(tonic_status(x));
             }
@@ -740,14 +740,29 @@ impl MyCedar {
             stats.solve_success_fraction =
                 Some(psr.solve_success_stats.clone());
             frame_result.slew_request = psr.slew_request.clone();
-            // TODO: boresight_image
+            if let Some(boresight_image) = &psr.boresight_image {
+                let mut bmp_buf = Vec::<u8>::new();
+                let bsi_rect = psr.boresight_image_region.unwrap();
+                bmp_buf.reserve((bsi_rect.width() * bsi_rect.height()) as usize);
+                boresight_image.write_to(&mut Cursor::new(&mut bmp_buf),
+                                         ImageOutputFormat::Bmp).unwrap();
+                frame_result.boresight_image = Some(Image{
+                    binning_factor: 1,
+                    // Rectangle is always in full resolution coordinates.
+                    rectangle: Some(Rectangle{origin_x: bsi_rect.left(),
+                                              origin_y: bsi_rect.top(),
+                                              width: bsi_rect.width() as i32,
+                                              height: bsi_rect.height() as i32}),
+                    image_data: bmp_buf,
+                });
+            }
         }
         if tetra3_solve_result.is_some() {
             frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
         }
         let boresight_position =
-            locked_state.solve_engine.lock().await.target_pixel().expect(
-                "solve_engine.target_pixel() should not fail");
+            locked_state.solve_engine.lock().await.boresight_pixel().expect(
+                "solve_engine.boresight_pixel() should not fail");
         if let Some(bs) = boresight_position {
             frame_result.boresight_position = Some(ImageCoord{x: bs.x, y: bs.y});
         } else {
