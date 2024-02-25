@@ -3,10 +3,6 @@ cedar-detect get info for ROI: include noise measure, background estimate
 show matches/pattern stars in operate mode. Except when slewing?
 * make this a preference, is ugly
 
-slew aim circle:
-* align aim/target crosses to ra/dec or alt/az
-* magnify when target is close to aim?
-
 Pacifier/busy indicator for capturing image
 
 interoperation with SkySafari
@@ -73,6 +69,7 @@ UI:
 
 Preferences:
 * update rate (non-dwell, dwell)
+* flip options? To match telescope FOV orientation.
 
 Object catalog ("Cedar Sky")
 * selection criteria
