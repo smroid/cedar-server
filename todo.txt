@@ -1,13 +1,13 @@
 cedar-detect get info for ROI: include noise measure, background estimate
 
-camera connect error
-* better error message
-* recovery?
-  usbreset to the rescue
-* detect the need for USB reset during camera operation (time outs?)
-
 show matches/pattern stars in operate mode. Except when slewing?
 * make this a preference, is ugly
+
+slew aim circle:
+* align aim/target crosses to ra/dec or alt/az
+* magnify when target is close to aim?
+
+Pacifier/busy indicator for capturing image
 
 interoperation with SkySafari
 * switch apps?
@@ -34,6 +34,12 @@ time/location from phone
 * HTTPS for location
 
 observer session handling
+
+IMU? 6DOF should be fine.
+* detect motion, replace solution with motion-based estimate if no
+  plate solve
+* while moving, run with accuracy setting at "fastest" position to
+  try to get plate solve
 
 logging
 * server log to linux-standard place
