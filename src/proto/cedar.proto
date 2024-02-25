@@ -188,7 +188,7 @@ enum ImageMode {
   BINNED = 1;
 }
 
-// Next tag: 28.
+// Next tag: 29.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
@@ -257,10 +257,12 @@ message FrameResult {
   // resolution image coordinates.
   optional ImageCoord center_peak_position = 12;
 
-  // The pixel value at the center_peak_positino.
+  // The pixel value at the center_peak_position.
   optional int32 center_peak_value = 6;
 
   // A small full resolution crop of `image` centered at `center_peak_position`.
+  // Note that this image has stretch/gamma applied for better visibility of
+  // dark features.
   optional Image center_peak_image = 13;
 
   // Information returned when `operating_mode` is OPERATE.
@@ -285,6 +287,12 @@ message FrameResult {
   // If present, SkySafari is requesting that the telescope's pointing should be
   // changed.
   optional SlewRequest slew_request = 24;
+
+  // If the boresight is close to the slew target, the server returns a full
+  // resolution crop of 'image' centered at the 'boresight_position'. Note that
+  // this image has stretch/gamma applied for better visibility of dark
+  // features.
+  optional Image boresight_image = 28;
 
   // advice
   // * polar alignment (operation mode only)
