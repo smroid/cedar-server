@@ -107,7 +107,6 @@ class _MainImagePainter extends CustomPainter {
       }
     }
 
-    var center = state._boresightPosition ?? state._imageRegion.center;
     if (state._slewRequest != null && !state._setupMode && state._hasSolution) {
       var slew = state._slewRequest;
       Offset? posInImage;
@@ -119,15 +118,12 @@ class _MainImagePainter extends CustomPainter {
       final scopeFov = state._preferences!.slewBullseyeSize *
           state._imageRegion.width /
           state._solutionFOV;
-      drawSlewTarget(canvas, color, center, scopeFov, posInImage,
-          slew.targetDistance, slew.targetAngle);
+      drawSlewTarget(canvas, color, state._boresightPosition, scopeFov,
+          posInImage, slew.targetDistance, slew.targetAngle);
     } else {
       // Make a cross at the boresight position (if any) or else the image
       // center.
-      double crossRadius = 8;
-      double crossThickness =
-          state._boresightPosition == null ? hairline : thin;
-      drawCross(canvas, color, center, crossRadius, crossThickness);
+      drawCross(canvas, color, state._boresightPosition, /*radius=*/ 8, thin);
     }
   }
 
@@ -153,7 +149,8 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _setupMode = false;
   int _accuracy = 3; // 1-4.
 
-  Offset? _boresightPosition; // Scaled by main image's binning.
+  Offset _boresightPosition =
+      const Offset(0, 0); // Scaled by main image's binning.
 
   Rect? _centerRegion; // Scaled by main image's binning.
   Rect? _centerPeakRegion; // Scaled by binning.
@@ -270,12 +267,8 @@ class _MyHomePageState extends State<MyHomePage> {
         0,
         response.image.rectangle.width.toDouble() / _binFactor,
         response.image.rectangle.height.toDouble() / _binFactor);
-    if (response.hasBoresightPosition()) {
-      _boresightPosition = Offset(response.boresightPosition.x / _binFactor,
-          response.boresightPosition.y / _binFactor);
-    } else {
-      _boresightPosition = null;
-    }
+    _boresightPosition = Offset(response.boresightPosition.x / _binFactor,
+        response.boresightPosition.y / _binFactor);
     if (response.hasCenterRegion()) {
       var cr = response.centerRegion;
       _centerRegion = Rect.fromLTWH(
@@ -719,10 +712,11 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Widget mainImage() {
-    return CustomPaint(
+    return ClipRect(
+        child: CustomPaint(
       foregroundPainter: _MainImagePainter(this, context),
       child: dart_widgets.Image.memory(_imageBytes, gaplessPlayback: true),
-    );
+    ));
   }
 
   Widget pacifier(BuildContext context, bool calibrating) {

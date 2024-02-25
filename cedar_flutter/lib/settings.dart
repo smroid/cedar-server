@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:cedar_flutter/cedar.pb.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter/material.dart';
@@ -213,7 +215,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         min: 0.1,
                         max: 2.0,
                         divisions: 19,
-                        value: prefsProto.slewBullseyeSize,
+                        value: min(prefsProto.slewBullseyeSize, 2.0),
                         onChanged: (double value) {
                           setState(() {
                             provider.updateSlewBullseyeSize(value);
