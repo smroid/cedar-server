@@ -558,7 +558,7 @@ impl SolveEngine {
                                         x: width as f32 / 2.0, y: height as f32 / 2.0};
                                 }
                                 let target_close_threshold =
-                                    std::cmp::min(width, height) as f32 / 12.0;
+                                    std::cmp::min(width, height) as f32 / 16.0;
 	                        let target_boresight_distance =
                                     ((target_image_coord.x - boresight_pos.x) *
                                      (target_image_coord.x - boresight_pos.x) +
@@ -567,7 +567,7 @@ impl SolveEngine {
                                 if target_boresight_distance < target_close_threshold {
                                     let image_rect = Rect::at(0, 0).of_size(width, height);
                                     // Get a sub-image centered on the boresight.
-                                    let bs_image_size = std::cmp::min(width, height) / 5;
+                                    let bs_image_size = std::cmp::min(width, height) / 6;
                                     boresight_image_region = Some(Rect::at(
                                         boresight_pos.x as i32 - bs_image_size as i32/2,
                                         boresight_pos.y as i32 - bs_image_size as i32/2)
