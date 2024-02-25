@@ -1,45 +1,76 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
+// angleRad is counter-clockwise starting from up direction, where y increases
+// downward. The angle typically corresponds to north (equatorial mount) or
+// zenith (alt-az mount).
 void drawCross(Canvas canvas, Color color, Offset center, double radius,
-    double thickness) {
+    double angleRad, double thickness, double directionThickness) {
+  var unitVec = Offset.fromDirection(angleRad + math.pi / 2);
+  var unitVecRightAngle = Offset.fromDirection(angleRad);
+
   canvas.drawLine(
-      center.translate(-radius, 0),
-      center.translate(radius, 0),
+      center.translate(0, 0),
+      center.translate(radius * unitVec.dx, -radius * unitVec.dy),
+      Paint()
+        ..color = color
+        ..strokeWidth = directionThickness);
+  canvas.drawLine(
+      center.translate(0, 0),
+      center.translate(-radius * unitVec.dx, radius * unitVec.dy),
       Paint()
         ..color = color
         ..strokeWidth = thickness);
   canvas.drawLine(
-      center.translate(0, -radius),
-      center.translate(0, radius),
+      center.translate(
+          -radius * unitVecRightAngle.dx, radius * unitVecRightAngle.dy),
+      center.translate(
+          radius * unitVecRightAngle.dx, -radius * unitVecRightAngle.dy),
       Paint()
         ..color = color
         ..strokeWidth = thickness);
 }
 
-void drawGapCross(Canvas canvas, Color color, Offset center, double radius,
-    double gapRadius, double thickness) {
+// angleRad is counter-clockwise starting from up direction, where y increases
+// downward. The angle typically corresponds to north (equatorial mount) or
+// zenith (alt-az mount).
+void drawGapCross(
+    Canvas canvas,
+    Color color,
+    Offset center,
+    double radius,
+    double gapRadius,
+    double angleRad,
+    double thickness,
+    double directionThickness) {
+  var unitVec = Offset.fromDirection(angleRad + math.pi / 2);
+  var unitVecRightAngle = Offset.fromDirection(angleRad);
+
   canvas.drawLine(
-      center.translate(-radius, 0),
-      center.translate(-gapRadius, 0),
+      center.translate(gapRadius * unitVec.dx, -gapRadius * unitVec.dy),
+      center.translate(radius * unitVec.dx, -radius * unitVec.dy),
+      Paint()
+        ..color = color
+        ..strokeWidth = directionThickness);
+  canvas.drawLine(
+      center.translate(-gapRadius * unitVec.dx, gapRadius * unitVec.dy),
+      center.translate(-radius * unitVec.dx, radius * unitVec.dy),
       Paint()
         ..color = color
         ..strokeWidth = thickness);
   canvas.drawLine(
-      center.translate(gapRadius, 0),
-      center.translate(radius, 0),
+      center.translate(
+          gapRadius * unitVecRightAngle.dx, -gapRadius * unitVecRightAngle.dy),
+      center.translate(
+          radius * unitVecRightAngle.dx, -radius * unitVecRightAngle.dy),
       Paint()
         ..color = color
         ..strokeWidth = thickness);
   canvas.drawLine(
-      center.translate(0, -radius),
-      center.translate(0, -gapRadius),
-      Paint()
-        ..color = color
-        ..strokeWidth = thickness);
-  canvas.drawLine(
-      center.translate(0, gapRadius),
-      center.translate(0, radius),
+      center.translate(
+          -gapRadius * unitVecRightAngle.dx, gapRadius * unitVecRightAngle.dy),
+      center.translate(
+          -radius * unitVecRightAngle.dx, radius * unitVecRightAngle.dy),
       Paint()
         ..color = color
         ..strokeWidth = thickness);
@@ -54,8 +85,12 @@ void drawText(Canvas canvas, Color color, Offset pos, String text) {
   textPainter.paint(canvas, pos);
 }
 
+// angleRad is counter-clockwise starting from up direction, where y increases
+// downward.
 void drawArrow(Canvas canvas, Color color, Offset start, double length,
     double angleRad, String text, double thickness) {
+  angleRad +=
+      math.pi / 2; // The math below wants angle to start from +x direction.
   var end = Offset(start.dx + length * math.cos(angleRad),
       start.dy - length * math.sin(angleRad));
 

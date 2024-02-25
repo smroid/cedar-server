@@ -11,8 +11,11 @@ double _deg2rad(double deg) {
   return deg / 180.0 * math.pi;
 }
 
-void _drawBullseye(
-    Canvas canvas, Color color, Offset boresight, double radius) {
+// rollAngleRad is counter-clockwise starting from up direction, where y
+// increases downward. The angle typically corresponds to north (equatorial
+// mount) or zenith (alt-az mount).
+void drawBullseye(Canvas canvas, Color color, Offset boresight, double radius,
+    double rollAngleRad) {
   // Draw center bullseye.
   canvas.drawCircle(
       boresight,
@@ -21,7 +24,8 @@ void _drawBullseye(
         ..color = color
         ..strokeWidth = _thin
         ..style = PaintingStyle.stroke);
-  drawGapCross(canvas, color, boresight, radius, 9, _hairline);
+  drawGapCross(canvas, color, boresight, radius, 9, rollAngleRad, _hairline,
+      _hairline + 1);
 }
 
 void drawSlewTarget(
@@ -29,6 +33,7 @@ void drawSlewTarget(
     Color color,
     Offset boresight,
     double boresightDiameterPix,
+    double rollAngleRad,
     Offset? slewTarget,
     double targetDistance,
     double targetAngle,
@@ -51,19 +56,20 @@ void drawSlewTarget(
     final arrowLength =
         math.min(200, 200 * math.sqrt(targetDistance / 180.0)).toDouble();
     final arrowRoot = -arrowLength / 2.0;
-    final angleRad = _deg2rad(targetAngle + 90);
-    final arrowStart = Offset(boresight.dx + arrowRoot * math.cos(angleRad),
-        boresight.dy - arrowRoot * math.sin(angleRad));
+    final angleRad = _deg2rad(targetAngle);
+    final arrowStart = Offset(boresight.dx - arrowRoot * math.sin(angleRad),
+        boresight.dy - arrowRoot * math.cos(angleRad));
     drawArrow(
         canvas, color, arrowStart, arrowLength, angleRad, distanceText, _thin);
   } else {
     // Slew target is in the field of view.
     // Draw the slew target.
-    drawGapCross(canvas, color, slewTarget, 10, 3, _thick);
+    drawGapCross(
+        canvas, color, slewTarget, 10, 3, rollAngleRad, _thick, _thick);
     // Draw a bullseye at the boresight position, annotated with the target
     // distance.
     final bsRadius = boresightDiameterPix / 2;
-    _drawBullseye(canvas, color, boresight, bsRadius);
+    drawBullseye(canvas, color, boresight, bsRadius, rollAngleRad);
     if (drawDistanceText) {
       final textPos = Offset(boresight.dx - bsRadius - 40, boresight.dy);
       drawText(canvas, color, textPos, distanceText);
