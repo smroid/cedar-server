@@ -75,7 +75,6 @@ class _MainImagePainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     const double hairline = 0.5;
     const double thin = 1;
-    const double thick = 2;
     final Color color = Theme.of(_context).colorScheme.primary;
     if (state._setupMode && state._centerRegion != null) {
       // Draw search box within which we search for the brightest star for
@@ -84,7 +83,7 @@ class _MainImagePainter extends CustomPainter {
           state._centerRegion as Rect,
           Paint()
             ..color = color
-            ..strokeWidth = thick
+            ..strokeWidth = hairline
             ..style = PaintingStyle.stroke);
       // Draw box around location of the brightest star in search box.
       canvas.drawRect(
@@ -133,6 +132,43 @@ class _MainImagePainter extends CustomPainter {
   }
 }
 
+class _OverlayImagePainter extends CustomPainter {
+  final _MyHomePageState _state;
+  final BuildContext _context;
+  final double _scale;
+
+  _OverlayImagePainter(this._state, this._context, this._scale);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Color color = Theme.of(_context).colorScheme.primary;
+    Offset overlayCenter = Offset(size.width / 2, size.height / 2);
+
+    var slew = _state._slewRequest;
+    Offset? posInImage;
+    if (slew!.hasImagePos()) {
+      posInImage = Offset(
+          overlayCenter.dx +
+              _scale * (slew.imagePos.x - _state._fullResBoresightPosition.dx),
+          overlayCenter.dy +
+              _scale * (slew.imagePos.y - _state._fullResBoresightPosition.dy));
+    }
+    // How many display pixels is the telescope FOV?
+    final scopeFov = _scale *
+        _state._preferences!.slewBullseyeSize *
+        _state._fullResImageRegion.width /
+        _state._solutionFOV;
+    drawSlewTarget(canvas, color, overlayCenter, scopeFov, posInImage,
+        slew.targetDistance, slew.targetAngle,
+        drawDistanceText: false);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) {
+    return true;
+  }
+}
+
 class _MyHomePageState extends State<MyHomePage> {
   _MyHomePageState() {
     refreshStateFromServer();
@@ -143,6 +179,7 @@ class _MyHomePageState extends State<MyHomePage> {
   // Image data, binned by server.
   Uint8List _imageBytes = Uint8List(1);
   late Rect _imageRegion; // Scaled by _binFactor.
+  late Rect _fullResImageRegion;
   int _binFactor = 1;
 
   OperationSettings? _operationSettings;
@@ -151,6 +188,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Offset _boresightPosition =
       const Offset(0, 0); // Scaled by main image's binning.
+  Offset _fullResBoresightPosition = const Offset(0, 0);
 
   Rect? _centerRegion; // Scaled by main image's binning.
   Rect? _centerPeakRegion; // Scaled by binning.
@@ -158,6 +196,10 @@ class _MyHomePageState extends State<MyHomePage> {
   int _centerPeakWidth = 0;
   int _centerPeakHeight = 0;
   Uint8List? _centerPeakImageBytes;
+
+  int _boresightImageWidth = 0;
+  int _boresightImageHeight = 0;
+  Uint8List? _boresightImageBytes;
 
   int _prevFrameId = -1;
   late List<StarCentroid> _stars;
@@ -267,8 +309,15 @@ class _MyHomePageState extends State<MyHomePage> {
         0,
         response.image.rectangle.width.toDouble() / _binFactor,
         response.image.rectangle.height.toDouble() / _binFactor);
+    _fullResImageRegion = Rect.fromLTWH(
+        0,
+        0,
+        response.image.rectangle.width.toDouble(),
+        response.image.rectangle.height.toDouble());
     _boresightPosition = Offset(response.boresightPosition.x / _binFactor,
         response.boresightPosition.y / _binFactor);
+    _fullResBoresightPosition =
+        Offset(response.boresightPosition.x, response.boresightPosition.y);
     if (response.hasCenterRegion()) {
       var cr = response.centerRegion;
       _centerRegion = Rect.fromLTWH(
@@ -280,11 +329,19 @@ class _MyHomePageState extends State<MyHomePage> {
     if (response.hasExposureTime()) {
       _exposureTimeMs = durationToMs(response.exposureTime);
     }
+    _centerPeakImageBytes = null;
     if (response.hasCenterPeakImage()) {
       _centerPeakImageBytes =
           Uint8List.fromList(response.centerPeakImage.imageData);
       _centerPeakWidth = response.centerPeakImage.rectangle.width;
       _centerPeakHeight = response.centerPeakImage.rectangle.height;
+    }
+    _boresightImageBytes = null;
+    if (response.hasBoresightImage()) {
+      _boresightImageBytes =
+          Uint8List.fromList(response.boresightImage.imageData);
+      _boresightImageWidth = response.boresightImage.rectangle.width;
+      _boresightImageHeight = response.boresightImage.rectangle.height;
     }
     if (response.hasCenterPeakPosition()) {
       var cp = response.centerPeakPosition;
@@ -750,16 +807,31 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Widget imageStack(BuildContext context) {
+    Widget? overlayWidget;
+    if (_setupMode && _centerPeakImageBytes != null) {
+      overlayWidget = dart_widgets.Image.memory(_centerPeakImageBytes!,
+          height: _centerPeakHeight.toDouble() * 3,
+          width: _centerPeakWidth.toDouble() * 3,
+          fit: BoxFit.fill,
+          gaplessPlayback: true);
+    } else if (!_setupMode && _boresightImageBytes != null) {
+      var scale = 1.25;
+      var overlayImage = dart_widgets.Image.memory(_boresightImageBytes!,
+          height: _boresightImageHeight * scale,
+          width: _boresightImageWidth * scale,
+          fit: BoxFit.fill,
+          gaplessPlayback: true);
+      overlayWidget = ClipRect(
+          child: CustomPaint(
+              foregroundPainter: _OverlayImagePainter(this, context, scale),
+              child: overlayImage));
+    }
     return Stack(
       alignment: Alignment.topRight,
       children: <Widget>[
         _prevFrameId != -1 ? mainImage() : Container(),
-        _prevFrameId != -1 && _setupMode && _centerPeakImageBytes != null
-            ? dart_widgets.Image.memory(_centerPeakImageBytes!,
-                height: _centerPeakHeight.toDouble() * 3,
-                width: _centerPeakWidth.toDouble() * 3,
-                fit: BoxFit.fill,
-                gaplessPlayback: true)
+        _prevFrameId != -1 && overlayWidget != null
+            ? overlayWidget
             : Container(),
         _calibrating || _transitionToSetup
             ? Positioned.fill(
