@@ -988,7 +988,7 @@ async fn main() {
     let subscriber = registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(fmt::layer().with_writer(non_blocking_stdout))
-        .with(fmt::layer().with_writer(non_blocking_file))
+        .with(fmt::layer().with_ansi(false).with_writer(non_blocking_file))
         .init();
 
     let args = Args::parse();
