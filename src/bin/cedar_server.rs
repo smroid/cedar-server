@@ -20,7 +20,10 @@ use log::{debug, info, warn};
 use prost::Message;
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
-use tracing_subscriber;
+
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{fmt, registry, EnvFilter};
+use tracing_appender::{non_blocking, non_blocking::NonBlockingBuilder};
 
 use futures::join;
 
@@ -974,7 +977,20 @@ fn parse_duration(arg: &str)
 // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    let file_appender = tracing_appender::rolling::daily(".", "log");
+    // Create non-blocking writers for both the file and stdout
+    let (non_blocking_file, _guard1) = NonBlockingBuilder::default()
+        .lossy(false)
+        .finish(file_appender);
+    let (non_blocking_stdout, _guard2) = NonBlockingBuilder::default()
+        .lossy(false)
+        .finish(std::io::stdout());
+    let subscriber = registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(fmt::layer().with_writer(non_blocking_stdout))
+        .with(fmt::layer().with_writer(non_blocking_file))
+        .init();
+
     let args = Args::parse();
     info!("Using Tetra3 server {:?} listening at {:?}",
           args.tetra3_script, args.tetra3_socket);
