@@ -14,7 +14,8 @@ help system
 * long press? (GestureDetector wrapped around a widget)
 * 'i' icons?
 
-view server log
+make more settings durable
+* accuracy slider
 
 vignetting calibration
 
@@ -38,7 +39,6 @@ IMU? 6DOF should be fine.
   try to get plate solve
 
 logging
-* server log to linux-standard place
 * observer log is separate
 
 command line options for camera binning: yes, no, auto.

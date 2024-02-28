@@ -1,5 +1,6 @@
 use std::fs;
-use std::io::Cursor;
+use std::io;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
@@ -23,7 +24,7 @@ use tonic_web::GrpcWebLayer;
 
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, registry, EnvFilter};
-use tracing_appender::{non_blocking, non_blocking::NonBlockingBuilder};
+use tracing_appender::{non_blocking::NonBlockingBuilder};
 
 use futures::join;
 
@@ -31,7 +32,8 @@ use cedar::cedar::cedar_server::{Cedar, CedarServer};
 use cedar::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
                    Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
-                   ProcessingStats, Rectangle, StarCentroid, Preferences};
+                   ProcessingStats, Rectangle, StarCentroid, Preferences,
+                   ServerInformationRequest, ServerInformationResult};
 use ::cedar::calibrator::Calibrator;
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::scale_image::scale_image;
@@ -68,7 +70,15 @@ fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
 }
 
 struct MyCedar {
+    // We organize our state as a sub-object so update_operation_settings() can
+    // spawn a sub-task for the SETUP -> OPERATE mode transition; the sub-task
+    // needs access to our state.
     state: Arc<tokio::sync::Mutex<CedarState>>,
+
+    preferences_file: PathBuf,
+
+    // The path to our log file.
+    log_file: PathBuf,
 }
 
 struct CedarState {
@@ -86,7 +96,6 @@ struct CedarState {
     // operation; we reflect them out to all clients and persist them to a
     // server-side file.
     preferences: Mutex<Preferences>,
-    preferences_file: String,
 
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
@@ -109,7 +118,24 @@ struct CedarState {
 
 #[tonic::async_trait]
 impl Cedar for MyCedar {
-    // TODO: get_server_information RPC.
+    async fn get_server_information(
+        &self, request: tonic::Request<ServerInformationRequest>)
+        -> Result<tonic::Response<ServerInformationResult>, tonic::Status>
+    {
+        let req: ServerInformationRequest = request.into_inner();
+        let mut response = ServerInformationResult::default();
+
+        if let Some(log_request) = req.log_request {
+            let tail = Self::read_file_tail(&self.log_file, log_request);
+            if let Err(e) = tail {
+                return Err(tonic::Status::failed_precondition(
+                    format!("Error reading log file {:?}: {:?}.", self.log_file, e)));
+            }
+            response.log_content = Some(tail.unwrap());
+        }
+
+        Ok(tonic::Response::new(response))
+    }
 
     async fn update_fixed_settings(
         &self, request: tonic::Request<FixedSettings>)
@@ -324,7 +350,7 @@ impl Cedar for MyCedar {
         }
 
         // Write updated preferences to file.
-        let prefs_path = Path::new(&locked_state.preferences_file);
+        let prefs_path = Path::new(&self.preferences_file);
         let scratch_path = prefs_path.with_extension("tmp");
 
         let mut buf = vec![];
@@ -786,11 +812,12 @@ impl MyCedar {
                      tetra3_uds: String,
                      camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
                      telescope_position: Arc<Mutex<TelescopePosition>>,
-                     preferences_file: String,
                      base_star_count_goal: i32,
                      base_detection_sigma: f32,
                      min_detection_sigma: f32,
-                     stats_capacity: usize) -> Self {
+                     stats_capacity: usize,
+                     preferences_file: PathBuf,
+                     log_file: PathBuf) -> Self {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration, max_exposure_duration,
             min_detection_sigma, base_detection_sigma,
@@ -814,7 +841,7 @@ impl MyCedar {
         let prefs_path = Path::new(&preferences_file);
         let bytes = fs::read(prefs_path);
         if let Err(e) = bytes {
-            warn!("Could not read file {}: {:?}", preferences_file, e);
+            warn!("Could not read file {:?}: {:?}", preferences_file, e);
         } else {
             match Preferences::decode(bytes.unwrap().as_slice()) {
                 Ok(mut p) => {
@@ -867,7 +894,6 @@ impl MyCedar {
                 Calibrator::new(camera.clone()))),
             telescope_position: telescope_position.clone(),
             preferences: Mutex::new(preferences),
-            preferences_file,
             scaled_image: None,
             width: 0,
             height: 0,
@@ -881,6 +907,8 @@ impl MyCedar {
         }));
         let cedar = MyCedar {
             state: state.clone(),
+            preferences_file,
+            log_file,
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;
@@ -888,7 +916,6 @@ impl MyCedar {
             warn!("Could not set default settings on camera {:?}", x);
         }
         Self::update_accuracy_adjusted_params(&*locked_state).await;
-
 
         cedar
     }
@@ -905,6 +932,20 @@ impl MyCedar {
         };
         let mut locked_detect_engine = state.detect_engine.lock().await;
         locked_detect_engine.set_accuracy_multiplier(multiplier);
+    }
+
+    fn read_file_tail(log_file: &PathBuf, bytes_to_read: i32) -> io::Result<String> {
+        let mut f = fs::File::open(log_file)?;
+        let len = f.metadata()?.len();
+        let to_read = std::cmp::min(len, bytes_to_read as u64) as i64;
+        f.seek(SeekFrom::End(-to_read))?;
+        let mut content = String::new();
+        f.read_to_string(&mut content)?;
+        // Trim leading portion of content until first newline.
+        if let Some(pos) = content.find('\n') {
+            content = content[pos+1..].to_string();
+        }
+        Ok(content)
     }
 }
 
@@ -961,6 +1002,14 @@ struct Args {
     #[arg(long, default_value = "./cedar_ui_prefs.binpb")]
     ui_prefs: String,
 
+    /// Directory for log file(s).
+    #[arg(long, default_value = ".")]
+    log_dir: String,
+
+    /// Name of log file.
+    #[arg(long, default_value = "cedar_log.txt")]
+    log_file: String,
+
     // TODO: max solve time
 }
 
@@ -977,7 +1026,9 @@ fn parse_duration(arg: &str)
 // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 #[tokio::main]
 async fn main() {
-    let file_appender = tracing_appender::rolling::daily(".", "log");
+    let args = Args::parse();
+
+    let file_appender = tracing_appender::rolling::never(&args.log_dir, &args.log_file);
     // Create non-blocking writers for both the file and stdout
     let (non_blocking_file, _guard1) = NonBlockingBuilder::default()
         .lossy(false)
@@ -985,16 +1036,14 @@ async fn main() {
     let (non_blocking_stdout, _guard2) = NonBlockingBuilder::default()
         .lossy(false)
         .finish(std::io::stdout());
-    let subscriber = registry()
+    let _subscriber = registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(fmt::layer().with_writer(non_blocking_stdout))
         .with(fmt::layer().with_ansi(false).with_writer(non_blocking_file))
         .init();
 
-    let args = Args::parse();
     info!("Using Tetra3 server {:?} listening at {:?}",
           args.tetra3_script, args.tetra3_socket);
-
     // Build the static content web service.
     let rest = Router::new().nest_service(
         "/", ServeDir::new("/home/pi/projects/cedar/cedar_flutter/build/web"));
@@ -1043,6 +1092,7 @@ async fn main() {
     //      https://github.com/hyperium/tonic/issues/981
 
     // Build the gRPC service.
+    let path: PathBuf = [args.log_dir, args.log_file].iter().collect();
     let grpc = tonic::transport::Server::builder()
         .accept_http1(true)
         .layer(GrpcWebLayer::new())
@@ -1054,12 +1104,14 @@ async fn main() {
                                                    args.tetra3_socket,
                                                    camera,
                                                    shared_telescope_position.clone(),
-                                                   args.ui_prefs,
                                                    args.star_count_goal,
                                                    args.sigma,
                                                    args.min_sigma,
                                                    // TODO: arg for this?
-                                                   /*stats_capacity=*/100).await))
+                                                   /*stats_capacity=*/100,
+                                                   PathBuf::from(args.ui_prefs),
+                                                   path,)
+                                      .await))
         .into_service();
 
     // Combine static content (flutter app) server and gRPC server into one service.
