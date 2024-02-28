@@ -37,3 +37,4 @@ cedar_webapp/windows
 src/tetra3_server.py
 
 src/cedar_ui_prefs.binpb
+cedar_log.txt
