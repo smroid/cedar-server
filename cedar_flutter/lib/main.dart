@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:cedar_flutter/draw_slew_target.dart';
 import 'package:cedar_flutter/draw_util.dart';
 import 'package:cedar_flutter/exp_values.dart';
+import 'package:cedar_flutter/server_log.dart';
 import 'package:cedar_flutter/settings.dart';
 import 'package:cedar_flutter/themes.dart';
 import 'package:fixnum/fixnum.dart';
@@ -462,6 +463,19 @@ class _MyHomePageState extends State<MyHomePage> {
     await updateOperationSettings(request);
   }
 
+  Future<String> getServerLogs() async {
+    var request = ServerInformationRequest();
+    request.logRequest = 20000;
+    try {
+      var infoResult = await client().getServerInformation(request,
+          options: CallOptions(timeout: const Duration(seconds: 10)));
+      return infoResult.logContent;
+    } catch (e) {
+      log('Error: $e');
+      return "";
+    }
+  }
+
   void shutdownDialog() {
     showDialog(
       context: context,
@@ -581,6 +595,15 @@ class _MyHomePageState extends State<MyHomePage> {
           const SizedBox(height: 15),
         ],
       ),
+      TextButton.icon(
+          label: const Text("Preferences"),
+          icon: const Icon(Icons.settings),
+          onPressed: () {
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (context) => const SettingsScreen()));
+          }),
       const SizedBox(height: 15),
       Column(children: <Widget>[
         OutlinedButton(
@@ -592,21 +615,22 @@ class _MyHomePageState extends State<MyHomePage> {
       const SizedBox(height: 15),
       Column(children: <Widget>[
         OutlinedButton(
+            child: const Text("Show server log"),
+            onPressed: () async {
+              var logs = await getServerLogs();
+              // ignore: use_build_context_synchronously
+              showDialog(
+                  context: context, builder: (context) => ServerLogPopUp(logs));
+            }),
+      ]),
+      const SizedBox(height: 15),
+      Column(children: <Widget>[
+        OutlinedButton(
             child: const Text("Shutdown"),
             onPressed: () {
               shutdownDialog();
             }),
       ]),
-      const SizedBox(height: 15),
-      TextButton.icon(
-          label: const Text("Preferences"),
-          icon: const Icon(Icons.settings),
-          onPressed: () {
-            Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (context) => const SettingsScreen()));
-          }),
     ];
   }
 
