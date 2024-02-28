@@ -520,11 +520,16 @@ message ActionRequest {
 }
 
 message ServerInformationRequest {
+  // Specifies how many bytes (most recent) of the server log to retrieve.
+  optional int32 log_request = 1;
+
   // Empty.
   // TODO: int to request N most recent lines of server log
 }
 
 message ServerInformationResult {
+  optional string log_content = 1;
+
   // Cedar version.
 
   // Tetra3 version.
@@ -546,15 +551,13 @@ message ServerInformationResult {
   // * Resolution
 
   // Status of SkySafari integration; SkySafari version.
-
-  // Server logs, if requested.
 }
 
 message EmptyMessage {}
 
 service Cedar {
   // Returns information about the Cedar server.
-  // rpc GetServerInformation(ServerInformationRequest) returns (ServerInformationResult);
+  rpc GetServerInformation(ServerInformationRequest) returns (ServerInformationResult);
 
   // Changes zero or more of Cedar's "fixed" settings. If a field is omitted
   // from the supplied FixedSettings, that setting is not updated. Returns the
