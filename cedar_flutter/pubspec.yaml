@@ -41,6 +41,7 @@ dependencies:
   numberpicker: ^2.1.2
   settings_ui: ^2.0.2
   provider: ^6.1.1
+  geolocator: ^11.0.0
 
 dev_dependencies:
   flutter_test:
