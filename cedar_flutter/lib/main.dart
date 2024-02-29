@@ -10,6 +10,7 @@ import 'package:fixnum/fixnum.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
+import 'package:geolocator/geolocator.dart';
 import 'package:grpc/service_api.dart';
 import 'package:numberpicker/numberpicker.dart';
 import 'package:protobuf/protobuf.dart';
@@ -200,8 +201,11 @@ class _OverlayImagePainter extends CustomPainter {
 
 class _MyHomePageState extends State<MyHomePage> {
   _MyHomePageState() {
+    getLocation();
     refreshStateFromServer();
   }
+
+  Position? _position;
 
   // Information from most recent FrameResult.
 
@@ -407,6 +411,30 @@ class _MyHomePageState extends State<MyHomePage> {
     } catch (e) {
       log('Error: $e');
     }
+  }
+
+  Future<void> getLocation() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      log("Location services not enabled");
+      return;
+    }
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        log("Location permissions are denied");
+        return;
+      }
+    }
+    if (permission == LocationPermission.deniedForever) {
+      log("Location permissions are denied forever");
+      return;
+    }
+
+    _position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.low);
+    log("position $_position");
   }
 
   // Issue repeated request/response RPCs.
@@ -668,7 +696,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   setOperatingMode(/*setup=*/ !value);
                 });
               }),
-          primaryText("Run"),
+          primaryText("Aim"),
         ])
       ]),
       const SizedBox(width: 15, height: 15),
