@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:cedar_flutter/draw_slew_target.dart';
 import 'package:cedar_flutter/draw_util.dart';
 import 'package:cedar_flutter/exp_values.dart';
+import 'package:cedar_flutter/geolocation.dart';
 import 'package:cedar_flutter/server_log.dart';
 import 'package:cedar_flutter/settings.dart';
 import 'package:cedar_flutter/themes.dart';
@@ -201,7 +202,6 @@ class _OverlayImagePainter extends CustomPainter {
 
 class _MyHomePageState extends State<MyHomePage> {
   _MyHomePageState() {
-    getLocation();
     refreshStateFromServer();
   }
 
@@ -413,32 +413,12 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
-  Future<void> getLocation() async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      log("Location services not enabled");
-      return;
-    }
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        log("Location permissions are denied");
-        return;
-      }
-    }
-    if (permission == LocationPermission.deniedForever) {
-      log("Location permissions are denied forever");
-      return;
-    }
-
-    _position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.low);
-    log("position $_position");
-  }
-
   // Issue repeated request/response RPCs.
   Future<void> refreshStateFromServer() async {
+    // See if we can get location from the platform. If we are a web app, served
+    // over http (not https), we won't be able to get location here.
+    _position = await getLocation();
+
     await Future.doWhile(() async {
       var delay = 100;
       if (_setupMode && !_calibrating && _doRefreshes) {
@@ -632,6 +612,24 @@ class _MyHomePageState extends State<MyHomePage> {
                 MaterialPageRoute(
                     builder: (context) => const SettingsScreen()));
           }),
+      const SizedBox(height: 15),
+      _position == null
+          ? TextButton.icon(
+              label: const Text("Location unknown"),
+              icon: const Icon(Icons.not_listed_location),
+              onPressed: () {
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (context) => const MapScreen()));
+              })
+          : TextButton.icon(
+              label: const Text("lat + long"),
+              icon: const Icon(Icons.edit_location_alt),
+              onPressed: () {
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const SettingsScreen()));
+              }),
       const SizedBox(height: 15),
       Column(children: <Widget>[
         OutlinedButton(
