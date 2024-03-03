@@ -67,7 +67,6 @@ class _MapScreenState extends State<MapScreen> {
                     ~InteractiveFlag.rotate),
             onTap: (tapPosition, point) {
               setState(() {
-                // TODO: call a method instead, we'll want to update server.
                 widget._homePageState.mapPosition = point;
               });
             },

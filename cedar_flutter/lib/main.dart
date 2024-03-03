@@ -206,7 +206,7 @@ class MyHomePageState extends State<MyHomePage> {
   }
 
   // Geolocation from map.
-  LatLng? mapPosition;
+  LatLng? _mapPosition;
 
   // Information from most recent FrameResult.
 
@@ -275,6 +275,14 @@ class MyHomePageState extends State<MyHomePage> {
   CedarClient client() {
     _client ??= getClient(); // Initialize if null.
     return _client!;
+  }
+
+  LatLng? get mapPosition => _mapPosition;
+  set mapPosition(LatLng? newPos) {
+    setState(() {
+      // TODO: update server.
+      _mapPosition = newPos;
+    });
   }
 
   void _setStateFromOpSettings(OperationSettings opSettings) {
@@ -420,7 +428,7 @@ class MyHomePageState extends State<MyHomePage> {
     // over http (not https), we won't be able to get location here.
     var platformPosition = await getLocation();
     if (platformPosition != null) {
-      mapPosition =
+      _mapPosition =
           LatLng(platformPosition.latitude, platformPosition.longitude);
     }
 
@@ -619,11 +627,11 @@ class MyHomePageState extends State<MyHomePage> {
           }),
       const SizedBox(height: 15),
       TextButton.icon(
-          label: mapPosition == null
+          label: _mapPosition == null
               ? const Text("Location unknown")
               : Text(sprintf("Location %.1f %.1f",
-                  [mapPosition!.latitude, mapPosition!.longitude])),
-          icon: Icon(mapPosition == null
+                  [_mapPosition!.latitude, _mapPosition!.longitude])),
+          icon: Icon(_mapPosition == null
               ? Icons.not_listed_location
               : Icons.edit_location_alt),
           onPressed: () {
