@@ -44,13 +44,17 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     LatLng? selectedPosition = widget._homePageState.mapPosition;
-    LatLng initialCenter = const LatLng(0, 0);
-    var initialZoom = 2.0;
+    LatLng initialCenter;
+    double initialZoom;
     if (selectedPosition != null) {
       initialCenter = selectedPosition;
       initialZoom = 5.0;
+    } else {
+      double longitudeFromTz =
+          15.0 * widget._homePageState.tzOffset.inMinutes / 60.0;
+      initialCenter = LatLng(0, longitudeFromTz);
+      initialZoom = 3.0;
     }
-    // TODO: initialCenter time zone if no selected position.
     return Scaffold(
       appBar: AppBar(title: const Text('Select Location')),
       body: Stack(children: [
