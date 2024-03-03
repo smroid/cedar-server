@@ -208,6 +208,8 @@ class MyHomePageState extends State<MyHomePage> {
   // Geolocation from map.
   LatLng? _mapPosition;
 
+  Duration _tzOffset = const Duration();
+
   // Information from most recent FrameResult.
 
   // Image data, binned by server.
@@ -284,6 +286,8 @@ class MyHomePageState extends State<MyHomePage> {
       _mapPosition = newPos;
     });
   }
+
+  Duration get tzOffset => _tzOffset;
 
   void _setStateFromOpSettings(OperationSettings opSettings) {
     _operationSettings = opSettings;
@@ -431,6 +435,12 @@ class MyHomePageState extends State<MyHomePage> {
       _mapPosition =
           LatLng(platformPosition.latitude, platformPosition.longitude);
     }
+    // TODO: if no platform position, accept position from server (saved
+    // from prior session).
+
+    // Get platform time.
+    final now = DateTime.now();
+    _tzOffset = now.timeZoneOffset;
 
     await Future.doWhile(() async {
       var delay = 100;
