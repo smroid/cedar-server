@@ -11,8 +11,8 @@ import 'package:fixnum/fixnum.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' as dart_widgets;
-import 'package:geolocator/geolocator.dart';
 import 'package:grpc/service_api.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:numberpicker/numberpicker.dart';
 import 'package:protobuf/protobuf.dart';
 import 'package:provider/provider.dart';
@@ -53,7 +53,7 @@ class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
   final String title;
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<MyHomePage> createState() => MyHomePageState();
 }
 
 double _durationToMs(proto_duration.Duration duration) {
@@ -73,7 +73,7 @@ double _deg2rad(double deg) {
 }
 
 class _MainImagePainter extends CustomPainter {
-  final _MyHomePageState state;
+  final MyHomePageState state;
   final BuildContext _context;
 
   _MainImagePainter(this.state, this._context);
@@ -157,7 +157,7 @@ class _MainImagePainter extends CustomPainter {
 }
 
 class _OverlayImagePainter extends CustomPainter {
-  final _MyHomePageState _state;
+  final MyHomePageState _state;
   final BuildContext _context;
   final double _scale;
 
@@ -200,12 +200,13 @@ class _OverlayImagePainter extends CustomPainter {
   }
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  _MyHomePageState() {
+class MyHomePageState extends State<MyHomePage> {
+  MyHomePageState() {
     refreshStateFromServer();
   }
 
-  Position? _position;
+  // Geolocation from map.
+  LatLng? mapPosition;
 
   // Information from most recent FrameResult.
 
@@ -417,7 +418,11 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> refreshStateFromServer() async {
     // See if we can get location from the platform. If we are a web app, served
     // over http (not https), we won't be able to get location here.
-    _position = await getLocation();
+    var platformPosition = await getLocation();
+    if (platformPosition != null) {
+      mapPosition =
+          LatLng(platformPosition.latitude, platformPosition.longitude);
+    }
 
     await Future.doWhile(() async {
       var delay = 100;
@@ -613,23 +618,18 @@ class _MyHomePageState extends State<MyHomePage> {
                     builder: (context) => const SettingsScreen()));
           }),
       const SizedBox(height: 15),
-      _position == null
-          ? TextButton.icon(
-              label: const Text("Location unknown"),
-              icon: const Icon(Icons.not_listed_location),
-              onPressed: () {
-                Navigator.push(context,
-                    MaterialPageRoute(builder: (context) => const MapScreen()));
-              })
-          : TextButton.icon(
-              label: const Text("lat + long"),
-              icon: const Icon(Icons.edit_location_alt),
-              onPressed: () {
-                Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) => const SettingsScreen()));
-              }),
+      TextButton.icon(
+          label: mapPosition == null
+              ? const Text("Location unknown")
+              : Text(sprintf("Location %.1f %.1f",
+                  [mapPosition!.latitude, mapPosition!.longitude])),
+          icon: Icon(mapPosition == null
+              ? Icons.not_listed_location
+              : Icons.edit_location_alt),
+          onPressed: () {
+            Navigator.push(context,
+                MaterialPageRoute(builder: (context) => MapScreen(this)));
+          }),
       const SizedBox(height: 15),
       Column(children: <Widget>[
         OutlinedButton(

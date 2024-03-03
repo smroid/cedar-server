@@ -1,5 +1,6 @@
 import 'dart:developer';
 
+import 'package:cedar_flutter/main.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -25,63 +26,63 @@ Future<Position?> getLocation() async {
   }
   var position = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.low);
-  // TODO: drop log
-  log("position $position");
   return position;
 }
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({Key? key}) : super(key: key);
+  final MyHomePageState _homePageState;
+  const MapScreen(this._homePageState, {Key? key}) : super(key: key);
+
   @override
+  // ignore: library_private_types_in_public_api
   _MapScreenState createState() => _MapScreenState();
 }
 
 class _MapScreenState extends State<MapScreen> {
   final _mapController = MapController();
-  LatLng? _selectedPosition;
-  LatLng _currentCenter = LatLng(37.45, -122.18);
 
   @override
   Widget build(BuildContext context) {
+    LatLng? selectedPosition = widget._homePageState.mapPosition;
+    LatLng initialCenter = const LatLng(0, 0);
+    var initialZoom = 2.0;
+    if (selectedPosition != null) {
+      initialCenter = selectedPosition;
+      initialZoom = 5.0;
+    }
+    // TODO: initialCenter time zone if no selected position.
     return Scaffold(
       appBar: AppBar(title: const Text('Select Location')),
       body: Stack(children: [
         FlutterMap(
           mapController: _mapController,
           options: MapOptions(
-            // TODO: initialCenter according to latlng if we have it,
-            // time zone otherwise.
-            initialCenter: _currentCenter,
-            initialZoom: 3.0,  // TODO: initial zoom more if we already have a good position
+            initialCenter: initialCenter,
+            initialZoom: initialZoom,
             minZoom: 1.0,
             maxZoom: 7.0,
             interactionOptions: const InteractionOptions(
-                flags: InteractiveFlag.all
-                    & ~InteractiveFlag.doubleTapZoom
-                    & ~InteractiveFlag.rotate),
-            cameraConstraint: CameraConstraint.contain(
-                bounds: LatLngBounds(
-                    const LatLng(80.0, 180.0), const LatLng(-80.0, -180.0))),
+                flags: InteractiveFlag.all &
+                    ~InteractiveFlag.doubleTapZoom &
+                    ~InteractiveFlag.rotate),
             onTap: (tapPosition, point) {
               setState(() {
-                _selectedPosition = point;
-                // TODO: remove log
-                log('Tapped: ${point.latitude}, ${point.longitude}');
+                // TODO: call a method instead, we'll want to update server.
+                widget._homePageState.mapPosition = point;
               });
             },
           ),
           children: [
             TileLayer(
-              urlTemplate: 'assets/tiles/{z}/{x}/{y}{r}.webp',
-              tileProvider: AssetTileProvider(),
-              maxNativeZoom: 6,
-              retinaMode: true
-            ),
-            if (_selectedPosition != null)
+                urlTemplate: 'assets/tiles/{z}/{x}/{y}{r}.webp',
+                tileProvider: AssetTileProvider(),
+                maxNativeZoom: 6,
+                retinaMode: true),
+            if (selectedPosition != null)
               MarkerLayer(
                 markers: [
                   Marker(
-                    point: _selectedPosition!,
+                    point: selectedPosition,
                     child: const Icon(Icons.location_pin, color: Colors.red),
                   ),
                 ],
@@ -99,9 +100,11 @@ class _MapScreenState extends State<MapScreen> {
                   _mapController.move(_mapController.camera.center,
                       _mapController.camera.zoom + 1);
                 },
-                backgroundColor: const Color(0x00000000),
+                elevation: 0,
+                hoverElevation: 0,
+                backgroundColor: const Color(0xc0ffffff),
                 foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                child: const Icon(Icons.zoom_in),
+                child: const Icon(Icons.add),
               ),
               const SizedBox(height: 10.0),
               FloatingActionButton.small(
@@ -110,11 +113,22 @@ class _MapScreenState extends State<MapScreen> {
                   _mapController.move(_mapController.camera.center,
                       _mapController.camera.zoom - 1);
                 },
-                backgroundColor: const Color(0x00000000),
+                elevation: 0,
+                hoverElevation: 0,
+                backgroundColor: const Color(0xc0ffffff),
                 foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                child: const Icon(Icons.zoom_out),
+                child: const Icon(Icons.remove),
               ),
             ],
+          ),
+        ),
+        const Positioned(
+          bottom: 20.0,
+          left: 20.0,
+          child: Text(
+            "© MapTiler © OpenStreetMap contributors",
+            textScaleFactor: 0.5,
+            style: TextStyle(color: Colors.blueGrey),
           ),
         ),
       ]),
