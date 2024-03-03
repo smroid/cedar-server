@@ -83,9 +83,9 @@ struct MyCedar {
 
 struct CedarState {
     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
-    fixed_settings: Mutex<FixedSettings>,
+    fixed_settings: FixedSettings,
     calibration_data: Arc<tokio::sync::Mutex<CalibrationData>>,
-    operation_settings: Mutex<OperationSettings>,
+    operation_settings: OperationSettings,
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
     tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
@@ -95,7 +95,7 @@ struct CedarState {
     // We host the user interface preferences here. These do not affect server
     // operation; we reflect them out to all clients and persist them to a
     // server-side file.
-    preferences: Mutex<Preferences>,
+    preferences: Preferences,
 
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
@@ -142,9 +142,10 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<FixedSettings>, tonic::Status>
     {
         let req: FixedSettings = request.into_inner();
-        if let Some(_observer_location) = req.observer_location {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateFixedSettings not implemented for observer_location."));
+        let mut locked_state = self.state.lock().await;
+        if let Some(observer_location) = req.observer_location {
+            locked_state.fixed_settings.observer_location =
+                Some(observer_location);
         }
         if let Some(_client_time) = req.client_time {
             return Err(tonic::Status::unimplemented(
@@ -158,8 +159,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings cannot update max_exposure_time."));
         }
-        Ok(tonic::Response::new(
-            self.state.lock().await.fixed_settings.lock().unwrap().clone()))
+        Ok(tonic::Response::new(self.state.lock().await.fixed_settings.clone()))
     }
 
     async fn update_operation_settings(
@@ -174,7 +174,7 @@ impl Cedar for MyCedar {
                     *locked_state.cancel_calibration.lock().unwrap() = true;
                     locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
                 }
-                if locked_state.operation_settings.lock().unwrap().operating_mode ==
+                if locked_state.operation_settings.operating_mode ==
                     Some(OperatingMode::Operate as i32)
                 {
                     // Transition: OPERATE -> SETUP mode.
@@ -191,12 +191,12 @@ impl Cedar for MyCedar {
                     if let Err(x) = Self::set_pre_calibration_defaults(&*locked_state).await {
                         return Err(tonic_status(x));
                     }
-                    locked_state.operation_settings.lock().unwrap().operating_mode =
+                    locked_state.operation_settings.operating_mode =
                         Some(OperatingMode::Setup as i32);
                 }
             } else if new_operating_mode == OperatingMode::Operate as i32 {
                 let locked_state = self.state.lock().await;
-                if locked_state.operation_settings.lock().unwrap().operating_mode ==
+                if locked_state.operation_settings.operating_mode ==
                     Some(OperatingMode::Setup as i32)
                 {
                     // Transition: SETUP -> OPERATE mode.
@@ -250,13 +250,11 @@ impl Cedar for MyCedar {
                                 // Restore OPERATE mode update interval.
                                 let std_duration;
                                 {
-                                    let mut locked_op_settings =
-                                        locked_state.operation_settings.lock().unwrap();
-                                    let update_interval =
-                                        locked_op_settings.update_interval.clone().unwrap();
+                                    let update_interval = locked_state.operation_settings.
+                                        update_interval.clone().unwrap();
                                     std_duration = std::time::Duration::try_from(
                                         update_interval).unwrap();
-                                    locked_op_settings.operating_mode =
+                                    locked_state.operation_settings.operating_mode =
                                         Some(OperatingMode::Operate as i32);
                                 }
                                 if let Err(x) = Self::set_update_interval(
@@ -266,7 +264,7 @@ impl Cedar for MyCedar {
                                 }
                             }
                             let result = tonic::Response::new(
-                                locked_state.operation_settings.lock().unwrap().clone());
+                                locked_state.operation_settings.clone());
                             Ok(result)
                         });
                     // Let _task_handle go out of scope, detaching the spawned
@@ -284,16 +282,15 @@ impl Cedar for MyCedar {
                     format!("Got negative exposure_time: {}.", exp_time)));
             }
             let std_duration = std::time::Duration::try_from(exp_time.clone()).unwrap();
-            let locked_state = self.state.lock().await;
+            let mut locked_state = self.state.lock().await;
             if let Err(x) = Self::set_exposure_time(&*locked_state, std_duration).await {
                 return Err(tonic_status(x));
             }
-            locked_state.operation_settings.lock().unwrap().exposure_time =
-                Some(exp_time);
+            locked_state.operation_settings.exposure_time = Some(exp_time);
         }
         if let Some(accuracy) = req.accuracy {
-            let locked_state = self.state.lock().await;
-            locked_state.operation_settings.lock().unwrap().accuracy = Some(accuracy);
+            let mut locked_state = self.state.lock().await;
+            locked_state.operation_settings.accuracy = Some(accuracy);
             Self::update_accuracy_adjusted_params(&*locked_state).await;
         }
         if let Some(update_interval) = req.update_interval {
@@ -303,16 +300,16 @@ impl Cedar for MyCedar {
             }
             let std_duration = std::time::Duration::try_from(
                 update_interval.clone()).unwrap();
-            let locked_state = self.state.lock().await;
-            if locked_state.operation_settings.lock().unwrap().operating_mode ==
+            let mut locked_state = self.state.lock().await;
+            if locked_state.operation_settings.operating_mode ==
                 Some(OperatingMode::Operate as i32)
             {
-                if let Err(x) = Self::set_update_interval(&*locked_state, std_duration).await {
+                if let Err(x) = Self::set_update_interval(&*locked_state,
+                                                          std_duration).await {
                     return Err(tonic_status(x));
                 }
             }
-            locked_state.operation_settings.lock().unwrap().update_interval =
-                Some(update_interval);
+            locked_state.operation_settings.update_interval = Some(update_interval);
         }
         if let Some(_dwell_update_interval) = req.dwell_update_interval {
             return Err(tonic::Status::unimplemented(
@@ -323,30 +320,28 @@ impl Cedar for MyCedar {
                 "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
         }
 
-        Ok(tonic::Response::new(
-            self.state.lock().await.operation_settings.lock().unwrap().clone()))
+        Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
     }
 
     async fn update_preferences(
         &self, request: tonic::Request<Preferences>)
         -> Result<tonic::Response<Preferences>, tonic::Status> {
-        let locked_state = self.state.lock().await;
-        let mut locked_preferences = locked_state.preferences.lock().unwrap();
+        let mut locked_state = self.state.lock().await;
         let req: Preferences = request.into_inner();
         if let Some(coord_format) = req.celestial_coord_format {
-            locked_preferences.celestial_coord_format = Some(coord_format);
+            locked_state.preferences.celestial_coord_format = Some(coord_format);
         }
         if let Some(bullseye_size) = req.slew_bullseye_size {
-            locked_preferences.slew_bullseye_size = Some(bullseye_size);
+            locked_state.preferences.slew_bullseye_size = Some(bullseye_size);
         }
         if let Some(night_vision) = req.night_vision_theme {
-            locked_preferences.night_vision_theme = Some(night_vision);
+            locked_state.preferences.night_vision_theme = Some(night_vision);
         }
         if let Some(show_perf) = req.show_perf_stats {
-            locked_preferences.show_perf_stats = Some(show_perf);
+            locked_state.preferences.show_perf_stats = Some(show_perf);
         }
         if let Some(hide_app_bar) = req.hide_app_bar {
-            locked_preferences.hide_app_bar = Some(hide_app_bar);
+            locked_state.preferences.hide_app_bar = Some(hide_app_bar);
         }
 
         // Write updated preferences to file.
@@ -354,19 +349,19 @@ impl Cedar for MyCedar {
         let scratch_path = prefs_path.with_extension("tmp");
 
         let mut buf = vec![];
-        if let Err(e) = locked_preferences.encode(&mut buf) {
+        if let Err(e) = locked_state.preferences.encode(&mut buf) {
             warn!("Could not encode preferences: {:?}", e);
-            return Ok(tonic::Response::new(locked_preferences.clone()));
+            return Ok(tonic::Response::new(locked_state.preferences.clone()));
         }
         if let Err(e) = fs::write(&scratch_path, buf) {
             warn!("Could not write file: {:?}", e);
-            return Ok(tonic::Response::new(locked_preferences.clone()));
+            return Ok(tonic::Response::new(locked_state.preferences.clone()));
         }
         if let Err(e) = fs::rename(scratch_path, prefs_path) {
             warn!("Could not rename file: {:?}", e);
         }
 
-        Ok(tonic::Response::new(locked_preferences.clone()))
+        Ok(tonic::Response::new(locked_state.preferences.clone()))
     }
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
@@ -382,8 +377,7 @@ impl Cedar for MyCedar {
         let req: ActionRequest = request.into_inner();
         let locked_state = self.state.lock().await;
         if req.capture_boresight.unwrap_or(false) {
-            let operating_mode =
-                locked_state.operation_settings.lock().unwrap().operating_mode.or(
+            let operating_mode = locked_state.operation_settings.operating_mode.or(
                     Some(OperatingMode::Setup as i32)).unwrap();
             if operating_mode != OperatingMode::Setup as i32 {
                 return Err(tonic::Status::failed_precondition(
@@ -597,11 +591,10 @@ impl MyCedar {
         {
             let locked_state = state.lock().await;
             frame_result.fixed_settings =
-                Some(locked_state.fixed_settings.lock().unwrap().clone());
-            frame_result.preferences =
-                Some(locked_state.preferences.lock().unwrap().clone());
+                Some(locked_state.fixed_settings.clone());
+            frame_result.preferences = Some(locked_state.preferences.clone());
             frame_result.operation_settings =
-                Some(locked_state.operation_settings.lock().unwrap().clone());
+                Some(locked_state.operation_settings.clone());
 
             if locked_state.calibrating {
                 frame_result.calibrating = true;
@@ -641,7 +634,7 @@ impl MyCedar {
         let mut plate_solution: Option<PlateSolution> = None;
 
         let detect_result;
-        if state.lock().await.operation_settings.lock().unwrap().operating_mode.unwrap() ==
+        if state.lock().await.operation_settings.operating_mode.unwrap() ==
             OperatingMode::Setup as i32
         {
             detect_result = state.lock().await.detect_engine.lock().await.
@@ -860,14 +853,14 @@ impl MyCedar {
         }
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
-            fixed_settings: Mutex::new(FixedSettings {
+            fixed_settings: FixedSettings {
                 observer_location: None,
                 client_time: None,
                 session_name: None,
                 max_exposure_time: Some(
                     prost_types::Duration::try_from(max_exposure_duration).unwrap()),
-            }),
-            operation_settings: Mutex::new(OperationSettings {
+            },
+            operation_settings: OperationSettings {
                 operating_mode: Some(OperatingMode::Setup as i32),
                 exposure_time: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
@@ -880,7 +873,7 @@ impl MyCedar {
                     seconds: 1, nanos: 0,
                 }),
                 log_dwelled_positions: Some(false),
-            }),
+            },
             calibration_data: Arc::new(tokio::sync::Mutex::new(
                 CalibrationData{..Default::default()})),
             detect_engine: detect_engine.clone(),
@@ -893,7 +886,7 @@ impl MyCedar {
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
             telescope_position: telescope_position.clone(),
-            preferences: Mutex::new(preferences),
+            preferences,
             scaled_image: None,
             width: 0,
             height: 0,
@@ -921,7 +914,7 @@ impl MyCedar {
     }
 
     async fn update_accuracy_adjusted_params(state: &CedarState) {
-        let accuracy = state.operation_settings.lock().unwrap().accuracy.unwrap();
+        let accuracy = state.operation_settings.accuracy.unwrap();
         let acc_enum = Accuracy::try_from(accuracy).unwrap();
         let multiplier = match acc_enum {
             Accuracy::Fastest => 0.5,
