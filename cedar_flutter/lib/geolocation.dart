@@ -51,9 +51,9 @@ class _MapScreenState extends State<MapScreen> {
             // TODO: initialCenter according to latlng if we have it,
             // time zone otherwise.
             initialCenter: _currentCenter,
-            initialZoom: 5.0,
-            minZoom: 3.0,
-            maxZoom: 6.0,
+            initialZoom: 4.0,
+            minZoom: 2.0,
+            maxZoom: 8.0,
             interactionOptions: const InteractionOptions(
                 flags: InteractiveFlag.all & ~InteractiveFlag.doubleTapZoom),
             onTap: (tapPosition, point) {
@@ -65,7 +65,8 @@ class _MapScreenState extends State<MapScreen> {
           ),
           children: [
             TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              urlTemplate: 'assets/tiles/{z}/{x}/{y}.webp',
+              tileProvider: AssetTileProvider(),
             ),
             if (_selectedPosition != null)
               MarkerLayer(
