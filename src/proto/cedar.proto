@@ -36,7 +36,8 @@ message FixedSettings {
   optional LatLong observer_location = 2;
 
   // The current time on the client. The server's current time is updated to
-  // match.
+  // match. Note that when a FixedSettings is returned by UpdateFixedSettings()
+  // RPC, this field is not populated.
   optional google.protobuf.Timestamp client_time = 4;
 
   // A name for the current observing session. If not supplied, one is generated
