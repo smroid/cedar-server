@@ -25,6 +25,7 @@ Future<Position?> getLocation() async {
   }
   var position = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.low);
+  // TODO: drop log
   log("position $position");
   return position;
 }
@@ -51,22 +52,30 @@ class _MapScreenState extends State<MapScreen> {
             // TODO: initialCenter according to latlng if we have it,
             // time zone otherwise.
             initialCenter: _currentCenter,
-            initialZoom: 4.0,
-            minZoom: 2.0,
-            maxZoom: 8.0,
+            initialZoom: 3.0,  // TODO: initial zoom more if we already have a good position
+            minZoom: 1.0,
+            maxZoom: 7.0,
             interactionOptions: const InteractionOptions(
-                flags: InteractiveFlag.all & ~InteractiveFlag.doubleTapZoom),
+                flags: InteractiveFlag.all
+                    & ~InteractiveFlag.doubleTapZoom
+                    & ~InteractiveFlag.rotate),
+            cameraConstraint: CameraConstraint.contain(
+                bounds: LatLngBounds(
+                    const LatLng(80.0, 180.0), const LatLng(-80.0, -180.0))),
             onTap: (tapPosition, point) {
               setState(() {
                 _selectedPosition = point;
+                // TODO: remove log
                 log('Tapped: ${point.latitude}, ${point.longitude}');
               });
             },
           ),
           children: [
             TileLayer(
-              urlTemplate: 'assets/tiles/{z}/{x}/{y}.webp',
+              urlTemplate: 'assets/tiles/{z}/{x}/{y}{r}.webp',
               tileProvider: AssetTileProvider(),
+              maxNativeZoom: 6,
+              retinaMode: true
             ),
             if (_selectedPosition != null)
               MarkerLayer(

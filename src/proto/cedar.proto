@@ -440,9 +440,9 @@ message CalibrationData {
 }
 
 enum MotionType {
-  // Motion unknown. This is possible either when there are no star detections
-  // and thus no plate solutions, and there is no IMU to sense motion independent
-  // of plate solutions.
+  // Motion unknown. This is reported when there is not a current plate
+  // solution, which can in turn be because fast motion is streaking the stars
+  // so they are not detected.
   MOTION_TYPE_UNKNOWN = 0;
 
   // Recent plate solutions are consistent with signficant movement of the

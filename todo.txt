@@ -14,6 +14,8 @@ help system
 * long press? (GestureDetector wrapped around a widget)
 * 'i' icons?
 
+server log: pre-scroll to bottom.
+
 make more settings durable
 * accuracy slider
 
