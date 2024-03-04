@@ -12,12 +12,16 @@ use camera_service::abstract_camera::{AbstractCamera, Offset};
 use camera_service::asi_camera;
 use camera_service::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
+use chrono::offset::Local;
 use image::{GrayImage, ImageOutputFormat};
 use image::io::Reader as ImageReader;
 
+use nix::time::{ClockId, clock_gettime, clock_settime};
+use nix::sys::time::TimeSpec;
+
 use clap::Parser;
 use axum::Router;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use prost::Message;
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
@@ -145,11 +149,30 @@ impl Cedar for MyCedar {
         let mut locked_state = self.state.lock().await;
         if let Some(observer_location) = req.observer_location {
             locked_state.fixed_settings.observer_location =
-                Some(observer_location);
+                Some(observer_location.clone());
+            info!("Updated observer location to {:?}", observer_location);
         }
-        if let Some(_client_time) = req.client_time {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateFixedSettings not implemented for client_time."));
+        if let Some(current_time) = req.current_time {
+            let current_time = TimeSpec::new(current_time.seconds, current_time.nanos as i64);
+            if let Err(e) = clock_settime(ClockId::CLOCK_REALTIME, current_time) {
+                if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
+                    // If our current time is close to the client's time, just
+                    // warn.
+                    if (cur_time.tv_sec() - current_time.tv_sec()).abs() < 60 {
+                        warn!("Could not update server time: {:?}", e);
+                    } else {
+                        error!("Could not update server time: {:?}", e);
+                    }
+                }
+                // Either way, return an error to the client.
+                // Note: the cedar-server binary needs CAP_SYS_TIME capability:
+                // sudo setcap cap_sys_time+ep <path to cedar-server>
+                return Err(tonic::Status::permission_denied(
+                    format!("Error updating server time: {:?}", e)));
+            }
+            info!("Updated server time to {:?}", Local::now());
+            // Don't store the client time in our fixed_settings state, but
+            // arrange to return our current time.
         }
         if let Some(_session_name) = req.session_name {
             return Err(tonic::Status::unimplemented(
@@ -159,7 +182,10 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings cannot update max_exposure_time."));
         }
-        Ok(tonic::Response::new(self.state.lock().await.fixed_settings.clone()))
+        let mut fixed_settings = self.state.lock().await.fixed_settings.clone();
+        // Fill in our current time.
+        Self::fill_in_time(&mut fixed_settings);
+        Ok(tonic::Response::new(fixed_settings))
     }
 
     async fn update_operation_settings(
@@ -426,6 +452,15 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
+    fn fill_in_time(fixed_settings: &mut FixedSettings) {
+        if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
+            let mut pst = prost_types::Timestamp::default();
+            pst.seconds = cur_time.tv_sec();
+            pst.nanos = cur_time.tv_nsec() as i32;
+            fixed_settings.current_time = Some(pst);
+        }
+    }
+
     async fn set_exposure_time(state: &CedarState, exposure_time: std::time::Duration)
                                -> Result<(), CanonicalError> {
         state.detect_engine.lock().await.set_exposure_time(exposure_time).await
@@ -590,8 +625,11 @@ impl MyCedar {
         let mut frame_result = FrameResult {..Default::default()};
         {
             let locked_state = state.lock().await;
-            frame_result.fixed_settings =
-                Some(locked_state.fixed_settings.clone());
+
+            let mut fixed_settings = locked_state.fixed_settings.clone();
+            // Fill in our current time.
+            Self::fill_in_time(&mut fixed_settings);
+            frame_result.fixed_settings = Some(fixed_settings);
             frame_result.preferences = Some(locked_state.preferences.clone());
             frame_result.operation_settings =
                 Some(locked_state.operation_settings.clone());
@@ -855,7 +893,7 @@ impl MyCedar {
             camera: camera.clone(),
             fixed_settings: FixedSettings {
                 observer_location: None,
-                client_time: None,
+                current_time: None,
                 session_name: None,
                 max_exposure_time: Some(
                     prost_types::Duration::try_from(max_exposure_duration).unwrap()),

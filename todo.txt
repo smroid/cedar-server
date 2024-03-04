@@ -5,6 +5,10 @@ show matches/pattern stars in operate mode. Except when slewing?
 
 Pacifier/busy indicator for capturing image
 
+bug report
+
+local dns entry
+
 interoperation with SkySafari
 * switch apps?
 * split screen?
@@ -28,9 +32,6 @@ Wifi management
 * access point power level (save battery)
 
 FITS support for saved images? Other formats?
-
-time/location from phone
-* HTTPS for location
 
 observer session handling
 
