@@ -283,8 +283,10 @@ class MyHomePageState extends State<MyHomePage> {
   LatLng? get mapPosition => _mapPosition;
   set mapPosition(LatLng? newPos) {
     setState(() {
-      // TODO: update server.
       _mapPosition = newPos;
+      if (newPos != null) {
+        setObserverLocation(newPos);
+      }
     });
   }
 
@@ -306,6 +308,12 @@ class MyHomePageState extends State<MyHomePage> {
     _numStars = _stars.length;
     _maxExposureTimeMs =
         _durationToMs(response.fixedSettings.maxExposureTime).toInt();
+    if (response.fixedSettings.hasObserverLocation()) {
+      _mapPosition = LatLng(response.fixedSettings.observerLocation.latitude,
+          response.fixedSettings.observerLocation.longitude);
+    } else if (_mapPosition != null) {
+      setObserverLocation(_mapPosition!);
+    }
     _hasSolution = false;
     _calibrating = response.calibrating;
     if (response.calibrating) {
@@ -445,8 +453,6 @@ class MyHomePageState extends State<MyHomePage> {
       _mapPosition =
           LatLng(platformPosition.latitude, platformPosition.longitude);
     }
-    // TODO: if no platform position, accept position from server (saved
-    // from prior session).
 
     // Get platform time.
     final now = DateTime.now();
@@ -481,6 +487,13 @@ class MyHomePageState extends State<MyHomePage> {
       nanos: (now.millisecondsSinceEpoch % 1000) * 1000000,
     );
     var request = FixedSettings(currentTime: ts);
+    await updateFixedSettings(request);
+  }
+
+  Future<void> setObserverLocation(LatLng pos) async {
+    LatLong posProto =
+        LatLong(latitude: pos.latitude, longitude: pos.longitude);
+    var request = FixedSettings(observerLocation: posProto);
     await updateFixedSettings(request);
   }
 
