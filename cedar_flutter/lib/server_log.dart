@@ -2,10 +2,16 @@ import 'package:flutter/material.dart';
 
 class ServerLogPopUp extends StatelessWidget {
   final String _content;
-  const ServerLogPopUp(this._content, {super.key});
+  final ScrollController _scrollController = ScrollController();
+  ServerLogPopUp(this._content, {super.key});
 
   @override
   Widget build(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollController.jumpTo(
+        _scrollController.position.maxScrollExtent,
+      );
+    });
     return AlertDialog(
       title: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -22,6 +28,7 @@ class ServerLogPopUp extends StatelessWidget {
         ],
       ),
       content: SingleChildScrollView(
+        controller: _scrollController,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
