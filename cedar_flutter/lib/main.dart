@@ -4,6 +4,7 @@ import 'package:cedar_flutter/draw_slew_target.dart';
 import 'package:cedar_flutter/draw_util.dart';
 import 'package:cedar_flutter/exp_values.dart';
 import 'package:cedar_flutter/geolocation.dart';
+import 'package:cedar_flutter/google/protobuf/timestamp.pb.dart';
 import 'package:cedar_flutter/server_log.dart';
 import 'package:cedar_flutter/settings.dart';
 import 'package:cedar_flutter/themes.dart';
@@ -398,6 +399,15 @@ class MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  Future<void> updateFixedSettings(FixedSettings request) async {
+    try {
+      await client().updateFixedSettings(request,
+          options: CallOptions(timeout: const Duration(seconds: 10)));
+    } catch (e) {
+      log('Error: $e');
+    }
+  }
+
   Future<void> updateOperationSettings(OperationSettings request) async {
     try {
       var newOpSettings = await client().updateOperationSettings(request,
@@ -441,6 +451,7 @@ class MyHomePageState extends State<MyHomePage> {
     // Get platform time.
     final now = DateTime.now();
     _tzOffset = now.timeZoneOffset;
+    setServerTime(now);
 
     await Future.doWhile(() async {
       var delay = 100;
@@ -462,6 +473,15 @@ class MyHomePageState extends State<MyHomePage> {
     } catch (e) {
       log('Error: $e');
     }
+  }
+
+  Future<void> setServerTime(DateTime now) async {
+    Timestamp ts = Timestamp(
+      seconds: Int64(now.millisecondsSinceEpoch ~/ 1000.0),
+      nanos: (now.millisecondsSinceEpoch % 1000) * 1000000,
+    );
+    var request = FixedSettings(currentTime: ts);
+    await updateFixedSettings(request);
   }
 
   Future<void> setExpTime() async {
