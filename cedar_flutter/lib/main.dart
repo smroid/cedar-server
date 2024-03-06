@@ -117,7 +117,7 @@ class _MainImagePainter extends CustomPainter {
     // How many display pixels is the telescope FOV?
     var scopeFov = 0.0;
     if (!state._setupMode && state._hasSolution) {
-      scopeFov = state._preferences!.slewBullseyeSize *
+      scopeFov = state._preferences!.eyepieceFov *
           state._imageRegion.width /
           state._solutionFOV;
     }
@@ -180,7 +180,7 @@ class _OverlayImagePainter extends CustomPainter {
     }
     // How many display pixels is the telescope FOV?
     final scopeFov = _scale *
-        _state._preferences!.slewBullseyeSize *
+        _state._preferences!.eyepieceFov *
         _state._fullResImageRegion.width /
         _state._solutionFOV;
     drawSlewTarget(
