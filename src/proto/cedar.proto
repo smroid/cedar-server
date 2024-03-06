@@ -133,9 +133,9 @@ message Preferences {
   // How the user interface should display celestial coordinates.
   optional CelestialCoordFormat celestial_coord_format = 1;
 
-  // Diameter (in degrees) of the boresight circle displayed while slewing
-  // to a target.
-  optional float slew_bullseye_size = 2;
+  // Diameter (in degrees) of the boresight circle displayed in operation
+  // mode.
+  optional float eyepiece_fov = 2;
 
   // If true, the UI should favor red highlights instead of white.
   optional bool night_vision_theme = 3;
@@ -145,6 +145,10 @@ message Preferences {
 
   // If true, the UI app bar is hidden to allow full screen operation.
   optional bool hide_app_bar = 5;
+
+  // The kind of telescope mount. This influences the display of the boresight
+  // circle (cross aligned to north for EQUATORIAL or to zenith for ALT_AZ).
+  optional MountType mount_type = 6;
 
   // TODO: save image format (bmp, tiff, jpg, webp, FITS)
 }
@@ -165,6 +169,12 @@ enum CelestialCoordFormat {
   // RA  = 12h 9m 20.28s
   // DEC = 34d 14m 6.36s
   HMS_DMS = 2;
+}
+
+enum MountType {
+  MOUNT_UNSPECIFIED = 0;
+  EQUATORIAL = 1;
+  ALT_AZ = 2;
 }
 
 message FrameRequest {
@@ -271,6 +281,8 @@ message FrameResult {
   // The current plate solution. Omitted if no plate solve was attempted for
   // this frame.
   optional tetra3_server.SolveResult plate_solution = 17;
+
+  // TODO: image roll angle to zenith (if alt/az mount).
 
   // Detected camera motion.
   optional MotionType camera_motion = 18;
