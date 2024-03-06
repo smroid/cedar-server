@@ -17,10 +17,10 @@ bool diffPreferences(Preferences prev, Preferences curr) {
   } else {
     curr.clearCelestialCoordFormat();
   }
-  if (curr.slewBullseyeSize != prev.slewBullseyeSize) {
+  if (curr.eyepieceFov != prev.eyepieceFov) {
     hasDiff = true;
   } else {
-    curr.clearSlewBullseyeSize();
+    curr.clearEyepieceFov();
   }
   if (curr.nightVisionTheme != prev.nightVisionTheme) {
     hasDiff = true;
@@ -74,7 +74,7 @@ class SettingsModel extends ChangeNotifier {
   OperationSettings opSettingsProto = OperationSettings();
 
   SettingsModel() {
-    preferencesProto.slewBullseyeSize = 1.0;
+    preferencesProto.eyepieceFov = 1.0;
   }
 
   void updateCelestialCoordFormat(CelestialCoordFormat format) {
@@ -83,7 +83,7 @@ class SettingsModel extends ChangeNotifier {
   }
 
   void updateSlewBullseyeSize(double size) {
-    preferencesProto.slewBullseyeSize = size;
+    preferencesProto.eyepieceFov = size;
     notifyListeners();
   }
 
@@ -207,24 +207,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ]),
                   title: const Text('Show performance stats'),
                 ),
-                SettingsTile(
-                  leading: SizedBox(
-                      width: 140,
-                      height: 40,
-                      child: Slider(
-                        min: 0.1,
-                        max: 2.0,
-                        divisions: 19,
-                        value: min(prefsProto.slewBullseyeSize, 2.0),
-                        onChanged: (double value) {
-                          setState(() {
-                            provider.updateSlewBullseyeSize(value);
-                          });
-                        },
-                      )),
-                  title: Text(sprintf(
-                      'Telescope FOV  %.1f°', [prefsProto.slewBullseyeSize])),
-                ),
               ]),
               SettingsSection(title: const Text('Operation'), tiles: [
                 SettingsTile(
@@ -272,6 +254,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ])),
                 ),
+              ]),
+              SettingsSection(title: const Text('Telescope'), tiles: [
+                SettingsTile(
+                  leading: SizedBox(
+                      width: 140,
+                      height: 40,
+                      child: Slider(
+                        min: 0.1,
+                        max: 2.0,
+                        divisions: 19,
+                        value: min(prefsProto.eyepieceFov, 2.0),
+                        onChanged: (double value) {
+                          setState(() {
+                            provider.updateSlewBullseyeSize(value);
+                          });
+                        },
+                      )),
+                  title: Text(
+                      sprintf('Eyepiece FOV  %.1f°', [prefsProto.eyepieceFov])),
+                ),
+                // SettingsTile(
+                //   leading: Row(children: <Widget>[
+                //     const SizedBox(width: switchInset, height: 10),
+                //     Switch(
+                //         value: prefsProto.celestialCoordFormat ==
+                //             CelestialCoordFormat.HMS_DMS,
+                //         onChanged: (bool value) {
+                //           setState(() {
+                //             provider.updateCelestialCoordFormat(value
+                //                 ? CelestialCoordFormat.HMS_DMS
+                //                 : CelestialCoordFormat.DECIMAL);
+                //           });
+                //         })
+                //   ]),
+                //   title: Text(prefsProto.celestialCoordFormat ==
+                //           CelestialCoordFormat.HMS_DMS
+                //       ? 'Equatorial mount'
+                //       : 'Alt/Az mount'),
+                // ),
               ]),
             ]));
   }
