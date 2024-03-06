@@ -35,9 +35,9 @@ use futures::join;
 use cedar::cedar::cedar_server::{Cedar, CedarServer};
 use cedar::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
-                   Image, ImageCoord, ImageMode, OperatingMode, OperationSettings,
-                   ProcessingStats, Rectangle, StarCentroid, Preferences,
-                   ServerInformationRequest, ServerInformationResult};
+                   Image, ImageCoord, ImageMode, MountType, OperatingMode,
+                   OperationSettings, ProcessingStats, Rectangle, StarCentroid,
+                   Preferences, ServerInformationRequest, ServerInformationResult};
 use ::cedar::calibrator::Calibrator;
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::scale_image::scale_image;
@@ -357,8 +357,8 @@ impl Cedar for MyCedar {
         if let Some(coord_format) = req.celestial_coord_format {
             locked_state.preferences.celestial_coord_format = Some(coord_format);
         }
-        if let Some(bullseye_size) = req.slew_bullseye_size {
-            locked_state.preferences.slew_bullseye_size = Some(bullseye_size);
+        if let Some(eyepiece_fov) = req.eyepiece_fov {
+            locked_state.preferences.eyepiece_fov = Some(eyepiece_fov);
         }
         if let Some(night_vision) = req.night_vision_theme {
             locked_state.preferences.night_vision_theme = Some(night_vision);
@@ -368,6 +368,9 @@ impl Cedar for MyCedar {
         }
         if let Some(hide_app_bar) = req.hide_app_bar {
             locked_state.preferences.hide_app_bar = Some(hide_app_bar);
+        }
+        if let Some(mount_type) = req.mount_type {
+            locked_state.preferences.mount_type = Some(mount_type);
         }
 
         // Write updated preferences to file.
@@ -863,10 +866,11 @@ impl MyCedar {
             Tetra3Subprocess::new(tetra3_script, tetra3_database).unwrap()));
         let mut preferences = Preferences{
             celestial_coord_format: Some(CelestialCoordFormat::HmsDms.into()),
-            slew_bullseye_size: Some(1.0),
+            eyepiece_fov: Some(1.0),
             night_vision_theme: Some(false),
             show_perf_stats: Some(false),
             hide_app_bar: Some(false),
+            mount_type: Some(MountType::Equatorial.into()),
         };
         // Load UI preferences file.
         let prefs_path = Path::new(&preferences_file);
@@ -876,11 +880,11 @@ impl MyCedar {
         } else {
             match Preferences::decode(bytes.unwrap().as_slice()) {
                 Ok(mut p) => {
-                    if p.slew_bullseye_size.unwrap() < 0.1 {
-                        p.slew_bullseye_size = Some(0.1);
+                    if p.eyepiece_fov.unwrap() < 0.1 {
+                        p.eyepiece_fov = Some(0.1);
                     }
-                    if p.slew_bullseye_size.unwrap() > 2.0 {
-                        p.slew_bullseye_size = Some(2.0);
+                    if p.eyepiece_fov.unwrap() > 2.0 {
+                        p.eyepiece_fov = Some(2.0);
                     }
                     preferences = p;
                 }
