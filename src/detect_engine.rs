@@ -459,6 +459,7 @@ impl DetectEngine {
                 get_stars_from_image(&image, noise_estimate,
                                      adjusted_sigma, detection_max_size as u32,
                                      /*use_binned_image=*/true,
+                                     /*detect_hot_pixels=*/true,
                                      /*return_binned_image=*/true);
             if stars.len() == 0 {
                 peak_star_pixel = 255;
