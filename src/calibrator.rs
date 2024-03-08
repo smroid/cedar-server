@@ -218,6 +218,7 @@ impl Calibrator {
             get_stars_from_image(&image, noise_estimate,
                                  detection_sigma, detection_max_size as u32,
                                  /*use_binned_image=*/true,
+                                 /*detect_hot_pixels*/true,
                                  /*return_binned_image=*/false);
         Ok((image.clone(), stars, frame_id))
     }
