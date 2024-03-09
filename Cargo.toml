@@ -41,6 +41,7 @@ chrono = "0.4.31"
 ctrlc = "3.4.2"
 tracing-appender = "0.2.3"
 nix = { version = "0.28.0", features = ["time"] }
+astro = "2.0.0"
 
 [build-dependencies]
 tonic-build = "0.11"
