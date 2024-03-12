@@ -32,12 +32,14 @@ use tracing_appender::{non_blocking::NonBlockingBuilder};
 
 use futures::join;
 
+use cedar::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
 use cedar::cedar::cedar_server::{Cedar, CedarServer};
 use cedar::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
-                   Image, ImageCoord, ImageMode, MountType, OperatingMode,
-                   OperationSettings, ProcessingStats, Rectangle, StarCentroid,
-                   Preferences, ServerInformationRequest, ServerInformationResult};
+                   Image, ImageCoord, ImageMode, LocationBasedInfo, MountType,
+                   OperatingMode, OperationSettings, ProcessingStats, Rectangle,
+                   StarCentroid, Preferences, ServerInformationRequest,
+                   ServerInformationResult};
 use ::cedar::calibrator::Calibrator;
 use ::cedar::detect_engine::DetectEngine;
 use ::cedar::scale_image::scale_image;
@@ -46,7 +48,7 @@ use ::cedar::position_reporter::{TelescopePosition, create_alpaca_server};
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 use ::cedar::value_stats::ValueStatsAccumulator;
 use ::cedar::tetra3_server;
-use ::cedar::tetra3_server::{SolveResult as SolveResultProto};
+use ::cedar::tetra3_server::{SolveResult as SolveResultProto, SolveStatus};
 
 use self::multiplex_service::MultiplexService;
 
@@ -182,7 +184,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings cannot update max_exposure_time."));
         }
-        let mut fixed_settings = self.state.lock().await.fixed_settings.clone();
+        let mut fixed_settings = locked_state.fixed_settings.clone();
         // Fill in our current time.
         Self::fill_in_time(&mut fixed_settings);
         Ok(tonic::Response::new(fixed_settings))
@@ -821,7 +823,45 @@ impl MyCedar {
             }
         }
         if tetra3_solve_result.is_some() {
-            frame_result.plate_solution = Some(tetra3_solve_result.unwrap());
+            let psr = &tetra3_solve_result.unwrap();
+            frame_result.plate_solution = Some(psr.clone());
+            if psr.status ==
+                Some(SolveStatus::MatchFound.into()) &&
+                locked_state.fixed_settings.observer_location.is_some()
+            {
+                let geo_location =
+                    locked_state.fixed_settings.observer_location.as_ref().unwrap();
+                let lat = geo_location.latitude.to_radians() as f64;
+                let long = geo_location.longitude.to_radians() as f64;
+                let time = captured_image.readout_time;
+                let celestial_coords;
+                if psr.target_coords.len() > 0 {
+                    celestial_coords = psr.target_coords[0].clone();
+                } else {
+                    celestial_coords = psr.image_center_coords.as_ref().unwrap().clone();
+                }
+                let bs_ra = celestial_coords.ra.to_radians() as f64;
+                let bs_dec = celestial_coords.dec.to_radians() as f64;
+                // alt/az of boresight.
+                let (alt, az) = alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
+                // ra/dec of zenith.
+                let (z_ra, z_dec) = equatorial_from_alt_az(
+                    90_f64.to_radians(),
+                    0.0,
+                    lat, long, time);
+                let mut zenith_roll_angle = (position_angle(
+                    bs_ra, bs_dec, z_ra, z_dec).to_degrees() as f32 +
+                                 psr.roll.unwrap()) % 360.0;
+                // Arrange for angle to be 0..360.
+                if zenith_roll_angle < 0.0 {
+                    zenith_roll_angle += 360.0;
+                }
+                frame_result.location_based_info =
+                    Some(LocationBasedInfo{zenith_roll_angle,
+                                           altitude: alt.to_degrees() as f32,
+                                           azimuth: az.to_degrees() as f32,
+                    });
+            }
         }
         let boresight_position =
             locked_state.solve_engine.lock().await.boresight_pixel().expect(
