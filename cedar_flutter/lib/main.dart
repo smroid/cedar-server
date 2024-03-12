@@ -133,7 +133,7 @@ class _MainImagePainter extends CustomPainter {
           color,
           state._boresightPosition,
           scopeFov,
-          /*rollAngleRad=*/ _deg2rad(state._solutionRollAngle),
+          /*rollAngleRad=*/ _deg2rad(state.bullseyeDirectionIndicator()),
           posInImage,
           slew.targetDistance,
           slew.targetAngle);
@@ -144,7 +144,7 @@ class _MainImagePainter extends CustomPainter {
         drawCross(canvas, color, state._boresightPosition, /*radius=*/ 8,
             /*rollAngleRad=*/ 0.0, thin, thin);
       } else {
-        var rollAngleRad = _deg2rad(state._solutionRollAngle);
+        var rollAngleRad = _deg2rad(state.bullseyeDirectionIndicator());
         drawBullseye(canvas, color, state._boresightPosition, scopeFov / 2,
             rollAngleRad);
       }
@@ -188,7 +188,7 @@ class _OverlayImagePainter extends CustomPainter {
         color,
         overlayCenter,
         scopeFov,
-        /*rollAngleRad=*/ _deg2rad(_state._solutionRollAngle),
+        /*rollAngleRad=*/ _deg2rad(_state.bullseyeDirectionIndicator()),
         posInImage,
         slew.targetDistance,
         slew.targetAngle,
@@ -255,6 +255,8 @@ class MyHomePageState extends State<MyHomePage> {
 
   // Arcsec.
   double _solutionRMSE = 0.0;
+
+  LocationBasedInfo? _location_based_info;
 
   CalibrationData? _calibrationData;
   ProcessingStats? _processingStats;
@@ -353,6 +355,9 @@ class MyHomePageState extends State<MyHomePage> {
         _solutionRollAngle = plateSolution.roll;
         _solutionRMSE = plateSolution.rmse;
         _solutionFOV = plateSolution.fov;
+        if (response.hasLocationBasedInfo()) {
+          _location_based_info = response.locationBasedInfo;
+        }
       }
     }
     if (response.hasImage()) {
@@ -407,12 +412,21 @@ class MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  double bullseyeDirectionIndicator() {
+    if (_preferences?.mountType == MountType.ALT_AZ &&
+        _location_based_info != null) {
+      return _location_based_info!.zenithRollAngle;
+    } else {
+      return _solutionRollAngle; // Direction towards north.
+    }
+  }
+
   Future<void> updateFixedSettings(FixedSettings request) async {
     try {
       await client().updateFixedSettings(request,
           options: CallOptions(timeout: const Duration(seconds: 10)));
     } catch (e) {
-      log('Error: $e');
+      log('updateFixedSettings error: $e');
     }
   }
 
@@ -424,7 +438,7 @@ class MyHomePageState extends State<MyHomePage> {
         _setStateFromOpSettings(newOpSettings);
       });
     } catch (e) {
-      log('Error: $e');
+      log('updateOperationSettings error: $e');
     }
   }
 
@@ -440,7 +454,7 @@ class MyHomePageState extends State<MyHomePage> {
         setStateFromFrameResult(response);
       });
     } catch (e) {
-      log('Error: $e');
+      log('getFrameFromServer error: $e');
     }
   }
 
@@ -477,7 +491,7 @@ class MyHomePageState extends State<MyHomePage> {
       await client().initiateAction(request,
           options: CallOptions(timeout: const Duration(seconds: 10)));
     } catch (e) {
-      log('Error: $e');
+      log('initiateAction error: $e');
     }
   }
 
@@ -535,7 +549,7 @@ class MyHomePageState extends State<MyHomePage> {
           options: CallOptions(timeout: const Duration(seconds: 10)));
       return infoResult.logContent;
     } catch (e) {
-      log('Error: $e');
+      log('getServerLogs error: $e');
       return "";
     }
   }
@@ -594,7 +608,7 @@ class MyHomePageState extends State<MyHomePage> {
         }
       });
     } catch (e) {
-      log('Error: $e');
+      log('updatePreferences error: $e');
     }
   }
 
@@ -800,6 +814,15 @@ class MyHomePageState extends State<MyHomePage> {
     return sprintf("%s%02d° %02d' %02d''", [sign, degrees, minutes, seconds]);
   }
 
+  String formatAltitude(double alt) {
+    return sprintf("ALT %.3f°", [alt]);
+  }
+
+  String formatAzimuth(double az) {
+    // TODO: use N, NE, eN, etc.
+    return sprintf("AZ %.3f°", [az]);
+  }
+
   Color starsSliderColor() {
     return _hasSolution
         ? Theme.of(context).colorScheme.primary
@@ -851,12 +874,18 @@ class MyHomePageState extends State<MyHomePage> {
           ? Container()
           : SizedBox(
               width: 120,
-              height: 80,
+              height: 100,
               child: Column(
                 children: <Widget>[
                   primaryText("Aim"),
                   solveText(sprintf("%s", [formatRightAscension(_solutionRA)])),
                   solveText(sprintf("%s", [formatDeclination(_solutionDec)])),
+                  if (_location_based_info != null)
+                    solveText(sprintf("%s",
+                        [formatAltitude(_location_based_info!.altitude)])),
+                  if (_location_based_info != null)
+                    solveText(sprintf(
+                        "%s", [formatAzimuth(_location_based_info!.azimuth)])),
                 ],
               )),
       const SizedBox(width: 15, height: 15),
