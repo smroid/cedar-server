@@ -199,7 +199,7 @@ enum ImageMode {
   BINNED = 1;
 }
 
-// Next tag: 30.
+// Next tag: 31.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
@@ -282,28 +282,15 @@ message FrameResult {
   // this frame.
   optional tetra3_server.SolveResult plate_solution = 17;
 
-  // Similar to SolveResult.roll, except gives the position angle of the zenith
-  // relative to the boresight. Angle is measured in degrees, with zero being
-  // the image's "up" direction (towards y=0); a positive zenith roll angle
-  // means the zenith is counter-clockwise from image "up".
+  // When the observer's geographic location is known, the `plate_solution`
+  // field is augmented with additional information.
   // Omitted if:
   // - no plate solution was obtained, or
-  // - Preferences.mount_type is not ALT_AZ, or
   // - FixedSettings.observer_location is absent.
-  optional float zenith_roll_angle = 29;
+  optional LocationBasedInfo location_based_info = 29;
 
-  // Detected camera motion.
-  optional MotionType camera_motion = 18;
-
-  // Estimated rate of RA boresight movement eastward (positive) or westward
-  // (negative). Unit is degrees per second (full circle in RA is 24h). Omitted
-  // if `camera_motion` is MOTION_TYPE_UNKNOWN.
-  optional float ra_rate = 19;
-
-  // Estimated rate of DEC boresight movement northward (positive) or southward
-  // (negative). Unit is degrees per second. Omitted if `camera_motion` is
-  // MOTION_TYPE_UNKNOWN.
-  optional float dec_rate = 20;
+  // Estimate of camera boresight motion against celestial coordinates.
+  optional MotionEstimate motion_estimate = 18;
 
   // If present, SkySafari is requesting that the telescope's pointing should be
   // changed.
@@ -315,8 +302,9 @@ message FrameResult {
   // features.
   optional Image boresight_image = 28;
 
-  // advice
-  // * polar alignment (operation mode only)
+  // If present, contains information about adjusting the equatorial mount's
+  // polar axis alignment.
+  optional PolarAlignAdvice polar_align_advice = 30;
 
   // alerts
   // * prolonged loss of stars; need setup mode?
@@ -460,6 +448,45 @@ message CalibrationData {
   optional float pixel_angular_size = 7;
 }
 
+// When the observer's geographic location is known, the
+// FrameResult.plate_solution field is augmented with additional information.
+message LocationBasedInfo {
+  // Similar to SolveResult.roll, except gives the position angle of the zenith
+  // relative to the boresight. Angle is measured in degrees, with zero being
+  // the image's "up" direction (towards y=0); a positive zenith roll angle
+  // means the zenith is counter-clockwise from image "up".
+  float zenith_roll_angle = 1;
+
+  // Altitude (degrees, relative to the local horizon) of the boresight.
+  float altitude = 2;
+
+  // Azimuth (degrees, positive clockwise from north) of the boresight.
+  float azimuth = 3;
+}
+
+// Result of analyzing the recent history of the camera position in celestial
+// coordinates.
+message MotionEstimate {
+  // Detected camera motion.
+  optional MotionType camera_motion = 1;
+
+  // Estimated rate of RA boresight movement eastward (positive) or westward
+  // (negative). Unit is degrees per second (full circle in RA is 24h). Omitted
+  // if `camera_motion` is MOTION_TYPE_UNKNOWN.
+  optional float ra_rate = 2;
+
+  // Estimate of the RMS error in `ra_rate`.
+  optional float ra_rate_error = 3;
+
+  // Estimated rate of DEC boresight movement northward (positive) or southward
+  // (negative). Unit is degrees per second. Omitted if `camera_motion` is
+  // MOTION_TYPE_UNKNOWN.
+  optional float dec_rate = 4;
+
+  // Estimate of the RMS error in `dec_rate`.
+  optional float dec_rate_error = 5;
+}
+
 enum MotionType {
   // Motion unknown. This is reported when there is not a current plate
   // solution, which can in turn be because fast motion is streaking the stars
@@ -505,11 +532,38 @@ message SlewRequest {
   optional ImageCoord image_pos = 4;
 }
 
-message PolarAlignmentAdvice {
-  // Estimate of alt/az error of polar axis. Not available for non-tracking
-  // mount (auto-detected).
+// Estimate of alt/az error of polar axis. Not available for non-equatorial
+// mount (auto-detected).
+message PolarAlignAdvice {
+  // Identifies the polar alignment method that is yielding the advice in
+  // this message.
+  PolarAlignMethod align_method = 1;
 
-  // Suggestion of sky region to dwell at for updated solution.
+  // The amount by which the mount azimuth should be adjusted, in degrees.
+  // Positive is clockwise looking down at the mount from above.
+  optional float azimuth_correction = 2;
+
+  // The amount by which the mount elevation should be adjusted, in degrees.
+  // Positive means raise the polar axis.
+  optional float altitude_correction = 3;
+}
+
+enum PolarAlignMethod {
+  POLAR_ALIGN_METHOD_UNKNWON = 0;
+
+  // Boresight is dwelling near the meridian and near the celestial equator.
+  // This allows polar axis azimuth adjustment advice to be provided.
+  MERIDIAN_DWELL = 1;
+
+  // Boresight is dwelling near the horizon and near the celestial equator.
+  // This allows polar axis elevation adjustment advice to be provided.
+  HORIZON_DWELL = 2;
+
+  // Boresight is dwelling near the celestial pole. This allows the "King" polar
+  // drift method to yield adjustment advice for polar axis in both azimuth and
+  // elevation. Note that this method does not require the observer's geographic
+  // location to be known.
+  POLE_DWELL = 3;
 }
 
 message ActionRequest {
