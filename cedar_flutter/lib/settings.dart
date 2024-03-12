@@ -17,6 +17,11 @@ bool diffPreferences(Preferences prev, Preferences curr) {
   } else {
     curr.clearCelestialCoordFormat();
   }
+  if (curr.mountType != prev.mountType) {
+    hasDiff = true;
+  } else {
+    curr.clearMountType();
+  }
   if (curr.eyepieceFov != prev.eyepieceFov) {
     hasDiff = true;
   } else {
@@ -79,6 +84,11 @@ class SettingsModel extends ChangeNotifier {
 
   void updateCelestialCoordFormat(CelestialCoordFormat format) {
     preferencesProto.celestialCoordFormat = format;
+    notifyListeners();
+  }
+
+  void updateMountType(MountType mt) {
+    preferencesProto.mountType = mt;
     notifyListeners();
   }
 
@@ -274,25 +284,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   title: Text(
                       sprintf('Eyepiece FOV  %.1f°', [prefsProto.eyepieceFov])),
                 ),
-                // SettingsTile(
-                //   leading: Row(children: <Widget>[
-                //     const SizedBox(width: switchInset, height: 10),
-                //     Switch(
-                //         value: prefsProto.celestialCoordFormat ==
-                //             CelestialCoordFormat.HMS_DMS,
-                //         onChanged: (bool value) {
-                //           setState(() {
-                //             provider.updateCelestialCoordFormat(value
-                //                 ? CelestialCoordFormat.HMS_DMS
-                //                 : CelestialCoordFormat.DECIMAL);
-                //           });
-                //         })
-                //   ]),
-                //   title: Text(prefsProto.celestialCoordFormat ==
-                //           CelestialCoordFormat.HMS_DMS
-                //       ? 'Equatorial mount'
-                //       : 'Alt/Az mount'),
-                // ),
+                SettingsTile(
+                  leading: Row(children: <Widget>[
+                    const SizedBox(width: switchInset, height: 10),
+                    Switch(
+                        value: prefsProto.mountType == MountType.EQUATORIAL,
+                        onChanged: (bool value) {
+                          setState(() {
+                            provider.updateMountType(value
+                                ? MountType.EQUATORIAL
+                                : MountType.ALT_AZ);
+                          });
+                        })
+                  ]),
+                  title: Text(prefsProto.mountType == MountType.EQUATORIAL
+                      ? 'Equatorial mount'
+                      : 'Alt/Az mount'),
+                ),
               ]),
             ]));
   }

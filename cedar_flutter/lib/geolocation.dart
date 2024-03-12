@@ -100,8 +100,8 @@ class _MapScreenState extends State<MapScreen> {
               FloatingActionButton.small(
                 heroTag: null,
                 onPressed: () {
-                  _mapController.move(_mapController.camera.center,
-                      _mapController.camera.zoom + 1);
+                  final pos = selectedPosition ?? _mapController.camera.center;
+                  _mapController.move(pos, _mapController.camera.zoom + 1);
                 },
                 elevation: 0,
                 hoverElevation: 0,
@@ -113,8 +113,8 @@ class _MapScreenState extends State<MapScreen> {
               FloatingActionButton.small(
                 heroTag: null,
                 onPressed: () {
-                  _mapController.move(_mapController.camera.center,
-                      _mapController.camera.zoom - 1);
+                  final pos = selectedPosition ?? _mapController.camera.center;
+                  _mapController.move(pos, _mapController.camera.zoom - 1);
                 },
                 elevation: 0,
                 hoverElevation: 0,
