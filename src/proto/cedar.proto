@@ -532,8 +532,9 @@ message SlewRequest {
   optional ImageCoord image_pos = 4;
 }
 
-// Estimate of alt/az error of polar axis. Not available for non-equatorial
-// mount (auto-detected).
+// Estimate of alt/az error of polar axis. Not available if the telescope is
+// not a clock-driven equatorial mount (auto-detected) or if the observer's
+// geographic location is not known.
 message PolarAlignAdvice {
   // Identifies the polar alignment method that is yielding the advice in
   // this message.
@@ -555,14 +556,13 @@ enum PolarAlignMethod {
   // This allows polar axis azimuth adjustment advice to be provided.
   MERIDIAN_DWELL = 1;
 
-  // Boresight is dwelling near the horizon and near the celestial equator.
-  // This allows polar axis elevation adjustment advice to be provided.
+  // Boresight is dwelling near the horizon and near the celestial equator. This
+  // allows polar axis elevation adjustment advice to be provided.
   HORIZON_DWELL = 2;
 
   // Boresight is dwelling near the celestial pole. This allows the "King" polar
   // drift method to yield adjustment advice for polar axis in both azimuth and
-  // elevation. Note that this method does not require the observer's geographic
-  // location to be known.
+  // elevation.
   POLE_DWELL = 3;
 }
 
