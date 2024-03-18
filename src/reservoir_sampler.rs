@@ -1,7 +1,7 @@
 use rand::{Rng, SeedableRng};
 use rand::rngs::SmallRng;
 
-struct ReservoirSampler<T> {
+pub struct ReservoirSampler<T> {
     reservoir: Vec<T>,
     capacity: usize,
     rng: SmallRng,
@@ -25,13 +25,24 @@ impl<T> ReservoirSampler<T> {
             return None;
         }
         let j = self.rng.gen_range(0..self.count);
-        if j < self.capacity {
-            return Some(std::mem::replace(&mut self.reservoir[j], item));
+        if j >= self.capacity {
+            return None;  // Discard new sample.
         }
-        None
+        // Replace: keep new sample and return the disarded sample.
+        Some(std::mem::replace(&mut self.reservoir[j], item))
     }
 
-    pub fn reservoir(&self) -> &Vec<T> {
+    pub fn count(&self) -> usize {
+        self.reservoir.len()
+    }
+
+    pub fn samples(&self) -> &Vec<T> {
         &self.reservoir
+    }
+
+    // Resets as if newly constructed.
+    pub fn clear(&mut self) {
+        self.reservoir.clear();
+        self.count = 0;
     }
 }

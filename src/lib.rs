@@ -2,6 +2,7 @@ pub mod astro_util;
 pub mod calibrator;
 pub mod detect_engine;
 pub mod position_reporter;
+pub mod rate_estimator;
 pub mod reservoir_sampler;
 pub mod tetra3_subprocess;
 pub mod solve_engine;
