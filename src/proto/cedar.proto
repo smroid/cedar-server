@@ -468,22 +468,22 @@ message LocationBasedInfo {
 // coordinates.
 message MotionEstimate {
   // Detected camera motion.
-  optional MotionType camera_motion = 1;
+  MotionType camera_motion = 1;
 
   // Estimated rate of RA boresight movement eastward (positive) or westward
-  // (negative). Unit is degrees per second (full circle in RA is 24h). Omitted
-  // if `camera_motion` is MOTION_TYPE_UNKNOWN.
+  // (negative). Unit is degrees per second.
+  // Supplied only for DWELL_TRACKED.
   optional float ra_rate = 2;
 
-  // Estimate of the RMS error in `ra_rate`.
+  // Estimate of the RMS error in `ra_rate`. Supplied only for DWELL_TRACKED.
   optional float ra_rate_error = 3;
 
   // Estimated rate of DEC boresight movement northward (positive) or southward
-  // (negative). Unit is degrees per second. Omitted if `camera_motion` is
-  // MOTION_TYPE_UNKNOWN.
+  // (negative). Unit is degrees per second.
+  // Supplied only for DWELL_TRACKED.
   optional float dec_rate = 4;
 
-  // Estimate of the RMS error in `dec_rate`.
+  // Estimate of the RMS error in `dec_rate`. Supplied only for DWELL_TRACKED.
   optional float dec_rate_error = 5;
 }
 
