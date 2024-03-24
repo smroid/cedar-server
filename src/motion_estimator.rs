@@ -1,11 +1,11 @@
-use log::warn;
+use log::{debug, warn};
 use std::time::{Duration, SystemTime};
 
 use crate::cedar::{MotionEstimate, MotionType};
 use crate::rate_estimator::RateEstimation;
 use crate::tetra3_server::CelestialCoord;
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum State {
     // MotionEstimator is newly constructed, or too much time has passed without
     // a position passed to add().
@@ -33,15 +33,13 @@ pub struct MotionEstimator {
     // The current state of this MotionEstimator.
     state: State,
 
-    // Set whenever add() is called with position=None. If the gap persists
-    // too long, `state` reverts to Unknown.
-    gap: Option<SystemTime>,
-
+    // How long we can tolerate lack of position updates before reverting
+    // to Unknown state.
     gap_tolerance: Duration,
 
-    // Time passed to most recent add() call, if any.
+    // Time/position passed to most recent add() call. Updated only for add() calls
+    // with non-None position arg.
     prev_time: Option<SystemTime>,
-    // Position passed to most recent add() call, if any.
     prev_position: Option<CelestialCoord>,
 
     // Tracking rate estimation, used when add()ed positions are consistent with
@@ -56,7 +54,6 @@ impl MotionEstimator {
     pub fn new(gap_tolerance: Duration) -> Self {
         MotionEstimator{
             state: State::Unknown,
-            gap: None,
             gap_tolerance,
             prev_time: None,
             prev_position: None,
@@ -69,106 +66,97 @@ impl MotionEstimator {
     //     captured. Must not be earlier than `time` passed to previous add()
     //     call.
     // `position` A successfully plate-solved determination of the telescope's
-    //     aim point as of `time`. Omitted if there was no solution (perhaps
+    //     aim point as of `time`. None if there was no solution (perhaps
     //     because the telescope is slewing).
-    pub fn add(&mut self, mut time: SystemTime, position: Option<CelestialCoord>) {
+    // `position_rmse` If `position` is provided, this will be the RMS error (in
+    //     arcseconds) of the plate solution. This represents the noise level
+    //     associated with `position`.
+    pub fn add(&mut self, mut time: SystemTime, position: Option<CelestialCoord>,
+               position_rmse: Option<f32>) {
         let prev_time = self.prev_time;
         let prev_pos = self.prev_position.clone();
-        self.prev_time = Some(time);
-        self.prev_position = position.clone();
+        if position.is_some() {
+            self.prev_time = Some(time);
+            self.prev_position = position.clone();
+        }
         if prev_time.is_none() {
-            // This is the very first call to add().
             if position.is_some() {
-                self.state = State::Moving;
+                // This is the first call to add() with a position.
+                self.set_state(State::Moving);
             }
             return;
         }
-        if time < prev_time.unwrap() {
-            warn!("Time arg regressed from {:?} to {:?}", prev_time.unwrap(), time);
-            time = prev_time.unwrap() + Duration::from_micros(1);
-            self.prev_time = Some(time);
+        let prev_time = prev_time.unwrap();
+        let prev_pos = prev_pos.unwrap();
+        if time < prev_time {
+            warn!("Time arg regressed from {:?} to {:?}", prev_time, time);
+            time = prev_time + Duration::from_micros(1);
+            if position.is_some() {
+                self.prev_time = Some(time);
+            }
         }
+
         if position.is_none() {
             if self.state == State::Unknown {
                 return;
             }
-            if let Some(gap) = self.gap {
-                // Has gap persisted for too long?
-                if time.duration_since(gap).unwrap() > self.gap_tolerance {
-                    self.state = State::Unknown;
-                    self.gap = None;
-                    self.ra_rate.clear();
-                    self.dec_rate.clear();
-                }
-            } else {
-                // New gap is starting.
-                self.gap = Some(time);
+            // Has gap persisted for too long?
+            if time.duration_since(prev_time).unwrap() > self.gap_tolerance {
+                self.set_state(State::Unknown);
+                self.ra_rate.clear();
+                self.dec_rate.clear();
             }
             return;
         }
         let position = position.unwrap();
-        self.gap = None;
+        let position_rmse = position_rmse.unwrap() / 3600.0;  // arcsec->deg.
         match self.state {
             State::Unknown => {
-                self.state = State::Moving;
+                self.set_state(State::Moving);
             },
             State::Moving => {
                 // Compare new position/time to previous position/time.
-                if self.is_stopped(time, &position) {
-                    self.state = State::Stopped;
+                if Self::is_stopped(time, &position, position_rmse, prev_time, &prev_pos) {
+                    self.set_state(State::Stopped);
                     // Enter the two points into our rate trackers.
-                    let prev_pos = prev_pos.as_ref().unwrap();
                     self.ra_rate.add(
-                        prev_time.unwrap(), prev_pos.ra as f64);
+                        prev_time, prev_pos.ra as f64);
                     self.ra_rate.add(time, position.ra as f64);
                     self.dec_rate.add(
-                        prev_time.unwrap(), prev_pos.dec as f64);
+                        prev_time, prev_pos.dec as f64);
                     self.dec_rate.add(time, position.dec as f64);
                 }
             },
             State::Stopped => {
                 // Compare new position/time to previous position/time.
-                if !self.is_stopped(time, &position) {
-                    self.state = State::Moving;
+                if Self::is_stopped(time, &position, position_rmse, prev_time, &prev_pos) {
+                    self.set_state(State::SteadyRate);
+                    self.ra_rate.add(time, position.ra as f64);
+                    self.dec_rate.add(time, position.dec as f64);
+                } else {
+                    self.set_state(State::Moving);
                     self.ra_rate.clear();
                     self.dec_rate.clear();
-                } else {
-                    // See if the RA rate (tracking vs non-tracking mount) is
-                    // consistent with the first two points in our rate
-                    // tracker.
-                    assert!(self.ra_rate.count() == 2);
-                    assert!(self.dec_rate.count() == 2);
-                    let elapsed_secs =
-                        time.duration_since(prev_time.unwrap()).unwrap().as_secs_f32();
-                    let prev_pos = prev_pos.as_ref().unwrap();
-                    let ra_rate =
-                        Self::ra_change(prev_pos.ra, position.ra) / elapsed_secs;
-                    if (ra_rate - self.ra_rate.slope() as f32).abs() <
-                        Self::SIDEREAL_RATE / 4.0
-                    {
-                        self.state = State::SteadyRate;
-                        self.ra_rate.add(time, position.ra as f64);
-                        self.dec_rate.add(time, position.dec as f64);
-                    } else {
-                        self.state = State::Moving;
-                        self.ra_rate.clear();
-                        self.dec_rate.clear();
-                    }
                 }
             },
             State::SteadyRate => {
-                if self.ra_rate.fits_trend(time, position.ra as f64, /*sigma=*/10.0) &&
-                    self.dec_rate.fits_trend(time, position.dec as f64, /*sigma=*/10.0)
+                if self.ra_rate.fits_trend(time, position.ra as f64, /*sigma=*/8.0) &&
+                    self.dec_rate.fits_trend(time, position.dec as f64, /*sigma=*/8.0)
                 {
                     self.ra_rate.add(time, position.ra as f64);
                     self.dec_rate.add(time, position.dec as f64);
                 } else {
-                    self.state = State::Moving;
+                    self.set_state(State::Moving);
                     self.ra_rate.clear();
                     self.dec_rate.clear();
                 }
             },
         }
+    }
+
+    fn set_state(&mut self, state: State) {
+        debug!("state -> {:?}", state);
+        self.state = state;
     }
 
     pub fn get_estimate(&self) -> MotionEstimate {
@@ -182,47 +170,34 @@ impl MotionEstimator {
                                ..Default::default()}
             },
             State::SteadyRate => {
-                // Dwelling. Determine whether untracked or tracked.
-                if Self::close_to_sidereal_rate(self.ra_rate.slope() as f32) {
-                    MotionEstimate{camera_motion: MotionType::DwellUntracked.into(),
-                                   ..Default::default()}
-                } else {
-                    MotionEstimate{
-                        camera_motion: MotionType::DwellTracked.into(),
-                        ra_rate: Some(self.ra_rate.slope() as f32),
-                        ra_rate_error: Some(self.ra_rate.rate_interval_bound() as f32),
-                        dec_rate: Some(self.dec_rate.slope() as f32),
-                        dec_rate_error: Some(self.dec_rate.rate_interval_bound() as f32),
-                    }
+                MotionEstimate{
+                    camera_motion: MotionType::Dwelling.into(),
+                    ra_rate: Some(self.ra_rate.slope() as f32),
+                    ra_rate_error: Some(self.ra_rate.rate_interval_bound() as f32),
+                    dec_rate: Some(self.dec_rate.slope() as f32),
+                    dec_rate_error: Some(self.dec_rate.rate_interval_bound() as f32),
                 }
             },
         }
     }
 
-    fn is_stopped(&self, time: SystemTime, pos: &CelestialCoord) -> bool {
+    fn is_stopped(time: SystemTime, pos: &CelestialCoord, pos_rmse: f32,
+                  prev_time: SystemTime, prev_pos: &CelestialCoord) -> bool {
         let elapsed_secs =
-            time.duration_since(self.prev_time.unwrap()).unwrap().as_secs_f32();
-        let prev_pos = self.prev_position.as_ref().unwrap();
+            time.duration_since(prev_time).unwrap().as_secs_f32();
+
+        // Max movement rate below which we are considered to be stopped.
+        let max_rate = f32::max(pos_rmse * 8.0, Self::SIDEREAL_RATE * 2.0);
 
         let dec_rate = Self::dec_change(prev_pos.dec, pos.dec) / elapsed_secs;
-        if dec_rate.abs() > Self::SIDEREAL_RATE / 4.0 {
+        if dec_rate.abs() > max_rate {
             return false;
         }
         let ra_rate = Self::ra_change(prev_pos.ra, pos.ra) / elapsed_secs;
-        // Two cases that qualify as "stopped". Non-tracking mount: position
-        // is changing at sidereal rate. Tracking mount: position is changing
-        // very little.
-        if Self::close_to_sidereal_rate(ra_rate) {
-            return true;  // Non-tracking mount.
-        }
-        ra_rate.abs() < Self::SIDEREAL_RATE / 4.0  // Tracking mount?
+        ra_rate.abs() <= max_rate
     }
 
-    fn close_to_sidereal_rate(rate: f32) -> bool {
-        rate > 0.75 * Self::SIDEREAL_RATE && rate < 1.25 * Self::SIDEREAL_RATE
-    }
-
-    const SIDEREAL_RATE: f32 = 15.04;  // Arcseconds per second.
+    const SIDEREAL_RATE: f32 = 15.04 / 3600.0;  // Degrees per second.
 
     // Computes the change in declination between `prev_dec` and `cur_dec`. All
     // are in degrees.
