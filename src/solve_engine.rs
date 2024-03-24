@@ -14,6 +14,7 @@ use tokio::net::UnixStream;
 use tower::service_fn;
 
 use crate::position_reporter::TelescopePosition;
+use crate::motion_estimator::MotionEstimator;
 use crate::tetra3_server::{CelestialCoord, ImageCoord, SolveRequest,
                            SolveResult as SolveResultProto,
                            SolveStatus};
@@ -76,6 +77,9 @@ struct SolveState {
     // the slew target to image coordinates (if it is currently in the FOV).
     telescope_position: Arc<Mutex<TelescopePosition>>,
 
+    // We also post our solution here.
+    motion_estimator: Arc<Mutex<MotionEstimator>>,
+
     // Set by stop(); the worker thread exits when it sees this.
     stop_request: bool,
 }
@@ -120,6 +124,7 @@ impl SolveEngine {
     pub async fn new(tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
                      detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
                      telescope_position: Arc<Mutex<TelescopePosition>>,
+                     motion_estimator: Arc<Mutex<MotionEstimator>>,
                      tetra3_server_address: String,
                      update_interval: Duration, stats_capacity: usize)
                      -> Result<Self, CanonicalError> {
@@ -145,6 +150,7 @@ impl SolveEngine {
                 eta: None,
                 plate_solution: None,
                 telescope_position,
+                motion_estimator,
                 stop_request: false,
             })),
             detect_engine,
@@ -463,6 +469,7 @@ impl SolveEngine {
             state.lock().unwrap().deref_mut().frame_id = Some(detect_result.frame_id);
 
             let image: &GrayImage = &detect_result.captured_image.image;
+            let capture_time = detect_result.captured_image.readout_time;
             let (width, height) = image.dimensions();
 
             // Plate-solve using the recently detected stars.
@@ -504,6 +511,7 @@ impl SolveEngine {
             if tetra3_solve_result.is_none() {
                 locked_state.solve_attempt_stats.add_value(0.0);
                 locked_state.telescope_position.lock().unwrap().boresight_valid = false;
+                locked_state.motion_estimator.lock().unwrap().add(capture_time, None, None);
             } else {
                 locked_state.solve_attempt_stats.add_value(1.0);
                 let tsr = tetra3_solve_result.as_ref().unwrap();
@@ -521,6 +529,9 @@ impl SolveEngine {
                     telescope_position.boresight_ra = coords.ra as f64;
                     telescope_position.boresight_dec = coords.dec as f64;
                     telescope_position.boresight_valid = true;
+
+                    locked_state.motion_estimator.lock().unwrap().add(
+                        capture_time, Some(coords.clone()), tsr.rmse);
 
                     if let Some(ref mut slew_req) = slew_request {
                         let bs_ra = coords.ra.to_radians() as f64;
@@ -593,6 +604,8 @@ impl SolveEngine {
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
                     locked_state.telescope_position.lock().unwrap().boresight_valid = false;
+                    locked_state.motion_estimator.lock().unwrap().add(
+                        capture_time, None, None);
                 }
                 locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
             }

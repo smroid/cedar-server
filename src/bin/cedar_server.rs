@@ -45,6 +45,7 @@ use ::cedar::detect_engine::DetectEngine;
 use ::cedar::scale_image::scale_image;
 use ::cedar::solve_engine::{PlateSolution, SolveEngine};
 use ::cedar::position_reporter::{TelescopePosition, create_alpaca_server};
+use ::cedar::motion_estimator::MotionEstimator;
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 use ::cedar::value_stats::ValueStatsAccumulator;
 use ::cedar::tetra3_server;
@@ -97,6 +98,7 @@ struct CedarState {
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<Mutex<TelescopePosition>>,
+    motion_estimator: Arc<Mutex<MotionEstimator>>,
 
     // We host the user interface preferences here. These do not affect server
     // operation; we reflect them out to all clients and persist them to a
@@ -863,6 +865,8 @@ impl MyCedar {
                     });
             }
         }
+        frame_result.motion_estimate =
+            Some(locked_state.motion_estimator.lock().unwrap().get_estimate());
         let boresight_position =
             locked_state.solve_engine.lock().await.boresight_pixel().expect(
                 "solve_engine.boresight_pixel() should not fail");
@@ -912,6 +916,9 @@ impl MyCedar {
             hide_app_bar: Some(false),
             mount_type: Some(MountType::Equatorial.into()),
         };
+        let motion_estimator = Arc::new(Mutex::new(MotionEstimator::new(
+            /*gap_tolerance=*/Duration::from_secs(5))));
+
         // Load UI preferences file.
         let prefs_path = Path::new(&preferences_file);
         let bytes = fs::read(prefs_path);
@@ -962,12 +969,13 @@ impl MyCedar {
             tetra3_subprocess: tetra3_subprocess.clone(),
             solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
                 tetra3_subprocess.clone(), detect_engine.clone(),
-                telescope_position.clone(), tetra3_uds,
+                telescope_position.clone(), motion_estimator.clone(), tetra3_uds,
                 /*update_interval=*/Duration::ZERO,
                 stats_capacity).await.unwrap())),
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
             telescope_position: telescope_position.clone(),
+            motion_estimator: motion_estimator,
             preferences,
             scaled_image: None,
             width: 0,

@@ -133,7 +133,7 @@ impl RateEstimation {
     // Returns estimated rate of change in value per second of time.
     // count() must be at least 2.
     pub fn slope(&self) -> f64 {
-        assert!(self.reservoir.count() > 0);
+        assert!(self.count() > 1);
         self.slope
     }
 
@@ -142,7 +142,7 @@ impl RateEstimation {
     // within which the true rate is likely to be.
     // count() must be at least 3.
     pub fn rate_interval_bound(&self) -> f64 {
-        assert!(self.reservoir.count() > 1);
+        assert!(self.count() > 2);
         let time_span_secs =
             self.last.unwrap().duration_since(self.first.as_ref().unwrap().x).unwrap()
             .as_secs_f64();

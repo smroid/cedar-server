@@ -472,18 +472,18 @@ message MotionEstimate {
 
   // Estimated rate of RA boresight movement eastward (positive) or westward
   // (negative). Unit is degrees per second.
-  // Supplied only for DWELL_TRACKED.
+  // Supplied only for DWELLING.
   optional float ra_rate = 2;
 
-  // Estimate of the RMS error in `ra_rate`. Supplied only for DWELL_TRACKED.
+  // Estimate of the RMS error in `ra_rate`. Supplied only for DWELLING.
   optional float ra_rate_error = 3;
 
   // Estimated rate of DEC boresight movement northward (positive) or southward
   // (negative). Unit is degrees per second.
-  // Supplied only for DWELL_TRACKED.
+  // Supplied only for DWELLING.
   optional float dec_rate = 4;
 
-  // Estimate of the RMS error in `dec_rate`. Supplied only for DWELL_TRACKED.
+  // Estimate of the RMS error in `dec_rate`. Supplied only for DWELLING.
   optional float dec_rate_error = 5;
 }
 
@@ -497,15 +497,11 @@ enum MotionType {
   // boresight in RA/DEC.
   MOVING = 1;
 
-  // Recent plate solutions are consistent with sidereal movement of the
-  // boresight in RA/DEC, such as would be seen when the camera's orientation is
-  // fixed relative to the earth.
-  DWELL_UNTRACKED = 2;
-
-  // Recent plate solutions are consistent with little to no movement of the
-  // boresight in RA/DEC, such as would be seen when the camera is mounted on
-  // a motorized equatorial mount.
-  DWELL_TRACKED = 3;
+  // Recent plate solutions are consistent with little or no movement of the
+  // boresight in RA/DEC. The MotionEstimate.ra_rate value will be close to
+  // zero for a motorized equatorial mount; the ra_rate value will be close
+  // to the sidereal rate (15 arcsec/sec) for a fixed mount.
+  DWELLING = 2;
 }
 
 // Describes a telescope motion request from SkySafari.
