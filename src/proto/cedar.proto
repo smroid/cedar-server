@@ -290,7 +290,7 @@ message FrameResult {
   optional LocationBasedInfo location_based_info = 29;
 
   // Estimate of camera boresight motion against celestial coordinates.
-  optional MotionEstimate motion_estimate = 18;
+  MotionEstimate motion_estimate = 18;
 
   // If present, SkySafari is requesting that the telescope's pointing should be
   // changed.
