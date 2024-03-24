@@ -5,9 +5,16 @@ show matches/pattern stars in operate mode. Except when slewing?
 
 Pacifier/busy indicator for capturing image
 
+eq vs alt/az setting
+* alt/az prompts for observer location if not known -- don't bother?
+* convey to SkySafari
+
 bug report
 
 local dns entry
+
+UI alert if large system time difference between client and server
+* only need this on entry to alt/az mode?
 
 interoperation with SkySafari
 * switch apps?
@@ -18,28 +25,21 @@ help system
 * long press? (GestureDetector wrapped around a widget)
 * 'i' icons?
 
-server log: pre-scroll to bottom.
-
 make more settings durable
 * accuracy slider
+* update rates
 
 vignetting calibration
 
 Wifi management
 * access point, provisioning
-* switching wifi mode
+* switching wifi mode-- setting in web UI?
 * bluetooth? disable if not using?
 * access point power level (save battery)
 
 FITS support for saved images? Other formats?
 
 observer session handling
-
-IMU? 6DOF should be fine.
-* detect motion, replace solution with motion-based estimate if no
-  plate solve
-* while moving, run with accuracy setting at "fastest" position to
-  try to get plate solve
 
 logging
 * observer log is separate
@@ -73,6 +73,7 @@ UI:
 Preferences:
 * update rate (non-dwell, dwell)
 * flip options? To match telescope FOV orientation.
+  - sync with SkySafari?
 
 Object catalog ("Cedar Sky")
 * selection criteria
