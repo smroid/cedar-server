@@ -15,13 +15,13 @@ struct DataPoint {
 // and an estimate of the rate's uncertainty is derived from a measurement of
 // the data's noise.
 pub struct RateEstimation {
-    // The first data point to be add()ed.
-    first: Option<DataPoint>,
+    // Time of the first data point to be add()ed.
+    first: Option<SystemTime>,
 
     // Time of most recent data point to be add()ed.
     last: Option<SystemTime>,
 
-    // The retained subset of data points that have been add()ed after the first.
+    // The retained subset of data points that have been add()ed.
     reservoir: ReservoirSampler<DataPoint>,
 
     // The linear regression's slope. This is the rate of change in y per second
@@ -64,11 +64,11 @@ impl RateEstimation {
             warn!("Time arg regressed from {:?} to {:?}", self.last.unwrap(), time);
             time = self.last.unwrap() + Duration::from_micros(1);
         }
-        self.last = Some(time);
         if self.first.is_none() {
-            self.first = Some(DataPoint{x: time, y: r64(value)});
-        } else if let Some(removed) = self.reservoir.add(DataPoint{x: time,
-                                                                   y: r64(value)}) {
+            self.first = Some(time);
+        }
+        self.last = Some(time);
+        if let Some(removed) = self.reservoir.add(DataPoint{x: time, y: r64(value)}) {
             let x = removed.x.duration_since(SystemTime::UNIX_EPOCH).unwrap()
                 .as_secs_f64();
             self.x_sum -= x;
@@ -77,7 +77,7 @@ impl RateEstimation {
         self.x_sum +=
             time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs_f64();
         self.y_sum += r64(value);
-        let count = 1 + self.reservoir.count();
+        let count = self.reservoir.count();
         if count < 2 {
             return;
         }
@@ -85,11 +85,8 @@ impl RateEstimation {
         let x_mean = self.x_sum / count_r64;
         let y_mean = self.y_sum / count_r64;
 
-        let first = self.first.as_ref().unwrap();
-        let first_x = r64(first.x.duration_since(SystemTime::UNIX_EPOCH).unwrap()
-                          .as_secs_f64());
-        let mut num: R64 = (first_x - x_mean) * (first.y - y_mean);
-        let mut den: R64 = (first_x - x_mean) * (first_x - x_mean);
+        let mut num = r64(0.0);
+        let mut den = r64(0.0);
         for sample in self.reservoir.samples() {
             let x = r64(sample.x.duration_since(SystemTime::UNIX_EPOCH).unwrap()
                         .as_secs_f64());
@@ -97,10 +94,12 @@ impl RateEstimation {
             den += (x - x_mean) * (x - x_mean);
         }
         self.slope = num / den;
+        let first_x =
+            r64(self.first.as_ref().unwrap().duration_since(SystemTime::UNIX_EPOCH).unwrap()
+                .as_secs_f64());
         self.intercept = y_mean - self.slope * (x_mean - first_x);
 
-        let y_reg = self.estimate_value(first.x);
-        let mut y_variance: R64 = (first.y - y_reg) * (first.y - y_reg);
+        let mut y_variance = r64(0.0);
         for sample in self.reservoir.samples() {
             let y_reg = self.estimate_value(sample.x);
             y_variance += (sample.y - y_reg) * (sample.y - y_reg);
@@ -109,10 +108,7 @@ impl RateEstimation {
     }
 
     pub fn count(&self) -> usize {
-        if self.first.is_none() {
-            return 0;
-        }
-        1 + self.reservoir.count()
+        self.reservoir.count()
     }
 
     // Determines if the given data point is on-trend, within `sigma` multiple of
@@ -129,8 +125,7 @@ impl RateEstimation {
     }
 
     fn estimate_value(&self, time: SystemTime) -> f64 {
-        let x = r64(time.duration_since(self.first.as_ref().unwrap().x).unwrap()
-                    .as_secs_f64());
+        let x = r64(time.duration_since(self.first.unwrap()).unwrap().as_secs_f64());
         (self.intercept + x * self.slope).into()
     }
 
@@ -148,8 +143,7 @@ impl RateEstimation {
     pub fn rate_interval_bound(&self) -> f64 {
         assert!(self.count() > 2);
         let time_span_secs =
-            self.last.unwrap().duration_since(self.first.as_ref().unwrap().x).unwrap()
-            .as_secs_f64();
+            self.last.unwrap().duration_since(self.first.unwrap()).unwrap().as_secs_f64();
         (self.noise / time_span_secs).into()
     }
 
