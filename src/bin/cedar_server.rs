@@ -844,8 +844,8 @@ impl MyCedar {
                 }
                 let bs_ra = celestial_coords.ra.to_radians() as f64;
                 let bs_dec = celestial_coords.dec.to_radians() as f64;
-                // alt/az of boresight.
-                let (alt, az) = alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
+                // alt/az of boresight. Also boresight hour angle.
+                let (alt, az, ha) = alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
                 // ra/dec of zenith.
                 let (z_ra, z_dec) = equatorial_from_alt_az(
                     90_f64.to_radians(),
@@ -862,6 +862,7 @@ impl MyCedar {
                     Some(LocationBasedInfo{zenith_roll_angle,
                                            altitude: alt.to_degrees() as f32,
                                            azimuth: az.to_degrees() as f32,
+                                           hour_angle: ha.to_degrees() as f32,
                     });
             }
         }

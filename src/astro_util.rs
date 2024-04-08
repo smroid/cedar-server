@@ -3,8 +3,8 @@ use astro::coords::{alt_frm_eq, az_frm_eq, hr_angl_frm_hz};
 use astro::time::{CalType, Date, julian_day, mn_sidr};
 
 use chrono::{Datelike, DateTime, Timelike, Utc};
-use std::f64::consts::{PI};
-use std::time::{SystemTime};
+use std::f64::consts::PI;
+use std::time::SystemTime;
 
 /// Returns the separation, in radians, between the given celestial coordinates
 /// (in radians).
@@ -31,13 +31,14 @@ pub fn position_angle(p0_ra: f64, p0_dec: f64,
     x.atan2(y)
 }
 
-/// Returns (alt, az) in radians. Returned azimuth is clockwise from north.
+/// Returns (alt, az, ha) in radians. Returned azimuth is clockwise from north.
+/// Returned hour angle is -PI..PI.
 /// ra: right ascension in radians.
 /// dec: declination in radians.
 /// lat: observer latitude in radians.
 /// long: observer longitude in radians.
 pub fn alt_az_from_equatorial(ra: f64, dec: f64, lat: f64, long: f64,
-                              time: SystemTime) -> (f64, f64) {
+                              time: SystemTime) -> (/*alt*/f64, /*az*/f64, /*ha*/f64) {
     let gmst = greenwich_mean_sidereal_time_from_system_time(time);
 
     // Note that astro::coords::hr_angl_frm_observer_long() has a bug. Fortunately
@@ -46,8 +47,12 @@ pub fn alt_az_from_equatorial(ra: f64, dec: f64, lat: f64, long: f64,
 
     let meeus_az = az_frm_eq(hour_angle, dec, lat);
     let az = limit_to_two_PI(meeus_az + PI);
+    let mut ha = limit_to_two_PI(hour_angle);
+    if ha > PI {
+        ha -= 2.0 * PI;
+    }
 
-    (alt_frm_eq(hour_angle, dec, lat), az)
+    (alt_frm_eq(hour_angle, dec, lat), az, ha)
 }
 
 /// Returns (ra, dec) in radians.
@@ -121,7 +126,7 @@ mod tests {
     #[test]
     fn test_alt_az_equatorial_conversion() {
         let mizar_ra = deg_frm_hms(13, 23, 55.5).to_radians();
-        let mizar_dec = deg_frm_dms(54, 55, 30.7).to_radians();
+        let mizar_dec = deg_frm_dms(54, 55, 31.3).to_radians();
 
         let dt = FixedOffset::west_opt(8 * 3600).unwrap().with_ymd_and_hms(
             2024, 3, 7, 23, 56, 0).unwrap();
@@ -131,22 +136,26 @@ mod tests {
         let lat = 37_f64.to_radians();
         let long = -122_f64.to_radians();
 
-        let (alt, az) = alt_az_from_equatorial(mizar_ra, mizar_dec, lat, long, time);
+        let (alt, az, ha) =
+            alt_az_from_equatorial(mizar_ra, mizar_dec, lat, long, time);
 
         // Expected values obtained from SkySafari.
         assert_abs_diff_eq!(alt,
-                            deg_frm_dms(59, 3, 54.3).to_radians(),
-                            epsilon = 0.02);
+                            deg_frm_dms(58, 52, 14.3).to_radians(),
+                            epsilon = 0.01);
         assert_abs_diff_eq!(az,
-                            deg_frm_dms(43, 20, 36.7).to_radians(),
-                            epsilon = 0.02);
+                            deg_frm_dms(42, 59, 36.7).to_radians(),
+                            epsilon = 0.01);
+        assert_abs_diff_eq!(ha,
+                            -deg_frm_hms(2, 29, 50.9).to_radians(),
+                            epsilon = 0.01);
 
         // Now go the other way.
         let (ra, dec) = equatorial_from_alt_az(alt, az, lat, long, time);
         assert_abs_diff_eq!(ra, mizar_ra,
-                            epsilon = 0.02);
+                            epsilon = 0.01);
         assert_abs_diff_eq!(dec, mizar_dec,
-                            epsilon = 0.02);
+                            epsilon = 0.01);
     }
 
 }  // mod tests.
