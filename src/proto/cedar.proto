@@ -462,6 +462,11 @@ message LocationBasedInfo {
 
   // Azimuth (degrees, positive clockwise from north) of the boresight.
   float azimuth = 3;
+
+  // Hour angle (degrees, -180..180). Negative hour angle means boresight
+  // is approaching the meridian from east; positive means boresight
+  // is moving away from the meridian towards west.
+  float hour_angle = 4;
 }
 
 // Result of analyzing the recent history of the camera position in celestial
