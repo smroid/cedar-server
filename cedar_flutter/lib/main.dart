@@ -256,7 +256,8 @@ class MyHomePageState extends State<MyHomePage> {
   // Arcsec.
   double _solutionRMSE = 0.0;
 
-  LocationBasedInfo? _location_based_info;
+  LocationBasedInfo? _locationBasedInfo;
+  MotionEstimate? _motionEstimate;
 
   CalibrationData? _calibrationData;
   ProcessingStats? _processingStats;
@@ -356,10 +357,11 @@ class MyHomePageState extends State<MyHomePage> {
         _solutionRMSE = plateSolution.rmse;
         _solutionFOV = plateSolution.fov;
         if (response.hasLocationBasedInfo()) {
-          _location_based_info = response.locationBasedInfo;
+          _locationBasedInfo = response.locationBasedInfo;
         }
       }
     }
+    _motionEstimate = response.motionEstimate;
     if (response.hasImage()) {
       _imageBytes = Uint8List.fromList(response.image.imageData);
     }
@@ -414,8 +416,8 @@ class MyHomePageState extends State<MyHomePage> {
 
   double bullseyeDirectionIndicator() {
     if (_preferences?.mountType == MountType.ALT_AZ &&
-        _location_based_info != null) {
-      return _location_based_info!.zenithRollAngle;
+        _locationBasedInfo != null) {
+      return _locationBasedInfo!.zenithRollAngle;
     } else {
       return _solutionRollAngle; // Direction towards north.
     }
@@ -795,7 +797,23 @@ class MyHomePageState extends State<MyHomePage> {
     int minutes = (fracHours * 60.0).floor();
     double fracMinutes = fracHours * 60.0 - minutes;
     int seconds = (fracMinutes * 60).round();
-    return sprintf("%02dh %02dm %02ds", [hours, minutes, seconds]);
+    return sprintf("RA %02dh %02dm %02ds", [hours, minutes, seconds]);
+  }
+
+  String formatHourAngle(double ha) {
+    if (_preferences?.celestialCoordFormat == CelestialCoordFormat.DECIMAL) {
+      return sprintf("HA %.4f°", [ha]);
+    }
+    String sign = ha < 0 ? "-" : "+";
+    if (ha < 0) {
+      ha = -ha;
+    }
+    int hours = (ha / 15.0).floor();
+    double fracHours = ha / 15.0 - hours;
+    int minutes = (fracHours * 60.0).floor();
+    double fracMinutes = fracHours * 60.0 - minutes;
+    int seconds = (fracMinutes * 60).round();
+    return sprintf("HA %s%02dh %02dm %02ds", [sign, hours, minutes, seconds]);
   }
 
   String formatDeclination(double dec) {
@@ -811,16 +829,27 @@ class MyHomePageState extends State<MyHomePage> {
     int minutes = (fracDegrees * 60.0).floor();
     double fracMinutes = fracDegrees * 60.0 - minutes;
     int seconds = (fracMinutes * 60).round();
-    return sprintf("%s%02d° %02d' %02d''", [sign, degrees, minutes, seconds]);
+    return sprintf(
+        "Dec %s%02d° %02d' %02d''", [sign, degrees, minutes, seconds]);
   }
 
   String formatAltitude(double alt) {
-    return sprintf("ALT %.3f°", [alt]);
+    return sprintf("Alt %.3f°", [alt]);
   }
 
   String formatAzimuth(double az) {
-    // TODO: use N, NE, eN, etc.
-    return sprintf("AZ %.3f°", [az]);
+    final String dir = switch (az) {
+      >= 360 - 22.5 || < 22.5 => "N",
+      >= 22.5 && < 45 + 22.5 => "NE",
+      >= 45 + 22.5 && < 90 + 22.5 => "E",
+      >= 90 + 22.5 && < 135 + 22.5 => "SE",
+      >= 135 + 22.5 && < 180 + 22.5 => "S",
+      >= 180 + 22.5 && < 225 + 22.5 => "SW",
+      >= 225 + 22.5 && < 270 + 22.5 => "W",
+      >= 270 + 22.5 && < 315 + 22.5 => "NW",
+      double() => "??",
+    };
+    return sprintf("Az %.3f° %s", [az, dir]);
   }
 
   Color starsSliderColor() {
@@ -874,20 +903,35 @@ class MyHomePageState extends State<MyHomePage> {
           ? Container()
           : SizedBox(
               width: 120,
-              height: 100,
+              height: 120,
               child: Column(
                 children: <Widget>[
                   primaryText("Aim"),
                   solveText(sprintf("%s", [formatRightAscension(_solutionRA)])),
                   solveText(sprintf("%s", [formatDeclination(_solutionDec)])),
-                  if (_location_based_info != null)
+                  if (_locationBasedInfo != null)
                     solveText(sprintf("%s",
-                        [formatAltitude(_location_based_info!.altitude)])),
-                  if (_location_based_info != null)
+                        [formatHourAngle(_locationBasedInfo!.hourAngle)])),
+                  if (_locationBasedInfo != null)
                     solveText(sprintf(
-                        "%s", [formatAzimuth(_location_based_info!.azimuth)])),
+                        "%s", [formatAltitude(_locationBasedInfo!.altitude)])),
+                  if (_locationBasedInfo != null)
+                    solveText(sprintf(
+                        "%s", [formatAzimuth(_locationBasedInfo!.azimuth)])),
                 ],
               )),
+      // const SizedBox(width: 15, height: 15),
+      // _motionEstimate == null
+      //     ? Container()
+      //     : SizedBox(
+      //         width: 120,
+      //         height: 300,
+      //         child: Column(
+      //           children: <Widget>[
+      //             primaryText("Motion"),
+      //             Text(_motionEstimate!.toDebugString()),
+      //           ],
+      //         )),
       const SizedBox(width: 15, height: 15),
       _slewRequest == null || _setupMode
           ? Container()
