@@ -19,11 +19,11 @@ enum State {
     // While Moving, a call to add() received a position very similar to the
     // previous position, consistent with a fixed mount (position moving at
     // sidereal rate) or a tracking mount (position nearly motionless in ra/dec)
-    // that is "motionless" (not slewing).
+    // that is motionless (i.e. tracking the sky but not slewing).
     Stopped,
 
     // From Stopped, the next add()ed position is consistent with the previous
-    // two points, for either a tracking or fixed mount. We continue in SteadyRate
+    // point, for either a tracking or fixed mount. We continue in SteadyRate
     // as long as newly add()ed positions are consistent with the existing rate
     // estimates.
     SteadyRate,
@@ -33,9 +33,14 @@ pub struct MotionEstimator {
     // The current state of this MotionEstimator.
     state: State,
 
-    // How long we can tolerate lack of position updates before reverting
-    // to Unknown state.
+    // How long we tolerate lack of position updates before reverting to Unknown
+    // state.
     gap_tolerance: Duration,
+
+    // When in SteadyRate, how long we tolerate (and discard) position updates
+    // not consistent with `ra_rate` and `dec_rate` before reverting to Moving
+    // state.
+    bump_tolerance: Duration,
 
     // Time/position passed to most recent add() call. Updated only for add() calls
     // with non-None position arg.
@@ -43,22 +48,22 @@ pub struct MotionEstimator {
     prev_position: Option<CelestialCoord>,
 
     // Tracking rate estimation, used when add()ed positions are consistent with
-    // a motionless fixed mount or tracking mount.
-    ra_rate: RateEstimation,
-    dec_rate: RateEstimation,
+    // a motionless fixed mount or tracking mount. Present only when SteadyRate.
+    ra_rate: Option<RateEstimation>,
+    dec_rate: Option<RateEstimation>,
 }
 
 impl MotionEstimator {
     // `gap_tolerance` The amount of time add() calls can have position=None
     //     before our state reverts to Unknown.
-    pub fn new(gap_tolerance: Duration) -> Self {
+    pub fn new(gap_tolerance: Duration, bump_tolerance: Duration) -> Self {
         MotionEstimator{
             state: State::Unknown,
-            gap_tolerance,
+            gap_tolerance, bump_tolerance,
             prev_time: None,
             prev_position: None,
-            ra_rate: RateEstimation::new(100),
-            dec_rate: RateEstimation::new(100),
+            ra_rate: None,
+            dec_rate: None,
         }
     }
 
@@ -88,7 +93,7 @@ impl MotionEstimator {
         }
         let prev_time = prev_time.unwrap();
         let prev_pos = prev_pos.unwrap();
-        if time < prev_time {
+        if time <= prev_time {
             warn!("Time arg regressed from {:?} to {:?}", prev_time, time);
             time = prev_time + Duration::from_micros(1);
             if position.is_some() {
@@ -103,8 +108,8 @@ impl MotionEstimator {
             // Has gap persisted for too long?
             if time.duration_since(prev_time).unwrap() > self.gap_tolerance {
                 self.set_state(State::Unknown);
-                self.ra_rate.clear();
-                self.dec_rate.clear();
+                self.ra_rate = None;
+                self.dec_rate = None;
             }
             return;
         }
@@ -118,37 +123,37 @@ impl MotionEstimator {
                 // Compare new position/time to previous position/time.
                 if Self::is_stopped(time, &position, position_rmse, prev_time, &prev_pos) {
                     self.set_state(State::Stopped);
-                    // Enter the two points into our rate trackers.
-                    self.ra_rate.add(
-                        prev_time, prev_pos.ra as f64);
-                    self.ra_rate.add(time, position.ra as f64);
-                    self.dec_rate.add(
-                        prev_time, prev_pos.dec as f64);
-                    self.dec_rate.add(time, position.dec as f64);
                 }
             },
             State::Stopped => {
-                // Compare new position/time to previous position/time.
+                // Compare new position/time to previous position/time. Are we still stopped?
                 if Self::is_stopped(time, &position, position_rmse, prev_time, &prev_pos) {
+                    // Enter SteadyRate and initialize ra/dec RateEstimation objects with the
+                    // current and previous positions/times.
                     self.set_state(State::SteadyRate);
-                    self.ra_rate.add(time, position.ra as f64);
-                    self.dec_rate.add(time, position.dec as f64);
+                    self.ra_rate = Some(RateEstimation::new(100, prev_time, prev_pos.ra as f64));
+                    self.ra_rate.as_mut().unwrap().add(time, position.ra as f64);
+                    self.dec_rate = Some(RateEstimation::new(100, prev_time, prev_pos.dec as f64));
+                    self.dec_rate.as_mut().unwrap().add(time, position.dec as f64);
                 } else {
                     self.set_state(State::Moving);
-                    self.ra_rate.clear();
-                    self.dec_rate.clear();
                 }
             },
             State::SteadyRate => {
-                if self.ra_rate.fits_trend(time, position.ra as f64, /*sigma=*/8.0) &&
-                    self.dec_rate.fits_trend(time, position.dec as f64, /*sigma=*/8.0)
+                let ra_rate = &mut self.ra_rate.as_mut().unwrap();
+                let dec_rate = &mut self.dec_rate.as_mut().unwrap();
+                if ra_rate.fits_trend(time, position.ra as f64, /*sigma=*/8.0) &&
+                    dec_rate.fits_trend(time, position.dec as f64, /*sigma=*/8.0)
                 {
-                    self.ra_rate.add(time, position.ra as f64);
-                    self.dec_rate.add(time, position.dec as f64);
+                    ra_rate.add(time, position.ra as f64);
+                    dec_rate.add(time, position.dec as f64);
                 } else {
-                    self.set_state(State::Moving);
-                    self.ra_rate.clear();
-                    self.dec_rate.clear();
+                    // Has rate trend violation persisted for too long?
+                    if time.duration_since(ra_rate.last_time()).unwrap() > self.bump_tolerance {
+                        self.set_state(State::Moving);
+                        self.ra_rate = None;
+                        self.dec_rate = None;
+                    }
                 }
             },
         }
@@ -170,12 +175,19 @@ impl MotionEstimator {
                                ..Default::default()}
             },
             State::SteadyRate => {
-                MotionEstimate{
-                    camera_motion: MotionType::Dwelling.into(),
-                    ra_rate: Some(self.ra_rate.slope() as f32),
-                    ra_rate_error: Some(self.ra_rate.rate_interval_bound() as f32),
-                    dec_rate: Some(self.dec_rate.slope() as f32),
-                    dec_rate_error: Some(self.dec_rate.rate_interval_bound() as f32),
+                let ra_rate = &self.ra_rate.as_ref().unwrap();
+                let dec_rate = &self.dec_rate.as_ref().unwrap();
+                if ra_rate.count() < 3 {
+                    MotionEstimate{camera_motion: MotionType::Moving.into(),
+                                   ..Default::default()}
+                } else {
+                    MotionEstimate{
+                        camera_motion: MotionType::Dwelling.into(),
+                        ra_rate: Some(ra_rate.slope() as f32),
+                        ra_rate_error: Some(ra_rate.rate_interval_bound() as f32),
+                        dec_rate: Some(dec_rate.slope() as f32),
+                        dec_rate_error: Some(dec_rate.rate_interval_bound() as f32),
+                    }
                 }
             },
         }
