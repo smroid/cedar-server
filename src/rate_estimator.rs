@@ -16,10 +16,10 @@ struct DataPoint {
 // the data's noise.
 pub struct RateEstimation {
     // Time of the first data point to be add()ed.
-    first: Option<SystemTime>,
+    first: SystemTime,
 
     // Time of most recent data point to be add()ed.
-    last: Option<SystemTime>,
+    last: SystemTime,
 
     // The retained subset of data points that have been add()ed.
     reservoir: ReservoirSampler<DataPoint>,
@@ -41,33 +41,33 @@ pub struct RateEstimation {
 }
 
 impl RateEstimation {
+    // Creates a new RateEstimation and add()s the first observation to it.
     // `capacity` governs how many add()ed points are kept to compute the rate
     // estimation. Note that even though we retain a finite number of points,
     // the estimated `slope` continues to improve over time as the time span of
     // added values increases.
-    pub fn new(capacity: usize) -> Self {
-        RateEstimation {
-            first: None,
-            last: None,
+    pub fn new(capacity: usize, time: SystemTime, value: f64) -> Self {
+        let mut re = RateEstimation {
+            first: time,
+            last: SystemTime::UNIX_EPOCH,
             reservoir: ReservoirSampler::<DataPoint>::new(capacity),
             slope: r64(0.0),
             intercept: r64(0.0),
             noise: r64(0.0),
             x_sum: r64(0.0),
             y_sum: r64(0.0),
-        }
+        };
+        re.add(time, value);
+        re
     }
 
     // Successive calls to add() must have increasing `time` arg values.
     pub fn add(&mut self, mut time: SystemTime, value: f64) {
-        if self.last.is_some() && time < self.last.unwrap() {
-            warn!("Time arg regressed from {:?} to {:?}", self.last.unwrap(), time);
-            time = self.last.unwrap() + Duration::from_micros(1);
+        if time <= self.last {
+            warn!("Time arg regressed from {:?} to {:?}", self.last, time);
+            time = self.last + Duration::from_micros(1);
         }
-        if self.first.is_none() {
-            self.first = Some(time);
-        }
-        self.last = Some(time);
+        self.last = time;
         if let Some(removed) = self.reservoir.add(DataPoint{x: time, y: r64(value)}) {
             let x = removed.x.duration_since(SystemTime::UNIX_EPOCH).unwrap()
                 .as_secs_f64();
@@ -93,9 +93,11 @@ impl RateEstimation {
             num += (x - x_mean) * (sample.y - y_mean);
             den += (x - x_mean) * (x - x_mean);
         }
+        // `den` will be non-zero because we require the `time` arg to be non-stationary.
+        assert!(den > 0.0);
         self.slope = num / den;
         let first_x =
-            r64(self.first.as_ref().unwrap().duration_since(SystemTime::UNIX_EPOCH).unwrap()
+            r64(self.first.duration_since(SystemTime::UNIX_EPOCH).unwrap()
                 .as_secs_f64());
         self.intercept = y_mean - self.slope * (x_mean - first_x);
 
@@ -109,6 +111,11 @@ impl RateEstimation {
 
     pub fn count(&self) -> usize {
         self.reservoir.count()
+    }
+
+    // Returns the `time` of the most recent `add()` call.
+    pub fn last_time(&self) -> SystemTime {
+        self.last
     }
 
     // Determines if the given data point is on-trend, within `sigma` multiple of
@@ -125,7 +132,7 @@ impl RateEstimation {
     }
 
     fn estimate_value(&self, time: SystemTime) -> f64 {
-        let x = r64(time.duration_since(self.first.unwrap()).unwrap().as_secs_f64());
+        let x = r64(time.duration_since(self.first).unwrap().as_secs_f64());
         (self.intercept + x * self.slope).into()
     }
 
@@ -142,21 +149,8 @@ impl RateEstimation {
     // count() must be at least 3.
     pub fn rate_interval_bound(&self) -> f64 {
         assert!(self.count() > 2);
-        let time_span_secs =
-            self.last.unwrap().duration_since(self.first.unwrap()).unwrap().as_secs_f64();
+        let time_span_secs = self.last.duration_since(self.first).unwrap().as_secs_f64();
         (self.noise / time_span_secs).into()
-    }
-
-    // Resets as if newly constructed.
-    pub fn clear(&mut self) {
-        self.first = None;
-        self.last = None;
-        self.reservoir.clear();
-        self.slope = r64(0.0);
-        self.intercept = r64(0.0);
-        self.noise = r64(0.0);
-        self.x_sum = r64(0.0);
-        self.y_sum = r64(0.0);
     }
 }
 
@@ -168,12 +162,9 @@ mod tests {
 
     #[test]
     fn test_rate_estimation() {
-        let mut re = RateEstimation::new(5);
-        assert_eq!(re.count(), 0);
-
         let mut time = SystemTime::now();
-        assert!(re.fits_trend(time, 1.0, /*sigma=*/5.0));
-        re.add(time, 1.0);
+        // Create with first point.
+        let mut re = RateEstimation::new(5, time, 1.0);
         assert_eq!(re.count(), 1);
 
         // Add a second point, one second later and 0.1 higher.

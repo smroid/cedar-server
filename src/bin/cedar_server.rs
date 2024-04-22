@@ -918,7 +918,8 @@ impl MyCedar {
             mount_type: Some(MountType::Equatorial.into()),
         };
         let motion_estimator = Arc::new(Mutex::new(MotionEstimator::new(
-            /*gap_tolerance=*/Duration::from_secs(5))));
+            /*gap_tolerance=*/Duration::from_secs(3),
+            /*bump_tolerance=*/Duration::from_secs_f32(1.0))));
 
         // Load UI preferences file.
         let prefs_path = Path::new(&preferences_file);
