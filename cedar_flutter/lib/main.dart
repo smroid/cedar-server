@@ -257,7 +257,6 @@ class MyHomePageState extends State<MyHomePage> {
   double _solutionRMSE = 0.0;
 
   LocationBasedInfo? _locationBasedInfo;
-  MotionEstimate? _motionEstimate;
 
   CalibrationData? _calibrationData;
   ProcessingStats? _processingStats;
@@ -361,7 +360,6 @@ class MyHomePageState extends State<MyHomePage> {
         }
       }
     }
-    _motionEstimate = response.motionEstimate;
     if (response.hasImage()) {
       _imageBytes = Uint8List.fromList(response.image.imageData);
     }
@@ -920,18 +918,6 @@ class MyHomePageState extends State<MyHomePage> {
                         "%s", [formatAzimuth(_locationBasedInfo!.azimuth)])),
                 ],
               )),
-      // const SizedBox(width: 15, height: 15),
-      // _motionEstimate == null
-      //     ? Container()
-      //     : SizedBox(
-      //         width: 120,
-      //         height: 300,
-      //         child: Column(
-      //           children: <Widget>[
-      //             primaryText("Motion"),
-      //             Text(_motionEstimate!.toDebugString()),
-      //           ],
-      //         )),
       const SizedBox(width: 15, height: 15),
       _slewRequest == null || _setupMode
           ? Container()
