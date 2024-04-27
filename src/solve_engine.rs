@@ -13,8 +13,6 @@ use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
 use tower::service_fn;
 
-use crate::position_reporter::TelescopePosition;
-use crate::motion_estimator::MotionEstimator;
 use crate::tetra3_server::{CelestialCoord, ImageCoord, SolveRequest,
                            SolveResult as SolveResultProto,
                            SolveStatus};
@@ -39,6 +37,12 @@ pub struct SolveEngine {
 
     // Executes worker().
     worker_thread: Option<tokio::task::JoinHandle<()>>,
+
+    // Called whenever worker() finishes an evaluation. Return value is sky coordinate
+    // of slew target, if any.
+    solution_callback: Arc<dyn Fn(Option<DetectResult>,
+                                  Option<SolveResultProto>)
+                                  -> Option<CelestialCoord> + Send + Sync>,
 }
 
 // State shared between worker thread and the SolveEngine methods.
@@ -62,6 +66,9 @@ struct SolveState {
     distortion: f32,
     return_matches: bool,
 
+    // Set if currently slewing to a target.
+    slew_target: Option<CelestialCoord>,
+
     solve_interval_stats: ValueStatsAccumulator,
     solve_latency_stats: ValueStatsAccumulator,
     solve_attempt_stats: ValueStatsAccumulator,
@@ -71,14 +78,6 @@ struct SolveState {
     eta: Option<Instant>,
 
     plate_solution: Option<PlateSolution>,
-
-    // We post our solution here (SkySafari telescope interface). We also sense
-    // an active slew operation here so we can use the plate solver to translate
-    // the slew target to image coordinates (if it is currently in the FOV).
-    telescope_position: Arc<Mutex<TelescopePosition>>,
-
-    // We also post our solution here.
-    motion_estimator: Arc<Mutex<MotionEstimator>>,
 
     // Set by stop(); the worker thread exits when it sees this.
     stop_request: bool,
@@ -123,10 +122,12 @@ impl SolveEngine {
 
     pub async fn new(tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
                      detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-                     telescope_position: Arc<Mutex<TelescopePosition>>,
-                     motion_estimator: Arc<Mutex<MotionEstimator>>,
                      tetra3_server_address: String,
-                     update_interval: Duration, stats_capacity: usize)
+                     update_interval: Duration,
+                     stats_capacity: usize,
+                     solution_callback: Arc<dyn Fn(Option<DetectResult>,
+                                                   Option<SolveResultProto>)
+                                                   -> Option<CelestialCoord> + Send + Sync>)
                      -> Result<Self, CanonicalError> {
         let client = Self::connect(tetra3_server_address).await?;
         Ok(SolveEngine{
@@ -143,18 +144,18 @@ impl SolveEngine {
                 boresight_pixel: None,
                 distortion: 0.0,
                 return_matches: true,
+                slew_target: None,
                 solve_interval_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_attempt_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 plate_solution: None,
-                telescope_position,
-                motion_estimator,
                 stop_request: false,
             })),
             detect_engine,
             worker_thread: None,
+            solution_callback,
         })
     }
 
@@ -268,9 +269,8 @@ impl SolveEngine {
                     // Don't consume it, other clients may want it.
                     return locked_state.plate_solution.clone().unwrap();
                 }
-                if locked_state.eta.is_some() {
-                    let time_to_eta =
-                        locked_state.eta.unwrap().saturating_duration_since(Instant::now());
+                if let Some(eta) = locked_state.eta {
+                    let time_to_eta = eta.saturating_duration_since(Instant::now());
                     if time_to_eta > sleep_duration {
                         sleep_duration = time_to_eta;
                     }
@@ -349,9 +349,10 @@ impl SolveEngine {
             let cloned_client = self.client.clone();
             let cloned_state = self.state.clone();
             let cloned_detect_engine = self.detect_engine.clone();
+            let cloned_callback = self.solution_callback.clone();
             self.worker_thread = Some(tokio::task::spawn(async move {
                 SolveEngine::worker(cloned_client, cloned_state,
-                                    cloned_detect_engine).await;
+                                    cloned_detect_engine, cloned_callback).await;
             }));
         }
     }
@@ -371,7 +372,10 @@ impl SolveEngine {
     async fn worker(
         client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
         state: Arc<Mutex<SolveState>>,
-        detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>) {
+        detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
+        solution_callback: Arc<dyn Fn(Option<DetectResult>,
+                                      Option<SolveResultProto>)
+                                      -> Option<CelestialCoord> + Send + Sync>) {
         debug!("Starting solve engine");
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
@@ -383,14 +387,14 @@ impl SolveEngine {
                 if locked_state.stop_request {
                     debug!("Stopping solve engine");
                     locked_state.stop_request = false;
-                    locked_state.telescope_position.lock().unwrap().boresight_valid = false;
+                    solution_callback(None, None);
                     return;  // Exit thread.
                 }
             }
             // Is it time to generate the next PlateSolution?
             let now = Instant::now();
-            if last_result_time.is_some() {
-                let next_update_time = last_result_time.unwrap() + update_interval;
+            if let Some(lrt) = last_result_time {
+                let next_update_time = lrt + update_interval;
                 if next_update_time > now {
                     let delay = next_update_time - now;
                     state.lock().unwrap().eta = Some(Instant::now() + delay);
@@ -401,8 +405,8 @@ impl SolveEngine {
             }
 
             // Time to do a solve processing cycle.
-            if last_result_time.is_some() {
-                let elapsed = last_result_time.unwrap().elapsed();
+            if let Some(lrt) = last_result_time {
+                let elapsed = lrt.elapsed();
                 let mut locked_state = state.lock().unwrap();
                 locked_state.solve_interval_stats.add_value(elapsed.as_secs_f64());
             }
@@ -443,19 +447,13 @@ impl SolveEngine {
                     nanos: (solve_timeout_frac * 1000000000.0) as i32,
                 });
 
-                if locked_state.boresight_pixel.is_some() {
-                    solve_request.target_pixels.push(
-                        locked_state.boresight_pixel.as_ref().unwrap().clone());
+                if let Some(boresight_pixel) = &locked_state.boresight_pixel {
+                    solve_request.target_pixels.push(boresight_pixel.clone());
                 }
-                let telescope_position =
-                    locked_state.telescope_position.lock().unwrap();
-                if telescope_position.slew_active {
-                    let target =
-                        CelestialCoord{ra: telescope_position.slew_target_ra as f32,
-                                       dec: telescope_position.slew_target_dec as f32};
+                if let Some(slew_target) = &locked_state.slew_target {
                     slew_request = Some(cedar::SlewRequest{
-                        target: Some(target.clone()), ..Default::default()});
-                    solve_request.target_sky_coords.push(target);
+                        target: Some(slew_target.clone()), ..Default::default()});
+                    solve_request.target_sky_coords.push(slew_target.clone());
                 }
                 solve_request.distortion = Some(locked_state.distortion);
                 solve_request.return_matches = locked_state.return_matches;
@@ -469,7 +467,6 @@ impl SolveEngine {
             state.lock().unwrap().deref_mut().frame_id = Some(detect_result.frame_id);
 
             let image: &GrayImage = &detect_result.captured_image.image;
-            let capture_time = detect_result.captured_image.readout_time;
             let (width, height) = image.dimensions();
 
             // Plate-solve using the recently detected stars.
@@ -510,30 +507,25 @@ impl SolveEngine {
             let mut locked_state = state.lock().unwrap();
             if tetra3_solve_result.is_none() {
                 locked_state.solve_attempt_stats.add_value(0.0);
-                locked_state.telescope_position.lock().unwrap().boresight_valid = false;
-                locked_state.motion_estimator.lock().unwrap().add(capture_time, None, None);
+                solution_callback(Some(detect_result.clone()), None);
             } else {
                 locked_state.solve_attempt_stats.add_value(1.0);
                 let tsr = tetra3_solve_result.as_ref().unwrap();
                 if tsr.status.unwrap() == SolveStatus::MatchFound as i32 {
                     locked_state.solve_success_stats.add_value(1.0);
-                    // Update SkySafari telescope interface with our position.
-                    let coords;
-                    if tsr.target_coords.len() > 0 {
-                        coords = tsr.target_coords[0].clone();
-                    } else {
-                        coords = tsr.image_center_coords.as_ref().unwrap().clone();
-                    }
-                    let mut telescope_position =
-                        locked_state.telescope_position.lock().unwrap();
-                    telescope_position.boresight_ra = coords.ra as f64;
-                    telescope_position.boresight_dec = coords.dec as f64;
-                    telescope_position.boresight_valid = true;
-
-                    locked_state.motion_estimator.lock().unwrap().add(
-                        capture_time, Some(coords.clone()), tsr.rmse);
+                    // Let integration layer pass solution to SkySafari telescope
+                    // interface and MotionEstimator. Integration layer returns current
+                    // slew target, if any.
+                    locked_state.slew_target =
+                        solution_callback(Some(detect_result.clone()), Some(tsr.clone()));
 
                     if let Some(ref mut slew_req) = slew_request {
+                        let coords;
+                        if tsr.target_coords.len() > 0 {
+                            coords = tsr.target_coords[0].clone();
+                        } else {
+                            coords = tsr.image_center_coords.as_ref().unwrap().clone();
+                        }
                         let bs_ra = coords.ra.to_radians() as f64;
                         let bs_dec = coords.dec.to_radians() as f64;
                         let st_ra =
@@ -603,9 +595,7 @@ impl SolveEngine {
                     }
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
-                    locked_state.telescope_position.lock().unwrap().boresight_valid = false;
-                    locked_state.motion_estimator.lock().unwrap().add(
-                        capture_time, None, None);
+                    solution_callback(Some(detect_result.clone()), None);
                 }
                 locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
             }
