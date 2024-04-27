@@ -1,9 +1,22 @@
 use log::{debug, warn};
 use std::time::{Duration, SystemTime};
 
-use crate::cedar::{MotionEstimate, MotionType};
 use crate::rate_estimator::RateEstimation;
 use crate::tetra3_server::CelestialCoord;
+
+pub struct MotionEstimate {
+    // Estimated rate of RA boresight movement eastward (positive) or westward
+    // (negative). Unit is degrees per second.
+    pub ra_rate: f32,
+    // Estimate of the RMS error in `ra_rate`.
+    pub ra_rate_error: f32,
+
+    // Estimated rate of DEC boresight movement northward (positive) or southward
+    // (negative). Unit is degrees per second.
+    pub dec_rate: f32,
+    // Estimate of the RMS error in `ra_rate`.
+    pub dec_rate_error: f32,
+}
 
 #[derive(Debug, PartialEq)]
 enum State {
@@ -164,32 +177,22 @@ impl MotionEstimator {
         self.state = state;
     }
 
-    pub fn get_estimate(&self) -> MotionEstimate {
-        match self.state {
-            State::Unknown => {
-                MotionEstimate{camera_motion: MotionType::Unknown.into(),
-                               ..Default::default()}
-            },
-            State::Moving | State::Stopped => {
-                MotionEstimate{camera_motion: MotionType::Moving.into(),
-                               ..Default::default()}
-            },
-            State::SteadyRate => {
-                let ra_rate = &self.ra_rate.as_ref().unwrap();
-                let dec_rate = &self.dec_rate.as_ref().unwrap();
-                if ra_rate.count() < 3 {
-                    MotionEstimate{camera_motion: MotionType::Moving.into(),
-                                   ..Default::default()}
-                } else {
-                    MotionEstimate{
-                        camera_motion: MotionType::Dwelling.into(),
-                        ra_rate: Some(ra_rate.slope() as f32),
-                        ra_rate_error: Some(ra_rate.rate_interval_bound() as f32),
-                        dec_rate: Some(dec_rate.slope() as f32),
-                        dec_rate_error: Some(dec_rate.rate_interval_bound() as f32),
-                    }
-                }
-            },
+    /// Returns the current MotionEstimate, if any. If the boresight is not
+    /// dwelling (relatively motionless), None is returned.
+    pub fn get_estimate(&self) -> Option<MotionEstimate> {
+        if self.state != State::SteadyRate {
+            return None;
+        }
+        let ra_rate = &self.ra_rate.as_ref().unwrap();
+        let dec_rate = &self.dec_rate.as_ref().unwrap();
+        if ra_rate.count() < 3 {
+            None
+        } else {
+            Some(MotionEstimate{ra_rate: ra_rate.slope() as f32,
+                                ra_rate_error: ra_rate.rate_interval_bound() as f32,
+                                dec_rate: dec_rate.slope() as f32,
+                                dec_rate_error: dec_rate.rate_interval_bound() as f32}
+            )
         }
     }
 

@@ -866,8 +866,6 @@ impl MyCedar {
                     });
             }
         }
-        frame_result.motion_estimate =
-            Some(locked_state.motion_estimator.lock().unwrap().get_estimate());
         let boresight_position =
             locked_state.solve_engine.lock().await.boresight_pixel().expect(
                 "solve_engine.boresight_pixel() should not fail");
@@ -990,7 +988,7 @@ impl MyCedar {
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
             telescope_position: telescope_position.clone(),
-            motion_estimator: motion_estimator,
+            motion_estimator,
             preferences,
             scaled_image: None,
             width: 0,
