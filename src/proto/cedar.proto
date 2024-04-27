@@ -289,9 +289,6 @@ message FrameResult {
   // - FixedSettings.observer_location is absent.
   optional LocationBasedInfo location_based_info = 29;
 
-  // Estimate of camera boresight motion against celestial coordinates.
-  MotionEstimate motion_estimate = 18;
-
   // If present, SkySafari is requesting that the telescope's pointing should be
   // changed.
   optional SlewRequest slew_request = 24;
@@ -469,46 +466,6 @@ message LocationBasedInfo {
   float hour_angle = 4;
 }
 
-// Result of analyzing the recent history of the camera position in celestial
-// coordinates.
-message MotionEstimate {
-  // Detected camera motion.
-  MotionType camera_motion = 1;
-
-  // Estimated rate of RA boresight movement eastward (positive) or westward
-  // (negative). Unit is degrees per second.
-  // Supplied only for DWELLING.
-  optional float ra_rate = 2;
-
-  // Estimate of the RMS error in `ra_rate`. Supplied only for DWELLING.
-  optional float ra_rate_error = 3;
-
-  // Estimated rate of DEC boresight movement northward (positive) or southward
-  // (negative). Unit is degrees per second.
-  // Supplied only for DWELLING.
-  optional float dec_rate = 4;
-
-  // Estimate of the RMS error in `dec_rate`. Supplied only for DWELLING.
-  optional float dec_rate_error = 5;
-}
-
-enum MotionType {
-  // Motion unknown. This is reported when there is not a current plate
-  // solution, which can in turn be because fast motion is streaking the stars
-  // so they are not detected.
-  MOTION_TYPE_UNKNOWN = 0;
-
-  // Recent plate solutions are consistent with signficant movement of the
-  // boresight in RA/DEC.
-  MOVING = 1;
-
-  // Recent plate solutions are consistent with little or no movement of the
-  // boresight in RA/DEC. The MotionEstimate.ra_rate value will be close to
-  // zero for a motorized equatorial mount; the ra_rate value will be close
-  // to the sidereal rate (15 arcsec/sec) for a fixed mount.
-  DWELLING = 2;
-}
-
 // Describes a telescope motion request from SkySafari.
 message SlewRequest {
   // Identifies the target coordinate of the telescope motion request.
@@ -533,38 +490,24 @@ message SlewRequest {
   optional ImageCoord image_pos = 4;
 }
 
-// Estimate of alt/az error of polar axis. Not available if the telescope is
+// Estimate of alt/az offset of polar axis. Not available if the telescope is
 // not a clock-driven equatorial mount (auto-detected) or if the observer's
-// geographic location is not known.
+// geographic location is not known. Note that it is possible for one of alt or
+// az correction to be supplied and the other omitted.
 message PolarAlignAdvice {
-  // Identifies the polar alignment method that is yielding the advice in
-  // this message.
-  PolarAlignMethod align_method = 1;
-
   // The amount by which the mount azimuth should be adjusted, in degrees.
   // Positive is clockwise looking down at the mount from above.
-  optional float azimuth_correction = 2;
+  optional float azimuth_correction = 1;
+
+  // Estimate of the RMS error in `azimuth_correction`.
+  optional float azimuth_correction_error = 2;
 
   // The amount by which the mount elevation should be adjusted, in degrees.
   // Positive means raise the polar axis.
   optional float altitude_correction = 3;
-}
 
-enum PolarAlignMethod {
-  POLAR_ALIGN_METHOD_UNKNWON = 0;
-
-  // Boresight is dwelling near the meridian and near the celestial equator.
-  // This allows polar axis azimuth adjustment advice to be provided.
-  MERIDIAN_DWELL = 1;
-
-  // Boresight is dwelling near the horizon and near the celestial equator. This
-  // allows polar axis elevation adjustment advice to be provided.
-  HORIZON_DWELL = 2;
-
-  // Boresight is dwelling near the celestial pole. This allows the "King" polar
-  // drift method to yield adjustment advice for polar axis in both azimuth and
-  // elevation.
-  POLE_DWELL = 3;
+  // Estimate of the RMS error in `altitude_correction`.
+  optional float altitude_correction_error = 4;
 }
 
 message ActionRequest {
