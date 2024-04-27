@@ -41,7 +41,7 @@ use cedar::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordForma
                    StarCentroid, Preferences, ServerInformationRequest,
                    ServerInformationResult};
 use ::cedar::calibrator::Calibrator;
-use ::cedar::detect_engine::DetectEngine;
+use ::cedar::detect_engine::{DetectEngine, DetectResult};
 use ::cedar::scale_image::scale_image;
 use ::cedar::solve_engine::{PlateSolution, SolveEngine};
 use ::cedar::position_reporter::{TelescopePosition, create_alpaca_server};
@@ -49,7 +49,7 @@ use ::cedar::motion_estimator::MotionEstimator;
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 use ::cedar::value_stats::ValueStatsAccumulator;
 use ::cedar::tetra3_server;
-use ::cedar::tetra3_server::{SolveResult as SolveResultProto, SolveStatus};
+use ::cedar::tetra3_server::{CelestialCoord, SolveResult as SolveResultProto, SolveStatus};
 
 use self::multiplex_service::MultiplexService;
 
@@ -942,6 +942,20 @@ impl MyCedar {
                 },
             }
         }
+
+        // Define callback invoked from SolveEngine().
+        let closure_telescope_position = telescope_position.clone();
+        let closure_motion_estimator = motion_estimator.clone();
+        let closure = Arc::new(move |detect_result: Option<DetectResult>,
+                                     solve_result_proto: Option<SolveResultProto>|
+        {
+            let mut mut_telescope_position = closure_telescope_position.lock().unwrap();
+            let mut mut_motion_estimator = closure_motion_estimator.lock().unwrap();
+            Self::solution_callback(detect_result,
+                                    solve_result_proto,
+                                    &mut mut_telescope_position,
+                                    &mut mut_motion_estimator)
+        });
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
             fixed_settings: FixedSettings {
@@ -970,10 +984,9 @@ impl MyCedar {
             detect_engine: detect_engine.clone(),
             tetra3_subprocess: tetra3_subprocess.clone(),
             solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
-                tetra3_subprocess.clone(), detect_engine.clone(),
-                telescope_position.clone(), motion_estimator.clone(), tetra3_uds,
+                tetra3_subprocess.clone(), detect_engine.clone(), tetra3_uds,
                 /*update_interval=*/Duration::ZERO,
-                stats_capacity).await.unwrap())),
+                stats_capacity, closure).await.unwrap())),
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
             telescope_position: telescope_position.clone(),
@@ -1031,6 +1044,38 @@ impl MyCedar {
             content = content[pos+1..].to_string();
         }
         Ok(content)
+    }
+
+    fn solution_callback(detect_result: Option<DetectResult>,
+                         solve_result_proto: Option<SolveResultProto>,
+                         telescope_position: &mut TelescopePosition,
+                         motion_estimator: &mut MotionEstimator) -> Option<CelestialCoord> {
+        if solve_result_proto.is_none() {
+            telescope_position.boresight_valid = false;
+            if let Some(detect_result) = detect_result {
+                motion_estimator.add(detect_result.captured_image.readout_time, None, None);
+            }
+        } else {
+            let solve_result_proto = solve_result_proto.unwrap();
+            // Update SkySafari telescope interface with our position.
+            let coords;
+            if solve_result_proto.target_coords.len() > 0 {
+                coords = solve_result_proto.target_coords[0].clone();
+            } else {
+                coords = solve_result_proto.image_center_coords.as_ref().unwrap().clone();
+            }
+            telescope_position.boresight_ra = coords.ra as f64;
+            telescope_position.boresight_dec = coords.dec as f64;
+            telescope_position.boresight_valid = true;
+            motion_estimator.add(detect_result.unwrap().captured_image.readout_time,
+                                 Some(coords.clone()), solve_result_proto.rmse);
+        }
+        if telescope_position.slew_active {
+            Some(CelestialCoord{ra: telescope_position.slew_target_ra as f32,
+                                dec: telescope_position.slew_target_dec as f32})
+        } else {
+            None
+        }
     }
 }
 
