@@ -490,24 +490,44 @@ message SlewRequest {
   optional ImageCoord image_pos = 4;
 }
 
-// Estimate of alt/az offset of polar axis. Not available if the telescope is
-// not a clock-driven equatorial mount (auto-detected) or if the observer's
-// geographic location is not known. Note that it is possible for one of alt or
-// az correction to be supplied and the other omitted.
+// Estimate of alt/az offset of mount's polar axis from celestial pole. Not
+// available if the telescope is not a clock-driven equatorial mount
+// (auto-detected) or if the observer's geographic location is not known. Note
+// that it is possible for one of alt or az correction to be supplied and the
+// other omitted.
 message PolarAlignAdvice {
   // The amount by which the mount azimuth should be adjusted, in degrees.
-  // Positive is clockwise looking down at the mount from above.
-  optional float azimuth_correction = 1;
-
-  // Estimate of the RMS error in `azimuth_correction`.
-  optional float azimuth_correction_error = 2;
+  // Positive is clockwise looking down at the mount from above; in northern
+  // (southern) hemisphere this is moving polar axis towards east (west).
+  optional ErrorBoundedValue azimuth_correction = 1;
 
   // The amount by which the mount elevation should be adjusted, in degrees.
   // Positive means raise the polar axis.
-  optional float altitude_correction = 3;
+  optional ErrorBoundedValue altitude_correction = 2;
 
-  // Estimate of the RMS error in `altitude_correction`.
-  optional float altitude_correction_error = 4;
+  // The `azimuth_correction` and `altitude_correction` fields, once set,
+  // are retained. TODO: add action to clear?
+  // The `current_xxx_correction` fields are present if Cedar is currently
+  // developing new guidance, and are absent otherwise.
+  //
+  // A `current_xxx_correction` field is promoted to replace the corresponding
+  // `xxx_correction` field when:
+  // * `xxx_correction` has not yet been set, or
+  // * `current_xxx_correction` has a smaller error bound than `xxx_correction`,
+  //   or
+  // * `current_xxx_correction` +/- its error bound does not fully contain
+  //   `xxx_correction`.
+  optional ErrorBoundedValue current_azimuth_correction = 3;
+  optional ErrorBoundedValue current_altitude_correction = 4;
+}
+
+// A value estimate +/- an error estimate.
+message ErrorBoundedValue {
+  // The estimated value.
+  float value = 1;
+
+  // Estimate of the RMS error of `value`.
+  float error = 2;
 }
 
 message ActionRequest {

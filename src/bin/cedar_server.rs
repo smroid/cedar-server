@@ -36,7 +36,7 @@ use cedar::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position
 use cedar::cedar::cedar_server::{Cedar, CedarServer};
 use cedar::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
-                   Image, ImageCoord, ImageMode, LocationBasedInfo, MountType,
+                   Image, ImageCoord, ImageMode, LatLong, LocationBasedInfo, MountType,
                    OperatingMode, OperationSettings, ProcessingStats, Rectangle,
                    StarCentroid, Preferences, ServerInformationRequest,
                    ServerInformationResult};
@@ -46,6 +46,7 @@ use ::cedar::scale_image::scale_image;
 use ::cedar::solve_engine::{PlateSolution, SolveEngine};
 use ::cedar::position_reporter::{TelescopePosition, create_alpaca_server};
 use ::cedar::motion_estimator::MotionEstimator;
+use ::cedar::polar_analyzer::PolarAnalyzer;
 use ::cedar::tetra3_subprocess::Tetra3Subprocess;
 use ::cedar::value_stats::ValueStatsAccumulator;
 use ::cedar::tetra3_server;
@@ -90,7 +91,7 @@ struct MyCedar {
 
 struct CedarState {
     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
-    fixed_settings: FixedSettings,
+    fixed_settings: Arc<Mutex<FixedSettings>>,
     calibration_data: Arc<tokio::sync::Mutex<CalibrationData>>,
     operation_settings: OperationSettings,
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
@@ -98,7 +99,7 @@ struct CedarState {
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<Mutex<TelescopePosition>>,
-    motion_estimator: Arc<Mutex<MotionEstimator>>,
+    polar_analyzer: Arc<Mutex<PolarAnalyzer>>,
 
     // We host the user interface preferences here. These do not affect server
     // operation; we reflect them out to all clients and persist them to a
@@ -150,9 +151,9 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<FixedSettings>, tonic::Status>
     {
         let req: FixedSettings = request.into_inner();
-        let mut locked_state = self.state.lock().await;
+        let locked_state = self.state.lock().await;
         if let Some(observer_location) = req.observer_location {
-            locked_state.fixed_settings.observer_location =
+            locked_state.fixed_settings.lock().unwrap().observer_location =
                 Some(observer_location.clone());
             info!("Updated observer location to {:?}", observer_location);
         }
@@ -186,7 +187,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings cannot update max_exposure_time."));
         }
-        let mut fixed_settings = locked_state.fixed_settings.clone();
+        let mut fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
         // Fill in our current time.
         Self::fill_in_time(&mut fixed_settings);
         Ok(tonic::Response::new(fixed_settings))
@@ -633,7 +634,7 @@ impl MyCedar {
         {
             let locked_state = state.lock().await;
 
-            let mut fixed_settings = locked_state.fixed_settings.clone();
+            let mut fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
             // Fill in our current time.
             Self::fill_in_time(&mut fixed_settings);
             frame_result.fixed_settings = Some(fixed_settings);
@@ -829,10 +830,10 @@ impl MyCedar {
             frame_result.plate_solution = Some(psr.clone());
             if psr.status ==
                 Some(SolveStatus::MatchFound.into()) &&
-                locked_state.fixed_settings.observer_location.is_some()
+                locked_state.fixed_settings.lock().unwrap().observer_location.is_some()
             {
                 let geo_location =
-                    locked_state.fixed_settings.observer_location.as_ref().unwrap();
+                    locked_state.fixed_settings.lock().unwrap().observer_location.clone().unwrap();
                 let lat = geo_location.latitude.to_radians() as f64;
                 let long = geo_location.longitude.to_radians() as f64;
                 let time = captured_image.readout_time;
@@ -878,6 +879,8 @@ impl MyCedar {
         }
         frame_result.calibration_data =
             Some(locked_state.calibration_data.lock().await.clone());
+        frame_result.polar_align_advice = Some(
+            locked_state.polar_analyzer.lock().unwrap().get_polar_align_advice());
 
         frame_result
     }
@@ -915,9 +918,6 @@ impl MyCedar {
             hide_app_bar: Some(false),
             mount_type: Some(MountType::Equatorial.into()),
         };
-        let motion_estimator = Arc::new(Mutex::new(MotionEstimator::new(
-            /*gap_tolerance=*/Duration::from_secs(3),
-            /*bump_tolerance=*/Duration::from_secs_f32(1.0))));
 
         // Load UI preferences file.
         let prefs_path = Path::new(&preferences_file);
@@ -941,28 +941,37 @@ impl MyCedar {
             }
         }
 
+        let fixed_settings = Arc::new(Mutex::new(FixedSettings {
+            observer_location: None,
+            current_time: None,
+            session_name: None,
+            max_exposure_time: Some(
+                prost_types::Duration::try_from(max_exposure_duration).unwrap()),
+        }));
+
+        let polar_analyzer = Arc::new(Mutex::new(PolarAnalyzer::new()));
+
         // Define callback invoked from SolveEngine().
+        let closure_fixed_settings = fixed_settings.clone();
         let closure_telescope_position = telescope_position.clone();
-        let closure_motion_estimator = motion_estimator.clone();
+        let motion_estimator = Arc::new(Mutex::new(MotionEstimator::new(
+            /*gap_tolerance=*/Duration::from_secs(3),
+            /*bump_tolerance=*/Duration::from_secs_f32(1.0))));
+        let closure_polar_analyzer = polar_analyzer.clone();
         let closure = Arc::new(move |detect_result: Option<DetectResult>,
                                      solve_result_proto: Option<SolveResultProto>|
         {
-            let mut mut_telescope_position = closure_telescope_position.lock().unwrap();
-            let mut mut_motion_estimator = closure_motion_estimator.lock().unwrap();
-            Self::solution_callback(detect_result,
-                                    solve_result_proto,
-                                    &mut mut_telescope_position,
-                                    &mut mut_motion_estimator)
+            Self::solution_callback(
+                detect_result,
+                solve_result_proto,
+                closure_fixed_settings.lock().unwrap().observer_location.clone(),
+                &mut closure_telescope_position.lock().unwrap(),
+                &mut motion_estimator.lock().unwrap(),
+                &mut closure_polar_analyzer.lock().unwrap())
         });
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
-            fixed_settings: FixedSettings {
-                observer_location: None,
-                current_time: None,
-                session_name: None,
-                max_exposure_time: Some(
-                    prost_types::Duration::try_from(max_exposure_duration).unwrap()),
-            },
+            fixed_settings,
             operation_settings: OperationSettings {
                 operating_mode: Some(OperatingMode::Setup as i32),
                 exposure_time: Some(prost_types::Duration {
@@ -987,8 +996,8 @@ impl MyCedar {
                 stats_capacity, closure).await.unwrap())),
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
-            telescope_position: telescope_position.clone(),
-            motion_estimator,
+            telescope_position,
+            polar_analyzer,
             preferences,
             scaled_image: None,
             width: 0,
@@ -1046,8 +1055,10 @@ impl MyCedar {
 
     fn solution_callback(detect_result: Option<DetectResult>,
                          solve_result_proto: Option<SolveResultProto>,
+                         geo_location: Option<LatLong>,
                          telescope_position: &mut TelescopePosition,
-                         motion_estimator: &mut MotionEstimator) -> Option<CelestialCoord> {
+                         motion_estimator: &mut MotionEstimator,
+                         polar_analyzer: &mut PolarAnalyzer) -> Option<CelestialCoord> {
         if solve_result_proto.is_none() {
             telescope_position.boresight_valid = false;
             if let Some(detect_result) = detect_result {
@@ -1065,8 +1076,21 @@ impl MyCedar {
             telescope_position.boresight_ra = coords.ra as f64;
             telescope_position.boresight_dec = coords.dec as f64;
             telescope_position.boresight_valid = true;
-            motion_estimator.add(detect_result.unwrap().captured_image.readout_time,
-                                 Some(coords.clone()), solve_result_proto.rmse);
+            let readout_time = detect_result.unwrap().captured_image.readout_time;
+            motion_estimator.add(readout_time, Some(coords.clone()), solve_result_proto.rmse);
+            if let Some(geo_location) = geo_location {
+                let lat = geo_location.latitude.to_radians() as f64;
+                let long = geo_location.longitude.to_radians() as f64;
+                let bs_ra = coords.ra.to_radians() as f64;
+                let bs_dec = coords.dec.to_radians() as f64;
+                // alt/az of boresight. Also boresight hour angle.
+                let (_alt, _az, ha) =
+                    alt_az_from_equatorial(bs_ra, bs_dec, lat, long, readout_time);
+                polar_analyzer.process_solution(&coords,
+                                                ha.to_degrees() as f32,
+                                                geo_location.latitude,
+                                                &motion_estimator.get_estimate());
+            }
         }
         if telescope_position.slew_active {
             Some(CelestialCoord{ra: telescope_position.slew_target_ra as f32,
