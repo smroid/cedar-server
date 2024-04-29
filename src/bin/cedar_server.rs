@@ -956,7 +956,7 @@ impl MyCedar {
         let closure_telescope_position = telescope_position.clone();
         let motion_estimator = Arc::new(Mutex::new(MotionEstimator::new(
             /*gap_tolerance=*/Duration::from_secs(3),
-            /*bump_tolerance=*/Duration::from_secs_f32(1.0))));
+            /*bump_tolerance=*/Duration::from_secs_f32(2.0))));
         let closure_polar_analyzer = polar_analyzer.clone();
         let closure = Arc::new(move |detect_result: Option<DetectResult>,
                                      solve_result_proto: Option<SolveResultProto>|
