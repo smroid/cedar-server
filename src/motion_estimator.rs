@@ -155,8 +155,8 @@ impl MotionEstimator {
             State::SteadyRate => {
                 let ra_rate = &mut self.ra_rate.as_mut().unwrap();
                 let dec_rate = &mut self.dec_rate.as_mut().unwrap();
-                if ra_rate.fits_trend(time, position.ra as f64, /*sigma=*/8.0) &&
-                    dec_rate.fits_trend(time, position.dec as f64, /*sigma=*/8.0)
+                if ra_rate.fits_trend(time, position.ra as f64, /*sigma=*/10.0) &&
+                    dec_rate.fits_trend(time, position.dec as f64, /*sigma=*/10.0)
                 {
                     ra_rate.add(time, position.ra as f64);
                     dec_rate.add(time, position.dec as f64);
