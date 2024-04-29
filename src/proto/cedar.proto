@@ -299,9 +299,9 @@ message FrameResult {
   // features.
   optional Image boresight_image = 28;
 
-  // If present, contains information about adjusting the equatorial mount's
+  // Contains information, if available, about adjusting the equatorial mount's
   // polar axis alignment.
-  optional PolarAlignAdvice polar_align_advice = 30;
+  PolarAlignAdvice polar_align_advice = 30;
 
   // alerts
   // * prolonged loss of stars; need setup mode?
