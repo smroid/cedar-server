@@ -262,6 +262,7 @@ class MyHomePageState extends State<MyHomePage> {
   ProcessingStats? _processingStats;
   SlewRequest? _slewRequest;
   Preferences? _preferences;
+  PolarAlignAdvice? _polarAlignAdvice;
 
   // Calibration happens when _setupMode transitions to false.
   bool _calibrating = false;
@@ -328,6 +329,7 @@ class MyHomePageState extends State<MyHomePage> {
     }
     _setStateFromOpSettings(response.operationSettings);
     _preferences = response.preferences;
+    _polarAlignAdvice = response.polarAlignAdvice;
     var settingsModel = Provider.of<SettingsModel>(context, listen: false);
     settingsModel.preferencesProto = _preferences!.deepCopy();
     settingsModel.opSettingsProto = _operationSettings!.deepCopy();
@@ -850,6 +852,10 @@ class MyHomePageState extends State<MyHomePage> {
     return sprintf("Az %.3f° %s", [az, dir]);
   }
 
+  String formatAdvice(ErrorBoundedValue? ebv) {
+    return sprintf("%.2f±%.2f", [ebv!.value, ebv.error]);
+  }
+
   Color starsSliderColor() {
     return _hasSolution
         ? Theme.of(context).colorScheme.primary
@@ -932,6 +938,38 @@ class MyHomePageState extends State<MyHomePage> {
                     "%s", [formatDeclination(_slewRequest!.target.dec)])),
                 solveText(
                     sprintf("%.1f° away", [_slewRequest?.targetDistance])),
+              ]),
+            ),
+      const SizedBox(width: 15, height: 15),
+      _polarAlignAdvice == null || _setupMode
+          ? Container()
+          : SizedBox(
+              width: 140,
+              height: 120,
+              child: Column(children: <Widget>[
+                primaryText("Polar Align"),
+                solveText(sprintf("alt %s", [
+                  _polarAlignAdvice!.hasAltitudeCorrection()
+                      ? formatAdvice(_polarAlignAdvice!.altitudeCorrection)
+                      : "None"
+                ])),
+                solveText(sprintf("az %s", [
+                  _polarAlignAdvice!.hasAzimuthCorrection()
+                      ? formatAdvice(_polarAlignAdvice!.azimuthCorrection)
+                      : "None"
+                ])),
+                solveText(sprintf("curr alt %s", [
+                  _polarAlignAdvice!.hasCurrentAltitudeCorrection()
+                      ? formatAdvice(
+                          _polarAlignAdvice!.currentAltitudeCorrection)
+                      : "None"
+                ])),
+                solveText(sprintf("curr az %s", [
+                  _polarAlignAdvice!.hasCurrentAzimuthCorrection()
+                      ? formatAdvice(
+                          _polarAlignAdvice!.currentAzimuthCorrection)
+                      : "None"
+                ])),
               ]),
             ),
       const SizedBox(width: 15, height: 15),
