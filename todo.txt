@@ -1,5 +1,3 @@
-cedar-detect get info for ROI: include noise measure, background estimate
-
 show matches/pattern stars in operate mode. Except when slewing?
 * make this a preference, is ugly
 
@@ -8,6 +6,10 @@ Pacifier/busy indicator for capturing image
 eq vs alt/az setting
 * alt/az prompts for observer location if not known -- don't bother?
 * convey to SkySafari
+
+while "slew to target" is active:
+* offer 'align to target' button: user acquires target in telescope FOV, centers
+  it, and then hits 'align to target' button to update the boresight alignment.
 
 bug report
 
@@ -66,8 +68,6 @@ UI:
 * operation controls
   - save image: add confirmation+rename
 * status icons:
-  - dwelling
-    - tracking vs. fixed mount
   - polar advice available
 
 Preferences:
