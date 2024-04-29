@@ -7,14 +7,18 @@ use crate::cedar::{ErrorBoundedValue, PolarAlignAdvice};
 use crate::tetra3_server::CelestialCoord;
 use crate::motion_estimator::MotionEstimate;
 
-#[derive(Default)]
 pub struct PolarAnalyzer {
     polar_align_advice: PolarAlignAdvice,
 }
 
 impl PolarAnalyzer {
     pub fn new() -> Self {
-        PolarAnalyzer{..Default::default()}
+        PolarAnalyzer{
+            polar_align_advice: PolarAlignAdvice{azimuth_correction: None,
+                                                 altitude_correction: None,
+                                                 current_azimuth_correction: None,
+                                                 current_altitude_correction: None},
+        }
     }
 
     // This function should be called when the following conditions are all met:
@@ -43,6 +47,7 @@ impl PolarAnalyzer {
         }
         let dec_rate = motion_estimate.dec_rate;  // Positive is northward drift.
         let dec_rate_error = motion_estimate.dec_rate_error;
+        assert!(dec_rate_error >= 0.0);
 
         // Degrees (plus or minus) within which the declination must be zero for
         // polar alignment to be evaluated.
@@ -66,6 +71,7 @@ impl PolarAnalyzer {
         // to the adjusted_sidereal_rate. Degrees.
         let mut dec_drift_angle = (dec_rate / adjusted_sidereal_rate).atan().to_degrees();
         let mut dec_drift_angle_error = (dec_rate_error / adjusted_sidereal_rate).atan().to_degrees();
+        assert!(dec_drift_angle_error >= 0.0);
 
         // `hour_angle` arg is in degrees.
         let ha_hours = hour_angle / 15.0;
@@ -77,6 +83,7 @@ impl PolarAnalyzer {
             let ha_correction = hour_angle.to_radians().cos();
             dec_drift_angle /= ha_correction;
             dec_drift_angle_error /= ha_correction;
+            assert!(dec_drift_angle_error >= 0.0);
 
             // We project the azimuth_correction angle to the local horizontal.
             let latitude_correction = latitude.to_radians().cos();
@@ -110,6 +117,7 @@ impl PolarAnalyzer {
             let ha_correction = (hour_angle - -90.0).to_radians().cos();
             dec_drift_angle /= ha_correction;
             dec_drift_angle_error /= ha_correction;
+            assert!(dec_drift_angle_error >= 0.0);
 
             // Northern hemisphere:
             // Boresight drifting south (star drifting north in FOV): polar axis too high.
@@ -123,6 +131,7 @@ impl PolarAnalyzer {
             let ha_correction = (hour_angle - 90.0).to_radians().cos();
             dec_drift_angle /= ha_correction;
             dec_drift_angle_error /= ha_correction;
+            assert!(dec_drift_angle_error >= 0.0);
 
             // Northern hemisphere:
             // Boresight drifting south (star drifting north in FOV): polar axis too low.
