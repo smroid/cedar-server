@@ -55,24 +55,25 @@ void drawSlewTarget(
     // Make arrow length proportional to targetDistance (degrees, up to 180).
     final arrowLength =
         math.min(200, 200 * math.sqrt(targetDistance / 180.0)).toDouble();
-    final arrowRoot = -arrowLength / 2.0;
+    final arrowRoot = boresightDiameterPix;
     final angleRad = _deg2rad(targetAngle);
     final arrowStart = Offset(boresight.dx - arrowRoot * math.sin(angleRad),
         boresight.dy - arrowRoot * math.cos(angleRad));
     drawArrow(
         canvas, color, arrowStart, arrowLength, angleRad, distanceText, _thin);
+    drawDistanceText = false;
   } else {
     // Slew target is in the field of view.
     // Draw the slew target.
     drawGapCross(
         canvas, color, slewTarget, 10, 3, rollAngleRad, _thick, _thick);
-    // Draw a bullseye at the boresight position, annotated with the target
-    // distance.
-    final bsRadius = boresightDiameterPix / 2;
-    drawBullseye(canvas, color, boresight, bsRadius, rollAngleRad);
-    if (drawDistanceText) {
-      final textPos = Offset(boresight.dx - bsRadius - 40, boresight.dy);
-      drawText(canvas, color, textPos, distanceText);
-    }
+  }
+  // Draw a bullseye at the boresight position, maybe annotated with the target
+  // distance.
+  final bsRadius = boresightDiameterPix / 2;
+  drawBullseye(canvas, color, boresight, bsRadius, rollAngleRad);
+  if (drawDistanceText) {
+    final textPos = Offset(boresight.dx - bsRadius - 40, boresight.dy);
+    drawText(canvas, color, textPos, distanceText);
   }
 }
