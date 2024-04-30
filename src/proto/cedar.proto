@@ -504,21 +504,6 @@ message PolarAlignAdvice {
   // The amount by which the mount elevation should be adjusted, in degrees.
   // Positive means raise the polar axis.
   optional ErrorBoundedValue altitude_correction = 2;
-
-  // The `azimuth_correction` and `altitude_correction` fields, once set,
-  // are retained. TODO: add action to clear?
-  // The `current_xxx_correction` fields are present if Cedar is currently
-  // developing new guidance, and are absent otherwise.
-  //
-  // A `current_xxx_correction` field is promoted to replace the corresponding
-  // `xxx_correction` field when:
-  // * `xxx_correction` has not yet been set, or
-  // * `current_xxx_correction` has a smaller error bound than `xxx_correction`,
-  //   or
-  // * `current_xxx_correction` +/- its error bound does not fully contain
-  //   `xxx_correction`.
-  optional ErrorBoundedValue current_azimuth_correction = 3;
-  optional ErrorBoundedValue current_altitude_correction = 4;
 }
 
 // A value estimate +/- an error estimate.
