@@ -15,9 +15,7 @@ impl PolarAnalyzer {
     pub fn new() -> Self {
         PolarAnalyzer{
             polar_align_advice: PolarAlignAdvice{azimuth_correction: None,
-                                                 altitude_correction: None,
-                                                 current_azimuth_correction: None,
-                                                 current_altitude_correction: None},
+                                                 altitude_correction: None},
         }
     }
 
@@ -29,8 +27,8 @@ impl PolarAnalyzer {
     // `polar_align_advice` state.
     pub fn process_solution(&mut self, boresight_pos: &CelestialCoord, hour_angle: f32,
                             latitude: f32, motion_estimate: &Option<MotionEstimate>) {
-        self.polar_align_advice.current_azimuth_correction = None;
-        self.polar_align_advice.current_altitude_correction = None;
+        self.polar_align_advice.azimuth_correction = None;
+        self.polar_align_advice.altitude_correction = None;
         if motion_estimate.is_none() {
             debug!("Not updating polar alignment advice: not dwelling");
             return;
@@ -95,15 +93,8 @@ impl PolarAnalyzer {
             let az_corr = -dec_drift_angle / latitude_correction;
             let az_corr_error = dec_drift_angle_error / latitude_correction;
 
-            self.polar_align_advice.current_azimuth_correction =
+            self.polar_align_advice.azimuth_correction =
                 Some(ErrorBoundedValue{value: az_corr, error: az_corr_error});
-            if Self::should_promote_current_guidance(
-                self.polar_align_advice.current_azimuth_correction.as_ref().unwrap(),
-                &self.polar_align_advice.azimuth_correction)
-            {
-                self.polar_align_advice.azimuth_correction =
-                    self.polar_align_advice.current_azimuth_correction.clone();
-            }
             return;
         }
 
@@ -146,33 +137,9 @@ impl PolarAnalyzer {
             // Southern hemisphere: reverse sense of altitude guidance.
             altitude_correction = -altitude_correction;
         }
-        self.polar_align_advice.current_altitude_correction =
+        self.polar_align_advice.altitude_correction =
             Some(ErrorBoundedValue{value: altitude_correction,
                                    error: altitude_correction_error});
-        if Self::should_promote_current_guidance(
-            self.polar_align_advice.current_altitude_correction.as_ref().unwrap(),
-            &self.polar_align_advice.altitude_correction)
-        {
-            self.polar_align_advice.altitude_correction =
-                self.polar_align_advice.current_altitude_correction.clone();
-        }
-    }
-
-    fn should_promote_current_guidance(current_guidance: &ErrorBoundedValue,
-                                       guidance: &Option<ErrorBoundedValue>) -> bool {
-        if guidance.is_none() {
-            return true;
-        }
-        let guidance = guidance.as_ref().unwrap();
-        if current_guidance.error < guidance.error {
-            return true;
-        }
-        let guidance_min = guidance.value - guidance.error;
-        let guidance_max = guidance.value + guidance.error;
-        let current_guidance_min = current_guidance.value - current_guidance.error;
-        let current_guidance_max = current_guidance.value + current_guidance.error;
-        // Guidance is not consistent with current_guidance?
-        guidance_min < current_guidance_min || guidance_max > current_guidance_max
     }
 
     pub fn get_polar_align_advice(&self) -> PolarAlignAdvice {
