@@ -455,15 +455,30 @@ impl DetectEngine {
             }
             let adjusted_sigma = f32::max(detection_sigma * accuracy_multiplier,
                                           detection_min_sigma);
-            let (stars, hot_pixel_count, binned_image, mut peak_star_pixel) =
+            let (stars, hot_pixel_count, binned_image) =
                 get_stars_from_image(&image, noise_estimate,
                                      adjusted_sigma, detection_max_size as u32,
                                      /*use_binned_image=*/true,
                                      /*detect_hot_pixels=*/true,
                                      /*return_binned_image=*/true);
-            if stars.len() == 0 {
-                peak_star_pixel = 255;
+            // Average the peak pixels of the N brightest stars.
+            let mut sum_peak: i32 = 0;
+            let mut num_peak = 0;
+            const NUM_PEAKS: i32 = 10;
+            for star in &stars {
+                sum_peak += star.peak_value as i32;
+                num_peak += 1;
+                if num_peak >= NUM_PEAKS {
+                    break;
+                }
             }
+            let peak_star_pixel =
+                if num_peak == 0 {
+                    255
+                } else {
+                    sum_peak / num_peak
+                };
+            assert!(peak_star_pixel <= 255);
             let elapsed = process_start_time.elapsed();
             state.lock().unwrap().detect_latency_stats.add_value(elapsed.as_secs_f64());
 
@@ -549,7 +564,7 @@ impl DetectEngine {
                 star_candidates: stars,
                 noise_estimate,
                 hot_pixel_count: hot_pixel_count as i32,
-                peak_star_pixel,
+                peak_star_pixel: peak_star_pixel as u8,
                 focus_aid,
                 processing_duration: elapsed,
                 detect_latency_stats:
