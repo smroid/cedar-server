@@ -877,6 +877,14 @@ class MyHomePageState extends State<MyHomePage> {
     return Text(val, style: TextStyle(color: solveTextColor()));
   }
 
+  bool hasPolarAdvice() {
+    if (_polarAlignAdvice == null) {
+      return false;
+    }
+    return _polarAlignAdvice!.hasAltitudeCorrection() ||
+        _polarAlignAdvice!.hasAzimuthCorrection();
+  }
+
   List<Widget> dataItems(BuildContext context) {
     return <Widget>[
       Column(children: <Widget>[
@@ -941,7 +949,7 @@ class MyHomePageState extends State<MyHomePage> {
               ]),
             ),
       const SizedBox(width: 15, height: 15),
-      _polarAlignAdvice == null || _setupMode
+      !hasPolarAdvice() || _setupMode
           ? Container()
           : SizedBox(
               width: 140,
