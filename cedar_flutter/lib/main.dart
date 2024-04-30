@@ -958,18 +958,6 @@ class MyHomePageState extends State<MyHomePage> {
                       ? formatAdvice(_polarAlignAdvice!.azimuthCorrection)
                       : "None"
                 ])),
-                solveText(sprintf("curr alt %s", [
-                  _polarAlignAdvice!.hasCurrentAltitudeCorrection()
-                      ? formatAdvice(
-                          _polarAlignAdvice!.currentAltitudeCorrection)
-                      : "None"
-                ])),
-                solveText(sprintf("curr az %s", [
-                  _polarAlignAdvice!.hasCurrentAzimuthCorrection()
-                      ? formatAdvice(
-                          _polarAlignAdvice!.currentAzimuthCorrection)
-                      : "None"
-                ])),
               ]),
             ),
       const SizedBox(width: 15, height: 15),
