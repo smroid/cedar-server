@@ -31,7 +31,10 @@ pub struct RateEstimation {
 
     // Estimate of RMS deviation of y values compared to the linear regression
     // trend.
-    noise: f64,
+    y_noise: f64,
+
+    // Estimate of the standard error of the slope value.
+    slope_noise: f64,
 
     // Allows part of add() logic to be incremental.
     x_sum: f64,
@@ -51,7 +54,8 @@ impl RateEstimation {
             reservoir: ReservoirSampler::<DataPoint>::new(capacity),
             slope: 0.0,
             intercept: 0.0,
-            noise: 0.0,
+            y_noise: 0.0,
+            slope_noise: 0.0,
             x_sum: 0.0,
             y_sum: 0.0,
         };
@@ -106,7 +110,8 @@ impl RateEstimation {
             let y_reg = self.estimate_value(sample.x);
             y_variance += (sample.y - y_reg) * (sample.y - y_reg);
         }
-        self.noise = (y_variance / count).sqrt();
+        self.y_noise = (y_variance / count).sqrt();
+        self.slope_noise = ((1.0 / (count - 2.0)) * y_variance / den).sqrt();
     }
 
     pub fn count(&self) -> usize {
@@ -128,7 +133,7 @@ impl RateEstimation {
         }
         let regression_estimate = self.estimate_value(time);
         let deviation = (value - regression_estimate).abs();
-        deviation < sigma * self.noise
+        deviation < sigma * self.y_noise
     }
 
     fn estimate_value(&self, time: SystemTime) -> f64 {
@@ -143,15 +148,11 @@ impl RateEstimation {
         self.slope.into()
     }
 
-    // Given the measured noise, and the range of SystemTime values contributing
-    // to the model, this bound is an estimate of the +/- range of slope()
-    // within which the true rate is likely to be.
-    // TODO: fix this! Use proper stats.
-    // count() must be at least 3.
+    // This bound is an estimate of the +/- range of slope() within which the
+    // true rate is likely to be.
     pub fn rate_interval_bound(&self) -> f64 {
         assert!(self.count() > 2);
-        let time_span_secs = self.last.duration_since(self.first).unwrap().as_secs_f64();
-        (self.noise / time_span_secs).into()
+        self.slope_noise
     }
 }
 
