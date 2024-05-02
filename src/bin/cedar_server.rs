@@ -1135,7 +1135,7 @@ struct Args {
     /// Target number of detected stars for auto-exposure. This is altered by
     /// the OperationSettings.accuracy setting (multiplier ranging from 0.5 to
     /// 1.4).
-    #[arg(long, default_value = "30")]
+    #[arg(long, default_value = "20")]
     star_count_goal: i32,
 
     /// The S/N factor used to determine if a background-subtracted pixel is

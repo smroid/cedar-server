@@ -1,13 +1,11 @@
 use log::warn;
 use std::time::{Duration, SystemTime};
 
-use noisy_float::types::{R64, r64};
-use noisy_float::prelude::Float;
 use crate::reservoir_sampler::ReservoirSampler;
 
 struct DataPoint {
     x: SystemTime,
-    y: R64,
+    y: f64,
 }
 
 // Models a one-dimension time series (float values as a function of time)
@@ -26,18 +24,21 @@ pub struct RateEstimation {
 
     // The linear regression's slope. This is the rate of change in y per second
     // of SystemTime (x) change.
-    slope: R64,
+    slope: f64,
 
     // The linear regression's y intercept.
-    intercept: R64,
+    intercept: f64,
 
     // Estimate of RMS deviation of y values compared to the linear regression
     // trend.
-    noise: R64,
+    y_noise: f64,
+
+    // Estimate of the standard error of the slope value.
+    slope_noise: f64,
 
     // Allows part of add() logic to be incremental.
-    x_sum: R64,
-    y_sum: R64,
+    x_sum: f64,
+    y_sum: f64,
 }
 
 impl RateEstimation {
@@ -51,11 +52,12 @@ impl RateEstimation {
             first: time,
             last: SystemTime::UNIX_EPOCH,
             reservoir: ReservoirSampler::<DataPoint>::new(capacity),
-            slope: r64(0.0),
-            intercept: r64(0.0),
-            noise: r64(0.0),
-            x_sum: r64(0.0),
-            y_sum: r64(0.0),
+            slope: 0.0,
+            intercept: 0.0,
+            y_noise: 0.0,
+            slope_noise: 0.0,
+            x_sum: 0.0,
+            y_sum: 0.0,
         };
         re.add(time, value);
         re
@@ -68,28 +70,30 @@ impl RateEstimation {
             time = self.last + Duration::from_micros(1);
         }
         self.last = time;
-        if let Some(removed) = self.reservoir.add(DataPoint{x: time, y: r64(value)}) {
+        let (added, removed) = self.reservoir.add(DataPoint{x: time, y: value});
+        if let Some(removed) = removed {
             let x = removed.x.duration_since(SystemTime::UNIX_EPOCH).unwrap()
                 .as_secs_f64();
             self.x_sum -= x;
             self.y_sum -= removed.y;
         }
-        self.x_sum +=
-            time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs_f64();
-        self.y_sum += r64(value);
+        if added {
+            self.x_sum +=
+                time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs_f64();
+            self.y_sum += value;
+        }
         let count = self.reservoir.count();
         if count < 2 {
             return;
         }
-        let count_r64 = r64(count as f64);
-        let x_mean = self.x_sum / count_r64;
-        let y_mean = self.y_sum / count_r64;
+        let count = count as f64;
+        let x_mean = self.x_sum / count;
+        let y_mean = self.y_sum / count;
 
-        let mut num = r64(0.0);
-        let mut den = r64(0.0);
+        let mut num = 0.0_f64;
+        let mut den = 0.0_f64;
         for sample in self.reservoir.samples() {
-            let x = r64(sample.x.duration_since(SystemTime::UNIX_EPOCH).unwrap()
-                        .as_secs_f64());
+            let x = sample.x.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs_f64();
             num += (x - x_mean) * (sample.y - y_mean);
             den += (x - x_mean) * (x - x_mean);
         }
@@ -97,16 +101,17 @@ impl RateEstimation {
         assert!(den > 0.0);
         self.slope = num / den;
         let first_x =
-            r64(self.first.duration_since(SystemTime::UNIX_EPOCH).unwrap()
-                .as_secs_f64());
+            self.first.duration_since(SystemTime::UNIX_EPOCH).unwrap()
+                .as_secs_f64();
         self.intercept = y_mean - self.slope * (x_mean - first_x);
 
-        let mut y_variance = r64(0.0);
+        let mut y_variance = 0.0_f64;
         for sample in self.reservoir.samples() {
             let y_reg = self.estimate_value(sample.x);
             y_variance += (sample.y - y_reg) * (sample.y - y_reg);
         }
-        self.noise = (y_variance / count_r64).sqrt();
+        self.y_noise = (y_variance / count).sqrt();
+        self.slope_noise = ((1.0 / (count - 2.0)) * y_variance / den).sqrt();
     }
 
     pub fn count(&self) -> usize {
@@ -127,12 +132,12 @@ impl RateEstimation {
             return true;
         }
         let regression_estimate = self.estimate_value(time);
-        let deviation = r64(value - regression_estimate).abs();
-        deviation < r64(sigma) * self.noise
+        let deviation = (value - regression_estimate).abs();
+        deviation < sigma * self.y_noise
     }
 
     fn estimate_value(&self, time: SystemTime) -> f64 {
-        let x = r64(time.duration_since(self.first).unwrap().as_secs_f64());
+        let x = time.duration_since(self.first).unwrap().as_secs_f64();
         (self.intercept + x * self.slope).into()
     }
 
@@ -143,14 +148,11 @@ impl RateEstimation {
         self.slope.into()
     }
 
-    // Given the measured noise, and the range of SystemTime values contributing
-    // to the model, this bound is an estimate of the +/- range of slope()
-    // within which the true rate is likely to be.
-    // count() must be at least 3.
+    // This bound is an estimate of the +/- range of slope() within which the
+    // true rate is likely to be.
     pub fn rate_interval_bound(&self) -> f64 {
         assert!(self.count() > 2);
-        let time_span_secs = self.last.duration_since(self.first).unwrap().as_secs_f64();
-        (self.noise / time_span_secs).into()
+        self.slope_noise
     }
 }
 
