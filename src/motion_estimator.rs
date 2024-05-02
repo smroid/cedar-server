@@ -144,9 +144,9 @@ impl MotionEstimator {
                     // Enter SteadyRate and initialize ra/dec RateEstimation objects with the
                     // current and previous positions/times.
                     self.set_state(State::SteadyRate);
-                    self.ra_rate = Some(RateEstimation::new(100, prev_time, prev_pos.ra as f64));
+                    self.ra_rate = Some(RateEstimation::new(1000, prev_time, prev_pos.ra as f64));
                     self.ra_rate.as_mut().unwrap().add(time, position.ra as f64);
-                    self.dec_rate = Some(RateEstimation::new(100, prev_time, prev_pos.dec as f64));
+                    self.dec_rate = Some(RateEstimation::new(1000, prev_time, prev_pos.dec as f64));
                     self.dec_rate.as_mut().unwrap().add(time, position.dec as f64);
                 } else {
                     self.set_state(State::Moving);
