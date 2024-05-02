@@ -3,6 +3,8 @@ show matches/pattern stars in operate mode. Except when slewing?
 
 Pacifier/busy indicator for capturing image
 
+align/accumulate images? Write out image at end of dwell to observing log?
+
 eq vs alt/az setting
 * alt/az prompts for observer location if not known -- don't bother?
 * convey to SkySafari
@@ -11,12 +13,14 @@ while "slew to target" is active:
 * offer 'align to target' button: user acquires target in telescope FOV, centers
   it, and then hits 'align to target' button to update the boresight alignment.
 
+polar alignment
+* top-level mode?
+* alert if no observer location
+* guidance for where to point scope
+
 bug report
 
 local dns entry
-
-UI alert if large system time difference between client and server
-* only need this on entry to alt/az mode?
 
 interoperation with SkySafari
 * switch apps?
@@ -74,6 +78,10 @@ Preferences:
 * update rate (non-dwell, dwell)
 * flip options? To match telescope FOV orientation.
   - sync with SkySafari?
+
+Dark calibration:
+* hot pixel map
+* obtain pattern noise to improve star detection
 
 Object catalog ("Cedar Sky")
 * selection criteria
