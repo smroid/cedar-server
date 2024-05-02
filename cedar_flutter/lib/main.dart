@@ -953,19 +953,29 @@ class MyHomePageState extends State<MyHomePage> {
           ? Container()
           : SizedBox(
               width: 140,
-              height: 120,
+              height: 80,
               child: Column(children: <Widget>[
                 primaryText("Polar Align"),
-                solveText(sprintf("alt %s", [
-                  _polarAlignAdvice!.hasAltitudeCorrection()
-                      ? formatAdvice(_polarAlignAdvice!.altitudeCorrection)
-                      : "None"
-                ])),
-                solveText(sprintf("az %s", [
-                  _polarAlignAdvice!.hasAzimuthCorrection()
-                      ? formatAdvice(_polarAlignAdvice!.azimuthCorrection)
-                      : "None"
-                ])),
+                _polarAlignAdvice!.hasAltitudeCorrection()
+                    ? solveText(sprintf("alt %s", [
+                        sprintf("%s\npolar axis->%s", [
+                          formatAdvice(_polarAlignAdvice!.altitudeCorrection),
+                          _polarAlignAdvice!.altitudeCorrection.value > 0
+                              ? "up"
+                              : "down"
+                        ])
+                      ]))
+                    : Container(),
+                _polarAlignAdvice!.hasAzimuthCorrection()
+                    ? solveText(sprintf("az %s", [
+                        sprintf("%s\npolar axis->%s", [
+                          formatAdvice(_polarAlignAdvice!.azimuthCorrection),
+                          _polarAlignAdvice!.azimuthCorrection.value > 0
+                              ? "right"
+                              : "left"
+                        ])
+                      ]))
+                    : Container(),
               ]),
             ),
       const SizedBox(width: 15, height: 15),
