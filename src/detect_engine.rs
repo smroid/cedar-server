@@ -1,5 +1,6 @@
 use camera_service::abstract_camera::{AbstractCamera, CapturedImage};
 
+use std::cmp::{max, min};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -387,19 +388,30 @@ impl DetectEngine {
             if focus_mode_enabled {
                 let roi_summary = summarize_region_of_interest(
                     &image, &center_region, noise_estimate, detection_sigma);
-                let mut peak_value = 1_u8;  // Avoid div0 below.
                 let histogram = &roi_summary.histogram;
+
+                // Compute peak_value as the average of the 5 brightest pixels.
+                let num_brightest_pixels = 5;
+                let mut accum_count = 0;
+                let mut accum_val: u32 = 0;
                 for bin in (1..256).rev() {
-                    if histogram[bin] > 0 {
-                        peak_value = bin as u8;
+                    let remain = num_brightest_pixels - accum_count;
+                    if remain == 0 {
                         break;
                     }
+                    let count = min(histogram[bin], remain);
+                    accum_val += bin as u32 * count;
+                    accum_count += count;
                 }
+                let peak_value = max(accum_val / accum_count, 1) as u8;
+
                 if auto_exposure {
                     // Adjust exposure time based on peak value of center_region.
 
                     // For auto_exposure in focus mode, what is the target value
-                    // of the brightest pixel in the center region?
+                    // of the brightest pixel in the center region? Note that a
+                    // lower brightness_goal value allows for faster exposures,
+                    // which is nice in focus mode.
                     let brightness_goal = 128.0 * accuracy_multiplier;
 
                     // Compute how much to scale the previous exposure
