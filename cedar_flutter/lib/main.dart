@@ -221,7 +221,7 @@ class MyHomePageState extends State<MyHomePage> {
 
   OperationSettings? _operationSettings;
   bool _setupMode = false;
-  int _accuracy = 3; // 1-4.
+  int _accuracy = 2; // 1-3.
 
   Offset _boresightPosition =
       const Offset(0, 0); // Scaled by main image's binning.
@@ -629,7 +629,7 @@ class MyHomePageState extends State<MyHomePage> {
           const Text("Fast              Accurate"),
           Slider(
             min: 1,
-            max: 4,
+            max: 3,
             value: _accuracy.toDouble(),
             onChanged: (double value) => {
               setState(() {
