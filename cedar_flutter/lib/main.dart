@@ -27,13 +27,18 @@ import 'get_cedar_client_for_web.dart'
 // To generate release build: flutter build web
 
 void main() {
-  runApp(MultiProvider(
-    providers: [
-      ChangeNotifierProvider(create: (context) => SettingsModel()),
-      ChangeNotifierProvider(create: (context) => ThemeModel()),
-    ],
-    child: const MyApp(),
-  ));
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations(
+    [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight],
+  ).then(
+    (_) => runApp(MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (context) => SettingsModel()),
+        ChangeNotifierProvider(create: (context) => ThemeModel()),
+      ],
+      child: const MyApp(),
+    )),
+  );
 }
 
 class MyApp extends StatelessWidget {
