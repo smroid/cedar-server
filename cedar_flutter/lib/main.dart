@@ -91,7 +91,7 @@ class _MainImagePainter extends CustomPainter {
           state._centerRegion as Rect,
           Paint()
             ..color = color
-            ..strokeWidth = hairline
+            ..strokeWidth = thin
             ..style = PaintingStyle.stroke);
       // Draw box around location of the brightest star in search box.
       canvas.drawRect(
@@ -1065,7 +1065,12 @@ class MyHomePageState extends State<MyHomePage> {
       children: <Widget>[
         _prevFrameId != -1 ? mainImage() : Container(),
         _prevFrameId != -1 && overlayWidget != null
-            ? overlayWidget
+            ? Container(
+                decoration: BoxDecoration(
+                    border: Border.all(
+                        width: 0.5,
+                        color: Theme.of(context).colorScheme.primary)),
+                child: overlayWidget)
             : Container(),
         _calibrating || _transitionToSetup
             ? Positioned.fill(
