@@ -1,6 +1,25 @@
 show matches/pattern stars in operate mode. Except when slewing?
 * make this a preference, is ugly
 
+darken screen surround
+
+Force landscape option
+
+outline border around inset image (setup mode; target slew mode)
+
+eliminate first setting on speed/quality slider.
+
+investigate initial large residual when starting a motion track
+
+* enlarge display text (check on phone)
+
+Slewing to target:
+* when slew target is off-screen, add axis movement prompts in large font
+* when slew target is on-screen, blink it
+* when slew target is in magnified reticle, make the target cross's gap larger
+* offer 'align to target' button: user acquires target in telescope FOV, centers
+  it, and then hits 'align to target' button to update the boresight alignment.
+
 Pacifier/busy indicator for capturing image
 
 align/accumulate images? Write out image at end of dwell to observing log?
@@ -9,18 +28,16 @@ eq vs alt/az setting
 * alt/az prompts for observer location if not known -- don't bother?
 * convey to SkySafari
 
-while "slew to target" is active:
-* offer 'align to target' button: user acquires target in telescope FOV, centers
-  it, and then hits 'align to target' button to update the boresight alignment.
-
 polar alignment
 * top-level mode?
 * alert if no observer location
+* alert if not tracking mount (or not roughly polar aligned)
 * guidance for where to point scope
+* king method?
 
 bug report
 
-local dns entry
+.local dns entry
 
 interoperation with SkySafari
 * switch apps?
@@ -55,14 +72,9 @@ command line options for camera binning: yes, no, auto.
 run camera in single exposure mode (instead of video) if update interval
 is long.
 
-goto support from SkySafari
-* aural cue from phone
-
 motion classification
 * capture RA/DEC when dwell starts
 * adjust update interval
-
-polar alignment advice
 
 broaden camera support
 
