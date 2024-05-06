@@ -1,6 +1,5 @@
 use camera_service::abstract_camera::{AbstractCamera, CapturedImage};
 
-use std::cmp::{max, min};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -11,6 +10,9 @@ use imageproc::rect::Rect;
 use log::{debug, error};
 use cedar_detect::algorithm::{StarDescription, estimate_noise_from_image,
                               get_stars_from_image, summarize_region_of_interest};
+use cedar_detect::histogram_funcs::{average_top_values,
+                                    get_level_for_fraction,
+                                    remove_stars_from_histogram};
 use crate::scale_image::scale_image_mut;
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
@@ -388,22 +390,10 @@ impl DetectEngine {
             if focus_mode_enabled {
                 let roi_summary = summarize_region_of_interest(
                     &image, &center_region, noise_estimate, detection_sigma);
-                let histogram = &roi_summary.histogram;
+                let mut roi_histogram = roi_summary.histogram;
 
                 // Compute peak_value as the average of the 5 brightest pixels.
-                let num_brightest_pixels = 5;
-                let mut accum_count = 0;
-                let mut accum_val: u32 = 0;
-                for bin in (1..256).rev() {
-                    let remain = num_brightest_pixels - accum_count;
-                    if remain == 0 {
-                        break;
-                    }
-                    let count = min(histogram[bin], remain);
-                    accum_val += bin as u32 * count;
-                    accum_count += count;
-                }
-                let peak_value = max(accum_val / accum_count, 1) as u8;
+                let peak_value = average_top_values(&roi_histogram, 5);
 
                 if auto_exposure {
                     // Adjust exposure time based on peak value of center_region.
@@ -439,13 +429,17 @@ impl DetectEngine {
                 let peak_region = peak_region.intersect(image_rect).unwrap();
                 debug!("peak {} at x/y {}/{}",
                        peak_value, peak_region.left(), peak_region.top());
+                // Get a good black level for display.
+                remove_stars_from_histogram(&mut roi_histogram, /*sigma=*/8.0);
+                let black_level = get_level_for_fraction(&roi_histogram, 0.9);
+
                 // We scale up the pixel values in the peak_image for good
                 // display visibility.
                 let mut peak_image = image.view(peak_region.left() as u32,
                                                 peak_region.top() as u32,
                                                 sub_image_size as u32,
                                                 sub_image_size as u32).to_image();
-                scale_image_mut(&mut peak_image, Some(peak_value), /*gamma=*/0.7);
+                scale_image_mut(&mut peak_image, black_level as u8, peak_value, /*gamma=*/0.7);
                 focus_aid = Some(FocusAid{
                     center_region,
                     center_peak_position: peak_position,
@@ -467,7 +461,7 @@ impl DetectEngine {
             }
             let adjusted_sigma = f32::max(detection_sigma * accuracy_multiplier,
                                           detection_min_sigma);
-            let (stars, hot_pixel_count, binned_image) =
+            let (stars, hot_pixel_count, binned_image, mut histogram) =
                 get_stars_from_image(&image, noise_estimate,
                                      adjusted_sigma, detection_max_size as u32,
                                      /*use_binned_image=*/true,
@@ -491,6 +485,11 @@ impl DetectEngine {
                     sum_peak / num_peak
                 };
             assert!(peak_star_pixel <= 255);
+
+            // Get a good black level for display.
+            remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
+            let black_level = get_level_for_fraction(&histogram, 0.99);
+
             let elapsed = process_start_time.elapsed();
             state.lock().unwrap().detect_latency_stats.add_value(elapsed.as_secs_f64());
 
@@ -574,6 +573,7 @@ impl DetectEngine {
                 captured_image: captured_image,
                 binned_image: Arc::new(binned_image.unwrap()),
                 star_candidates: stars,
+                display_black_level: black_level as u8,
                 noise_estimate,
                 hot_pixel_count: hot_pixel_count as i32,
                 peak_star_pixel: peak_star_pixel as u8,
@@ -602,6 +602,11 @@ pub struct DetectResult {
     // The star candidates detected by CedarDetect; ordered by highest
     // StarDescription.mean_brightness first.
     pub star_candidates: Vec<StarDescription>,
+
+    // When displaying the `binned_image`, map this pixel value to
+    // black. This is chosen to allow stars to be visible but supress
+    // the background level.
+    pub display_black_level: u8,
 
     // Estimate of the RMS noise of the full-resolution image.
     pub noise_estimate: f32,

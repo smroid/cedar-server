@@ -773,7 +773,10 @@ impl MyCedar {
         let mut bmp_buf = Vec::<u8>::new();
         let (width, height) = disp_image.dimensions();
         bmp_buf.reserve((width * height) as usize);
-        let scaled_image = scale_image(disp_image, Some(peak_value), /*gamma=*/0.7);
+        let scaled_image = scale_image(disp_image,
+                                       detect_result.display_black_level,
+                                       peak_value,
+                                       /*gamma=*/0.7);
         // Save most recent display image.
         state.lock().await.scaled_image = Some(Arc::new(scaled_image.clone()));
         scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),

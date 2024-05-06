@@ -1,5 +1,6 @@
 use crate::detect_engine::{DetectEngine, DetectResult};
 
+use std::cmp::max;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -20,6 +21,9 @@ use crate::tetra3_server::tetra3_client::Tetra3Client;
 use crate::tetra3_subprocess::Tetra3Subprocess;
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
+use cedar_detect::histogram_funcs::{average_top_values,
+                                    get_level_for_fraction,
+                                    remove_stars_from_histogram};
 use crate::scale_image::scale_image_mut;
 use crate::astro_util::{angular_separation, position_angle};
 
@@ -587,8 +591,18 @@ impl SolveEngine {
                                                    boresight_image_region.unwrap().top() as u32,
                                                    bs_image_size as u32,
                                                    bs_image_size as u32).to_image());
+                                    let mut histogram: [u32; 256] = [0_u32; 256];
+                                    for pixel_value in boresight_image.as_ref().unwrap().pixels() {
+                                        histogram[pixel_value.0[0] as usize] += 1;
+                                    }
+                                    // Compute peak_value as the average of the 5 brightest pixels.
+                                    let peak_pixel_value = max(average_top_values(&histogram, 5), 64);
+                                    remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
+                                    let min_pixel_value = get_level_for_fraction(&histogram, 0.9);
                                     scale_image_mut(boresight_image.as_mut().unwrap(),
-                                                    /*peak_pixel_value=*/None, /*gamma=*/0.7);
+                                                    min_pixel_value as u8,
+                                                    peak_pixel_value as u8,
+                                                    /*gamma=*/0.7);
                                 }
                             }
                         }
