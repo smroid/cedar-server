@@ -122,10 +122,9 @@ enum OperatingMode {
 enum Accuracy {
   ACCURACY_UNSPECIFIED = 0;
 
-  FASTEST = 1;
-  FASTER = 2;
-  BALANCED = 3;
-  ACCURATE = 4;
+  FASTER = 1;
+  BALANCED = 2;
+  ACCURATE = 3;
 }
 
 // User interface preferences that are stored durably on the server.
