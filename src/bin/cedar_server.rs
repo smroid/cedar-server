@@ -1032,7 +1032,6 @@ impl MyCedar {
         let accuracy = state.operation_settings.accuracy.unwrap();
         let acc_enum = Accuracy::try_from(accuracy).unwrap();
         let multiplier = match acc_enum {
-            Accuracy::Fastest => 0.5,
             Accuracy::Faster => 0.7,
             Accuracy::Balanced => 1.0,
             Accuracy::Accurate => 1.4,
