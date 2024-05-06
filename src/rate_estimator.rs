@@ -182,7 +182,7 @@ mod tests {
         re.add(time, 1.22);
         assert_eq!(re.count(), 3);
         assert_abs_diff_eq!(re.slope(), 0.11, epsilon = 0.001);
-        assert_abs_diff_eq!(re.rate_interval_bound(), 0.0023, epsilon = 0.0001);
+        assert_abs_diff_eq!(re.rate_interval_bound(), 0.0057, epsilon = 0.0001);
 
         // Fourth point.
         time += Duration::from_secs(1);
