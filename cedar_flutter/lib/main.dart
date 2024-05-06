@@ -498,18 +498,20 @@ class MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> setServerTime(DateTime now) async {
-    Timestamp ts = Timestamp(
-      seconds: Int64(now.millisecondsSinceEpoch ~/ 1000.0),
-      nanos: (now.millisecondsSinceEpoch % 1000) * 1000000,
-    );
-    var request = FixedSettings(currentTime: ts);
+    Timestamp ts = Timestamp();
+    ts.seconds = Int64(now.millisecondsSinceEpoch ~/ 1000.0);
+    ts.nanos = (now.millisecondsSinceEpoch % 1000) * 1000000;
+    var request = FixedSettings();
+    request.currentTime = ts;
     await updateFixedSettings(request);
   }
 
   Future<void> setObserverLocation(LatLng pos) async {
-    LatLong posProto =
-        LatLong(latitude: pos.latitude, longitude: pos.longitude);
-    var request = FixedSettings(observerLocation: posProto);
+    LatLong posProto = LatLong();
+    posProto.latitude = pos.latitude;
+    posProto.longitude = pos.longitude;
+    var request = FixedSettings();
+    request.observerLocation = posProto;
     await updateFixedSettings(request);
   }
 
