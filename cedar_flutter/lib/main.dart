@@ -29,6 +29,8 @@ import 'get_cedar_client_for_web.dart'
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations(
+    // Note that this has no effect when running as web app; it only works for
+    // Android app. Not sure if it works for IOS app.
     [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight],
   ).then(
     (_) => runApp(MultiProvider(

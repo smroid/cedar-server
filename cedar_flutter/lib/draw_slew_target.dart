@@ -24,7 +24,7 @@ void drawBullseye(Canvas canvas, Color color, Offset boresight, double radius,
         ..color = color
         ..strokeWidth = _thin
         ..style = PaintingStyle.stroke);
-  drawGapCross(canvas, color, boresight, radius, 9, rollAngleRad, _hairline,
+  drawGapCross(canvas, color, boresight, radius, 11, rollAngleRad, _hairline,
       _hairline + 1);
 }
 
@@ -66,7 +66,7 @@ void drawSlewTarget(
     // Slew target is in the field of view.
     // Draw the slew target.
     drawGapCross(
-        canvas, color, slewTarget, 10, 3, rollAngleRad, _thick, _thick);
+        canvas, color, slewTarget, 11, 5, rollAngleRad, _thick, _thick);
   }
   // Draw a bullseye at the boresight position, maybe annotated with the target
   // distance.
