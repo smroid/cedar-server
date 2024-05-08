@@ -631,13 +631,14 @@ impl MyCedar {
         }
 
         let mut frame_result = FrameResult {..Default::default()};
+        let mut fixed_settings;
         {
             let locked_state = state.lock().await;
 
-            let mut fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
+            fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
             // Fill in our current time.
             Self::fill_in_time(&mut fixed_settings);
-            frame_result.fixed_settings = Some(fixed_settings);
+            frame_result.fixed_settings = Some(fixed_settings.clone());
             frame_result.preferences = Some(locked_state.preferences.clone());
             frame_result.operation_settings =
                 Some(locked_state.operation_settings.clone());
@@ -829,45 +830,90 @@ impl MyCedar {
             }
         }
         if tetra3_solve_result.is_some() {
-            let psr = &tetra3_solve_result.unwrap();
-            frame_result.plate_solution = Some(psr.clone());
-            if psr.status ==
-                Some(SolveStatus::MatchFound.into()) &&
-                locked_state.fixed_settings.lock().unwrap().observer_location.is_some()
-            {
-                let geo_location =
-                    locked_state.fixed_settings.lock().unwrap().observer_location.clone().unwrap();
-                let lat = geo_location.latitude.to_radians() as f64;
-                let long = geo_location.longitude.to_radians() as f64;
-                let time = captured_image.readout_time;
+            let tsr = &tetra3_solve_result.unwrap();
+            frame_result.plate_solution = Some(tsr.clone());
+            if tsr.status == Some(SolveStatus::MatchFound.into()) {
                 let celestial_coords;
-                if psr.target_coords.len() > 0 {
-                    celestial_coords = psr.target_coords[0].clone();
+                if tsr.target_coords.len() > 0 {
+                    celestial_coords = tsr.target_coords[0].clone();
                 } else {
-                    celestial_coords = psr.image_center_coords.as_ref().unwrap().clone();
+                    celestial_coords = tsr.image_center_coords.as_ref().unwrap().clone();
                 }
                 let bs_ra = celestial_coords.ra.to_radians() as f64;
                 let bs_dec = celestial_coords.dec.to_radians() as f64;
-                // alt/az of boresight. Also boresight hour angle.
-                let (alt, az, ha) = alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
-                // ra/dec of zenith.
-                let (z_ra, z_dec) = equatorial_from_alt_az(
-                    90_f64.to_radians(),
-                    0.0,
-                    lat, long, time);
-                let mut zenith_roll_angle = (position_angle(
-                    bs_ra, bs_dec, z_ra, z_dec).to_degrees() as f32 +
-                                 psr.roll.unwrap()) % 360.0;
-                // Arrange for angle to be 0..360.
-                if zenith_roll_angle < 0.0 {
-                    zenith_roll_angle += 360.0;
+
+                if frame_result.slew_request.is_some() &&
+                    locked_state.preferences.mount_type == Some(MountType::Equatorial.into())
+                {
+                    let slew_request = frame_result.slew_request.as_mut().unwrap();
+                    // Compute the movement required in RA and Dec to move boresight to
+                    // target.
+                    let target_ra = slew_request.target.as_ref().unwrap().ra;
+                    let mut rel_ra = target_ra - bs_ra.to_degrees() as f32;
+                    if rel_ra < -180.0 {
+                        rel_ra += 360.0;
+                    }
+                    if rel_ra > 180.0 {
+                        rel_ra -= 360.0;
+                    }
+                    slew_request.offset_rotation_axis = Some(rel_ra);
+
+                    let target_dec = slew_request.target.as_ref().unwrap().dec;
+                    let rel_dec = target_dec - bs_dec.to_degrees() as f32;
+                    slew_request.offset_tilt_axis = Some(rel_dec);
                 }
-                frame_result.location_based_info =
-                    Some(LocationBasedInfo{zenith_roll_angle,
-                                           altitude: alt.to_degrees() as f32,
-                                           azimuth: az.to_degrees() as f32,
-                                           hour_angle: ha.to_degrees() as f32,
-                    });
+                if fixed_settings.observer_location.is_some() {
+                    let geo_location = fixed_settings.observer_location.clone().unwrap();
+                    let lat = geo_location.latitude.to_radians() as f64;
+                    let long = geo_location.longitude.to_radians() as f64;
+                    let time = captured_image.readout_time;
+                    // alt/az of boresight. Also boresight hour angle.
+                    let (bs_alt, bs_az, bs_ha) =
+                        alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
+                    // ra/dec of zenith.
+                    let (z_ra, z_dec) = equatorial_from_alt_az(
+                        90_f64.to_radians(),
+                        0.0,
+                        lat, long, time);
+                    let mut zenith_roll_angle = (position_angle(
+                        bs_ra, bs_dec, z_ra, z_dec).to_degrees() as f32 +
+                                                 tsr.roll.unwrap()) % 360.0;
+                    // Arrange for angle to be 0..360.
+                    if zenith_roll_angle < 0.0 {
+                        zenith_roll_angle += 360.0;
+                    }
+                    frame_result.location_based_info =
+                        Some(LocationBasedInfo{zenith_roll_angle,
+                                               altitude: bs_alt.to_degrees() as f32,
+                                               azimuth: bs_az.to_degrees() as f32,
+                                               hour_angle: bs_ha.to_degrees() as f32,
+                        });
+
+                    if frame_result.slew_request.is_some() &&
+                        locked_state.preferences.mount_type == Some(MountType::AltAz.into())
+                    {
+                        let slew_request = frame_result.slew_request.as_mut().unwrap();
+                        // Compute the movement required in azimuith and altitude to move
+                        // boresight to target.
+                        let target_ra = slew_request.target.as_ref().unwrap().ra;
+                        let target_dec = slew_request.target.as_ref().unwrap().dec;
+                        let (target_alt, target_az, _target_ha) =
+                            alt_az_from_equatorial(target_ra.to_radians() as f64,
+                                                   target_dec.to_radians() as f64,
+                                                   lat, long, time);
+                        let mut rel_az = target_az.to_degrees() - bs_az.to_degrees();
+                        if rel_az < -180.0 {
+                            rel_az += 360.0;
+                        }
+                        if rel_az > 180.0 {
+                            rel_az -= 360.0;
+                        }
+                        slew_request.offset_rotation_axis = Some(rel_az as f32);
+
+                        let rel_alt = target_alt.to_degrees() - bs_alt.to_degrees();
+                        slew_request.offset_tilt_axis = Some(rel_alt as f32);
+                    }
+                }
             }
         }
         let boresight_position =

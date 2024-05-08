@@ -146,7 +146,8 @@ message Preferences {
   optional bool hide_app_bar = 5;
 
   // The kind of telescope mount. This influences the display of the boresight
-  // circle (cross aligned to north for EQUATORIAL or to zenith for ALT_AZ).
+  // circle (cross aligned to north for EQUATORIAL or to zenith for ALT_AZ) and
+  // target slew direction instructions.
   optional MountType mount_type = 6;
 
   // TODO: save image format (bmp, tiff, jpg, webp, FITS)
@@ -481,6 +482,22 @@ message SlewRequest {
   // boresight in the image.
   // Omitted if there is no valid plate solution.
   optional float target_angle = 3;
+
+  // To move the boresight to the target, this is the angle by which the
+  // telescope must be moved about the rotation axis (right ascension for
+  // equatorial mount; azimuth for alt/az mount). Degrees; positive is towards
+  // east in equatorial, clockwise (viewed from above) in alt/az. Omitted if
+  // alt/az mode and observer location has not been set.
+  // Range: -180..180
+  optional float offset_rotation_axis = 5;
+
+  // To move the boresight to the target, this is the angle by which the
+  // telescope must be moved about the other axis (declination for equatorial
+  // mount; altitude for alt/az mount). Degrees; positive is towards north pole
+  // in equatorial, towards zenith in alt/az. Omitted if alt/az mode and
+  // observer location has not been set.
+  // Range: -180..180
+  optional float offset_tilt_axis = 6;
 
   // Position of the target in FrameResult.image (in full image resolution
   // coordinates).
