@@ -144,6 +144,15 @@ class _MainImagePainter extends CustomPainter {
           posInImage,
           slew.targetDistance,
           slew.targetAngle);
+      drawSlewDirections(
+          canvas,
+          color,
+          // TODO: move down if target is in upper left quadrant
+          const Offset(20, 20),
+          /*altAz=*/ false, // TODO
+          /*northernHemisphere=*/ true, // TODO
+          slew.offsetRotationAxis,
+          slew.offsetTiltAxis);
     } else {
       // Make a cross at the boresight position (if any) or else the image
       // center.

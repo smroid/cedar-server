@@ -1,5 +1,7 @@
 import 'dart:math' as math;
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:sprintf/sprintf.dart';
 
 // angleRad is counter-clockwise starting from up direction, where y increases
 // downward. The angle typically corresponds to north (equatorial mount) or
@@ -116,4 +118,73 @@ void drawArrow(Canvas canvas, Color color, Offset start, double length,
         start.dy - (length + 20) * math.sin(angleRad) - 10);
     drawText(canvas, color, textPos, text);
   }
+}
+
+void drawSlewDirections(
+  Canvas canvas,
+  Color color,
+  Offset pos,
+  bool altAz, // false: eq
+  bool northernHemisphere,
+  double offsetRotationAxis, // degrees, az or ra movement
+  double offsetTiltAxis, // degrees, alt or dec movement
+) {
+  final String rotationAxisName = altAz ? "Az " : "RA ";
+  final String rotationCue = altAz
+      ? (offsetRotationAxis >= 0 ? "clockwise" : "counterclockwise")
+      : (offsetRotationAxis >= 0 ? "east" : "west");
+  final bool towardsPole =
+      northernHemisphere ? offsetTiltAxis >= 0 : offsetTiltAxis <= 0;
+  final String tiltCue = altAz
+      ? (offsetTiltAxis > 0 ? "up" : "down")
+      : (towardsPole ? "towards pole" : "away from pole");
+  final String tiltAxisName = altAz ? "Alt" : "Dec";
+  String rotationFormatted = sprintf("%+.1f", [offsetRotationAxis]);
+  String tiltFormatted = sprintf("%+.1f", [offsetTiltAxis]);
+  final width = max(rotationFormatted.length, tiltFormatted.length);
+  // Pad.
+  while (rotationFormatted.length < width) {
+    rotationFormatted = " $rotationFormatted";
+  }
+  while (tiltFormatted.length < width) {
+    tiltFormatted = " $tiltFormatted";
+  }
+  const smallFont = 24.0;
+  final textPainter1 = TextPainter(
+      text: TextSpan(
+          children: [
+            TextSpan(
+              text: sprintf("Δ %s ", [rotationAxisName]),
+              style: const TextStyle(fontSize: smallFont),
+            ),
+            TextSpan(
+              text: rotationFormatted,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const TextSpan(text: "°"),
+            // TextSpan(
+            //   text: sprintf(" %s", [rotationCue]),
+            //   style: const TextStyle(fontSize: smallFont),
+            // ),
+            const TextSpan(text: "\n"),
+            TextSpan(
+              text: sprintf("Δ %s ", [tiltAxisName]),
+              style: const TextStyle(fontSize: smallFont),
+            ),
+            TextSpan(
+              text: tiltFormatted,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const TextSpan(text: "°"),
+            // TextSpan(
+            //   text: sprintf(" %s", [tiltCue]),
+            //   style: const TextStyle(fontSize: smallFont),
+            // ),
+          ],
+          style:
+              TextStyle(fontFamily: "RobotoMono", color: color, fontSize: 52)),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.left);
+  textPainter1.layout();
+  textPainter1.paint(canvas, pos);
 }
