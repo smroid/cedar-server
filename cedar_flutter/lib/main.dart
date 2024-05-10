@@ -147,10 +147,13 @@ class _MainImagePainter extends CustomPainter {
       drawSlewDirections(
           canvas,
           color,
-          // TODO: move down if target is in upper left quadrant
-          const Offset(20, 20),
-          /*altAz=*/ false, // TODO
-          /*northernHemisphere=*/ true, // TODO
+          slew.targetAngle >= 0.0 &&
+                  slew.targetAngle <= 90.0 &&
+                  slew.targetDistance > 0.5
+              ? Offset(20, state._imageRegion.height - 220)
+              : const Offset(20, 20),
+          state._preferences?.mountType == MountType.ALT_AZ,
+          state._northernHemisphere,
           slew.offsetRotationAxis,
           slew.offsetTiltAxis);
     } else {
@@ -224,6 +227,7 @@ class MyHomePageState extends State<MyHomePage> {
 
   // Geolocation from map.
   LatLng? _mapPosition;
+  bool _northernHemisphere = true;
 
   Duration _tzOffset = const Duration();
 
@@ -330,6 +334,7 @@ class MyHomePageState extends State<MyHomePage> {
     if (response.fixedSettings.hasObserverLocation()) {
       _mapPosition = LatLng(response.fixedSettings.observerLocation.latitude,
           response.fixedSettings.observerLocation.longitude);
+      _northernHemisphere = _mapPosition!.latitude > 0.0;
     } else if (_mapPosition != null) {
       setObserverLocation(_mapPosition!);
     }
