@@ -131,16 +131,23 @@ void drawSlewDirections(
 ) {
   final String rotationAxisName = altAz ? "Az " : "RA ";
   final String rotationCue = altAz
-      ? (offsetRotationAxis >= 0 ? "clockwise" : "counterclockwise")
-      : (offsetRotationAxis >= 0 ? "east" : "west");
+      ? (offsetRotationAxis >= 0 ? "clockwise" : "anti-clockwise")
+      : (offsetRotationAxis >= 0 ? "towards east" : "towards west");
   final bool towardsPole =
       northernHemisphere ? offsetTiltAxis >= 0 : offsetTiltAxis <= 0;
   final String tiltCue = altAz
       ? (offsetTiltAxis > 0 ? "up" : "down")
       : (towardsPole ? "towards pole" : "away from pole");
   final String tiltAxisName = altAz ? "Alt" : "Dec";
-  String rotationFormatted = sprintf("%+.1f", [offsetRotationAxis]);
-  String tiltFormatted = sprintf("%+.1f", [offsetTiltAxis]);
+  int precision = 0;
+  if (offsetRotationAxis.abs() < 10.0 && offsetTiltAxis.abs() < 10.0) {
+    precision = 1;
+  }
+  if (offsetRotationAxis.abs() < 1.0 && offsetTiltAxis.abs() < 1.0) {
+    precision = 2;
+  }
+  String rotationFormatted = sprintf("%+.*f", [precision, offsetRotationAxis]);
+  String tiltFormatted = sprintf("%+.*f", [precision, offsetTiltAxis]);
   final width = max(rotationFormatted.length, tiltFormatted.length);
   // Pad.
   while (rotationFormatted.length < width) {
@@ -150,39 +157,43 @@ void drawSlewDirections(
     tiltFormatted = " $tiltFormatted";
   }
   const smallFont = 24.0;
+  const largeFont = 48.0;
   final textPainter1 = TextPainter(
-      text: TextSpan(
-          children: [
-            TextSpan(
-              text: sprintf("Δ %s ", [rotationAxisName]),
-              style: const TextStyle(fontSize: smallFont),
-            ),
-            TextSpan(
-              text: rotationFormatted,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const TextSpan(text: "°"),
-            // TextSpan(
-            //   text: sprintf(" %s", [rotationCue]),
-            //   style: const TextStyle(fontSize: smallFont),
-            // ),
-            const TextSpan(text: "\n"),
-            TextSpan(
-              text: sprintf("Δ %s ", [tiltAxisName]),
-              style: const TextStyle(fontSize: smallFont),
-            ),
-            TextSpan(
-              text: tiltFormatted,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const TextSpan(text: "°"),
-            // TextSpan(
-            //   text: sprintf(" %s", [tiltCue]),
-            //   style: const TextStyle(fontSize: smallFont),
-            // ),
-          ],
+      text: TextSpan(children: [
+        TextSpan(
+          text: sprintf("%s ", [rotationAxisName]),
+          style: const TextStyle(fontSize: smallFont),
+        ),
+        TextSpan(
+          text: rotationFormatted,
           style:
-              TextStyle(fontFamily: "RobotoMono", color: color, fontSize: 52)),
+              const TextStyle(fontSize: largeFont, fontWeight: FontWeight.bold),
+        ),
+        const TextSpan(text: "°", style: TextStyle(fontSize: largeFont)),
+        const TextSpan(text: "\n"),
+        TextSpan(
+          text: sprintf("%s", [rotationCue]),
+          style:
+              const TextStyle(fontSize: smallFont, fontStyle: FontStyle.italic),
+        ),
+        const TextSpan(text: "\n"),
+        TextSpan(
+          text: sprintf("%s ", [tiltAxisName]),
+          style: const TextStyle(fontSize: smallFont),
+        ),
+        TextSpan(
+          text: tiltFormatted,
+          style:
+              const TextStyle(fontSize: largeFont, fontWeight: FontWeight.bold),
+        ),
+        const TextSpan(text: "°", style: TextStyle(fontSize: largeFont)),
+        const TextSpan(text: "\n"),
+        TextSpan(
+          text: sprintf("%s", [tiltCue]),
+          style:
+              const TextStyle(fontSize: smallFont, fontStyle: FontStyle.italic),
+        ),
+      ], style: TextStyle(fontFamily: "RobotoMono", color: color)),
       textDirection: TextDirection.ltr,
       textAlign: TextAlign.left);
   textPainter1.layout();
