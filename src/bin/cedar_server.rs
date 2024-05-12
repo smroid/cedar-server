@@ -413,23 +413,43 @@ impl Cedar for MyCedar {
         if req.capture_boresight.unwrap_or(false) {
             let operating_mode = locked_state.operation_settings.operating_mode.or(
                     Some(OperatingMode::Setup as i32)).unwrap();
-            if operating_mode != OperatingMode::Setup as i32 {
-                return Err(tonic::Status::failed_precondition(
-                    format!("Not in Setup mode: {:?}.", operating_mode)));
-            }
-            let target_arg =
-                match locked_state.center_peak_position.lock().unwrap().as_ref()
-            {
-                Some(pos) => Some(tetra3_server::ImageCoord{
-                    x: pos.x,
-                    y: pos.y,
-                }),
-                None => None,
-            };
-            if let Err(x) =
-                locked_state.solve_engine.lock().await.set_boresight_pixel(target_arg)
-            {
-                return Err(tonic_status(x));
+            if operating_mode == OperatingMode::Setup as i32 {
+                let boresight_pos =
+                    match locked_state.center_peak_position.lock().unwrap().as_ref()
+                {
+                    Some(pos) => Some(tetra3_server::ImageCoord{
+                        x: pos.x,
+                        y: pos.y,
+                    }),
+                    None => None,
+                };
+                if let Err(x) =
+                    locked_state.solve_engine.lock().await.set_boresight_pixel(boresight_pos)
+                {
+                    return Err(tonic_status(x));
+                }
+            } else {
+                // Operate mode.
+                let plate_solution = locked_state.solve_engine.lock().await.
+                    get_next_result(None).await;
+                if let Some(slew_request) = plate_solution.slew_request {
+                    if slew_request.target_within_center_region {
+                        let boresight_pos = slew_request.image_pos.unwrap();
+                        if let Err(x) = locked_state.solve_engine.lock().await.
+                            set_boresight_pixel(Some(tetra3_server::ImageCoord{
+                                x: boresight_pos.x,
+                                y: boresight_pos.y}))
+                        {
+                            return Err(tonic_status(x));
+                        }
+                    } else {
+                        return Err(tonic::Status::failed_precondition(
+                            "Target not in center region."));
+                    }
+                } else {
+                    return Err(tonic::Status::failed_precondition(
+                        format!("Not in Setup mode: {:?}.", operating_mode)));
+                }
             }
         }
         if req.shutdown_server.unwrap_or(false) {
@@ -728,10 +748,10 @@ impl MyCedar {
         if let Some(fa) = &detect_result.focus_aid {
             peak_value = fa.center_peak_value;
             frame_result.center_region = Some(Rectangle {
-                origin_x: fa.center_region.left(),
-                origin_y: fa.center_region.top(),
-                width: fa.center_region.width() as i32,
-                height: fa.center_region.height() as i32});
+                origin_x: detect_result.center_region.left(),
+                origin_y: detect_result.center_region.top(),
+                width: detect_result.center_region.width() as i32,
+                height: detect_result.center_region.height() as i32});
 
             let ic = ImageCoord {
                 x: fa.center_peak_position.0 as f32,
