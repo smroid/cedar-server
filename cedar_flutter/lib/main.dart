@@ -241,6 +241,8 @@ class MyHomePageState extends State<MyHomePage> {
 
   OperationSettings? _operationSettings;
   bool _setupMode = false;
+  bool _canAlign = false;
+
   int _accuracy = 2; // 1-3.
 
   Offset _boresightPosition =
@@ -349,6 +351,10 @@ class MyHomePageState extends State<MyHomePage> {
       Provider.of<ThemeModel>(context, listen: false).setNormalTheme();
     }
     _setStateFromOpSettings(response.operationSettings);
+    _canAlign = false;
+    if (_setupMode) {
+      _canAlign = true;
+    }
     _preferences = response.preferences;
     _polarAlignAdvice = response.polarAlignAdvice;
     var settingsModel = Provider.of<SettingsModel>(context, listen: false);
@@ -359,6 +365,9 @@ class MyHomePageState extends State<MyHomePage> {
     _processingStats =
         response.hasProcessingStats() ? response.processingStats : null;
     _slewRequest = response.hasSlewRequest() ? response.slewRequest : null;
+    if (_slewRequest != null && _slewRequest!.targetWithinCenterRegion) {
+      _canAlign = true;
+    }
     if (response.hasPlateSolution()) {
       SolveResult plateSolution = response.plateSolution;
       if (plateSolution.status == SolveStatus.MATCH_FOUND) {
@@ -789,25 +798,28 @@ class MyHomePageState extends State<MyHomePage> {
       ]),
       const SizedBox(width: 15, height: 15),
       SizedBox(
-          width: 120,
-          height: 32,
-          child: _setupMode
-              ? Column(children: <Widget>[
-                  OutlinedButton(
-                      child: const FittedBox(child: Text("Set align")),
-                      onPressed: () {
-                        captureBoresight();
-                      }),
-                ])
-              : _slewRequest != null && !_setupMode
-                  ? Column(children: <Widget>[
-                      OutlinedButton(
-                          child: const Text("End goto"),
-                          onPressed: () {
-                            stopSlew();
-                          }),
-                    ])
-                  : Container()),
+        width: 120,
+        height: 32,
+        child: _canAlign
+            ? OutlinedButton(
+                child: const Text("Set Align"),
+                onPressed: () {
+                  captureBoresight();
+                })
+            : Container(),
+      ),
+      const SizedBox(width: 15, height: 15),
+      SizedBox(
+        width: 120,
+        height: 32,
+        child: _slewRequest != null && !_setupMode
+            ? OutlinedButton(
+                child: const Text("End goto"),
+                onPressed: () {
+                  stopSlew();
+                })
+            : Container(),
+      ),
     ];
   }
 
