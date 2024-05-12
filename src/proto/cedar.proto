@@ -504,6 +504,10 @@ message SlewRequest {
   // Omitted if the target is not in the field of view or there is no valid
   // plate solution.
   optional ImageCoord image_pos = 4;
+
+  // True if the target's image position is within the center_region defined
+  // in SETUP mode. False otherwise, or if there is no valid plate solution.
+  bool target_within_center_region = 7;
 }
 
 // Estimate of alt/az offset of mount's polar axis from celestial pole. Not
@@ -532,8 +536,8 @@ message ErrorBoundedValue {
 }
 
 message ActionRequest {
-  // Capture boresight offset (focus mode only) based on current location of
-  // brightest peak in central region. Context:
+  // Capture boresight offset. In focus mode, this is based on current location
+  // of brightest peak in central region. Context:
   // 1. Cedar is in focus mode.
   // 2. User focuses on bright star.
   // 3. User centers the same star in the telescope's field of view.
@@ -544,6 +548,10 @@ message ActionRequest {
   // FrameResult's `boresight_position` field, and will cause a single
   // `target_coords` entry to be included with each FrameResult
   // `plate_solution`.
+  // Note that `capture_boresight` can also be used during an active slew to
+  // target, when SlewRequest's `target_within_center_region` field is true.
+  // This lets the user update/refine the boresight offset when the user
+  // has centered the target in the telescope's field of view.
   optional bool capture_boresight = 1;
 
   // Shut down the computer on which the Cedar server is running. Do this before

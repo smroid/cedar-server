@@ -554,7 +554,13 @@ impl SolveEngine {
                                 let target_image_coord =
                                     cedar::ImageCoord{x: img_coord.x, y: img_coord.y};
                                 slew_req.image_pos = Some(target_image_coord.clone());
-
+                                if img_coord.x > detect_result.center_region.left() as f32 &&
+                                    img_coord.x < detect_result.center_region.right() as f32 &&
+                                    img_coord.y > detect_result.center_region.top() as f32 &&
+                                    img_coord.y < detect_result.center_region.bottom() as f32
+                                {
+                                    slew_req.target_within_center_region = true;
+                                }
                                 // Is the target's image_pos close to the boresight's
                                 // image position?
                                 let boresight_pos;

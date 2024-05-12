@@ -441,7 +441,6 @@ impl DetectEngine {
                                                 sub_image_size as u32).to_image();
                 scale_image_mut(&mut peak_image, black_level as u8, peak_value, /*gamma=*/0.7);
                 focus_aid = Some(FocusAid{
-                    center_region,
                     center_peak_position: peak_position,
                     center_peak_value: peak_value,
                     peak_image,
@@ -578,6 +577,7 @@ impl DetectEngine {
                 hot_pixel_count: hot_pixel_count as i32,
                 peak_star_pixel: peak_star_pixel as u8,
                 focus_aid,
+                center_region,
                 processing_duration: elapsed,
                 detect_latency_stats:
                 locked_state.detect_latency_stats.value_stats.clone(),
@@ -618,8 +618,12 @@ pub struct DetectResult {
     // this value is fixed to 255.
     pub peak_star_pixel: u8,
 
-    // Included if `focus_mode` is enabled.
+    // Included if `focus_mode_enabled`.
     pub focus_aid: Option<FocusAid>,
+
+    // See the corresponding field in FrameResult. Note that this is populated
+    // even when not in `focus_mode_enabled`.
+    pub center_region: Rect,
 
     // Time taken to produce this DetectResult, excluding the time taken to
     // acquire the image.
@@ -631,9 +635,6 @@ pub struct DetectResult {
 
 #[derive(Clone)]
 pub struct FocusAid {
-    // See the corresponding field in FrameResult.
-    pub center_region: Rect,
-
     // See the corresponding field in FrameResult.
     pub center_peak_position: (f32, f32),
 
