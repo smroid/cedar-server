@@ -5,7 +5,7 @@ use image::GrayImage;
 use imageproc::stats::histogram;
 use log::warn;
 
-use camera_service::abstract_camera::{AbstractCamera, Gain, Offset};
+use cedar_camera::abstract_camera::{AbstractCamera, Gain, Offset};
 use canonical_error::{CanonicalError,
                       aborted_error, failed_precondition_error, internal_error,
                       deadline_exceeded_error, unknown_error};

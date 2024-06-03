@@ -1,4 +1,4 @@
-use camera_service::abstract_camera::{AbstractCamera, CapturedImage};
+use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage};
 
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -8,9 +8,9 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use camera_service::abstract_camera::{AbstractCamera, Offset};
-use camera_service::asi_camera;
-use camera_service::image_camera::ImageCamera;
+use cedar_camera::abstract_camera::{AbstractCamera, Offset};
+use cedar_camera::asi_camera;
+use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
 use image::{GrayImage, ImageOutputFormat};
