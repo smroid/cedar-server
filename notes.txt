@@ -1,30 +1,3 @@
-Exposure control loop:
-
-Setup mode: find brightest point in central region, modulate exposure time
-to get brightest point to ~240 ADU. The UI will display a zoomed in view
-of this bright point for focusing.
-
-Operate mode: modulate exposure time based on number of detected stars.
-
-
-A high-level goal for Cedar is to minimize the number of user-set parameters. No
-exposure time setting, no camera gain value, no Cedar-detect sigma value
-adjustment.
-
-The only thing the user should have to worry about is focusing the camera and
-(roughly) aligning the camera to the telescope. The only user interface "knob"
-will be a quality <---> speed slider. At the extremes, this will work as
-follows:
-
-Quality: raises the goal for detected star count. This causes the exposure
-  control loop to make longer exposures. Perhaps we also raise the Cedar-detect
-  sigma param.
-
-Speed: lowers the goal for detected star count, which casues the exposure
-  control loop to use shorter exposures. Perhaps we also lower the Cedar-detect
-  sigma param.
-
-
 How to automatically set the 'sigma' parameter for Cedar-detect? Idea: acquire a
 test image, use Cedar-detect with a default sigma value to find stars, and run
 Tetra3 to plate solve it.
@@ -55,3 +28,7 @@ for a bar graph. Improvements to consider:
   in (nearly) all of the frames (based on x/y proximity between frames). Display
   the count of these "robustly detected" stars. This count will not include stars
   at the edge of detectability nor false positives (noise).
+
+
+converting raw without debayering:
+dcraw -D -T -W -b 256 -g 1 1 *.dng
