@@ -1,24 +1,24 @@
 show matches/pattern stars in operate mode. Except when slewing?
 * make this a preference, is ugly
 
-darken screen surround
-
-Force landscape option
-
-outline border around inset image (setup mode; target slew mode)
-
-eliminate first setting on speed/quality slider.
-
-investigate initial large residual when starting a motion track
-
 * enlarge display text (check on phone)
 
-Slewing to target:
-* when slew target is off-screen, add axis movement prompts in large font
-* when slew target is on-screen, blink it
-* when slew target is in magnified reticle, make the target cross's gap larger
-* offer 'align to target' button: user acquires target in telescope FOV, centers
-  it, and then hits 'align to target' button to update the boresight alignment.
+fix rotation logic
+* rotate image to preserve aspect ratio
+* rotate image graphical annotations
+
+auto-detect alt-az vs equatorial (with manual override)
+
+alert icon if observer location not yet set.
+
+calibrate for match_max_error
+
+rename camera_service to cedar-camera
+
+change license for Cedar to AGPL or negotiated.
+
+Remove refresh rate control. Go full speed; when dwelling for more than N
+seconds drop to 5hz.
 
 Pacifier/busy indicator for capturing image
 
@@ -28,12 +28,74 @@ eq vs alt/az setting
 * alt/az prompts for observer location if not known -- don't bother?
 * convey to SkySafari
 
-polar alignment
+Support Stellarium telescope control
+
+Cedar Pole Align
 * top-level mode?
 * alert if no observer location
 * alert if not tracking mount (or not roughly polar aligned)
 * guidance for where to point scope
 * king method?
+
+status LED
+* cedar server liveness
+* wifi connection status
+* setting to turn off (ephemeral)
+
+Physical button
+* power-off?
+* switch wifi mode?
+
+create Android app
+create IOS app
+* benefits (for both): control over screen rotation; access to location info; switching
+  app to SkySafari?
+* control over wifi?
+
+Cedar Journal
+* capture Cedar Sky goto requests (and whether target was reached)
+* capture RA/DEC when long-enough dwell detected
+TBD
+
+Lens heater with slider control
+
+Cedar Sky
+Idea: OOBE should not require Sky Safari integration
+* rudimentary catalog of "beginner" objects
+  - brightness
+  - size
+  - object type (bright star, planet, nebula, double star, open cluster,
+    globular cluster, galaxy)
+* slider for brightness limit
+* selector boxes for object types
+* display selected objects in FOV. Tap to bring up info and goto button.
+* option for whole-sky (more than 5deg above current horizon) vs. near (within 45deg)
+  current boresight (ranked by distance). Maybe a slider, with far setting being
+  whole sky.
+* ephemeris for planets/asteroids
+* cloud-enabled: comets, other interlopers
+
+Goto ra/dec button: pops up text entry field
+
+remote ops, proxied via phone
+* update cedar server
+* download logs
+* send bug reports
+
+"expert" mode enable
+* eq/alt-az selector
+* polar alignment advice
+* speed-quality slider
+* option to show exposure control
+* option to show stats
+* re-align in target slew
+* ra/dec formatting option
+* refresh rate control
+* FOV control
+* capture image
+* show detected/solved stars option
+* dark calibration
+* show server log
 
 bug report
 
@@ -62,8 +124,6 @@ Wifi management
 
 FITS support for saved images? Other formats?
 
-observer session handling
-
 logging
 * observer log is separate
 
@@ -73,18 +133,18 @@ run camera in single exposure mode (instead of video) if update interval
 is long.
 
 motion classification
-* capture RA/DEC when dwell starts
 * adjust update interval
 
 broaden camera support
+* RPi HQ
+* RPi GS (color)
+* InnoMaker GS (mono)
 
 multi camera support (choose which)
 
 UI:
 * operation controls
   - save image: add confirmation+rename
-* status icons:
-  - polar advice available
 
 Preferences:
 * update rate (non-dwell, dwell)
@@ -95,14 +155,9 @@ Dark calibration:
 * hot pixel map
 * obtain pattern noise to improve star detection
 
-Object catalog ("Cedar Sky")
-* selection criteria
-* rankings
-* annotations
-* solar system object ephemeris
-
 Splash screen
 
 About page
 
 Help page
+* mostly redirects attention to long-press aids?
