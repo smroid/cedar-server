@@ -140,6 +140,7 @@ impl MotionEstimator {
             },
             State::Stopped => {
                 // Compare new position/time to previous position/time. Are we still stopped?
+                // TODO: require a few add() calls in Stopped before advancing to SteadyRate?
                 if Self::is_stopped(time, &position, position_rmse, prev_time, &prev_pos) {
                     // Enter SteadyRate and initialize ra/dec RateEstimation objects with the
                     // current and previous positions/times.
@@ -196,6 +197,7 @@ impl MotionEstimator {
         }
     }
 
+    // pos_rmse: position error estimate in degrees.
     fn is_stopped(time: SystemTime, pos: &CelestialCoord, pos_rmse: f32,
                   prev_time: SystemTime, prev_pos: &CelestialCoord) -> bool {
         let elapsed_secs =
