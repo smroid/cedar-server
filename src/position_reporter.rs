@@ -55,6 +55,7 @@ impl Device for MyTelescope {
 #[async_trait]
 impl Telescope for MyTelescope {
     async fn alignment_mode(&self) -> ASCOMResult<AlignmentMode> {
+        // TODO: update if settings is alt/az.
         Ok(AlignmentMode::Polar)
     }
 
@@ -129,6 +130,8 @@ impl Telescope for MyTelescope {
     async fn can_set_tracking(&self) -> ASCOMResult<bool> {
         Ok(false)
     }
+
+    // TODO: can_sync(); sync_to_coordinates() (or sync_to_target()?)
 }
 
 pub fn create_alpaca_server(telescope_position: Arc<Mutex<TelescopePosition>>)
