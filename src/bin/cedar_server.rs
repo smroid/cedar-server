@@ -8,8 +8,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use cedar_camera::abstract_camera::{AbstractCamera, Offset};
-use cedar_camera::asi_camera;
+use cedar_camera::abstract_camera::{AbstractCamera, EnumeratedCameraInfo, Offset};
+use cedar_camera::asi_camera::ASICamera;
 use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
@@ -1268,12 +1268,30 @@ async fn main() {
     let rest = Router::new().nest_service(
         "/", ServeDir::new("/home/pi/projects/cedar/cedar_flutter/build/web"));
 
-    // TODO(smr): discovery/enumeration mechanism for cameras. Or command
-    // line arg?
+    // Enumerate ASI cameras.
+    let asi_cameras = ASICamera::enumerate_cameras();
+    if asi_cameras.len() > 0 {
+        if asi_cameras.len() == 1 {
+            info!("Found ASI camera: ");
+        } else {
+            info!("Found ASI cameras: ");
+        }
+        for (i, info) in asi_cameras.iter().enumerate() {
+            info!("{}: {}", i, format_camera_info(&info));
+        }
+    }
+
+    // TODO: enumerate Rpi cameras.
+
+    // TODO: command line arg to choose between ASI/Rpi camera interface if both
+    // present.
+    // TODO: command line arg to specify camera index, if multiple cameras
+    // present on same interface.
+    let abstract_cam = ASICamera::new(0).unwrap();
+
     let camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>> =
         match args.test_image.as_str() {
-        "" => Arc::new(tokio::sync::Mutex::new(asi_camera::ASICamera::new(
-            asi_camera2::asi_camera2_sdk::ASICamera::new(0)).unwrap())),
+        "" => Arc::new(tokio::sync::Mutex::new(abstract_cam)),
         _ => {
             let input_path = PathBuf::from(&args.test_image);
             let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
@@ -1352,6 +1370,14 @@ async fn main() {
     let (service_result, alpaca_result) = join!(service_future, alpaca_server_future);
     service_result.unwrap();
     alpaca_result.unwrap();
+}
+
+fn format_camera_info(info: &EnumeratedCameraInfo) -> String {
+    return format!("{} ({}) {}x{}",
+                   info.model,
+                   if info.is_color { "color" } else { "mono" },
+                   info.width,
+                   info.height);
 }
 
 mod multiplex_service {
