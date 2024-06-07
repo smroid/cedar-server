@@ -1373,11 +1373,7 @@ async fn main() {
 }
 
 fn format_camera_info(info: &EnumeratedCameraInfo) -> String {
-    return format!("{} ({}) {}x{}",
-                   info.model,
-                   if info.is_color { "color" } else { "mono" },
-                   info.width,
-                   info.height);
+    return format!("{} {}x{}", info.model, info.width, info.height);
 }
 
 mod multiplex_service {
