@@ -13,7 +13,7 @@ ascom-alpaca = { version = "1.0.0-beta.3", features = ["server", "telescope"] }
 async-std = "1.12.0"
 async-trait = "0.1.77"
 axum = "0.6.19"
-cedar-camera = { version = "0.2.0", path = "../cedar-camera" }
+cedar-camera = { version = "0.3.0", path = "../cedar-camera" }
 canonical-error = "0.1.0"
 clap = { version = "4.3.19", features = ["derive"] }
 futures = "0.3.30"
