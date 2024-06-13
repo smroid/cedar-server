@@ -245,7 +245,7 @@ impl RestoreSettings {
     async fn restore(&mut self) {
         let mut locked_camera = self.camera.lock().await;
         locked_camera.set_gain(self.gain).unwrap();
-        locked_camera.set_offset(self.offset).unwrap();
+        let _ = locked_camera.set_offset(self.offset);  // Ignore unsupported offset.
         locked_camera.set_exposure_duration(self.exp_duration).unwrap();
     }
 }
