@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,12 +16,12 @@ use crate::solve_engine::SolveEngine;
 use crate::tetra3_server::{ImageCoord, SolveRequest, SolveStatus};
 
 pub struct Calibrator {
-    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
+    camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
 }
 
 // By convention, all methods restore any camera settings that they alter.
 impl Calibrator {
-    pub fn new(camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>) -> Self{
+    pub fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>) -> Self{
         Calibrator{camera}
     }
 
@@ -57,7 +58,7 @@ impl Calibrator {
             let (captured_image, frame_id) =
                 locked_camera.capture_image(prev_frame_id).await?;
             prev_frame_id = Some(frame_id);
-            let channel_histogram = histogram(&captured_image.image);
+            let channel_histogram = histogram(captured_image.image.deref());
             let histo = channel_histogram.channels[0];
             num_zero_pixels = histo[0];
             if num_zero_pixels < (total_pixels / 1000) as u32 {
@@ -226,13 +227,13 @@ impl Calibrator {
 
 // RAII gadget for saving/restoring camera settings.
 struct RestoreSettings {
-    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
+    camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
     gain: Gain,
     offset: Offset,
     exp_duration: Duration,
 }
 impl RestoreSettings {
-    async fn new(camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>) -> Self {
+    async fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>) -> Self {
         let locked_camera = camera.lock().await;
         RestoreSettings{
             camera: camera.clone(),
