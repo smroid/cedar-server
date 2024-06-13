@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use cedar_camera::abstract_camera::{AbstractCamera, EnumeratedCameraInfo, Offset};
 use cedar_camera::asi_camera::ASICamera;
 use cedar_camera::image_camera::ImageCamera;
+use cedar_camera::rpi_camera::RpiCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
 use image::{GrayImage, ImageOutputFormat};
@@ -516,8 +517,9 @@ impl MyCedar {
         let mut locked_camera = state.camera.lock().await;
         let gain = locked_camera.optimal_gain();
         locked_camera.set_gain(gain)?;
-        locked_camera.set_offset(Offset::new(3))?;
-
+        if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
+            debug!("Could not set offset: {:?}", e);
+        }
         let mut locked_solve_engine = state.solve_engine.lock().await;
         locked_solve_engine.set_fov_estimate(/*fov_estimate=*/None)?;
         locked_solve_engine.set_distortion(0.0)?;
@@ -573,7 +575,7 @@ impl MyCedar {
                 Offset::new(3)  // Sane fallback value.
             }
         };
-        camera.lock().await.set_offset(offset)?;
+        _ = camera.lock().await.set_offset(offset);  // Ignore unsupported offset.
         calibration_data.lock().await.camera_offset = Some(offset.value());
 
         let exp_duration = match calibrator.lock().await.calibrate_exposure_duration(
@@ -1197,7 +1199,7 @@ struct Args {
     /// Maximum exposure duration, seconds.
     // For monochrome camera and f/1.4 lens, 200ms is a good maximum. For color
     // camera and/or slower f/number, increase the maximum exposure accordingly.
-    #[arg(long, value_parser = parse_duration, default_value = "0.2")]
+    #[arg(long, value_parser = parse_duration, default_value = "1.0")]
     max_exposure: Duration,
 
     /// Target number of detected stars for auto-exposure. This is altered by
@@ -1281,13 +1283,25 @@ async fn main() {
         }
     }
 
-    // TODO: enumerate Rpi cameras.
+    // Enumerate Rpi cameras.
+    let rpi_cameras = RpiCamera::enumerate_cameras();
+    if rpi_cameras.len() > 0 {
+        if rpi_cameras.len() == 1 {
+            info!("Found Rpi camera: ");
+        } else {
+            info!("Found Rpi cameras: ");
+        }
+        for (i, info) in rpi_cameras.iter().enumerate() {
+            info!("{}: {}", i, format_camera_info(&info));
+        }
+    }
 
     // TODO: command line arg to choose between ASI/Rpi camera interface if both
     // present.
     // TODO: command line arg to specify camera index, if multiple cameras
     // present on same interface.
-    let abstract_cam = ASICamera::new(0).unwrap();
+    // let abstract_cam = ASICamera::new(0).unwrap();
+    let abstract_cam = RpiCamera::new(0).unwrap();
 
     let camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>> =
         match args.test_image.as_str() {
