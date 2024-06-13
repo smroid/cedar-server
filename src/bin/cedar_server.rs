@@ -9,12 +9,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use cedar_camera::abstract_camera::{AbstractCamera, EnumeratedCameraInfo, Offset};
-use cedar_camera::asi_camera::ASICamera;
+use cedar_camera::select_camera::select_camera;
 use cedar_camera::image_camera::ImageCamera;
-use cedar_camera::rpi_camera::RpiCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
-use image::{GrayImage, ImageOutputFormat};
+use image::{GrayImage, ImageFormat};
 use image::io::Reader as ImageReader;
 
 use nix::time::{ClockId, clock_gettime, clock_settime};
@@ -91,7 +90,7 @@ struct MyCedar {
 }
 
 struct CedarState {
-    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
+    camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
     fixed_settings: Arc<Mutex<FixedSettings>>,
     calibration_data: Arc<tokio::sync::Mutex<CalibrationData>>,
     operation_settings: OperationSettings,
@@ -686,7 +685,7 @@ impl MyCedar {
                     let mut bmp_buf = Vec::<u8>::new();
                     bmp_buf.reserve((scaled_width * scaled_height) as usize);
                     img.write_to(&mut Cursor::new(&mut bmp_buf),
-                                 ImageOutputFormat::Bmp).unwrap();
+                                 ImageFormat::Bmp).unwrap();
                     frame_result.image = Some(Image{
                         binning_factor,
                         // Rectangle is always in full resolution coordinates.
@@ -772,7 +771,7 @@ impl MyCedar {
             center_peak_bmp_buf.reserve(
                 (center_peak_width * center_peak_height) as usize);
             center_peak_image.write_to(&mut Cursor::new(&mut center_peak_bmp_buf),
-                                       ImageOutputFormat::Bmp).unwrap();
+                                       ImageFormat::Bmp).unwrap();
             frame_result.center_peak_image = Some(Image{
                 binning_factor: 1,
                 rectangle: Some(Rectangle{
@@ -803,7 +802,7 @@ impl MyCedar {
         // Save most recent display image.
         state.lock().await.scaled_image = Some(Arc::new(scaled_image.clone()));
         scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
-                              ImageOutputFormat::Bmp).unwrap();
+                              ImageFormat::Bmp).unwrap();
         frame_result.image = Some(Image{
             binning_factor,
             // Rectangle is always in full resolution coordinates.
@@ -839,7 +838,7 @@ impl MyCedar {
                 let bsi_rect = psr.boresight_image_region.unwrap();
                 bmp_buf.reserve((bsi_rect.width() * bsi_rect.height()) as usize);
                 boresight_image.write_to(&mut Cursor::new(&mut bmp_buf),
-                                         ImageOutputFormat::Bmp).unwrap();
+                                         ImageFormat::Bmp).unwrap();
                 frame_result.boresight_image = Some(Image{
                     binning_factor: 1,
                     // Rectangle is always in full resolution coordinates.
@@ -961,7 +960,7 @@ impl MyCedar {
                      tetra3_script: String,
                      tetra3_database: String,
                      tetra3_uds: String,
-                     camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
+                     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                      telescope_position: Arc<Mutex<TelescopePosition>>,
                      base_star_count_goal: i32,
                      base_detection_sigma: f32,
@@ -1270,40 +1269,13 @@ async fn main() {
     let rest = Router::new().nest_service(
         "/", ServeDir::new("/home/pi/projects/cedar/cedar_flutter/build/web"));
 
-    // Enumerate ASI cameras.
-    let asi_cameras = ASICamera::enumerate_cameras();
-    if asi_cameras.len() > 0 {
-        if asi_cameras.len() == 1 {
-            info!("Found ASI camera: ");
-        } else {
-            info!("Found ASI cameras: ");
-        }
-        for (i, info) in asi_cameras.iter().enumerate() {
-            info!("{}: {}", i, format_camera_info(&info));
-        }
-    }
-
-    // Enumerate Rpi cameras.
-    let rpi_cameras = RpiCamera::enumerate_cameras();
-    if rpi_cameras.len() > 0 {
-        if rpi_cameras.len() == 1 {
-            info!("Found Rpi camera: ");
-        } else {
-            info!("Found Rpi cameras: ");
-        }
-        for (i, info) in rpi_cameras.iter().enumerate() {
-            info!("{}: {}", i, format_camera_info(&info));
-        }
-    }
-
     // TODO: command line arg to choose between ASI/Rpi camera interface if both
     // present.
     // TODO: command line arg to specify camera index, if multiple cameras
     // present on same interface.
-    // let abstract_cam = ASICamera::new(0).unwrap();
-    let abstract_cam = RpiCamera::new(0).unwrap();
+    let abstract_cam = select_camera(None, 0).unwrap();
 
-    let camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>> =
+    let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>> =
         match args.test_image.as_str() {
         "" => Arc::new(tokio::sync::Mutex::new(abstract_cam)),
         _ => {
@@ -1311,7 +1283,7 @@ async fn main() {
             let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
             let img_u8 = img.to_luma8();
             info!("Using test image {} instead of camera.", args.test_image);
-            Arc::new(tokio::sync::Mutex::new(ImageCamera::new(img_u8).unwrap()))
+            Arc::new(tokio::sync::Mutex::new(Box::new(ImageCamera::new(img_u8).unwrap())))
         },
     };
 

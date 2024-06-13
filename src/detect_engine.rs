@@ -36,7 +36,7 @@ pub struct DetectEngine {
     star_count_goal: i32,
 
     // Note: camera settings can be adjusted behind our back.
-    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
+    camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
 
     // Our state, shared between DetectEngine methods and the worker thread.
     state: Arc<Mutex<DetectState>>,
@@ -97,7 +97,7 @@ impl DetectEngine {
                detection_sigma: f32,
                detection_max_size: i32,
                star_count_goal: i32,
-               camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
+               camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                update_interval: Duration, auto_exposure: bool,
                focus_mode_enabled: bool, stats_capacity: usize)
                -> Self {
@@ -310,7 +310,7 @@ impl DetectEngine {
                     detection_max_size: i32,
                     star_count_goal: i32,
                     state: Arc<Mutex<DetectState>>,
-                    camera: Arc<tokio::sync::Mutex<dyn AbstractCamera + Send>>,
+                    camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                     done: Arc<AtomicBool>) {
         debug!("Starting detect engine");
         // Keep track of when we started the detect cycle.
