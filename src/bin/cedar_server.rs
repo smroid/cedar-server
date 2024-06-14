@@ -8,8 +8,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use cedar_camera::abstract_camera::{AbstractCamera, EnumeratedCameraInfo, Offset};
-use cedar_camera::select_camera::select_camera;
+use cedar_camera::abstract_camera::{AbstractCamera, Offset};
+use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
@@ -1187,6 +1187,17 @@ struct Args {
     #[arg(long, default_value = "/home/pi/tetra3.sock")]
     tetra3_socket: String,
 
+    /// Camera interface to look for. Useful if there are multiple interfaces.
+    /// Currently supported values are "asi" and "rpi". Leave empty if you
+    /// are using only one camera interface, which is typical.
+    #[arg(long, default_value = "")]
+    camera_interface: String,
+
+    /// Which camera (within the chosen camera interface) to use. Leave at 0
+    /// if you only have one camera on the chosen interface, which is typical.
+    #[arg(long, default_value = "0")]
+    camera_index: i32,
+
     /// Test image to use instead of camera.
     #[arg(long, default_value = "")]
     test_image: String,
@@ -1202,7 +1213,7 @@ struct Args {
     max_exposure: Duration,
 
     /// Target number of detected stars for auto-exposure. This is altered by
-    /// the OperationSettings.accuracy setting (multiplier ranging from 0.5 to
+    /// the OperationSettings.accuracy setting (multiplier ranging from 0.7 to
     /// 1.4).
     #[arg(long, default_value = "20")]
     star_count_goal: i32,
@@ -1210,7 +1221,7 @@ struct Args {
     /// The S/N factor used to determine if a background-subtracted pixel is
     /// bright enough relative to the noise measure to be considered part of a
     /// star. This is altered by the OperationSettings.accuracy setting
-    /// (multiplier ranging from 0.5 to 1.4).
+    /// (multiplier ranging from 0.7 to 1.4).
     #[arg(long, default_value = "8.0")]
     sigma: f32,
 
@@ -1269,11 +1280,26 @@ async fn main() {
     let rest = Router::new().nest_service(
         "/", ServeDir::new("/home/pi/projects/cedar/cedar_flutter/build/web"));
 
-    // TODO: command line arg to choose between ASI/Rpi camera interface if both
-    // present.
-    // TODO: command line arg to specify camera index, if multiple cameras
-    // present on same interface.
-    let abstract_cam = select_camera(None, 0).unwrap();
+    let camera_interface = match args.camera_interface.as_str() {
+        "" => None,
+        "asi" => Some(CameraInterface::ASI),
+        "rpi" => Some(CameraInterface::Rpi),
+        _ => {
+            error!("Unrecognized 'camera_interface' value: {}", args.camera_interface);
+            std::process::exit(1);
+        }
+    };
+    let abstract_cam = match select_camera(camera_interface, args.camera_index) {
+        Ok(cam) => cam,
+        Err(e) => {
+            error!("Could not select camera: {:?}", e);
+            std::process::exit(1);
+        }
+    };
+    info!("Using camera {} {}x{}",
+          abstract_cam.model(),
+          abstract_cam.dimensions().0,
+          abstract_cam.dimensions().1);
 
     let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>> =
         match args.test_image.as_str() {
@@ -1356,10 +1382,6 @@ async fn main() {
     let (service_result, alpaca_result) = join!(service_future, alpaca_server_future);
     service_result.unwrap();
     alpaca_result.unwrap();
-}
-
-fn format_camera_info(info: &EnumeratedCameraInfo) -> String {
-    return format!("{} {}x{}", info.model, info.width, info.height);
 }
 
 mod multiplex_service {
