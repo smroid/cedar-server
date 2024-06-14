@@ -13,16 +13,16 @@ alert icon if observer location not yet set.
 
 calibrate for match_max_error
 
-rename camera_service to cedar-camera
+setup central zone: make 1/3 in each direction (will widen it a bit)
 
-change license for Cedar to AGPL or negotiated.
+HQ cam: extra 2x binning for presentation images
+
+change license for Cedar Aim (server & app) to AGPL or negotiated.
 
 Remove refresh rate control. Go full speed; when dwelling for more than N
 seconds drop to 5hz.
 
 Pacifier/busy indicator for capturing image
-
-align/accumulate images? Write out image at end of dwell to observing log?
 
 eq vs alt/az setting
 * alt/az prompts for observer location if not known -- don't bother?
@@ -97,6 +97,8 @@ remote ops, proxied via phone
 * dark calibration
 * show server log
 
+CPU temperature
+
 bug report
 
 .local dns entry
@@ -129,18 +131,10 @@ logging
 
 command line options for camera binning: yes, no, auto.
 
-run camera in single exposure mode (instead of video) if update interval
-is long.
-
 motion classification
 * adjust update interval
 
-broaden camera support
-* RPi HQ
-* RPi GS (color)
-* InnoMaker GS (mono)
-
-multi camera support (choose which)
+multi camera support (command line args to choose which)
 
 UI:
 * operation controls
