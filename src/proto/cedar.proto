@@ -72,11 +72,11 @@ message OperationSettings {
 
   // Controls the speed vs accuracy. Default is BALANCED. Only relevant in
   // OPERATE mode.
-  // High value: uses longer exposures to obtain more detected stars. Also
+  // ACCURATE: uses longer exposures to obtain more detected stars. Also
   //   uses higher detection sigma threshold to reduce false star detections.
   //   Benefit: more robust plate solves, smaller RMS errors. Drawback: slower
   //   cycle time.
-  // Low value: shorter exposures to obtain fewer detected stars. Also uses
+  // FASTER: shorter exposures to obtain fewer detected stars. Also uses
   //   lower detection sigma threshold to find more stars despite shorter
   //   exposures. Benefit: faster cycle time. Drawback: risk of failed plate
   //   solves from too few stars and more spurious detections.
@@ -191,6 +191,8 @@ message FrameRequest {
 
 // Used by FrameRequest to control inclusion of the main image in the
 // FrameResult.
+// TODO: remove this? resolutions and binning are determined by server
+// based on camera and cmd line args.
 enum ImageMode {
   // Full resolution image will be returned.
   DEFAULT = 0;
@@ -587,8 +589,9 @@ message ServerInformationResult {
   // Processor info.
   // * model: RPi or other board model
   // * OS version, etc.
-  // * Ram
-  // * Free disk space
+  // * RAM present, used, free
+  // * temperature
+  // * free disk space
 
   // Network info (hosted network, or access point?)
 
