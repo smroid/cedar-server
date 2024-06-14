@@ -1170,6 +1170,70 @@ impl MyCedar {
     }
 }
 
+// Cedar is designed to support a wide variety of cameras. It has been extensively
+// tested with two rather different camera sensors:
+//
+// ASI120mm mini (AR0130CS):         1.2 megapixel, mono,  6.0 mm diagonal
+// Raspberry Pi HQ camera (IMX477): 12.3 megapixel, color, 7.9 mm diagonal
+//
+// Cedar works very well with low resolution cameras such as the ASI mini. The
+// high pixel resolution of the HQ camera presents some challenges:
+//
+// * Star images are typically highly oversampled (spread out over many pixels)
+//   and often exceed CedarDetect's star profile shape window, and thus are not
+//   detected.
+// * The HQ image has too-high resolution for the phone UI. A half megapixel or
+//   less is adequate for good UI rendering.
+// * Sending the HQ image to the phone UI takes too long.
+//
+// We thus employ image resizing at various points in the processing chain.
+//
+// In Cedar's SETUP mode, we are acquiring images only for focusing and
+// alignment. For the HQ camera, we apply 2x2 sub-sampling (rather than
+// binning), given that focusing and alignment can sacrifice some data quality
+// in favor of speed. We then apply an additional 2x2 binning when sending
+// images to the phone UI. For the HQ camera, the result is a 0.77 megapixel
+// display image, good for visual focus support.
+//
+// In Cedar's OPERATE mode, preserving available signal/noise is the order of
+// the day. The initial capture is done at the HQ sensor's full resolution (in
+// RAW mode), which allows CedarDetect to apply its hot pixel detection
+// algorithm. Any resolution reduction operations are done by binning (rather
+// than sampling) to preserve information.
+//
+// Going into CedarDetect, two rounds of 2x2 binning are applied (4x4 binning)
+// to the HQ image to yield star images that fit CedarDetect's star profile
+// shape window. Note that star candidates so detected are then referenced to
+// the full-resolution original capture for high-accuracy centroiding.
+//
+// An additional 2x2 binning is used when sending HQ images to the phone UI. For
+// the HQ camera, the result is a 0.2 megapixel display image (around 500x375),
+// which is adequate to provide a background for visualizing the plate solve
+// result (this can be overridden with a command line flag e.g. for a tablet UI;
+// see below).
+//
+// For the ASI mini camera, we apply 2x2 binning prior to CedarDetect, and refer
+// star detections to the full resolution capture for centroiding. The 2x2
+// binned image is sent to the phone UI.
+//
+// Rather than hardwiring the above image size reduction strategies for the HQ
+// camera and the ASI mini camera, we instead generalize based on the camera
+// sensor resolution:
+//
+// Camera mpix  SETUP processing  SETUP display  OPERATE processing  OPERATE display
+//   < 0.5        no sampling       no binning     no binning          no binning
+//   0.5 to 1     no sampling       no binning     no binning          +2x2 binning
+//   1 to 2       no sampling       +2x2 binning   2x2 binning         no binning
+//   2 to 6       2x2 sampling      no binning     4x4 binning         no binning
+//   6 to 16      2x2 sampling      +2x2 binning   4x4 binning         +2x2 binning
+//   >16 same as 16, but not likely to work well.
+//
+// Note that the "display" binning value is always the additional binning (if
+// any) applied after the "processing" sampling/binning has been applied.
+//
+// Command line arguments are provided to allow overrides to be applied to the
+// above rubric.
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about=None)]
 struct Args {
