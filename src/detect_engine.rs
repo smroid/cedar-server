@@ -463,7 +463,7 @@ impl DetectEngine {
             let (stars, hot_pixel_count, binned_image, mut histogram) =
                 get_stars_from_image(&image, noise_estimate,
                                      adjusted_sigma, detection_max_size as u32,
-                                     /*use_binned_image=*/true,
+                                     /*binning=*/2,  // TODO: param this.
                                      /*detect_hot_pixels=*/true,
                                      /*return_binned_image=*/true);
             // Average the peak pixels of the N brightest stars.
