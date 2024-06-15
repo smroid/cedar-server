@@ -971,7 +971,7 @@ impl MyCedar {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration, max_exposure_duration,
             min_detection_sigma, base_detection_sigma,
-            /*detection_max_size=*/10,  // TODO: command line arg?
+            /*detection_max_size=*/10,  // TODO: command line arg? do as fraction of image size
             base_star_count_goal,
             camera.clone(),
             /*update_interval=*/Duration::ZERO,
@@ -1189,28 +1189,28 @@ impl MyCedar {
 // We thus employ image resizing at various points in the processing chain.
 //
 // In Cedar's SETUP mode, we are acquiring images only for focusing and
-// alignment. For the HQ camera, we apply 2x2 sub-sampling (rather than
-// binning), given that focusing and alignment can sacrifice some data quality
-// in favor of speed. We then apply an additional 2x2 binning when sending
-// images to the phone UI. For the HQ camera, the result is a 0.77 megapixel
-// display image, good for visual focus support.
+// alignment. For the HQ camera, we apply 2x2 sampling (rather than binning),
+// given that focusing and alignment can sacrifice some data quality in favor of
+// speed. We then apply an additional 2x2 sampling when sending images to the
+// phone UI. For the HQ camera, the result is a 0.77 megapixel display image,
+// good for visual focus support.
 //
 // In Cedar's OPERATE mode, preserving available signal/noise is the order of
 // the day. The initial capture is done at the HQ sensor's full resolution (in
 // RAW mode), which allows CedarDetect to apply its hot pixel detection
-// algorithm. Any resolution reduction operations are done by binning (rather
-// than sampling) to preserve information.
+// algorithm. Any resolution reduction operations feeding CedarDetect are done
+// by binning (rather than sampling) to preserve information.
 //
-// Going into CedarDetect, two rounds of 2x2 binning are applied (4x4 binning)
-// to the HQ image to yield star images that fit CedarDetect's star profile
-// shape window. Note that star candidates so detected are then referenced to
-// the full-resolution original capture for high-accuracy centroiding.
+// Going into CedarDetect, 4x4 binning is applied to the HQ image to yield star
+// images that fit CedarDetect's star profile shape window. Note that star
+// candidates so detected are then referenced to the full-resolution original
+// capture for high-accuracy centroiding.
 //
-// An additional 2x2 binning is used when sending HQ images to the phone UI. For
-// the HQ camera, the result is a 0.2 megapixel display image (around 500x375),
-// which is adequate to provide a background for visualizing the plate solve
-// result (this can be overridden with a command line flag e.g. for a tablet UI;
-// see below).
+// An additional 2x2 sampling is used when sending HQ images to the phone UI.
+// For the HQ camera, the result is a 0.2 megapixel display image (around
+// 500x375), which is adequate to provide a background for visualizing the plate
+// solve result (this can be overridden with a command line flag e.g. for a
+// tablet UI; see below).
 //
 // For the ASI mini camera, we apply 2x2 binning prior to CedarDetect, and refer
 // star detections to the full resolution capture for centroiding. The 2x2
@@ -1221,14 +1221,14 @@ impl MyCedar {
 // sensor resolution:
 //
 // Camera mpix  SETUP processing  SETUP display  OPERATE processing  OPERATE display
-//   < 0.5        no sampling       no binning     no binning          no binning
-//   0.5 to 1     no sampling       no binning     no binning          +2x2 binning
-//   1 to 2       no sampling       +2x2 binning   2x2 binning         no binning
-//   2 to 6       2x2 sampling      no binning     4x4 binning         no binning
-//   6 to 16      2x2 sampling      +2x2 binning   4x4 binning         +2x2 binning
-//   >16 same as 16, but not likely to work well.
+//       < 0.5
+//       0.5-1                                                        +2x2 sampling
+// ASI   1-2                       +2x2 sampling  2x2 binning
+//       2-6     2x2 sampling                     4x4 binning
+// HQ    6-16    2x2 sampling      +2x2 sampling  4x4 binning         +2x2 sampling
+//       >16 same as 16, but not likely to work well.
 //
-// Note that the "display" binning value is always the additional binning (if
+// Note that the "display" sampling value is always the additional sampling (if
 // any) applied after the "processing" sampling/binning has been applied.
 //
 // Command line arguments are provided to allow overrides to be applied to the
@@ -1267,11 +1267,11 @@ struct Args {
     #[arg(long)]
     setup_sampling: Option<bool>,
 
-    /// Specifies whether 2x2 binning is applied (in addition to 2x2
+    /// Specifies whether 2x2 sampling is applied (in addition to 2x2
     /// setup-sampling, if any) when sending SETUP mode images to the UI.
     /// Omit this to use the resolution-determined value.
     #[arg(long)]
-    setup_display_binning: Option<bool>,
+    setup_display_sampling: Option<bool>,
 
     /// Specifies whether binning is applied prior to CedarDetect processing,
     /// and if so whether it is 2x2 binning or 4x4 binning. Legal values are 1
@@ -1280,11 +1280,11 @@ struct Args {
     #[arg(long)]
     operate_binning: Option<i32>,
 
-    /// Specifies whether 2x2 binning is applied (in addition to 2x2 or 4x4
+    /// Specifies whether 2x2 sampling is applied (in addition to 2x2 or 4x4
     /// operate-binning, if any) when sending OPERATE mode images to the UI.
     /// Omit this to use the resolution-determined value.
     #[arg(long)]
-    operate_display_binning: Option<bool>,
+    operate_display_sampling: Option<bool>,
 
     /// Test image to use instead of camera.
     #[arg(long, default_value = "")]
@@ -1406,42 +1406,40 @@ async fn main() {
 
     // Initialize sampling/binning parameters based on sensor resolution.
     let mut setup_sampling = false;
-    let mut setup_display_binning = false;
+    let mut setup_display_sampling = false;
     let mut operate_binning = 1;
-    let mut operate_display_binning = false;
+    let mut operate_display_sampling = false;
     if mpix <= 0.5 {
         // Use initial values.
     } else if mpix <= 1.0 {
-        operate_display_binning = true;
+        operate_display_sampling = true;
     } else if mpix <= 2.0 {
-        setup_display_binning = true;
+        setup_display_sampling = true;
         operate_binning = 2;
     } else if mpix <= 6.0 {
         setup_sampling = true;
         operate_binning = 4;
     } else if mpix <= 16.0 {
         setup_sampling = true;
-        setup_display_binning = true;
+        setup_display_sampling = true;
         operate_binning = 4;
-        operate_display_binning = true;
+        operate_display_sampling = true;
     } else {
         setup_sampling = true;
-        setup_display_binning = true;
+        setup_display_sampling = true;
         operate_binning = 4;
-        operate_display_binning = true;
+        operate_display_sampling = true;
     }
     // Allow command-line overrides of sampling/binning parameters.
     if let Some(setup_sampling_arg) = args.setup_sampling {
         setup_sampling = setup_sampling_arg;
     }
-    if let Some(setup_display_binning_arg) = args.setup_display_binning {
-        setup_display_binning = setup_display_binning_arg;
+    if let Some(setup_display_sampling_arg) = args.setup_display_sampling {
+        setup_display_sampling = setup_display_sampling_arg;
     }
     if let Some(operate_binning_arg) = args.operate_binning {
         match operate_binning_arg {
-            1 => (),
-            2 => (),
-            4 => (),
+            1 | 2 | 4 => (),
             _ => {
                 error!("Invalid operate-binning argument {}, must be 1, 2, or 4",
                        operate_binning_arg);
@@ -1450,9 +1448,10 @@ async fn main() {
         }
         operate_binning = operate_binning_arg;
     }
-    if let Some(operate_display_binning_arg) = args.operate_display_binning {
-        operate_display_binning = operate_display_binning_arg;
+    if let Some(operate_display_sampling_arg) = args.operate_display_sampling {
+        operate_display_sampling = operate_display_sampling_arg;
     }
+    // TODO: debug-log the mpix value and the sampling/binning settings.
 
     let shared_telescope_position = Arc::new(Mutex::new(TelescopePosition::new()));
 
