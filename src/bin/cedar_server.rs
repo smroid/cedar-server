@@ -1259,8 +1259,32 @@ struct Args {
 
     /// Which camera (within the chosen camera interface) to use. Leave at 0
     /// if you only have one camera on the chosen interface, which is typical.
-    #[arg(long, default_value = "0")]
+    #[arg(long, default_value_t = 0)]
     camera_index: i32,
+
+    /// Specifies whether 2x2 sampling is applied prior to SETUP processing.
+    /// Omit this to use the resolution-determined value.
+    #[arg(long)]
+    setup_sampling: Option<bool>,
+
+    /// Specifies whether 2x2 binning is applied (in addition to 2x2
+    /// setup-sampling, if any) when sending SETUP mode images to the UI.
+    /// Omit this to use the resolution-determined value.
+    #[arg(long)]
+    setup_display_binning: Option<bool>,
+
+    /// Specifies whether binning is applied prior to CedarDetect processing,
+    /// and if so whether it is 2x2 binning or 4x4 binning. Legal values are 1
+    /// (no binning), 2, or 4.
+    /// Omit this to use the resolution-determined value.
+    #[arg(long)]
+    operate_binning: Option<i32>,
+
+    /// Specifies whether 2x2 binning is applied (in addition to 2x2 or 4x4
+    /// operate-binning, if any) when sending OPERATE mode images to the UI.
+    /// Omit this to use the resolution-determined value.
+    #[arg(long)]
+    operate_display_binning: Option<bool>,
 
     /// Test image to use instead of camera.
     #[arg(long, default_value = "")]
@@ -1279,19 +1303,21 @@ struct Args {
     /// Target number of detected stars for auto-exposure. This is altered by
     /// the OperationSettings.accuracy setting (multiplier ranging from 0.7 to
     /// 1.4).
-    #[arg(long, default_value = "20")]
+    #[arg(long, default_value_t = 20)]
     star_count_goal: i32,
 
     /// The S/N factor used to determine if a background-subtracted pixel is
     /// bright enough relative to the noise measure to be considered part of a
     /// star. This is altered by the OperationSettings.accuracy setting
     /// (multiplier ranging from 0.7 to 1.4).
-    #[arg(long, default_value = "8.0")]
+    #[arg(long, default_value_t = 8.0)]
     sigma: f32,
+
+    // TODO: max detection size
 
     /// Specifies a value below which `sigma` is not adjusted by the
     /// OperationSettings.accuracy setting.
-    #[arg(long, default_value = "5.0")]
+    #[arg(long, default_value_t = 5.0)]
     min_sigma: f32,
 
     /// Path to UI preferences file.
@@ -1364,6 +1390,7 @@ async fn main() {
           abstract_cam.model(),
           abstract_cam.dimensions().0,
           abstract_cam.dimensions().1);
+    let mpix = (abstract_cam.dimensions().0 * abstract_cam.dimensions().1) as f64 / 1000000.0;
 
     let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>> =
         match args.test_image.as_str() {
@@ -1376,6 +1403,56 @@ async fn main() {
             Arc::new(tokio::sync::Mutex::new(Box::new(ImageCamera::new(img_u8).unwrap())))
         },
     };
+
+    // Initialize sampling/binning parameters based on sensor resolution.
+    let mut setup_sampling = false;
+    let mut setup_display_binning = false;
+    let mut operate_binning = 1;
+    let mut operate_display_binning = false;
+    if mpix <= 0.5 {
+        // Use initial values.
+    } else if mpix <= 1.0 {
+        operate_display_binning = true;
+    } else if mpix <= 2.0 {
+        setup_display_binning = true;
+        operate_binning = 2;
+    } else if mpix <= 6.0 {
+        setup_sampling = true;
+        operate_binning = 4;
+    } else if mpix <= 16.0 {
+        setup_sampling = true;
+        setup_display_binning = true;
+        operate_binning = 4;
+        operate_display_binning = true;
+    } else {
+        setup_sampling = true;
+        setup_display_binning = true;
+        operate_binning = 4;
+        operate_display_binning = true;
+    }
+    // Allow command-line overrides of sampling/binning parameters.
+    if let Some(setup_sampling_arg) = args.setup_sampling {
+        setup_sampling = setup_sampling_arg;
+    }
+    if let Some(setup_display_binning_arg) = args.setup_display_binning {
+        setup_display_binning = setup_display_binning_arg;
+    }
+    if let Some(operate_binning_arg) = args.operate_binning {
+        match operate_binning_arg {
+            1 => (),
+            2 => (),
+            4 => (),
+            _ => {
+                error!("Invalid operate-binning argument {}, must be 1, 2, or 4",
+                       operate_binning_arg);
+                std::process::exit(1);
+            }
+        }
+        operate_binning = operate_binning_arg;
+    }
+    if let Some(operate_display_binning_arg) = args.operate_display_binning {
+        operate_display_binning = operate_display_binning_arg;
+    }
 
     let shared_telescope_position = Arc::new(Mutex::new(TelescopePosition::new()));
 
