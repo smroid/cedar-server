@@ -61,6 +61,16 @@ struct DetectState {
     // True means populate `DetectResult.focus_aid` info.
     focus_mode_enabled: bool,
 
+    // Tells if the input image has been 2x2 sampled.
+    // See "About Resolutions" in cedar_server.rs.
+    sampled: bool,
+
+    // When running CedarDetect, this supplies the `binning` value used. This
+    // is passed in set_focus_mode(); the caller takes into account how much
+    // binning is needed and whether the input image has already been sampled.
+    // See "About Resolutions" in cedar_server.rs.
+    binning_for_detect: u32,
+
     // When using auto exposure in operate mode, this is the exposure duration
     // determined (by calibration) to yield `star_count_goal` detected stars.
     // Auto exposure logic will only deviate from this by a bounded amount.
@@ -114,6 +124,8 @@ impl DetectEngine {
                 auto_exposure,
                 update_interval,
                 focus_mode_enabled,
+                sampled: false,
+                binning_for_detect: 1,
                 calibrated_exposure_duration: None,
                 accuracy_multiplier: 1.0,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
@@ -157,9 +169,11 @@ impl DetectEngine {
         Ok(())
     }
 
-    pub fn set_focus_mode(&mut self, enabled: bool) {
+    pub fn set_focus_mode(&mut self, enabled: bool, sampled: bool, binning: u32) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.focus_mode_enabled = enabled;
+        locked_state.sampled = sampled;
+        locked_state.binning_for_detect = binning;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -319,8 +333,10 @@ impl DetectEngine {
             let auto_exposure: bool;
             let update_interval: Duration;
             let focus_mode_enabled: bool;
+            let binning_for_detect: u32;
             let calibrated_exposure_duration: Option<Duration>;
             let accuracy_multiplier: f32;
+            let coord_scale: f32;
             {
                 let mut locked_state = state.lock().unwrap();
                 if locked_state.stop_request {
@@ -332,9 +348,11 @@ impl DetectEngine {
                 auto_exposure = locked_state.auto_exposure;
                 update_interval = locked_state.update_interval;
                 focus_mode_enabled = locked_state.focus_mode_enabled;
+                binning_for_detect = locked_state.binning_for_detect;
                 calibrated_exposure_duration =
                     locked_state.calibrated_exposure_duration;
                 accuracy_multiplier = locked_state.accuracy_multiplier;
+                coord_scale = if locked_state.sampled { 2.0 } else { 1.0 };
             }
             // Is it time to generate the next DetectResult?
             let now = Instant::now();
@@ -376,6 +394,8 @@ impl DetectEngine {
             // Process the just-acquired image.
             let process_start_time = Instant::now();
             let image: &GrayImage = &captured_image.image;
+            // Note: `image` is not necessarily at full resolution; it might
+            // have been 2x2 sampled.
             let (width, height) = image.dimensions();
             let center_size = std::cmp::min(width, height) / 3;
             let center_region = Rect::at(((width - center_size) / 2) as i32,
@@ -441,10 +461,10 @@ impl DetectEngine {
                                                 sub_image_size as u32).to_image();
                 scale_image_mut(&mut peak_image, black_level as u8, peak_value, /*gamma=*/0.7);
                 focus_aid = Some(FocusAid{
-                    center_peak_position: peak_position,
+                    center_peak_position: Self::scale_coord(peak_position, coord_scale),
                     center_peak_value: peak_value,
                     peak_image,
-                    peak_image_region: peak_region,
+                    peak_image_region: Self::scale_rect(peak_region, coord_scale as u32),
                 });
             }  // focus_mode_enabled
 
@@ -460,17 +480,27 @@ impl DetectEngine {
             }
             let adjusted_sigma = f32::max(detection_sigma * accuracy_multiplier,
                                           detection_min_sigma);
-            let (stars, hot_pixel_count, binned_image, mut histogram) =
-                get_stars_from_image(&image, noise_estimate,
-                                     adjusted_sigma, detection_max_size as u32,
-                                     /*binning=*/2,  // TODO: param this.
-                                     /*detect_hot_pixels=*/true,
-                                     /*return_binned_image=*/true);
-            // Average the peak pixels of the N brightest stars.
+            let (mut stars, hot_pixel_count, detect_binned_image, mut histogram) =
+                get_stars_from_image(
+                    &image, noise_estimate,
+                    adjusted_sigma, detection_max_size as u32,
+                    /*binning=*/binning_for_detect,
+                    /*detect_hot_pixels=*/true,
+                    /*return_binned_image=*/binning_for_detect != 1);
+            let binned_image = if let Some(bi) = detect_binned_image {
+                Some(Arc::new(bi))
+            } else {
+                None
+            };
+
+            // Average the peak pixels of the N brightest stars. Also adjust the
+            // coordinates of `stars` to full resolution.
             let mut sum_peak: i32 = 0;
             let mut num_peak = 0;
             const NUM_PEAKS: i32 = 10;
-            for star in &stars {
+            for star in stars.iter_mut() {
+                star.centroid_x *= coord_scale;
+                star.centroid_y *= coord_scale;
                 sum_peak += star.peak_value as i32;
                 num_peak += 1;
                 if num_peak >= NUM_PEAKS {
@@ -570,19 +600,28 @@ impl DetectEngine {
             locked_state.detect_result = Some(DetectResult{
                 frame_id: locked_state.frame_id.unwrap(),
                 captured_image: captured_image,
-                binned_image: Arc::new(binned_image.unwrap()),
+                binned_image,
                 star_candidates: stars,
                 display_black_level: black_level as u8,
                 noise_estimate,
                 hot_pixel_count: hot_pixel_count as i32,
                 peak_star_pixel: peak_star_pixel as u8,
                 focus_aid,
-                center_region,
+                center_region: Self::scale_rect(center_region, coord_scale as u32),
                 processing_duration: elapsed,
                 detect_latency_stats:
                 locked_state.detect_latency_stats.value_stats.clone(),
             });
         }  // loop.
+    }
+
+    fn scale_coord(coord: (f32, f32), scale: f32) -> (f32, f32) {
+        (coord.0 * scale, coord.1 * scale)
+    }
+
+    fn scale_rect(rect: Rect, scale: u32) -> Rect {
+        Rect::at(rect.left() * scale as i32, rect.top() * scale as i32)
+            .of_size(rect.width() * scale, rect.height() * scale)
     }
 }
 
@@ -591,21 +630,22 @@ pub struct DetectResult {
     // See the corresponding field in cedar.FrameResult proto message.
     pub frame_id: i32,
 
-    // The full resolution camera image used to produce the information in this
-    // detect result.
+    // The camera image used to produce the information in this detect result.
+    // Note that in focus mode this might be a 2x2 sampling of the camera's full
+    // resolution.
     pub captured_image: CapturedImage,
 
-    // The 2x2 binned image computed (with hot pixel removal) from
-    // `captured_image`.
-    pub binned_image: Arc<GrayImage>,
+    // If binning was applied prior to detect, this is the 2x2 or 4x4 binned
+    // (and hot pixel removed) image.
+    pub binned_image: Option<Arc<GrayImage>>,
 
     // The star candidates detected by CedarDetect; ordered by highest
     // StarDescription.mean_brightness first.
     pub star_candidates: Vec<StarDescription>,
 
-    // When displaying the `binned_image`, map this pixel value to
-    // black. This is chosen to allow stars to be visible but supress
-    // the background level.
+    // When displaying the captured (or binned) image, map this pixel value to
+    // black. This is chosen to allow stars to be visible but supress the
+    // background level.
     pub display_black_level: u8,
 
     // Estimate of the RMS noise of the full-resolution image.
@@ -623,6 +663,7 @@ pub struct DetectResult {
 
     // See the corresponding field in FrameResult. Note that this is populated
     // even when not in `focus_mode_enabled`.
+    // This is in full resolution coordinates.
     pub center_region: Rect,
 
     // Time taken to produce this DetectResult, excluding the time taken to
@@ -641,8 +682,8 @@ pub struct FocusAid {
     // See the corresponding field in FrameResult.
     pub center_peak_value: u8,
 
-    // A small full resolution crop of `captured_image` centered at
-    // `center_peak_position`. Brightness scaled to full range for visibility.
+    // A small crop of `captured_image` centered at `center_peak_position`.
+    // Brightness scaled to full range for visibility.
     pub peak_image: GrayImage,
 
     // The location of `peak_image`.
