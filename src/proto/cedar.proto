@@ -183,22 +183,6 @@ message FrameRequest {
   // server's current FrameResult. If omitted, GetFrame() will return the
   // server's current FrameResult.
   optional int32 prev_frame_id = 1;
-
-  // Controls whether and how the camera's image is returned with the
-  // FrameResult.
-  ImageMode main_image_mode = 2;
-}
-
-// Used by FrameRequest to control inclusion of the main image in the
-// FrameResult.
-// TODO: remove this? resolutions and binning are determined by server
-// based on camera and cmd line args.
-enum ImageMode {
-  // Full resolution image will be returned.
-  DEFAULT = 0;
-
-  // 2x2 binned image will be returned.
-  BINNED = 1;
 }
 
 // Next tag: 31.
@@ -221,9 +205,9 @@ message FrameResult {
 
   // Information returned regardless of `operating_mode`.
 
-  // The image from which information in this FrameResult is derived. Can be
-  // binned according to the FrameRequest. Note that this image has
-  // stretch/gamma applied for better visibility of dark features.
+  // The image from which information in this FrameResult is derived. Note that
+  // this image has stretch/gamma applied for better visibility of dark
+  // features.
   Image image = 3;
 
   // The camera exposure integration time for `image`.
@@ -239,7 +223,8 @@ message FrameResult {
   // first.
   repeated StarCentroid star_candidates = 4;
 
-  // Estimate of the RMS noise of the full-resolution image.
+  // Estimate of the RMS noise of the full-resolution image. In 8 bit ADU
+  // units.
   float noise_estimate = 26;
 
   // Information about Cedar's performance.
@@ -263,7 +248,7 @@ message FrameResult {
   // Information returned when `operating_mode` is SETUP.
 
   // Identifies the center region used for brightest-star detection for focusing
-  // support.
+  // support. In full resolution image coordinates.
   optional Rectangle center_region = 11;
 
   // The estimated position of the brightest point in `center_region`. In full
@@ -273,7 +258,7 @@ message FrameResult {
   // The pixel value at the center_peak_position.
   optional int32 center_peak_value = 6;
 
-  // A small full resolution crop of `image` centered at `center_peak_position`.
+  // A small high resolution crop of `image` centered at `center_peak_position`.
   // Note that this image has stretch/gamma applied for better visibility of
   // dark features.
   optional Image center_peak_image = 13;
@@ -310,21 +295,24 @@ message FrameResult {
 }
 
 message Image {
-  // Whether the image is binned or full resolution. Values:
-  // 1 (or omitted): full resolution
-  // 2: 2x2 binning.
+  // Whether the image is binned/sampled or full resolution. Values:
+  // 1: full resolution image from camera sensor.
+  // 2: 2x lower resolution than camera sensor (in both x and y axes).
+  // 4: 4x lower resolution than camera sensor.
+  // 8: 8x lower resolution than camera sensor.
   int32 binning_factor = 1;
 
   // Specifies what part of the camera sensor this Image corresponds to, in full
-  // resolution units. If binning_factor is 2, the `image_data` dimensions are
-  // rectangle.width/2, rectangle.height/2 (floored).
+  // resolution units. If binning_factor is B, the `image_data` dimensions are
+  // rectangle.width/B, rectangle.height/B (floored).
   Rectangle rectangle = 2;
 
   // Must be a recognized file format, e.g. BMP grayscale 8 bits per pixel.
   bytes image_data = 3;
 }
 
-// Describes the position/size of an Image within the camera's sensor.
+// Describes the position/size of an region within the camera's sensor. In
+// full resolution units.
 message Rectangle {
   int32 origin_x = 1;
   int32 origin_y = 2;

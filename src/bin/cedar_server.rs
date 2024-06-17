@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::net::SocketAddr;
-use std::ops::DerefMut;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -15,6 +15,8 @@ use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
 use image::{GrayImage, ImageFormat};
 use image::io::Reader as ImageReader;
+use image::imageops;
+use image::imageops::FilterType;
 
 use nix::time::{ClockId, clock_gettime, clock_settime};
 use nix::sys::time::TimeSpec;
@@ -36,7 +38,7 @@ use cedar::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position
 use cedar::cedar::cedar_server::{Cedar, CedarServer};
 use cedar::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
                    EmptyMessage, FixedSettings, FrameRequest, FrameResult,
-                   Image, ImageCoord, ImageMode, LatLong, LocationBasedInfo, MountType,
+                   Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
                    OperatingMode, OperationSettings, ProcessingStats, Rectangle,
                    StarCentroid, Preferences, ServerInformationRequest,
                    ServerInformationResult};
@@ -100,6 +102,21 @@ struct CedarState {
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<Mutex<TelescopePosition>>,
     polar_analyzer: Arc<Mutex<PolarAnalyzer>>,
+
+    // See "About Resolutions" below.
+    // Whether camera image is 2x subsampled in SETUP mode.
+    setup_sampling: bool,
+    // Whether (and how much, 2x2 or 4x4) the (possibly sampled) image is binned
+    // in SETUP mode.
+    setup_binning: u32,
+    // Whether (possibly sampled/binned) image is to be 2x sampled when sending
+    // to the UI.
+    setup_display_sampling: bool,
+    // Whether (and how much, 2x2 or 4x4) camera image is binned in OPERATE mode.
+    operate_binning: u32,
+    // Whether (possibly binned) image is to be 2x sampled when sending to
+    // the UI.
+    operate_display_sampling: bool,
 
     // We host the user interface preferences here. These do not affect server
     // operation; we reflect them out to all clients and persist them to a
@@ -217,11 +234,12 @@ impl Cedar for MyCedar {
                         return Err(tonic_status(x));
                     }
                     locked_state.solve_engine.lock().await.stop().await;
-                    locked_state.detect_engine.lock().await.set_focus_mode(true);
                     Self::reset_session_stats(locked_state.deref_mut()).await;
                     if let Err(x) = Self::set_pre_calibration_defaults(&*locked_state).await {
                         return Err(tonic_status(x));
                     }
+                    locked_state.detect_engine.lock().await.set_focus_mode(
+                        true, locked_state.setup_sampling, locked_state.setup_binning);
                     locked_state.operation_settings.operating_mode =
                         Some(OperatingMode::Setup as i32);
                 }
@@ -246,7 +264,7 @@ impl Cedar for MyCedar {
                     // FrameResult with a information about the ongoing
                     // calibration.
                     let state = self.state.clone();
-                    let solve_timeout = Duration::from_secs(5);
+                    let solve_timeout = Duration::from_secs(1);
                     let _task_handle: tokio::task::JoinHandle<
                             Result<tonic::Response<OperationSettings>, tonic::Status>> =
                         tokio::task::spawn(async move {
@@ -276,7 +294,8 @@ impl Cedar for MyCedar {
                                 *locked_state.cancel_calibration.lock().unwrap() = false;
                             } else {
                                 // Transition into Operate mode.
-                                locked_state.detect_engine.lock().await.set_focus_mode(false);
+                                locked_state.detect_engine.lock().await.set_focus_mode(
+                                    false, /*sampled=*/false, locked_state.operate_binning);
                                 locked_state.solve_engine.lock().await.start().await;
                                 // Restore OPERATE mode update interval.
                                 let std_duration;
@@ -402,7 +421,7 @@ impl Cedar for MyCedar {
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let req: FrameRequest = request.into_inner();
         let frame_result = Self::get_next_frame(
-            self.state.clone(), req.prev_frame_id, req.main_image_mode).await;
+            self.state.clone(), req.prev_frame_id).await;
         Ok(tonic::Response::new(frame_result))
     }
 
@@ -496,9 +515,6 @@ impl MyCedar {
 
     async fn set_update_interval(state: &CedarState, update_interval: std::time::Duration)
                                  -> Result<(), CanonicalError> {
-        // TODO: if the update interval is long, it might make sense to take the
-        // camera out of video mode and do individual captures. The main issue
-        // is whether this can lower power consumption.
         state.camera.lock().await.set_update_interval(update_interval)?;
         state.detect_engine.lock().await.set_update_interval(update_interval)?;
         state.solve_engine.lock().await.set_update_interval(update_interval)
@@ -519,6 +535,9 @@ impl MyCedar {
         if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
             debug!("Could not set offset: {:?}", e);
         }
+        if state.setup_sampling {
+            locked_camera.set_sampled(true).unwrap();
+        }
         let mut locked_solve_engine = state.solve_engine.lock().await;
         locked_solve_engine.set_fov_estimate(/*fov_estimate=*/None)?;
         locked_solve_engine.set_distortion(0.0)?;
@@ -534,6 +553,7 @@ impl MyCedar {
                        solve_timeout: Duration)
                        -> Result<(), CanonicalError> {
         let setup_exposure_duration;
+        let detection_binning;
         let detection_sigma;
         let detection_max_size;
         let star_count_goal;
@@ -554,10 +574,13 @@ impl MyCedar {
 
             // What was the final exposure duration coming out of SETUP mode?
             setup_exposure_duration = camera.lock().await.get_exposure_duration();
-
+            if locked_state.setup_sampling {
+                camera.lock().await.set_sampled(false).unwrap();
+            }
             // For calibrations, use statically configured sigma value, not adjusted
             // by accuracy setting.
             let locked_detect_engine = detect_engine.lock().await;
+            detection_binning = locked_state.operate_binning;
             detection_sigma = locked_detect_engine.get_detection_sigma();
             detection_max_size = locked_detect_engine.get_detection_max_size();
             star_count_goal = locked_detect_engine.get_star_count_goal();
@@ -578,8 +601,9 @@ impl MyCedar {
         calibration_data.lock().await.camera_offset = Some(offset.value());
 
         let exp_duration = match calibrator.lock().await.calibrate_exposure_duration(
-            setup_exposure_duration, star_count_goal, detection_sigma,
-            detection_max_size, cancel_calibration.clone()).await {
+            setup_exposure_duration, star_count_goal,
+            detection_binning, detection_sigma, detection_max_size,
+            cancel_calibration.clone()).await {
             Ok(ed) => ed,
             Err(e) => {
                 if e.code == CanonicalErrorCode::Aborted {
@@ -596,8 +620,8 @@ impl MyCedar {
         detect_engine.lock().await.set_calibrated_exposure_duration(exp_duration);
 
         match calibrator.lock().await.calibrate_optical(
-            solve_engine.clone(), exp_duration, solve_timeout, detection_sigma,
-            detection_max_size).await
+            solve_engine.clone(), exp_duration, solve_timeout,
+            detection_binning, detection_sigma, detection_max_size).await
         {
             Ok((fov, distortion, solve_duration)) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
@@ -642,19 +666,20 @@ impl MyCedar {
     }
 
     async fn get_next_frame(state: Arc<tokio::sync::Mutex<CedarState>>,
-                            prev_frame_id: Option<i32>, main_image_mode: i32)
+                            prev_frame_id: Option<i32>)
                             -> FrameResult {
         let overall_start_time = Instant::now();
 
-        let mut binning_factor = 1;
-        if main_image_mode == ImageMode::Binned as i32 {
-            binning_factor = 2;
-        }
-
         let mut frame_result = FrameResult {..Default::default()};
         let mut fixed_settings;
+        let image_rectangle;
         {
             let locked_state = state.lock().await;
+            image_rectangle = Rectangle{
+                origin_x: 0, origin_y: 0,
+                width: locked_state.width as i32,
+                height: locked_state.height as i32,
+            };
 
             fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
             // Fill in our current time.
@@ -676,18 +701,13 @@ impl MyCedar {
                 frame_result.calibration_progress = Some(fraction);
 
                 if let Some(img) = &locked_state.scaled_image {
-                    let image_rectangle = Rectangle{
-                        origin_x: 0, origin_y: 0,
-                        width: locked_state.width as i32,
-                        height: locked_state.height as i32,
-                    };
                     let (scaled_width, scaled_height) = img.dimensions();
                     let mut bmp_buf = Vec::<u8>::new();
                     bmp_buf.reserve((scaled_width * scaled_height) as usize);
                     img.write_to(&mut Cursor::new(&mut bmp_buf),
                                  ImageFormat::Bmp).unwrap();
                     frame_result.image = Some(Image{
-                        binning_factor,
+                        binning_factor: locked_state.operate_binning as i32,
                         // Rectangle is always in full resolution coordinates.
                         rectangle: Some(image_rectangle),
                         image_data: bmp_buf,
@@ -695,7 +715,7 @@ impl MyCedar {
                 }
                 return frame_result;
             }
-        }
+        }  // locked_state.
 
         // Populated only in OperatingMode::Operate mode.
         let mut tetra3_solve_result: Option<SolveResultProto> = None;
@@ -716,16 +736,10 @@ impl MyCedar {
         }
         let serve_start_time = Instant::now();
 
+        // TODO: start a new locked_state block here.
+
         frame_result.frame_id = detect_result.frame_id;
         let captured_image = &detect_result.captured_image;
-        let (width, height) = captured_image.image.dimensions();
-        state.lock().await.width = width;
-        state.lock().await.height = height;
-        let image_rectangle = Rectangle{
-            origin_x: 0, origin_y: 0,
-            width: width as i32,
-            height: height as i32,
-        };
         frame_result.exposure_time = Some(prost_types::Duration::try_from(
             captured_image.capture_params.exposure_duration).unwrap());
         frame_result.capture_time = Some(prost_types::Timestamp::try_from(
@@ -745,8 +759,18 @@ impl MyCedar {
         frame_result.star_candidates = centroids;
         frame_result.noise_estimate = detect_result.noise_estimate;
 
+        let display_sampling;
+        if state.lock().await.operation_settings.operating_mode ==
+            Some(OperatingMode::Operate as i32)
+        {
+            display_sampling = state.lock().await.operate_display_sampling;
+        } else {
+            display_sampling = state.lock().await.setup_display_sampling;
+        }
+
         let peak_value;
         if let Some(fa) = &detect_result.focus_aid {
+            let locked_state = state.lock().await;
             peak_value = fa.center_peak_value;
             frame_result.center_region = Some(Rectangle {
                 origin_x: detect_result.center_region.left(),
@@ -758,22 +782,22 @@ impl MyCedar {
                 x: fa.center_peak_position.0 as f32,
                 y: fa.center_peak_position.1 as f32,
             };
-            *state.lock().await.center_peak_position.lock().unwrap() = Some(ic.clone());
+            *locked_state.center_peak_position.lock().unwrap() = Some(ic.clone());
             frame_result.center_peak_position = Some(ic);
             frame_result.center_peak_value = Some(fa.center_peak_value as i32);
 
             // Populate `center_peak_image`.
-            let mut center_peak_bmp_buf = Vec::<u8>::new();
             let center_peak_image = &fa.peak_image;
             let peak_image_region = &fa.peak_image_region;
             let (center_peak_width, center_peak_height) =
                 center_peak_image.dimensions();
+            let mut center_peak_bmp_buf = Vec::<u8>::new();
             center_peak_bmp_buf.reserve(
                 (center_peak_width * center_peak_height) as usize);
             center_peak_image.write_to(&mut Cursor::new(&mut center_peak_bmp_buf),
                                        ImageFormat::Bmp).unwrap();
             frame_result.center_peak_image = Some(Image{
-                binning_factor: 1,
+                binning_factor: if locked_state.setup_sampling { 2 } else { 1 },
                 rectangle: Some(Rectangle{
                     origin_x: peak_image_region.left(),
                     origin_y: peak_image_region.top(),
@@ -789,13 +813,24 @@ impl MyCedar {
 
         // Populate `image` as requested.
         let mut disp_image = &captured_image.image;
-        if main_image_mode == ImageMode::Binned as i32 {
-            disp_image = &detect_result.binned_image;
+        if detect_result.binned_image.is_some() {
+            disp_image = detect_result.binned_image.as_ref().unwrap();
         }
+        let mut resized_disp_image = disp_image;
+        let resize_result: Arc<GrayImage>;
+        if display_sampling {
+            let image = disp_image.deref().clone();
+            let width = image.width();
+            let height = image.height();
+            resize_result = Arc::new(imageops::resize(
+                &image, (width / 2) as u32, (height / 2) as u32, FilterType::Nearest));
+            resized_disp_image = &resize_result;
+        }
+
         let mut bmp_buf = Vec::<u8>::new();
-        let (width, height) = disp_image.dimensions();
+        let (width, height) = resized_disp_image.dimensions();
         bmp_buf.reserve((width * height) as usize);
-        let scaled_image = scale_image(disp_image,
+        let scaled_image = scale_image(resized_disp_image,
                                        detect_result.display_black_level,
                                        peak_value,
                                        /*gamma=*/0.7);
@@ -803,12 +838,27 @@ impl MyCedar {
         state.lock().await.scaled_image = Some(Arc::new(scaled_image.clone()));
         scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
                               ImageFormat::Bmp).unwrap();
-        frame_result.image = Some(Image{
-            binning_factor,
-            // Rectangle is always in full resolution coordinates.
-            rectangle: Some(image_rectangle),
-            image_data: bmp_buf,
-        });
+
+        {  // TEMPORARY
+            let locked_state = state.lock().await;
+            let binning_factor;
+            if locked_state.operation_settings.operating_mode.unwrap() ==
+                OperatingMode::Setup as i32
+            {
+                binning_factor = if locked_state.setup_sampling { 2 } else { 1 } *
+                    locked_state.setup_binning *
+                    if locked_state.setup_display_sampling { 2 } else { 1 };
+            } else {
+                binning_factor = locked_state.operate_binning *
+                    if locked_state.operate_display_sampling { 2 } else { 1 };
+            }
+            frame_result.image = Some(Image{
+                binning_factor: binning_factor as i32,
+                // Rectangle is always in full resolution coordinates.
+                rectangle: Some(image_rectangle),
+                image_data: bmp_buf,
+            });
+        }
 
         let mut locked_state = state.lock().await;
         locked_state.serve_latency_stats.add_value(
@@ -962,6 +1012,11 @@ impl MyCedar {
                      tetra3_uds: String,
                      camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                      telescope_position: Arc<Mutex<TelescopePosition>>,
+                     setup_sampling: bool,
+                     setup_binning: u32,
+                     setup_display_sampling: bool,
+                     operate_binning: u32,
+                     operate_display_sampling: bool,
                      base_star_count_goal: i32,
                      base_detection_sigma: f32,
                      min_detection_sigma: f32,
@@ -971,7 +1026,7 @@ impl MyCedar {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration, max_exposure_duration,
             min_detection_sigma, base_detection_sigma,
-            /*detection_max_size=*/10,  // TODO: command line arg? do as fraction of image size
+            /*detection_max_size=*/60,  // TODO: command line arg? do as fraction of image size
             base_star_count_goal,
             camera.clone(),
             /*update_interval=*/Duration::ZERO,
@@ -1039,6 +1094,7 @@ impl MyCedar {
                 &mut motion_estimator.lock().unwrap(),
                 &mut closure_polar_analyzer.lock().unwrap())
         });
+        let dimensions = camera.lock().await.dimensions();
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
             fixed_settings,
@@ -1068,10 +1124,12 @@ impl MyCedar {
                 Calibrator::new(camera.clone()))),
             telescope_position,
             polar_analyzer,
+            setup_sampling, setup_binning, setup_display_sampling,
+            operate_binning, operate_display_sampling,
             preferences,
             scaled_image: None,
-            width: 0,
-            height: 0,
+            width: dimensions.0 as u32,
+            height: dimensions.1 as u32,
             calibrating: false,
             cancel_calibration: Arc::new(Mutex::new(false)),
             calibration_start: Instant::now(),
@@ -1090,6 +1148,8 @@ impl MyCedar {
         if let Err(x) = Self::set_pre_calibration_defaults(&*locked_state).await {
             warn!("Could not set default settings on camera {:?}", x);
         }
+        locked_state.detect_engine.lock().await.set_focus_mode(
+            true, locked_state.setup_sampling, setup_binning);
         Self::update_accuracy_adjusted_params(&*locked_state).await;
 
         cedar
@@ -1170,6 +1230,8 @@ impl MyCedar {
     }
 }
 
+// About Resolutions
+//
 // Cedar is designed to support a wide variety of cameras. It has been extensively
 // tested with two rather different camera sensors:
 //
@@ -1182,11 +1244,11 @@ impl MyCedar {
 // * Star images are typically highly oversampled (spread out over many pixels)
 //   and often exceed CedarDetect's star profile shape window, and thus are not
 //   detected.
-// * The HQ image has too-high resolution for the phone UI. A half megapixel or
-//   less is adequate for good UI rendering.
+// * The HQ image has too-high resolution for the CedarAim phone UI. A half
+//   megapixel or less is adequate for good UI rendering.
 // * Sending the HQ image to the phone UI takes too long.
 //
-// We thus employ image resizing at various points in the processing chain.
+// We thus employ image downsizing at various points in the processing chain.
 //
 // In Cedar's SETUP mode, we are acquiring images only for focusing and
 // alignment. For the HQ camera, we apply 2x2 sampling (rather than binning),
@@ -1206,27 +1268,36 @@ impl MyCedar {
 // candidates so detected are then referenced to the full-resolution original
 // capture for high-accuracy centroiding.
 //
-// An additional 2x2 sampling is used when sending HQ images to the phone UI.
-// For the HQ camera, the result is a 0.2 megapixel display image (around
-// 500x375), which is adequate to provide a background for visualizing the plate
-// solve result (this can be overridden with a command line flag e.g. for a
-// tablet UI; see below).
+// An additional 2x2 sampling is used when sending HQ images to the CedarAim
+// phone UI. For the HQ camera, the result is a 0.2 megapixel display image
+// (around 500x375), which is adequate to provide a background for visualizing
+// the plate solve result (this can be overridden with a command line flag e.g.
+// for a tablet UI; see below).
 //
-// For the ASI mini camera, we apply 2x2 binning prior to CedarDetect, and refer
-// star detections to the full resolution capture for centroiding. The 2x2
+// For the ASI mini camera, in SETUP mode we use full-resolution images for
+// focus and alignment, applying 2x2 sampling when sending the image to the
+// phone UI. In OPERATE mode, we apply 2x2 binning prior to CedarDetect, and
+// refer star detections to the full resolution capture for centroiding. The 2x2
 // binned image is sent to the phone UI.
 //
-// Rather than hardwiring the above image size reduction strategies for the HQ
+// Rather than hardwiring the above image downsizing strategies for the HQ
 // camera and the ASI mini camera, we instead generalize based on the camera
 // sensor resolution:
 //
 // Camera mpix  SETUP processing  SETUP display  OPERATE processing  OPERATE display
-//       < 0.5
-//       0.5-1                                                        +2x2 sampling
-// ASI   1-2                       +2x2 sampling  2x2 binning
-//       2-6     2x2 sampling                     4x4 binning
-// HQ    6-16    2x2 sampling      +2x2 sampling  4x4 binning         +2x2 sampling
-//       >16 same as 16, but not likely to work well.
+//        < 0.5
+//
+//        0.5-1                                                       +2x2 sampling
+//
+//  ASI   1-2                      +2x2 sampling  2x2 binning
+//
+//        2-6    2x2 sampling                     4x4 binning
+//               +2x2 binning
+//
+//  HQ    6-16   2x2 sampling      +2x2 sampling  4x4 binning         +2x2 sampling
+//               +2x2 binning
+//
+//        >16 same as 16, but not likely to work well.
 //
 // Note that the "display" sampling value is always the additional sampling (if
 // any) applied after the "processing" sampling/binning has been applied.
@@ -1267,6 +1338,13 @@ struct Args {
     #[arg(long)]
     setup_sampling: Option<bool>,
 
+    /// Specifies whether binning is applied (after sampling, if any) prior to
+    /// CedarDetect SETUP processing, and if so whether it is 2x2 binning or 4x4
+    /// binning. Legal values are 1 (no binning), 2, or 4.
+    /// Omit this to use the resolution-determined value.
+    #[arg(long)]
+    setup_binning: Option<u32>,
+
     /// Specifies whether 2x2 sampling is applied (in addition to 2x2
     /// setup-sampling, if any) when sending SETUP mode images to the UI.
     /// Omit this to use the resolution-determined value.
@@ -1278,7 +1356,7 @@ struct Args {
     /// (no binning), 2, or 4.
     /// Omit this to use the resolution-determined value.
     #[arg(long)]
-    operate_binning: Option<i32>,
+    operate_binning: Option<u32>,
 
     /// Specifies whether 2x2 sampling is applied (in addition to 2x2 or 4x4
     /// operate-binning, if any) when sending OPERATE mode images to the UI.
@@ -1406,8 +1484,9 @@ async fn main() {
 
     // Initialize sampling/binning parameters based on sensor resolution.
     let mut setup_sampling = false;
+    let mut setup_binning = 1_u32;
     let mut setup_display_sampling = false;
-    let mut operate_binning = 1;
+    let mut operate_binning = 1_u32;
     let mut operate_display_sampling = false;
     if mpix <= 0.5 {
         // Use initial values.
@@ -1418,14 +1497,17 @@ async fn main() {
         operate_binning = 2;
     } else if mpix <= 6.0 {
         setup_sampling = true;
+        setup_binning = 2;
         operate_binning = 4;
     } else if mpix <= 16.0 {
         setup_sampling = true;
+        setup_binning = 2;
         setup_display_sampling = true;
         operate_binning = 4;
         operate_display_sampling = true;
     } else {
         setup_sampling = true;
+        setup_binning = 2;
         setup_display_sampling = true;
         operate_binning = 4;
         operate_display_sampling = true;
@@ -1433,6 +1515,17 @@ async fn main() {
     // Allow command-line overrides of sampling/binning parameters.
     if let Some(setup_sampling_arg) = args.setup_sampling {
         setup_sampling = setup_sampling_arg;
+    }
+    if let Some(setup_binning_arg) = args.setup_binning {
+        match setup_binning_arg {
+            1 | 2 | 4 => (),
+            _ => {
+                error!("Invalid setup-binning argument {}, must be 1, 2, or 4",
+                       setup_binning_arg);
+                std::process::exit(1);
+            }
+        }
+        setup_binning = setup_binning_arg;
     }
     if let Some(setup_display_sampling_arg) = args.setup_display_sampling {
         setup_display_sampling = setup_display_sampling_arg;
@@ -1451,7 +1544,10 @@ async fn main() {
     if let Some(operate_display_sampling_arg) = args.operate_display_sampling {
         operate_display_sampling = operate_display_sampling_arg;
     }
-    // TODO: debug-log the mpix value and the sampling/binning settings.
+    debug!("For {:.1}mpix, setup_sampling {}, setup_binning {}, setup_display_sampling {}, \
+            operate_binning {}, operate_display_sampling {}",
+           mpix, setup_sampling, setup_binning, setup_display_sampling,
+           operate_binning, operate_display_sampling);
 
     let shared_telescope_position = Arc::new(Mutex::new(TelescopePosition::new()));
 
@@ -1487,22 +1583,19 @@ async fn main() {
         .accept_http1(true)
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
-        .add_service(CedarServer::new(MyCedar::new(args.min_exposure,
-                                                   args.max_exposure,
-                                                   args.tetra3_script,
-                                                   args.tetra3_database,
-                                                   args.tetra3_socket,
-                                                   camera,
-                                                   shared_telescope_position.clone(),
-                                                   args.star_count_goal,
-                                                   args.sigma,
-                                                   args.min_sigma,
-                                                   // TODO: arg for this?
-                                                   /*stats_capacity=*/100,
-                                                   PathBuf::from(args.ui_prefs),
-                                                   path,)
-                                      .await))
-        .into_service();
+        .add_service(CedarServer::new(MyCedar::new(
+            args.min_exposure, args.max_exposure,
+            args.tetra3_script, args.tetra3_database, args.tetra3_socket,
+            camera, shared_telescope_position.clone(),
+            setup_sampling, setup_binning, setup_display_sampling,
+            operate_binning, operate_display_sampling,
+            args.star_count_goal, args.sigma, args.min_sigma,
+            // TODO: arg for this?
+            /*stats_capacity=*/100,
+            PathBuf::from(args.ui_prefs),
+            path,
+        ).await
+        )).into_service();
 
     // Combine static content (flutter app) server and gRPC server into one service.
     let service = MultiplexService::new(rest, grpc);
