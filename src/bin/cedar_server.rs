@@ -8,15 +8,13 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use cedar_camera::abstract_camera::{AbstractCamera, Offset};
+use cedar_camera::abstract_camera::{AbstractCamera, Offset, bin_2x2, sample_2x2};
 use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
 use image::{GrayImage, ImageFormat};
 use image::io::Reader as ImageReader;
-use image::imageops;
-use image::imageops::FilterType;
 
 use nix::time::{ClockId, clock_gettime, clock_settime};
 use nix::sys::time::TimeSpec;
@@ -125,6 +123,8 @@ struct CedarState {
 
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
+    scaled_image_binning_factor: u32,
+
     // Full resolution dimensions.
     width: u32,
     height: u32,
@@ -264,7 +264,7 @@ impl Cedar for MyCedar {
                     // FrameResult with a information about the ongoing
                     // calibration.
                     let state = self.state.clone();
-                    let solve_timeout = Duration::from_secs(1);
+                    let solve_timeout = Duration::from_secs(2);
                     let _task_handle: tokio::task::JoinHandle<
                             Result<tonic::Response<OperationSettings>, tonic::Status>> =
                         tokio::task::spawn(async move {
@@ -273,7 +273,7 @@ impl Cedar for MyCedar {
                                 locked_state.calibrating = true;
                                 locked_state.calibration_start = Instant::now();
                                 locked_state.calibration_duration_estimate =
-                                    Duration::from_secs(2) + solve_timeout;
+                                    Duration::from_secs(5) + solve_timeout;
                                 locked_state.solve_engine.lock().await.stop().await;
                                 locked_state.detect_engine.lock().await.stop().await;
                                 locked_state.calibration_data.lock().await.calibration_time =
@@ -639,7 +639,7 @@ impl MyCedar {
                 let operation_solve_timeout =
                     std::cmp::min(
                         std::cmp::max(solve_duration * 10, Duration::from_millis(500)),
-                        Duration::from_secs(2));  // TODO: max solve time cmd line arg
+                        Duration::from_secs(1));  // TODO: max solve time cmd line arg
                 let mut locked_solve_engine = solve_engine.lock().await;
                 locked_solve_engine.set_fov_estimate(Some(fov))?;
                 locked_solve_engine.set_distortion(distortion)?;
@@ -707,7 +707,7 @@ impl MyCedar {
                     img.write_to(&mut Cursor::new(&mut bmp_buf),
                                  ImageFormat::Bmp).unwrap();
                     frame_result.image = Some(Image{
-                        binning_factor: locked_state.operate_binning as i32,
+                        binning_factor: locked_state.scaled_image_binning_factor as i32,
                         // Rectangle is always in full resolution coordinates.
                         rectangle: Some(image_rectangle),
                         image_data: bmp_buf,
@@ -819,11 +819,7 @@ impl MyCedar {
         let mut resized_disp_image = disp_image;
         let resize_result: Arc<GrayImage>;
         if display_sampling {
-            let image = disp_image.deref().clone();
-            let width = image.width();
-            let height = image.height();
-            resize_result = Arc::new(imageops::resize(
-                &image, (width / 2) as u32, (height / 2) as u32, FilterType::Nearest));
+            resize_result = Arc::new(sample_2x2(disp_image.deref().clone()));
             resized_disp_image = &resize_result;
         }
 
@@ -840,7 +836,7 @@ impl MyCedar {
                               ImageFormat::Bmp).unwrap();
 
         {  // TEMPORARY
-            let locked_state = state.lock().await;
+            let mut locked_state = state.lock().await;
             let binning_factor;
             if locked_state.operation_settings.operating_mode.unwrap() ==
                 OperatingMode::Setup as i32
@@ -852,6 +848,7 @@ impl MyCedar {
                 binning_factor = locked_state.operate_binning *
                     if locked_state.operate_display_sampling { 2 } else { 1 };
             }
+            locked_state.scaled_image_binning_factor = binning_factor;
             frame_result.image = Some(Image{
                 binning_factor: binning_factor as i32,
                 // Rectangle is always in full resolution coordinates.
@@ -883,14 +880,28 @@ impl MyCedar {
             stats.solve_success_fraction =
                 Some(psr.solve_success_stats.clone());
             frame_result.slew_request = psr.slew_request.clone();
+            let binning_factor;
             if let Some(boresight_image) = &psr.boresight_image {
                 let mut bmp_buf = Vec::<u8>::new();
                 let bsi_rect = psr.boresight_image_region.unwrap();
-                bmp_buf.reserve((bsi_rect.width() * bsi_rect.height()) as usize);
-                boresight_image.write_to(&mut Cursor::new(&mut bmp_buf),
-                                         ImageFormat::Bmp).unwrap();
+                // boresight_image is taken from the camera's acquired image. In
+                // OPERATE mode the camera capture is always full resolution. If
+                // it is a color camera, we 2x2 bin it to avoid displaying the
+                // Bayer grid.
+                if locked_state.camera.lock().await.is_color() {
+                    let binned_boresight_image = bin_2x2(boresight_image.clone());
+                    binning_factor = 2;
+                    bmp_buf.reserve((bsi_rect.width() / 2 * bsi_rect.height() / 2) as usize);
+                    binned_boresight_image.write_to(&mut Cursor::new(&mut bmp_buf),
+                                                    ImageFormat::Bmp).unwrap();
+                } else {
+                    binning_factor = 1;
+                    bmp_buf.reserve((bsi_rect.width() * bsi_rect.height()) as usize);
+                    boresight_image.write_to(&mut Cursor::new(&mut bmp_buf),
+                                             ImageFormat::Bmp).unwrap();
+                }
                 frame_result.boresight_image = Some(Image{
-                    binning_factor: 1,
+                    binning_factor,
                     // Rectangle is always in full resolution coordinates.
                     rectangle: Some(Rectangle{origin_x: bsi_rect.left(),
                                               origin_y: bsi_rect.top(),
@@ -1128,6 +1139,7 @@ impl MyCedar {
             operate_binning, operate_display_sampling,
             preferences,
             scaled_image: None,
+            scaled_image_binning_factor: 1,
             width: dimensions.0 as u32,
             height: dimensions.1 as u32,
             calibrating: false,

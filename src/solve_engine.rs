@@ -650,10 +650,10 @@ pub struct PlateSolution {
     // `slew_request` with its information.
     pub slew_request: Option<cedar::SlewRequest>,
 
-    // A small full resolution crop of `detect_result.captured_image` centered
-    // at the boresight. Brightness scaled to full range for visibility. This
-    // is present if `slew_request` is present and the slew target is close to
-    // the boresight.
+    // A small crop (without resolution change) of
+    // `detect_result.captured_image` centered at the boresight. Brightness
+    // scaled to full range for visibility. This is present if `slew_request` is
+    // present and the slew target is close to the boresight.
     pub boresight_image: Option<GrayImage>,
 
     // The location of `boresight_image`. Omitted if `boresight_image` is
