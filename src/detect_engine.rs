@@ -65,9 +65,7 @@ struct DetectState {
     // See "About Resolutions" in cedar_server.rs.
     sampled: bool,
 
-    // When running CedarDetect, this supplies the `binning` value used. This
-    // is passed in set_focus_mode(); the caller takes into account how much
-    // binning is needed and whether the input image has already been sampled.
+    // When running CedarDetect, this supplies the `binning` value used.
     // See "About Resolutions" in cedar_server.rs.
     binning_for_detect: u32,
 
@@ -499,8 +497,8 @@ impl DetectEngine {
             let mut num_peak = 0;
             const NUM_PEAKS: i32 = 10;
             for star in stars.iter_mut() {
-                star.centroid_x *= coord_scale;
-                star.centroid_y *= coord_scale;
+                (*star).centroid_x *= coord_scale;
+                (*star).centroid_y *= coord_scale;
                 sum_peak += star.peak_value as i32;
                 num_peak += 1;
                 if num_peak >= NUM_PEAKS {

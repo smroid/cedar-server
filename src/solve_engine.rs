@@ -470,6 +470,8 @@ impl SolveEngine {
             detect_result = detect_engine.lock().await.get_next_result(frame_id).await;
             state.lock().unwrap().deref_mut().frame_id = Some(detect_result.frame_id);
 
+            // In OPERATE mode the captured image is always at the camera's full
+            // resolution.
             let image: &GrayImage = &detect_result.captured_image.image;
             let (width, height) = image.dimensions();
 

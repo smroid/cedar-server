@@ -264,7 +264,7 @@ impl Cedar for MyCedar {
                     // FrameResult with a information about the ongoing
                     // calibration.
                     let state = self.state.clone();
-                    let solve_timeout = Duration::from_secs(2);
+                    let solve_timeout = Duration::from_secs(5);
                     let _task_handle: tokio::task::JoinHandle<
                             Result<tonic::Response<OperationSettings>, tonic::Status>> =
                         tokio::task::spawn(async move {
@@ -1161,7 +1161,7 @@ impl MyCedar {
             warn!("Could not set default settings on camera {:?}", x);
         }
         locked_state.detect_engine.lock().await.set_focus_mode(
-            true, locked_state.setup_sampling, setup_binning);
+            true, setup_sampling, setup_binning);
         Self::update_accuracy_adjusted_params(&*locked_state).await;
 
         cedar
