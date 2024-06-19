@@ -156,8 +156,8 @@ void drawSlewDirections(
   while (tiltFormatted.length < width) {
     tiltFormatted = " $tiltFormatted";
   }
-  const smallFont = 24.0;
-  const largeFont = 48.0;
+  const smallFont = 20.0;
+  const largeFont = 40.0;
   final textPainter1 = TextPainter(
       text: TextSpan(children: [
         TextSpan(

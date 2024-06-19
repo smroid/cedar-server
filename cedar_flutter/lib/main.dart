@@ -394,18 +394,18 @@ class MyHomePageState extends State<MyHomePage> {
     }
     if (response.hasImage()) {
       _imageBytes = Uint8List.fromList(response.image.imageData);
+      _binFactor = response.image.binningFactor;
+      _imageRegion = Rect.fromLTWH(
+          0,
+          0,
+          response.image.rectangle.width.toDouble() / _binFactor,
+          response.image.rectangle.height.toDouble() / _binFactor);
+      _fullResImageRegion = Rect.fromLTWH(
+          0,
+          0,
+          response.image.rectangle.width.toDouble(),
+          response.image.rectangle.height.toDouble());
     }
-    _binFactor = response.image.binningFactor;
-    _imageRegion = Rect.fromLTWH(
-        0,
-        0,
-        response.image.rectangle.width.toDouble() / _binFactor,
-        response.image.rectangle.height.toDouble() / _binFactor);
-    _fullResImageRegion = Rect.fromLTWH(
-        0,
-        0,
-        response.image.rectangle.width.toDouble(),
-        response.image.rectangle.height.toDouble());
     _boresightPosition = Offset(response.boresightPosition.x / _binFactor,
         response.boresightPosition.y / _binFactor);
     _fullResBoresightPosition =
@@ -476,9 +476,7 @@ class MyHomePageState extends State<MyHomePage> {
 
   // Use request/response style of RPC.
   Future<void> getFrameFromServer() async {
-    final request = FrameRequest()
-      ..prevFrameId = _prevFrameId
-      ..mainImageMode = ImageMode.BINNED;
+    final request = FrameRequest()..prevFrameId = _prevFrameId;
     try {
       final response = await client().getFrame(request,
           options: CallOptions(timeout: const Duration(seconds: 10)));
@@ -956,6 +954,7 @@ class MyHomePageState extends State<MyHomePage> {
                   primaryText("Aim"),
                   solveText(sprintf("%s", [formatRightAscension(_solutionRA)])),
                   solveText(sprintf("%s", [formatDeclination(_solutionDec)])),
+                  solveText(sprintf("RMSE %.1f", [_solutionRMSE])),
                   if (_locationBasedInfo != null)
                     solveText(sprintf("%s",
                         [formatHourAngle(_locationBasedInfo!.hourAngle)])),
@@ -1077,20 +1076,20 @@ class MyHomePageState extends State<MyHomePage> {
     Widget? overlayWidget;
     if (_setupMode && _centerPeakImageBytes != null) {
       overlayWidget = dart_widgets.Image.memory(_centerPeakImageBytes!,
-          height: _centerPeakHeight.toDouble() * 3,
-          width: _centerPeakWidth.toDouble() * 3,
+          height: _imageRegion.width / 4,
+          width: _imageRegion.width / 4,
           fit: BoxFit.fill,
           gaplessPlayback: true);
     } else if (!_setupMode && _boresightImageBytes != null) {
-      var scale = 1.25;
       var overlayImage = dart_widgets.Image.memory(_boresightImageBytes!,
-          height: _boresightImageHeight * scale,
-          width: _boresightImageWidth * scale,
+          height: _imageRegion.width / 4,
+          width: _imageRegion.width / 4,
           fit: BoxFit.fill,
           gaplessPlayback: true);
       overlayWidget = ClipRect(
           child: CustomPaint(
-              foregroundPainter: _OverlayImagePainter(this, context, scale),
+              foregroundPainter: _OverlayImagePainter(this, context,
+                  (_imageRegion.width / 4) / _boresightImageWidth),
               child: overlayImage));
     }
     return Stack(
