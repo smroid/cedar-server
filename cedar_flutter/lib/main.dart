@@ -1076,8 +1076,8 @@ class MyHomePageState extends State<MyHomePage> {
     Widget? overlayWidget;
     if (_setupMode && _centerPeakImageBytes != null) {
       overlayWidget = dart_widgets.Image.memory(_centerPeakImageBytes!,
-          height: _imageRegion.width / 4,
-          width: _imageRegion.width / 4,
+          height: _imageRegion.width / 6,
+          width: _imageRegion.width / 6,
           fit: BoxFit.fill,
           gaplessPlayback: true);
     } else if (!_setupMode && _boresightImageBytes != null) {
