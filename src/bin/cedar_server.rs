@@ -722,8 +722,7 @@ impl MyCedar {
             detect_result = psr.detect_result.clone();
         }
         let serve_start_time = Instant::now();
-
-        // TODO: start a new locked_state block here.
+        let mut locked_state = state.lock().await;
 
         frame_result.frame_id = detect_result.frame_id;
         let captured_image = &detect_result.captured_image;
@@ -746,11 +745,10 @@ impl MyCedar {
         frame_result.star_candidates = centroids;
         frame_result.noise_estimate = detect_result.noise_estimate;
 
-        let display_sampling = state.lock().await.display_sampling;
+        let display_sampling = locked_state.display_sampling;
 
         let peak_value;
         if let Some(fa) = &detect_result.focus_aid {
-            let locked_state = state.lock().await;
             peak_value = fa.center_peak_value;
             frame_result.center_region = Some(Rectangle {
                 origin_x: detect_result.center_region.left(),
@@ -802,7 +800,7 @@ impl MyCedar {
             });
         } else {
             peak_value = detect_result.peak_star_pixel;
-            *state.lock().await.center_peak_position.lock().unwrap() = None;
+            *locked_state.center_peak_position.lock().unwrap() = None;
         }
 
         // Populate `image` as requested.
@@ -825,23 +823,19 @@ impl MyCedar {
                                        peak_value,
                                        /*gamma=*/0.7);
         // Save most recent display image.
-        state.lock().await.scaled_image = Some(Arc::new(scaled_image.clone()));
+        locked_state.scaled_image = Some(Arc::new(scaled_image.clone()));
         scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
                               ImageFormat::Bmp).unwrap();
 
-        {  // TEMPORARY
-            let mut locked_state = state.lock().await;
-            let binning_factor = locked_state.binning * if display_sampling { 2 } else { 1 };
-            locked_state.scaled_image_binning_factor = binning_factor;
-            frame_result.image = Some(Image{
-                binning_factor: binning_factor as i32,
-                // Rectangle is always in full resolution coordinates.
-                rectangle: Some(image_rectangle),
-                image_data: bmp_buf,
-            });
-        }
+        let binning_factor = locked_state.binning * if display_sampling { 2 } else { 1 };
+        locked_state.scaled_image_binning_factor = binning_factor;
+        frame_result.image = Some(Image{
+            binning_factor: binning_factor as i32,
+            // Rectangle is always in full resolution coordinates.
+            rectangle: Some(image_rectangle),
+            image_data: bmp_buf,
+        });
 
-        let mut locked_state = state.lock().await;
         locked_state.serve_latency_stats.add_value(
             serve_start_time.elapsed().as_secs_f64());
         locked_state.overall_latency_stats.add_value(
