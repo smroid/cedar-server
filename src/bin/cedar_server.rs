@@ -545,7 +545,6 @@ impl MyCedar {
         let setup_exposure_duration;
         let binning;
         let detection_sigma;
-        let detection_max_size;
         let star_count_goal;
         let camera;
         let calibrator;
@@ -569,7 +568,6 @@ impl MyCedar {
             let locked_detect_engine = detect_engine.lock().await;
             binning = locked_state.binning;
             detection_sigma = locked_detect_engine.get_detection_sigma();
-            detection_max_size = locked_detect_engine.get_detection_max_size();
             star_count_goal = locked_detect_engine.get_star_count_goal();
         }
         let offset = match calibrator.lock().await.calibrate_offset(
@@ -589,7 +587,7 @@ impl MyCedar {
 
         let exp_duration = match calibrator.lock().await.calibrate_exposure_duration(
             setup_exposure_duration, star_count_goal,
-            binning, detection_sigma, detection_max_size,
+            binning, detection_sigma,
             cancel_calibration.clone()).await {
             Ok(ed) => ed,
             Err(e) => {
@@ -608,7 +606,7 @@ impl MyCedar {
 
         match calibrator.lock().await.calibrate_optical(
             solve_engine.clone(), exp_duration, solve_timeout,
-            binning, detection_sigma, detection_max_size).await
+            binning, detection_sigma).await
         {
             Ok((fov, distortion, solve_duration)) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
@@ -1012,7 +1010,6 @@ impl MyCedar {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration, max_exposure_duration,
             min_detection_sigma, base_detection_sigma,
-            /*detection_max_size=*/60,  // TODO: command line arg? do as fraction of image size
             base_star_count_goal,
             camera.clone(),
             /*update_interval=*/Duration::ZERO,
@@ -1333,8 +1330,6 @@ struct Args {
     /// (multiplier ranging from 0.7 to 1.4).
     #[arg(long, default_value_t = 8.0)]
     sigma: f32,
-
-    // TODO: max detection size
 
     /// Specifies a value below which `sigma` is not adjusted by the
     /// OperationSettings.accuracy setting.

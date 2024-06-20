@@ -26,7 +26,6 @@ pub struct DetectEngine {
     // Parameters for star detection algorithm.
     detection_min_sigma: f32,
     detection_sigma: f32,
-    detection_max_size: i32,
 
     // In operate mode (`focus_mode_enabled` is false), the auto-exposure
     // algorithm uses this as the desired number of detected stars. The
@@ -99,7 +98,6 @@ impl DetectEngine {
                max_exposure_duration: Duration,
                detection_min_sigma: f32,
                detection_sigma: f32,
-               detection_max_size: i32,
                star_count_goal: i32,
                camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                update_interval: Duration, auto_exposure: bool,
@@ -110,7 +108,6 @@ impl DetectEngine {
             max_exposure_duration,
             detection_min_sigma,
             detection_sigma,
-            detection_max_size,
             star_count_goal,
             camera: camera.clone(),
             state: Arc::new(Mutex::new(DetectState{
@@ -173,9 +170,7 @@ impl DetectEngine {
     pub fn get_detection_sigma(&self) -> f32 {
         return self.detection_sigma;
     }
-    pub fn get_detection_max_size(&self) -> i32 {
-        return self.detection_max_size;
-    }
+
     pub fn get_star_count_goal(&self) -> i32 {
         return self.star_count_goal;
     }
@@ -216,7 +211,6 @@ impl DetectEngine {
             let max_exposure_duration = self.max_exposure_duration;
             let detection_min_sigma = self.detection_min_sigma;
             let detection_sigma = self.detection_sigma;
-            let detection_max_size = self.detection_max_size;
             let star_count_goal = self.star_count_goal;
             let cloned_state = self.state.clone();
             let cloned_camera = self.camera.clone();
@@ -239,7 +233,7 @@ impl DetectEngine {
                 runtime.block_on(async move {
                     DetectEngine::worker(
                         min_exposure_duration, max_exposure_duration,
-                        detection_min_sigma, detection_sigma, detection_max_size,
+                        detection_min_sigma, detection_sigma,
                         star_count_goal, cloned_state, cloned_camera, cloned_done).await;
                 });
             }));
@@ -313,7 +307,6 @@ impl DetectEngine {
                     max_exposure_duration: Duration,
                     detection_min_sigma: f32,
                     detection_sigma: f32,
-                    detection_max_size: i32,
                     star_count_goal: i32,
                     state: Arc<Mutex<DetectState>>,
                     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
@@ -471,7 +464,7 @@ impl DetectEngine {
             let (stars, hot_pixel_count, detect_binned_image, mut histogram) =
                 get_stars_from_image(
                     &image, noise_estimate,
-                    adjusted_sigma, detection_max_size as u32,
+                    adjusted_sigma, /*deprecated_max_size=*/1,
                     binning,
                     /*detect_hot_pixels=*/true,
                     /*return_binned_image=*/binning != 1);
