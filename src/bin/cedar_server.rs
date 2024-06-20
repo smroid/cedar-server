@@ -1251,11 +1251,11 @@ impl MyCedar {
 // camera and the ASI mini camera, we instead generalize based on the camera
 // sensor resolution:
 //
-// Camera mpix   SETUP processing  SETUP display  OPERATE processing  OPERATE display
-//        <0.75
-//  ASI   0.75-3  2x2 binning                      2x2 binning
-//        3-12    4x4 binning                      4x4 binning
-//  HQ    >12     4x4 binning       +2x2 sampling  4x4 binning         +2x2 sampling
+// Camera  mpix     Cedar Detect   Display
+//         <0.75
+// ASI     0.75-3   2x2 binning
+//         3-12     4x4 binning
+// HQ      >12      4x4 binning    +2x2 sampling
 
 // Note that the "display" sampling value is an additional sampling (if any)
 // applied after the "processing" binning has been applied.
