@@ -7,6 +7,10 @@ fix rotation logic
 * rotate image to preserve aspect ratio
 * rotate image graphical annotations
 
+reorganize 'cedar' repo to:
+* cedar-server
+* cedar-aim
+
 auto-detect alt-az vs equatorial (with manual override)
 
 alert icon if observer location not yet set.
@@ -14,8 +18,6 @@ alert icon if observer location not yet set.
 calibrate for match_max_error
 
 setup central zone: make 1/3 in each direction (will widen it a bit)
-
-HQ cam: extra 2x binning for presentation images
 
 change license for Cedar Aim (server & app) to AGPL or negotiated.
 
@@ -83,7 +85,9 @@ remote ops, proxied via phone
 * send bug reports
 
 "expert" mode enable
-* eq/alt-az selector
+* focus inset enable/disable (hopper is pre-focused)
+* RMSE display
+* eq/alt-az selector; auto checkbox
 * polar alignment advice
 * speed-quality slider
 * option to show exposure control
@@ -134,8 +138,6 @@ command line options for camera binning: yes, no, auto.
 motion classification
 * adjust update interval
 
-multi camera support (command line args to choose which)
-
 UI:
 * operation controls
   - save image: add confirmation+rename
@@ -155,3 +157,5 @@ About page
 
 Help page
 * mostly redirects attention to long-press aids?
+
+Sounds for various actions/events in app?

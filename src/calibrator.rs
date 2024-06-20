@@ -74,7 +74,7 @@ impl Calibrator {
 
     pub async fn calibrate_exposure_duration(
         &self, setup_exposure_duration: Duration, star_count_goal: i32,
-        detection_binning: u32, detection_sigma: f32, detection_max_size: i32,
+        detection_binning: u32, detection_sigma: f32,
         cancel_calibration: Arc<Mutex<bool>>)
         -> Result<Duration, CanonicalError> {
         // Goal: find the camera exposure duration that yields the desired
@@ -100,8 +100,7 @@ impl Calibrator {
 
         self.camera.lock().await.set_exposure_duration(setup_exposure_duration)?;
         let (_, mut stars, frame_id) = self.acquire_image_get_stars(
-            /*frame_id=*/None,
-            detection_binning, detection_sigma, detection_max_size).await?;
+            /*frame_id=*/None, detection_binning, detection_sigma).await?;
 
         let mut num_stars_detected = stars.len();
         if num_stars_detected < (star_count_goal / 5) as usize {
@@ -126,8 +125,7 @@ impl Calibrator {
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f32(scaled_exposure_duration_secs))?;
         (_, stars, _) = self.acquire_image_get_stars(
-            Some(frame_id),
-            detection_binning, detection_sigma, detection_max_size).await?;
+            Some(frame_id), detection_binning, detection_sigma).await?;
 
         num_stars_detected = stars.len();
         if num_stars_detected < (star_count_goal / 5) as usize {
@@ -152,7 +150,7 @@ impl Calibrator {
         solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
         exposure_duration: Duration,
         solve_timeout: Duration,
-        detection_binning: u32, detection_sigma: f32, detection_max_size: i32)
+        detection_binning: u32, detection_sigma: f32)
         -> Result<(f32, f32, Duration), CanonicalError> {
         // Goal: find the field of view, lens distortion, and representative
         // plate solve time.
@@ -167,8 +165,7 @@ impl Calibrator {
 
         self.camera.lock().await.set_exposure_duration(exposure_duration)?;
         let (image, stars, _) = self.acquire_image_get_stars(
-            /*frame_id=*/None,
-            detection_binning, detection_sigma, detection_max_size).await?;
+            /*frame_id=*/None, detection_binning, detection_sigma).await?;
         let (width, height) = image.dimensions();
 
         // Set up SolveRequest.
@@ -211,7 +208,7 @@ impl Calibrator {
 
     async fn acquire_image_get_stars(
         &self, frame_id: Option<i32>,
-        detection_binning: u32, detection_sigma: f32, detection_max_size: i32)
+        detection_binning: u32, detection_sigma: f32)
         -> Result<(Arc<GrayImage>, Vec<StarDescription>, i32), CanonicalError>
     {
         let (captured_image, frame_id) =
@@ -221,7 +218,7 @@ impl Calibrator {
         let noise_estimate = estimate_noise_from_image(&image);
         let (stars, _, _, _) =
             get_stars_from_image(&image, noise_estimate,
-                                 detection_sigma, detection_max_size as u32,
+                                 detection_sigma, /*deprecated_max_size=*/1,
                                  detection_binning,
                                  /*detect_hot_pixels*/true,
                                  /*return_binned_image=*/false);
