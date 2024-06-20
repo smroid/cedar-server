@@ -470,8 +470,6 @@ impl SolveEngine {
             detect_result = detect_engine.lock().await.get_next_result(frame_id).await;
             state.lock().unwrap().deref_mut().frame_id = Some(detect_result.frame_id);
 
-            // In OPERATE mode the captured image is always at the camera's full
-            // resolution.
             let image: &GrayImage = &detect_result.captured_image.image;
             let (width, height) = image.dimensions();
 
@@ -652,10 +650,10 @@ pub struct PlateSolution {
     // `slew_request` with its information.
     pub slew_request: Option<cedar::SlewRequest>,
 
-    // A small crop (without resolution change) of
-    // `detect_result.captured_image` centered at the boresight. Brightness
-    // scaled to full range for visibility. This is present if `slew_request` is
-    // present and the slew target is close to the boresight.
+    // A small crop of the full resolution `detect_result.captured_image`
+    // centered at the boresight. Brightness scaled to full range for
+    // visibility. This is present if `slew_request` is present and the slew
+    // target is close to the boresight.
     pub boresight_image: Option<GrayImage>,
 
     // The location of `boresight_image`. Omitted if `boresight_image` is
