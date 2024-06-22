@@ -3,10 +3,6 @@ show matches/pattern stars in operate mode. Except when slewing?
 
 * enlarge display text (check on phone)
 
-fix rotation logic
-* rotate image to preserve aspect ratio
-* rotate image graphical annotations
-
 reorganize 'cedar' repo to:
 * cedar-server
 * cedar-aim
@@ -16,8 +12,6 @@ auto-detect alt-az vs equatorial (with manual override)
 alert icon if observer location not yet set.
 
 calibrate for match_max_error
-
-setup central zone: make 1/3 in each direction (will widen it a bit)
 
 change license for Cedar Aim (server & app) to AGPL or negotiated.
 
@@ -105,7 +99,7 @@ CPU temperature
 
 bug report
 
-.local dns entry
+.local dns entry -- already done for us by rpi os?
 
 interoperation with SkySafari
 * switch apps?
