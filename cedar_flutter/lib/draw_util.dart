@@ -78,19 +78,30 @@ void drawGapCross(
         ..strokeWidth = thickness);
 }
 
-void drawText(Canvas canvas, Color color, Offset pos, String text) {
+void drawText(
+    Canvas canvas, Color color, Offset pos, String text, bool portrait) {
   final textPainter = TextPainter(
       text: TextSpan(text: text, style: TextStyle(color: color, fontSize: 14)),
       textDirection: TextDirection.ltr,
       textAlign: TextAlign.center);
   textPainter.layout();
+  final pivot = textPainter.size.center(pos);
+  if (portrait) {
+    canvas.save();
+    canvas.translate(pivot.dx, pivot.dy);
+    canvas.rotate(-pi / 2);
+    canvas.translate(-pivot.dx, -pivot.dy);
+  }
   textPainter.paint(canvas, pos);
+  if (portrait) {
+    canvas.restore();
+  }
 }
 
 // angleRad is counter-clockwise starting from up direction, where y increases
 // downward.
 void drawArrow(Canvas canvas, Color color, Offset start, double length,
-    double angleRad, String text, double thickness) {
+    double angleRad, String text, bool portrait, double thickness) {
   angleRad +=
       math.pi / 2; // The math below wants angle to start from +x direction.
   var end = Offset(start.dx + length * math.cos(angleRad),
@@ -116,7 +127,7 @@ void drawArrow(Canvas canvas, Color color, Offset start, double length,
   if (text.isNotEmpty) {
     var textPos = Offset(start.dx + (length + 20) * math.cos(angleRad) - 10,
         start.dy - (length + 20) * math.sin(angleRad) - 10);
-    drawText(canvas, color, textPos, text);
+    drawText(canvas, color, textPos, text, portrait);
   }
 }
 
@@ -127,7 +138,8 @@ void drawSlewDirections(
   bool altAz, // false: eq
   bool northernHemisphere,
   double offsetRotationAxis, // degrees, az or ra movement
-  double offsetTiltAxis, // degrees, alt or dec movement
+  double offsetTiltAxis,
+  bool portrait, // degrees, alt or dec movement
 ) {
   final String rotationAxisName = altAz ? "Az " : "RA ";
   final String rotationCue = altAz
@@ -158,7 +170,7 @@ void drawSlewDirections(
   }
   const smallFont = 20.0;
   const largeFont = 40.0;
-  final textPainter1 = TextPainter(
+  final textPainter = TextPainter(
       text: TextSpan(children: [
         TextSpan(
           text: sprintf("%s ", [rotationAxisName]),
@@ -196,6 +208,16 @@ void drawSlewDirections(
       ], style: TextStyle(fontFamily: "RobotoMono", color: color)),
       textDirection: TextDirection.ltr,
       textAlign: TextAlign.left);
-  textPainter1.layout();
-  textPainter1.paint(canvas, pos);
+  textPainter.layout();
+  final pivot = textPainter.size.center(pos);
+  if (portrait) {
+    canvas.save();
+    canvas.translate(pivot.dx, pivot.dy);
+    canvas.rotate(-pi / 2);
+    canvas.translate(-pivot.dx, -pivot.dy);
+  }
+  textPainter.paint(canvas, pos);
+  if (portrait) {
+    canvas.restore();
+  }
 }

@@ -135,6 +135,8 @@ class _MainImagePainter extends CustomPainter {
         posInImage = Offset(slew.imagePos.x / state._binFactor,
             slew.imagePos.y / state._binFactor);
       }
+      final portrait =
+          MediaQuery.of(_context).orientation == Orientation.portrait;
       drawSlewTarget(
           canvas,
           color,
@@ -143,7 +145,9 @@ class _MainImagePainter extends CustomPainter {
           /*rollAngleRad=*/ _deg2rad(state.bullseyeDirectionIndicator()),
           posInImage,
           slew.targetDistance,
-          slew.targetAngle);
+          slew.targetAngle,
+          /*drawDistanceText=*/ true,
+          portrait);
       drawSlewDirections(
           canvas,
           color,
@@ -155,7 +159,8 @@ class _MainImagePainter extends CustomPainter {
           state._preferences?.mountType == MountType.ALT_AZ,
           state._northernHemisphere,
           slew.offsetRotationAxis,
-          slew.offsetTiltAxis);
+          slew.offsetTiltAxis,
+          portrait);
     } else {
       // Make a cross at the boresight position (if any) or else the image
       // center.
@@ -202,6 +207,8 @@ class _OverlayImagePainter extends CustomPainter {
         _state._preferences!.eyepieceFov *
         _state._fullResImageRegion.width /
         _state._solutionFOV;
+    final portrait =
+        MediaQuery.of(_context).orientation == Orientation.portrait;
     drawSlewTarget(
         canvas,
         color,
@@ -211,7 +218,8 @@ class _OverlayImagePainter extends CustomPainter {
         posInImage,
         slew.targetDistance,
         slew.targetAngle,
-        drawDistanceText: false);
+        /*drawDistanceText=*/ false,
+        portrait);
   }
 
   @override
@@ -758,6 +766,7 @@ class MyHomePageState extends State<MyHomePage> {
   }
 
   List<Widget> controls() {
+    final portrait = MediaQuery.of(context).orientation == Orientation.portrait;
     return <Widget>[
       // Fake widget to consume changes to preferences and issue RPC to the
       // server.
@@ -778,46 +787,52 @@ class MyHomePageState extends State<MyHomePage> {
           return Container();
         },
       ),
-      Column(children: <Widget>[
-        Row(children: <Widget>[
-          primaryText("Setup"),
-          Switch(
-              value: !_setupMode,
-              onChanged: (bool value) {
-                setState(() {
-                  if (!value) {
-                    _transitionToSetup = true;
-                  }
-                  setOperatingMode(/*setup=*/ !value);
-                });
-              }),
-          primaryText("Aim"),
-        ])
-      ]),
+      RotatedBox(
+          quarterTurns: portrait ? 3 : 0,
+          child: Column(children: <Widget>[
+            Row(children: <Widget>[
+              primaryText("Setup"),
+              Switch(
+                  value: !_setupMode,
+                  onChanged: (bool value) {
+                    setState(() {
+                      if (!value) {
+                        _transitionToSetup = true;
+                      }
+                      setOperatingMode(/*setup=*/ !value);
+                    });
+                  }),
+              primaryText("Aim"),
+            ])
+          ])),
       const SizedBox(width: 15, height: 15),
-      SizedBox(
-        width: 120,
-        height: 32,
-        child: _canAlign
-            ? OutlinedButton(
-                child: const Text("Set Align"),
-                onPressed: () {
-                  captureBoresight();
-                })
-            : Container(),
-      ),
+      RotatedBox(
+          quarterTurns: portrait ? 3 : 0,
+          child: SizedBox(
+            width: 120,
+            height: 32,
+            child: _canAlign
+                ? OutlinedButton(
+                    child: const Text("Set Align"),
+                    onPressed: () {
+                      captureBoresight();
+                    })
+                : Container(),
+          )),
       const SizedBox(width: 15, height: 15),
-      SizedBox(
-        width: 120,
-        height: 32,
-        child: _slewRequest != null && !_setupMode
-            ? OutlinedButton(
-                child: const Text("End goto"),
-                onPressed: () {
-                  stopSlew();
-                })
-            : Container(),
-      ),
+      RotatedBox(
+          quarterTurns: portrait ? 3 : 0,
+          child: SizedBox(
+            width: 120,
+            height: 32,
+            child: _slewRequest != null && !_setupMode
+                ? OutlinedButton(
+                    child: const Text("End goto"),
+                    onPressed: () {
+                      stopSlew();
+                    })
+                : Container(),
+          )),
     ];
   }
 
@@ -919,118 +934,141 @@ class MyHomePageState extends State<MyHomePage> {
   }
 
   List<Widget> dataItems(BuildContext context) {
+    final portrait = MediaQuery.of(context).orientation == Orientation.portrait;
     return <Widget>[
-      Column(children: <Widget>[
-        SizedBox(
-            width: 130,
-            height: 20,
-            child: Slider(
-              min: 0,
-              max: 10,
-              value: math.min(10, math.sqrt(_numStars)),
-              onChanged: (double value) {},
-              activeColor: starsSliderColor(),
-              thumbColor: starsSliderColor(),
-            )),
-        primaryText("$_numStars stars"),
-        const SizedBox(width: 15, height: 15),
-        _calibrationData != null && _calibrationData!.fovHorizontal > 0
-            ? Column(children: <Widget>[
-                primaryText(
-                    sprintf("FOV %.1f°", [_calibrationData!.fovHorizontal])),
-                primaryText(
-                    sprintf("Lens %.1f mm", [_calibrationData!.lensFlMm])),
-              ])
-            : Container(),
-      ]),
+      RotatedBox(
+          quarterTurns: portrait ? 3 : 0,
+          child: Column(children: <Widget>[
+            SizedBox(
+                width: 130,
+                height: 20,
+                child: Slider(
+                  min: 0,
+                  max: 10,
+                  value: math.min(10, math.sqrt(_numStars)),
+                  onChanged: (double value) {},
+                  activeColor: starsSliderColor(),
+                  thumbColor: starsSliderColor(),
+                )),
+            primaryText("$_numStars stars"),
+            const SizedBox(width: 15, height: 15),
+            _calibrationData != null && _calibrationData!.fovHorizontal > 0
+                ? Column(children: <Widget>[
+                    primaryText(sprintf(
+                        "FOV %.1f°", [_calibrationData!.fovHorizontal])),
+                    primaryText(
+                        sprintf("Lens %.1f mm", [_calibrationData!.lensFlMm])),
+                  ])
+                : Container(),
+          ])),
       const SizedBox(width: 15, height: 15),
-      _setupMode
-          ? Container()
-          : SizedBox(
-              width: 120,
-              height: 120,
-              child: Column(
-                children: <Widget>[
-                  primaryText("Aim"),
-                  solveText(sprintf("%s", [formatRightAscension(_solutionRA)])),
-                  solveText(sprintf("%s", [formatDeclination(_solutionDec)])),
-                  solveText(sprintf("RMSE %.1f", [_solutionRMSE])),
-                  if (_locationBasedInfo != null)
-                    solveText(sprintf("%s",
-                        [formatHourAngle(_locationBasedInfo!.hourAngle)])),
-                  if (_locationBasedInfo != null)
+      RotatedBox(
+          quarterTurns: portrait ? 3 : 0,
+          child: _setupMode
+              ? Container()
+              : SizedBox(
+                  width: 120,
+                  height: 120,
+                  child: Column(
+                    children: <Widget>[
+                      primaryText("Aim"),
+                      solveText(
+                          sprintf("%s", [formatRightAscension(_solutionRA)])),
+                      solveText(
+                          sprintf("%s", [formatDeclination(_solutionDec)])),
+                      solveText(sprintf("RMSE %.1f", [_solutionRMSE])),
+                      if (_locationBasedInfo != null)
+                        solveText(sprintf("%s",
+                            [formatHourAngle(_locationBasedInfo!.hourAngle)])),
+                      if (_locationBasedInfo != null)
+                        solveText(sprintf("%s",
+                            [formatAltitude(_locationBasedInfo!.altitude)])),
+                      if (_locationBasedInfo != null)
+                        solveText(sprintf("%s",
+                            [formatAzimuth(_locationBasedInfo!.azimuth)])),
+                    ],
+                  ))),
+      const SizedBox(width: 15, height: 15),
+      RotatedBox(
+          quarterTurns: portrait ? 3 : 0,
+          child: _slewRequest == null || _setupMode
+              ? Container()
+              : SizedBox(
+                  width: 120,
+                  height: 120,
+                  child: Column(children: <Widget>[
+                    primaryText("Target"),
                     solveText(sprintf(
-                        "%s", [formatAltitude(_locationBasedInfo!.altitude)])),
-                  if (_locationBasedInfo != null)
+                        "%s", [formatRightAscension(_slewRequest!.target.ra)])),
                     solveText(sprintf(
-                        "%s", [formatAzimuth(_locationBasedInfo!.azimuth)])),
-                ],
-              )),
+                        "%s", [formatDeclination(_slewRequest!.target.dec)])),
+                    solveText(
+                        sprintf("%.1f° away", [_slewRequest?.targetDistance])),
+                  ]),
+                )),
       const SizedBox(width: 15, height: 15),
-      _slewRequest == null || _setupMode
-          ? Container()
-          : SizedBox(
-              width: 120,
-              height: 80,
-              child: Column(children: <Widget>[
-                primaryText("Target"),
-                solveText(sprintf(
-                    "%s", [formatRightAscension(_slewRequest!.target.ra)])),
-                solveText(sprintf(
-                    "%s", [formatDeclination(_slewRequest!.target.dec)])),
-                solveText(
-                    sprintf("%.1f° away", [_slewRequest?.targetDistance])),
-              ]),
-            ),
+      RotatedBox(
+          quarterTurns: portrait ? 3 : 0,
+          child: !hasPolarAdvice() || _setupMode
+              ? Container()
+              : SizedBox(
+                  width: 140,
+                  height: 120,
+                  child: Column(children: <Widget>[
+                    primaryText("Polar Align"),
+                    _polarAlignAdvice!.hasAltitudeCorrection()
+                        ? solveText(sprintf("alt %s", [
+                            sprintf("%s\npolar axis->%s", [
+                              formatAdvice(
+                                  _polarAlignAdvice!.altitudeCorrection),
+                              _polarAlignAdvice!.altitudeCorrection.value > 0
+                                  ? "up"
+                                  : "down"
+                            ])
+                          ]))
+                        : Container(),
+                    _polarAlignAdvice!.hasAzimuthCorrection()
+                        ? solveText(sprintf("az %s", [
+                            sprintf("%s\npolar axis->%s", [
+                              formatAdvice(
+                                  _polarAlignAdvice!.azimuthCorrection),
+                              _polarAlignAdvice!.azimuthCorrection.value > 0
+                                  ? "right"
+                                  : "left"
+                            ])
+                          ]))
+                        : Container(),
+                  ]),
+                )),
       const SizedBox(width: 15, height: 15),
-      !hasPolarAdvice() || _setupMode
-          ? Container()
-          : SizedBox(
-              width: 140,
-              height: 80,
-              child: Column(children: <Widget>[
-                primaryText("Polar Align"),
-                _polarAlignAdvice!.hasAltitudeCorrection()
-                    ? solveText(sprintf("alt %s", [
-                        sprintf("%s\npolar axis->%s", [
-                          formatAdvice(_polarAlignAdvice!.altitudeCorrection),
-                          _polarAlignAdvice!.altitudeCorrection.value > 0
-                              ? "up"
-                              : "down"
-                        ])
-                      ]))
-                    : Container(),
-                _polarAlignAdvice!.hasAzimuthCorrection()
-                    ? solveText(sprintf("az %s", [
-                        sprintf("%s\npolar axis->%s", [
-                          formatAdvice(_polarAlignAdvice!.azimuthCorrection),
-                          _polarAlignAdvice!.azimuthCorrection.value > 0
-                              ? "right"
-                              : "left"
-                        ])
-                      ]))
-                    : Container(),
-              ]),
-            ),
-      const SizedBox(width: 15, height: 15),
-      _setupMode || _processingStats == null || !_preferences!.showPerfStats
-          ? Container()
-          : Column(
-              children: <Widget>[
-                primaryText(sprintf("Detect %.1f ms",
-                    [_processingStats!.detectLatency.recent.mean * 1000])),
-                primaryText(sprintf("Solve %.1f ms",
-                    [_processingStats!.solveLatency.recent.mean * 1000])),
-                primaryText(sprintf("Solve attempt %2d%%", [
-                  (_processingStats!.solveAttemptFraction.recent.mean * 100)
-                      .toInt()
-                ])),
-                primaryText(sprintf("Solve success %d%%", [
-                  (_processingStats!.solveSuccessFraction.recent.mean * 100)
-                      .toInt()
-                ])),
-              ],
-            ),
+      RotatedBox(
+          quarterTurns: portrait ? 3 : 0,
+          child: _setupMode ||
+                  _processingStats == null ||
+                  !_preferences!.showPerfStats
+              ? Container()
+              : SizedBox(
+                  width: 140,
+                  height: 120,
+                  child: Column(
+                    children: <Widget>[
+                      primaryText(sprintf("Detect %.1f ms", [
+                        _processingStats!.detectLatency.recent.mean * 1000
+                      ])),
+                      primaryText(sprintf("Solve %.1f ms",
+                          [_processingStats!.solveLatency.recent.mean * 1000])),
+                      primaryText(sprintf("Solve attempt %2d%%", [
+                        (_processingStats!.solveAttemptFraction.recent.mean *
+                                100)
+                            .toInt()
+                      ])),
+                      primaryText(sprintf("Solve success %d%%", [
+                        (_processingStats!.solveSuccessFraction.recent.mean *
+                                100)
+                            .toInt()
+                      ])),
+                    ],
+                  ))),
     ];
   }
 
@@ -1043,33 +1081,37 @@ class MyHomePageState extends State<MyHomePage> {
   }
 
   Widget pacifier(BuildContext context, bool calibrating) {
-    return Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: <Widget>[
-          calibrating
-              ? Text("Calibrating",
-                  style: TextStyle(
-                      fontSize: 20,
-                      backgroundColor: Colors.black,
-                      color: Theme.of(context).colorScheme.primary))
-              : Container(),
-          const SizedBox(height: 15),
-          CircularProgressIndicator(
-              value: calibrating ? _calibrationProgress : null,
-              color: Theme.of(context).colorScheme.primary),
-          const SizedBox(height: 15),
-          calibrating
-              ? TextButton(
-                  onPressed: () {
-                    cancelCalibration();
-                  },
-                  style: TextButton.styleFrom(
-                      backgroundColor: Colors.black,
-                      foregroundColor: Theme.of(context).colorScheme.primary),
-                  child: const Text('Cancel'),
-                )
-              : Container(),
-        ]);
+    final portrait = MediaQuery.of(context).orientation == Orientation.portrait;
+    return RotatedBox(
+        quarterTurns: portrait ? 3 : 0,
+        child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              calibrating
+                  ? Text("Calibrating",
+                      style: TextStyle(
+                          fontSize: 20,
+                          backgroundColor: Colors.black,
+                          color: Theme.of(context).colorScheme.primary))
+                  : Container(),
+              const SizedBox(height: 15),
+              CircularProgressIndicator(
+                  value: calibrating ? _calibrationProgress : null,
+                  color: Theme.of(context).colorScheme.primary),
+              const SizedBox(height: 15),
+              calibrating
+                  ? TextButton(
+                      onPressed: () {
+                        cancelCalibration();
+                      },
+                      style: TextButton.styleFrom(
+                          backgroundColor: Colors.black,
+                          foregroundColor:
+                              Theme.of(context).colorScheme.primary),
+                      child: const Text('Cancel'),
+                    )
+                  : Container(),
+            ]));
   }
 
   Widget imageStack(BuildContext context) {
@@ -1092,42 +1134,30 @@ class MyHomePageState extends State<MyHomePage> {
                   (_imageRegion.width / 4) / _boresightImageWidth),
               child: overlayImage));
     }
-    return Stack(
-      alignment: Alignment.topRight,
-      children: <Widget>[
-        _prevFrameId != -1 ? mainImage() : Container(),
-        _prevFrameId != -1 && overlayWidget != null
-            ? Container(
-                decoration: BoxDecoration(
-                    border: Border.all(
-                        width: 0.5,
-                        color: Theme.of(context).colorScheme.primary)),
-                child: overlayWidget)
-            : Container(),
-        _calibrating || _transitionToSetup
-            ? Positioned.fill(
-                child: Align(
-                    alignment: Alignment.center,
-                    child: pacifier(context, _calibrating)))
-            : Container(),
-      ],
-    );
+    return Stack(alignment: Alignment.topRight, children: <Widget>[
+      _prevFrameId != -1 ? mainImage() : Container(),
+      _prevFrameId != -1 && overlayWidget != null
+          ? Container(
+              decoration: BoxDecoration(
+                  border: Border.all(
+                      width: 0.5,
+                      color: Theme.of(context).colorScheme.primary)),
+              child: overlayWidget)
+          : Container(),
+      _calibrating || _transitionToSetup
+          ? Positioned.fill(
+              child: Align(
+                  alignment: Alignment.center,
+                  child: pacifier(context, _calibrating)))
+          : Container(),
+    ]);
   }
 
   Widget orientationLayout(BuildContext context) {
-    if (MediaQuery.of(context).orientation == Orientation.portrait) {
-      return Column(
-        children: <Widget>[
-          Row(children: controls()),
-          const SizedBox(width: 15, height: 15),
-          imageStack(context),
-          const SizedBox(width: 15, height: 15),
-          Row(children: dataItems(context)),
-        ],
-      );
-    } else {
-      // Landscape
-      return Row(
+    final portrait = MediaQuery.of(context).orientation == Orientation.portrait;
+    return RotatedBox(
+      quarterTurns: portrait ? 1 : 0,
+      child: Row(
         children: <Widget>[
           Column(children: controls()),
           const SizedBox(width: 15, height: 15),
@@ -1135,8 +1165,8 @@ class MyHomePageState extends State<MyHomePage> {
           const SizedBox(width: 15, height: 15),
           Column(children: dataItems(context)),
         ],
-      );
-    }
+      ),
+    );
   }
 
   final _scaffoldKey = GlobalKey<ScaffoldState>();

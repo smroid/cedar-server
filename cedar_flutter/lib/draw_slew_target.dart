@@ -37,7 +37,8 @@ void drawSlewTarget(
     Offset? slewTarget,
     double targetDistance,
     double targetAngle,
-    {bool drawDistanceText = true}) {
+    bool drawDistanceText,
+    bool portrait) {
   var distanceText = "";
   if (targetDistance > 1) {
     distanceText = sprintf("%.1f°", [targetDistance]);
@@ -59,8 +60,8 @@ void drawSlewTarget(
     final angleRad = _deg2rad(targetAngle);
     final arrowStart = Offset(boresight.dx - arrowRoot * math.sin(angleRad),
         boresight.dy - arrowRoot * math.cos(angleRad));
-    drawArrow(
-        canvas, color, arrowStart, arrowLength, angleRad, distanceText, _thin);
+    drawArrow(canvas, color, arrowStart, arrowLength, angleRad, distanceText,
+        portrait, _thin);
     drawDistanceText = false;
   } else {
     // Slew target is in the field of view.
@@ -74,6 +75,6 @@ void drawSlewTarget(
   drawBullseye(canvas, color, boresight, bsRadius, rollAngleRad);
   if (drawDistanceText) {
     final textPos = Offset(boresight.dx - bsRadius - 40, boresight.dy);
-    drawText(canvas, color, textPos, distanceText);
+    drawText(canvas, color, textPos, distanceText, portrait);
   }
 }
