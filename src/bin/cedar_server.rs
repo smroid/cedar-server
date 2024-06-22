@@ -1242,23 +1242,22 @@ impl MyCedar {
 // the plate solve result (this can be overridden with a command line flag e.g.
 // for a tablet UI; see below).
 //
-// For the ASI mini camera, use full-resolution images for focus, applying 2x2
-// sampling when sending the image to the phone UI. The same 2x2 binning is used
-// prior to CedarDetect, and refer star detections to the full resolution
-// capture for centroiding.
+// For the ASI mini camera, we apply 2x2 binning prior to CedarDetect, and refer
+// star detections to the full resolution capture for centroiding. The binned
+// image (0.3 megapixel) is sent to the phone UI.
 //
 // Rather than hardwiring the above image downsizing strategies for the HQ
 // camera and the ASI mini camera, we instead generalize based on the camera
 // sensor resolution:
 //
-// Camera mpix   SETUP processing  SETUP display  OPERATE processing  OPERATE display
-//        <0.75
-//  ASI   0.75-3  2x2 binning                      2x2 binning
-//        3-12    4x4 binning                      4x4 binning
-//  HQ    >12     4x4 binning       +2x2 sampling  4x4 binning         +2x2 sampling
+// Camera  Mpix     CedarDetect    Display
+//         <0.75
+// ASI     0.75-3   2x2 binning
+//         3-12     4x4 binning
+// HQ      >12      4x4 binning    +2x2 sampling
 
 // Note that the "display" sampling value is an additional sampling (if any)
-// applied after the "processing" binning has been applied.
+// applied after the CedarDetect binning has been applied.
 //
 // Command line arguments are provided to allow overrides to be applied to the
 // above rubric.
