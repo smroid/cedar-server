@@ -28,7 +28,3 @@ for a bar graph. Improvements to consider:
   in (nearly) all of the frames (based on x/y proximity between frames). Display
   the count of these "robustly detected" stars. This count will not include stars
   at the edge of detectability nor false positives (noise).
-
-
-converting raw without debayering:
-dcraw -D -T -W -b 256 -g 1 1 *.dng
