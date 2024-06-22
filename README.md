@@ -1,7 +1,7 @@
 # cedar-server
 
 Cedar-server integrates several Cedar components to implement a plate-solving
-electronic finder for showing where in the sky your telescope is pointed.:
+electronic finder for showing where in the sky your telescope is pointed.
 
 Cedar-server:
 * Acquires images (cedar-camera)
