@@ -1,3 +1,6 @@
+// Copyright (c) 2023 Steven Rosenthal smr@dt3.org
+// See LICENSE file in root directory for license terms.
+
 use astro::angle::{anglr_sepr, limit_to_two_PI};
 use astro::coords::{alt_frm_eq, az_frm_eq, hr_angl_frm_hz};
 use astro::time::{CalType, Date, julian_day, mn_sidr};

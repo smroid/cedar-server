@@ -1,3 +1,6 @@
+// Copyright (c) 2023 Steven Rosenthal smr@dt3.org
+// See LICENSE file in root directory for license terms.
+
 use image::GrayImage;
 
 fn compute_lut(min_pixel_value: u8,
