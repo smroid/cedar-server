@@ -378,10 +378,11 @@ impl DetectEngine {
             let process_start_time = Instant::now();
             let image: &GrayImage = &captured_image.image;
             let (width, height) = image.dimensions();
-            let center_size = std::cmp::min(width, height) / 3;
-            let center_region = Rect::at(((width - center_size) / 2) as i32,
-                                         ((height - center_size) / 2) as i32)
-                .of_size(center_size, center_size);
+            let center_width = width / 3;
+            let center_height = height / 3;
+            let center_region = Rect::at(((width - center_width) / 2) as i32,
+                                         ((height - center_height) / 2) as i32)
+                .of_size(center_width, center_height);
             let noise_estimate = estimate_noise_from_image(&image);
             let prev_exposure_duration_secs =
                 captured_image.capture_params.exposure_duration.as_secs_f32();
