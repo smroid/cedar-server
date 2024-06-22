@@ -1,3 +1,6 @@
+// Copyright (c) 2023 Steven Rosenthal smr@dt3.org
+// See LICENSE file in root directory for license terms.
+
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Child, Stdio, ChildStdout, ChildStderr};
