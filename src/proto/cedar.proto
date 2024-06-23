@@ -14,12 +14,12 @@ package cedar;
 // run: protoc --experimental_allow_proto3_optional --dart_out=grpc:. --proto_path=../../src/proto ../../src/proto/cedar.proto
 
 // General note: in the Cedar gRPC protocol, the client is a user interface
-// realized as a web app or a mobile app. The client interacts with the
+// typically realized as a web app or a mobile app. The client interacts with the
 // server via gRPC, using the messages and RPCs defined in this proto file.
 //
 // The server runs independently of the client. In particular, image
 // acquisitions, star detection, plate solving, and updates of SkySafari occur
-// in the server even if no user interface app is connected. A client can obtain
+// in the server even if no user interface client is connected. A client can obtain
 // FrameResults at a rate equal to or slower than the rate at which the server
 // is producing results.
 //
