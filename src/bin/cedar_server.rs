@@ -35,25 +35,25 @@ use tracing_appender::{non_blocking::NonBlockingBuilder};
 
 use futures::join;
 
-use cedar::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
-use cedar::cedar::cedar_server::{Cedar, CedarServer};
-use cedar::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
-                   EmptyMessage, FixedSettings, FrameRequest, FrameResult,
-                   Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
-                   OperatingMode, OperationSettings, ProcessingStats, Rectangle,
-                   StarCentroid, Preferences, ServerInformationRequest,
-                   ServerInformationResult};
-use ::cedar::calibrator::Calibrator;
-use ::cedar::detect_engine::{DetectEngine, DetectResult};
-use ::cedar::scale_image::scale_image;
-use ::cedar::solve_engine::{PlateSolution, SolveEngine};
-use ::cedar::position_reporter::{TelescopePosition, create_alpaca_server};
-use ::cedar::motion_estimator::MotionEstimator;
-use ::cedar::polar_analyzer::PolarAnalyzer;
-use ::cedar::tetra3_subprocess::Tetra3Subprocess;
-use ::cedar::value_stats::ValueStatsAccumulator;
-use ::cedar::tetra3_server;
-use ::cedar::tetra3_server::{CelestialCoord, SolveResult as SolveResultProto, SolveStatus};
+use cedar_server::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
+use cedar_server::cedar::cedar_server::{Cedar, CedarServer};
+use cedar_server::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
+                          EmptyMessage, FixedSettings, FrameRequest, FrameResult,
+                          Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
+                          OperatingMode, OperationSettings, ProcessingStats, Rectangle,
+                          StarCentroid, Preferences, ServerInformationRequest,
+                          ServerInformationResult};
+use ::cedar_server::calibrator::Calibrator;
+use ::cedar_server::detect_engine::{DetectEngine, DetectResult};
+use ::cedar_server::scale_image::scale_image;
+use ::cedar_server::solve_engine::{PlateSolution, SolveEngine};
+use ::cedar_server::position_reporter::{TelescopePosition, create_alpaca_server};
+use ::cedar_server::motion_estimator::MotionEstimator;
+use ::cedar_server::polar_analyzer::PolarAnalyzer;
+use ::cedar_server::tetra3_subprocess::Tetra3Subprocess;
+use ::cedar_server::value_stats::ValueStatsAccumulator;
+use ::cedar_server::tetra3_server;
+use ::cedar_server::tetra3_server::{CelestialCoord, SolveResult as SolveResultProto, SolveStatus};
 
 use self::multiplex_service::MultiplexService;
 
