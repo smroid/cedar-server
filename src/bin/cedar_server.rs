@@ -1278,8 +1278,8 @@ struct Args {
     #[arg(long, default_value = "default_database")]
     tetra3_database: String,
 
-    /// Unix domain socket file for Tetra3 gRPC server.
-    #[arg(long, default_value = "/home/pi/tetra3.sock")]
+    /// Unix domain socket file for Tetra3 gRPC server. Server creates this file.
+    #[arg(long, default_value = "/tmp/cedar.sock")]
     tetra3_socket: String,
 
     /// Camera interface to look for. Useful if there are multiple interfaces.
