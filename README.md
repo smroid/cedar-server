@@ -10,7 +10,7 @@ Cedar-server:
 * Serves a gRPC endpoint used by clients such as Cedar Aim to present
   a user interface
 
-For more information, see [about.md](<https://discord.com/smroid/cedar-server/about.md>).
+For more information, see [about.md](about.md).
 
 Please join the [Cedar Discord](<https://discord.gg/xbDrUyXP>) server
 for discussions around Cedar-server and other related topics.
