@@ -1,12 +1,11 @@
 # About Cedar-server
 
-As noted in the [README.md](README.md) file, Cedar-server implements a plate solving
-pipeline to help you aim your telescope.
+Cedar-server implements a plate solving pipeline to help you aim your telescope.
 
-Cedar-server's design provides rich functionality, high performance, and simple
-usage. To the greatest extent possible, all internal settings and calibrations
-are performed automatically so the user does not need to tweak endless knobs in
-a hunt for good results.
+Cedar-server's design provides rich functionality, high performance, reliable
+operation, and simple usage. To the greatest extent possible, all internal
+settings and calibrations are performed automatically so the user does not need
+to tweak endless knobs in a hunt for good results.
 
 ## Processing pipeline
 
@@ -279,7 +278,7 @@ mount is equatorial with clock drive.
 
 ### Adaptive frame rate
 
-With a sensitive camera such as the ASI120mm mini with a fast lens, Cedar-server
+With a sensitive camera such as the ASI120mm mini and a fast lens, Cedar-server
 can run at frame rates in the range of 10-30Hz. This causes the Rpi to use more
 supply current, because the processing pipeline results in >100% CPU utilization
 where the multiple cores are being kept busy.
