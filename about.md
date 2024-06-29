@@ -5,7 +5,7 @@ Cedar-server implements a plate solving pipeline to help you aim your telescope.
 Cedar-server's design provides rich functionality, high performance, reliable
 operation, and simple usage. To the greatest extent possible, all internal
 settings and calibrations are performed automatically so the user does not need
-to tweak endless knobs in a hunt for good results.
+to endlessly tweak multiple knobs in a hunt for good results.
 
 ## Processing pipeline
 
@@ -42,8 +42,8 @@ Setup mode is what the user first sees in the Cedar-aim app. Setup mode
 provides:
 
 * Visual support for focusing the camera. This is presented in the Cedar-aim
-  user interface as a magnified view of the brightest star in the central
-  region of the field of view (FOV), displayed at a high refresh rate.
+  user interface as a magnified view of the brightest star in the central region
+  of the field of view (FOV), acquired and displayed at a high refresh rate.
 
 * "Any star" boresight alignment. The user centers the central brightest star in
   the telescope view and then taps a button to capture the x/y position of the
@@ -60,7 +60,7 @@ Aim mode (referred to as Operate mode in the Cedar-server code) is the main
 operating mode, where:
 
 * Plate solves are done continuously, updating the RA/Dec information on the
-  Cedar-aim UI.
+  Cedar-aim UI and optionally SkySafari.
 
 * Move to target: see below.
 
@@ -189,10 +189,9 @@ automatically adjusts the exposure time in a mode-specific fashion.
 
 ### Daylight alignment mode
 
-In daylight alignment mode (coming soon), the camera is pointed at a
-daylight-illuminated terrestrial scene. In this situation Cedar-server adjusts
-the exposure time to achieve good brightness of the central region of the field
-of view.
+In daylight alignment mode (coming soon), the camera is pointed at a terrestrial
+scene before dark. Here Cedar-server adjusts the exposure time to achieve good
+brightness of the central region of the field of view.
 
 ### Setup mode (focusing)
 
@@ -208,22 +207,22 @@ number of detected stars (see below).
 ## Speed vs accuracy slider
 
 Reliable plate solving requires a good number of correctly detected stars with
-reasonably accurate brightness estimates. Cedar-solve can succeed with as few as
-6 detected stars, but is much more reliable at above 10 stars. In practice using
-20 detected stars yields solid solve results; using more than 20 stars provides
-little benefit but requires longer exposure times.
+reasonably accurate relative brightness ranking. Cedar-solve can succeed with as
+few as 6 detected stars, but is much more reliable at above 10 stars. In
+practice using 20 detected stars yields solid solve results; using more than 20
+stars provides little added benefit but incurs longer exposure times.
 
 The number of detected stars is influenced by:
 
 * Exposure time. A longer exposure produces higher signal-to-noise and thus allows
-  more numerous fainter stars to be detected.
+  additional fainter stars to be detected.
 
 * Noise-relative detection threshold. A "sigma multiple" parameter governs the
   sensitivity of Cedar-detect. A high sigma value yields fewer star detections
   but very few false positives; a lower sigma value allows fainter stars to be
-  detected but also results in some noise fluctuations to be mistaken for stars.
+  detected but also causes some noise fluctuations to be mistaken for stars.
 
-So we have potentially three knobs to present to the user:
+So we have potentially three parameters to present to the user:
 
 1. Desired number of detected stars for plate solving.
 
@@ -266,7 +265,7 @@ command line.
 Cedar-server includes logic that tracks the plate solutions over time, allowing
 additional functionality to be synthesized. A basic concept is "dwell
 detection", where successive plate solutions yielding (nearly) unchanging
-results allow Cedar-server to conclude that the telescope is not moving.
+results allow Cedar-server to infer that the telescope is not moving.
 
 ### Mount type determination
 
@@ -275,12 +274,12 @@ is changing at the sidereal rate, Cedar-server can infer that the telescope
 mount is non-motorized.
 
 If the RA and Dec are both unchanging, Cedar-server can infer that the telescope
-mount is equatorial with clock drive.
+mount is tracking, e.g. equatorial with clock drive.
 
 ### Adaptive frame rate
 
 With a sensitive camera such as the ASI120mm mini and a fast lens, Cedar-server
-can run at frame rates in the range of 10-30Hz. This causes high CPU utilization
+can run at frame rates in the range of 10-30Hz. This causes high CPU usage
 because the processing pipeline keeps the multiple Rpi cores busy.
 
 (coming soon) To improve battery life, Cedar-server reduces the frame rate when
