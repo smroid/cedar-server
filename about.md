@@ -63,18 +63,16 @@ operating mode, where:
 * Plate solves are done continuously, updating the RA/Dec information on the
   Cedar-aim UI.
 
-* Slew-to-target: initiated from SkySafari, or manual entry of Ra/Dec (coming
-  soon), or from Cedar-sky (coming soon). Cedar displays distance and direction
-  to target and displays the needed telescope axis motions.
+* Move to target: see below.
 
 * Polar alignment (coming soon). Cedar provides assistance for the "declination
   drift" method of polar alignment, using the high precision of plate solutions
-  and integration over time to quickly provide polar axis pointing corrections.
+  and integration over time to provide polar axis pointing corrections.
 
 ## Calibrations
 
 When the user transitions from Setup mode to Aim mode, Cedar takes the
-opportunity to perform a series of calibrations, on the assumption that the
+opportunity to perform a series of calibrations, on the presumption that the
 camera is pointed at a star field and is well focused. The calibrations are as
 follows, taking several seconds in total:
 
@@ -87,9 +85,10 @@ follows, taking several seconds in total:
 * Lens characteristics: Cedar does a trial plate solve, passing null constraints
   for field of view and lens distortion, with a generous solve timeout. Given
   the calibrated exposure duration, there should be a proper number of
-  centroids, leading to a good initial solution, if slow because of the lack of
-  FOV constraint. The actual FOV and lens distortion parameters are extracted
-  and used for Aim mode plate solves, yielding the fastest possible solves.
+  centroids, leading to a good initial solution, even if slow because of the
+  lack of FOV constraint. The actual FOV and lens distortion parameters are
+  obtained and used for subsequent Aim mode plate solves, yielding faster
+  solves.
 
 * Solver parameters: The trial plate solve in the previous calibration step also
   yields a sense of how long solves take on this system, allowing a suitable
@@ -101,15 +100,15 @@ follows, taking several seconds in total:
 ## Moving to target
 
 Cedar-server can provide push-to guidance for a given sky target. The user
-initiates this by using SkySafari, entering RA/Dec manually (coming soon), or
-using the integrated Cedar-sky app (coming soon).
+initiates this by using SkySafari or entering RA/Dec manually in Cedar-aim UI
+(coming soon).
 
 Cedar decomposes the needed telescope motion in terms of the telescope's mount
 axes, either north-south and east-west (equatorial mount) or up-down and
 clockwise-counterclockwise (alt-az mount).
 
-After centering the telescope on the target, before existing move-to mode, the
-user can refine the boresight alignment.
+After centering the telescope on the target, before exiting move-to mode, the
+user can direct Cedar-server to refine its boresight alignment.
 
 ## Camera handling
 
@@ -127,40 +126,187 @@ on the full resolution original image for best accuracy.
 
 ### Gain
 
+Cedar-server operates each kind of camera at its optimal gain setting. The
+optimal gain is taken to be the lowest gain that yields RMS noise of around 0.5
+ADU on a dark image taken at a typical plate solving exposure time. The optimal
+gain values are determined by offline trials and are baked into the Cedar-camera
+library.
 
 ### Color camera
 
-no debayering
+When a color camera (such as the Rpi HQ camera) is used, the Cedar-camera
+library does not debayer to color or monochrome, but instead returns the full
+resolution RAW bayer mosaic image as 8 bits intensity value (linear) per photosite.
 
+Retaining the image in RAW form allows Cedar-detect to accurately detect and
+remove hot pixels (see below). The software binning used prior to star detection
+acts as a simplistic but effective conversion to monochrome.
 
 ### Readout format
 
+All logic in Cedar-detect and Cedar-server use 8-bit linear pixel intensity
+encoding. The Cedar-camera library either configures the camera for 8-bit RAW
+readout, or if only 10- or 12-bit RAW readout is supported, the Cedar-camera
+library converts to 8-bit RAW.
+
 ### Hot pixel detection
 
-combined with binning
+As mentioned earlier, the camera readout is full-resolution RAW with no
+debayering (if color). Any noise reduction modes provided by the camera driver
+are disabled.
 
-### Auto exposure
+Cedar-detect examines each pixel and its left/right neighbors to detect
+hot pixels. A pixel is hot if:
 
+* It is brighter than the local background by an amount that is significant
+  w.r.t. the noise, and
 
+* The pixel's left+right pixels have low background-corrected intensity
+  compared to the center pixel.
 
+The rationale is that hot pixels are isolated, whereas genuine star images are
+spread out over many pixels, so the neighbors of a star's central pixel will
+also be relatively bright. See Cedar-detect (`gate_star_1d()` function in
+algorithm.rs) for details.
+
+When a hot pixel is detected, it is replaced by the mean of its left/right
+neighbors. For efficiency, Cedar-detect combines hot pixel processing with the
+binning used prior to star detection.
+
+## Auto exposure
+
+The optimum exposure time depends on many factors:
+
+* Camera model
+
+* Lens attached (focal length, f/ratio)
+
+* Sky conditions
+
+* Cedar operating mode
+
+Instead of requiring the user to set the camera exposure time, Cedar-server
+automatically adjusts the exposure time in a mode-specific fashion.
+
+### Daylight alignment mode
+
+In daylight alignment mode (coming soon), the camera is pointed at a
+daylight-illuminated terrestrial scene. In this situation Cedar-server adjusts
+the exposure time to achieve good brightness of the central region of the field
+of view.
+
+### Setup mode (focusing)
+
+To achieve a high frame rate during focusing, Cedar-server underexposes the
+brightest star of the central region of the field of view. A crop of the
+brightest star is then stretched for display.
+
+### Aim mode (plate solving)
+
+When plate solving, Cedar-server adjust the exposure time to achieve a desired
+number of detected stars (see below).
 
 ## Speed vs accuracy slider
 
-auto exposure vs manual
+Reliable plate solving requires a good number of correctly detected stars with
+reasonably accurate brightness estimates. Cedar-solve can succeed with as few as
+6 detected stars, but is much more reliable at above 10 stars. In practice using
+20 detected stars yields solid solve results.
+
+The number of detected stars is influenced by:
+
+* Exposure time. A longer exposure produces higher signal-to-noise and thus allows
+  more numerous fainter stars to be detected.
+
+* Noise-relative detection threshold. A "sigma multiple" parameter governs the
+  sensitivity of Cedar-detect. A high sigma value yields fewer star detections
+  but very few false positives; a lower sigma value allows fainter stars to be
+  detected but also results in some noise fluctuations to be mistaken for stars.
+
+So we have potentially three knobs to present to the user:
+
+1. Desired number of detected stars for plate solving.
+
+2. Exposure time.
+
+3. Detection "sigma multiple" parameter.
+
+These are interrelated, as items 2 and 3 together influence the number of
+star detections, which relates to item 1.
+
+Instead of exposing these knobs, Cedar-server instead provides a simple speed
+vs. accuracy knob with three settings:
+
+* Balanced: Baseline values (see below) for desired number of stars and detection sigma
+  are used.
+
+* Faster: Baseline values for star count and detection sigma are multiplied by 0.7.
+
+* Accurate: Baseline values for star count and detection sigma are multiplied by 1.4.
+
+In each case, auto-exposure logic determines the exposure time to acheive the
+desired number of stars.
+
+In the "faster" case, we are seeking fewer stars so Cedar-server will use
+shorter exposures Furthermore, the lowered sigma value allows the exposure time
+to be lowered yet more because it is "easier" to detect stars (plus false
+positives).
+
+In the "accurate" case, we are seeking more stars at a higher sigma threshold,
+so Cedar-server will use longer exposures. By detecting more stars with fewer
+false positives, plate solutions are more robust and the resulting astrometric
+accuracy will be increased due to the larger number of matches.
+
+The baseline value for desired number of stars is 20; the baseline value for
+detection sigma multiple is 8. These can be overridden on the Cedar-server
+command line.
 
 ## Motion analysis
 
-detect tracking eq vs. altaz
-detect dwell
-  - turn down frame rate after delay
-  - auto-create journal entry
-declination drift estimate for polar alignment
+Cedar-server includes logic that tracks the plate solutions over time, allowing
+additional functionality to be synthesized. A basic concept is "dwell
+detection", where successive plate solutions yielding (nearly) unchanging
+results allow Cedar-server to conclude that the telescope is not moving.
 
-## Polar alignment
+### Mount type determination
 
-## Auto-adjustment of frame rate
+During a dwell, if the declination value is unchanging and the right ascension
+is changing at the sidereal rate, Cedar-server can infer that the telescope
+mount is either non-motorized alt-az, or perhaps equatorial without clock drive.
 
-## Catalog integration
+If the RA and Dec are both unchanging, Cedar-server can infer that the telescope
+mount is equatorial with clock drive.
+
+### Adaptive frame rate
+
+With a sensitive camera such as the ASI120mm mini with a fast lens, Cedar-server
+can run at frame rates in the range of 10-30Hz. This causes the Rpi to use more
+supply current, because the processing pipeline results in >100% CPU utilization
+where the multiple cores are being kept busy.
+
+(coming soon) To improve battery life, Cedar-server reduces the frame rate when
+a dwell persists for more than a few seconds. Once motion is again detected,
+Cedar-server returns to the high frame rate.
+
+### Polar alignment
+
+When dwelling with a clock-driven equatorial mount that is accurately polar
+aligned, the RA/Dec values will be perfectly stationary. However, if the polar
+alignment is off, a "drift" in the declination value will be observed; generally
+the RA drift is small unless the polar axis is grossly misalgined.
+
+Cedar-server measures the declination drift rate during dwells and uses this
+information, along with knowledge of where the telescope is pointed relative to
+the celestial equator and meridian, to quantitatively determine how the polar
+alignment should be corrected.
+
+See [Canburytech.net](https://canburytech.net/DriftAlign/index.html) for a detailed
+explanation of how declination drift is used to correct polar alignment.
 
 ## SkySafari integration
 
+Cedar-server implements the [Ascom Alpaca](https://ascom-standards.org/About/Index.htm)
+protocol to present itself as a "telescope" that reports its RA/Dec and responds
+to slew requests. This allows the user to connect SkySafari to Cedar-server,
+after which SkySafari shows the telescope's position and allows the user to
+initiate moving to a target.
