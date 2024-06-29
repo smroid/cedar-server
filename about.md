@@ -210,7 +210,8 @@ number of detected stars (see below).
 Reliable plate solving requires a good number of correctly detected stars with
 reasonably accurate brightness estimates. Cedar-solve can succeed with as few as
 6 detected stars, but is much more reliable at above 10 stars. In practice using
-20 detected stars yields solid solve results.
+20 detected stars yields solid solve results; using more than 20 stars provides
+little benefit but requires longer exposure times.
 
 The number of detected stars is influenced by:
 
@@ -233,8 +234,8 @@ So we have potentially three knobs to present to the user:
 These are interrelated, as items 2 and 3 together influence the number of
 star detections, which relates to item 1.
 
-Instead of exposing these knobs, Cedar-server instead provides a simple speed
-vs. accuracy knob with three settings:
+Instead of having these knobs, Cedar-server instead provides a simple speed vs.
+accuracy knob with three settings:
 
 * Balanced: Baseline values (see below) for desired number of stars and detection sigma
   are used.
@@ -247,7 +248,7 @@ In each case, auto-exposure logic determines the exposure time to acheive the
 desired number of stars.
 
 In the "faster" case, we are seeking fewer stars so Cedar-server will use
-shorter exposures Furthermore, the lowered sigma value allows the exposure time
+shorter exposures. Furthermore, the lowered sigma value allows the exposure time
 to be lowered yet more because it is "easier" to detect stars (plus false
 positives).
 
@@ -271,7 +272,7 @@ results allow Cedar-server to conclude that the telescope is not moving.
 
 During a dwell, if the declination value is unchanging and the right ascension
 is changing at the sidereal rate, Cedar-server can infer that the telescope
-mount is either non-motorized alt-az, or perhaps equatorial without clock drive.
+mount is non-motorized.
 
 If the RA and Dec are both unchanging, Cedar-server can infer that the telescope
 mount is equatorial with clock drive.
@@ -279,13 +280,12 @@ mount is equatorial with clock drive.
 ### Adaptive frame rate
 
 With a sensitive camera such as the ASI120mm mini and a fast lens, Cedar-server
-can run at frame rates in the range of 10-30Hz. This causes the Rpi to use more
-supply current, because the processing pipeline results in >100% CPU utilization
-where the multiple cores are being kept busy.
+can run at frame rates in the range of 10-30Hz. This causes high CPU utilization
+because the processing pipeline keeps the multiple Rpi cores busy.
 
 (coming soon) To improve battery life, Cedar-server reduces the frame rate when
 a dwell persists for more than a few seconds. Once motion is again detected,
-Cedar-server returns to the high frame rate.
+Cedar-server returns to its high frame rate.
 
 ### Polar alignment
 
