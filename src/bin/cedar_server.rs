@@ -1386,7 +1386,7 @@ async fn main() {
           args.tetra3_script, args.tetra3_socket);
     // Build the static content web service.
     let rest = Router::new().nest_service(
-        "/", ServeDir::new("/home/pi/projects/cedar/cedar_flutter/build/web"));
+        "/", ServeDir::new("../cedar_flutter/build/web"));
 
     let camera_interface = match args.camera_interface.as_str() {
         "" => None,
