@@ -251,3 +251,32 @@ sudo nmcli con up cedar-ap
 
 ### Set up service
 
+If you want Cedar-server to start automatically when you power up your
+Rpi, you can set up a systemd configuration to do this.
+
+First, create a file `/home/pi/run_cedar.sh` containing:
+
+```
+#!/bin/bash
+source /home/pi/projects/cedar-solve/.cedar_venv/bin/activate
+cd /home/pi/projects/cedar-server/src
+/home/pi/projects/cedar-server/target/release/cedar-server
+```
+
+Next, create a file `/lib/systemd/system/cedar.service` with:
+
+```
+[Unit]
+Description=Cedar server.
+
+[Service]
+User=pi
+Type=simple
+ExecStart=/bin/bash /home/pi/run_cedar.sh
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Use `sudo systemctl [start/stop/status/enable/disable] cedar.service` to
+control the service.
