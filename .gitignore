@@ -23,8 +23,5 @@ Cargo.lock
 *.jpg
 *~
 
-# Symlink
-src/tetra3_server.py
-
 src/cedar_ui_prefs.binpb
 cedar_log.txt
