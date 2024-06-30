@@ -1,10 +1,18 @@
 # Building and running Cedar-server
 
+Cedar uses a client-server architecture. Cedar-server runs on your Raspberry Pi
+and hosts the camera, image processing algorithms, and the plate solving logic.
+
+The client is the Cedar-aim web app that runs on your mobile phone and provides
+the user interface to Cedar.
+
 ## Supported platforms
 
 These instructions are for running Cedar-server on a Raspberry Pi 4B running
 Bookworm. For building at least 4GB RAM is recommended; for running at least 1GB
 RAM is recommended.
+
+The Cedar-aim web app works with both Android and IOS devices.
 
 ## Initial steps
 
@@ -14,6 +22,7 @@ To build and run Cedar-server, you will need to clone all of the following repos
 all available at [github/smroid](https://github.com/smroid):
 
 * asi_camera2
+* cedar-aim
 * cedar-camera
 * cedar-detect
 * cedar-server
@@ -24,12 +33,6 @@ Note the client app is [Cedar-aim](https://github.com/smroid/cedar-aim); it has
 its own instructions on how to build and run. The remainder of this document
 concerns Cedar-server only.
 
-
-need to update this-- have to build cedar-aim first, so cedar-server can have
-the web assets to server???
-
-
-
 You must clone these repos into sibling directories, for example
 `/home/pi/projects/cedar-camera`, `/home/pi/projects/cedar-detect`,
 `/home/pi/projects/cedar-server`, etc.
@@ -39,6 +42,7 @@ the commands:
 
 ```
 git clone https://github.com/smroid/asi_camera2.git
+git clone https://github.com/smroid/cedar-aim.git
 git clone https://github.com/smroid/cedar-camera.git
 git clone https://github.com/smroid/cedar-detect.git
 git clone https://github.com/smroid/cedar-server.git
@@ -46,9 +50,23 @@ git clone https://github.com/smroid/cedar-solve.git
 git clone https://github.com/smroid/tetra3_server.git
 ```
 
+### Build Cedar-aim
+
+Cedar-aim is Flutter-based and requires some initial setup. Please follow the
+official Flutter
+[instructions](https://docs.flutter.dev/get-started/install/linux/web).
+
+Now that you have the Flutter SDK, it's time to build the Cedar-aim web app.
+
+```
+cd cedar-aim/cedar_flutter/lib
+protoc --experimental_allow_proto3_optional --dart_out=grpc:. --proto_path=../../src/proto cedar.proto tetra3.proto google/protobuf/duration.proto google/protobuf/timestamp.proto
+flutter build web
+```
+
 ### Install Cedar-solve
 
-Cedar-solve is Python-based and requires some extra setup.
+Cedar-solve is Python-based and requires some initial setup.
 
 In the root directory of cedar-solve (e.g. `/home/pi/projects/cedar-solve`), do
 the following:
@@ -127,7 +145,7 @@ Here's what's happening:
 * Cedar's preferences file was not found. This file will be created when the Cedar-aim
   app first saves its settings.
 
-* Cedar-server is listening at port 8080 for connections from Cedar-aim.
+* Cedar-server is listening at port 8080 for connections from the Cedar-aim client app.
 
 * Cedar-server is serving the Ascom Alpaca protocol, allowing SkySafari to connect
   to the "telescope" emulated by Cedar-server.
