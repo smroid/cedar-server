@@ -1,4 +1,4 @@
-# Building and running Cedar-server
+# Building and running Cedar
 
 Cedar uses a client-server architecture. Cedar-server runs on your Raspberry Pi
 and hosts the camera, image processing algorithms, and the plate solving logic.
@@ -18,8 +18,8 @@ The Cedar-aim web app works with both Android and IOS devices.
 
 ### Clone repos
 
-To build and run Cedar-server, you will need to clone all of the following repos,
-all available at [github/smroid](https://github.com/smroid):
+To build and run Cedar, you will need to clone all of the following repos, all
+available at [github/smroid](https://github.com/smroid):
 
 * asi_camera2
 * cedar-aim
@@ -52,9 +52,10 @@ git clone https://github.com/smroid/tetra3_server.git
 
 ### Build Cedar-aim
 
-Cedar-aim is Flutter-based and requires some initial setup. Please follow the
+Cedar-aim is implemented in Flutter and requires some initial setup. Please follow the
 official Flutter
-[instructions](https://docs.flutter.dev/get-started/install/linux/web).
+[instructions](https://docs.flutter.dev/get-started/install/linux/web) to install Flutter
+tools.
 
 Now that you have the Flutter SDK, it's time to build the Cedar-aim web app.
 
@@ -66,7 +67,7 @@ flutter build web
 
 ### Install Cedar-solve
 
-Cedar-solve is Python-based and requires some initial setup.
+Cedar-solve is implemented in Python and requires some initial setup.
 
 In the root directory of cedar-solve (e.g. `/home/pi/projects/cedar-solve`), do
 the following:
@@ -104,7 +105,7 @@ cd cedar-server/src
 ```
 
 This builds Cedar-server and all of its dependencies. Rust crates are downloaded
-and built as needed. The initial build takes around 20 minutes.
+and built as needed. The initial build takes around a half hour on a Rpi 4.
 
 ### Run
 
@@ -155,7 +156,9 @@ Here's what's happening:
 
 
 
-Cedar-aim to verify operation
+Cedar-aim
+
+SkySafari
 
 
 ## Next steps
@@ -165,3 +168,4 @@ Cedar-aim to verify operation
 
 
 ### Set up service
+
