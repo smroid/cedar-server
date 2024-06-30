@@ -3,8 +3,8 @@
 ## Supported platforms
 
 These instructions are for running Cedar-server on a Raspberry Pi 4B running
-Bookworm. For building Cedar-server at least 4GB RAM is recommended; for running
-Cedar-server at least 1GB RAM is recommended.
+Bookworm. For building at least 4GB RAM is recommended; for running at least 1GB
+RAM is recommended.
 
 ## Initial steps
 
@@ -24,6 +24,12 @@ Note the client app is [Cedar-aim](https://github.com/smroid/cedar-aim); it has
 its own instructions on how to build and run. The remainder of this document
 concerns Cedar-server only.
 
+
+need to update this-- have to build cedar-aim first, so cedar-server can have
+the web assets to server???
+
+
+
 You must clone these repos into sibling directories, for example
 `/home/pi/projects/cedar-camera`, `/home/pi/projects/cedar-detect`,
 `/home/pi/projects/cedar-server`, etc.
@@ -40,7 +46,7 @@ git clone https://github.com/smroid/cedar-solve.git
 git clone https://github.com/smroid/tetra3_server.git
 ```
 
-### Install Cedar-solve (Tetra3)
+### Install Cedar-solve
 
 Cedar-solve is Python-based and requires some extra setup.
 
@@ -58,7 +64,7 @@ to your .bashrc file.
 
 ### Set up tetra3_server component
 
-In the root directory of tetra3_server (e.g. `/home/pi/projects/cedar-solve`), do
+In the root directory of tetra3_server (e.g. `/home/pi/projects/tetra3_server`), do
 the following:
 
 ```
@@ -72,7 +78,7 @@ You will need to install the Rust toolchain if you don't have it already. Follow
 the instructions at the [Install Rust](https://www.rust-lang.org/tools/install)
 site.
 
-Build Cedar-server:
+Now build Cedar-server:
 
 ```
 cd cedar-server/src
@@ -80,10 +86,54 @@ cd cedar-server/src
 ```
 
 This builds Cedar-server and all of its dependencies. Rust crates are downloaded
-and built as needed.
-
+and built as needed. The initial build takes around 20 minutes.
 
 ### Run
+
+You can start the Cedar-server at the command line as follows:
+
+```
+cd cedar-server/src
+source ../../cedar-solve/.cedar_venv/bin/activate
+../target/release/cedar-server
+```
+
+If things are working correctly, the output will be similar to:
+
+```
+INFO cedar_server: Using Tetra3 server "./tetra3_server.py" listening at "/tmp/cedar.sock"
+INFO Camera camera_manager.cpp:313 libcamera v0.3.0+65-6ddd79b5
+WARN RPiSdn sdn.cpp:40 Using legacy SDN tuning - please consider moving SDN inside rpi.denoise
+INFO RPI vc4.cpp:446 Registered camera /base/soc/i2c0mux/i2c@1/imx477@1a to Unicam device /dev/media4 and ISP device /dev/media1
+INFO Camera camera_manager.cpp:313 libcamera v0.3.0+65-6ddd79b5
+WARN RPiSdn sdn.cpp:40 Using legacy SDN tuning - please consider moving SDN inside rpi.denoise
+INFO RPI vc4.cpp:446 Registered camera /base/soc/i2c0mux/i2c@1/imx477@1a to Unicam device /dev/media4 and ISP device /dev/media1
+INFO cedar_server: Using camera imx477 4056x3040
+INFO cedar_server::tetra3_subprocess: Tetra3 subprocess started
+WARN cedar_server::tetra3_subprocess: Loading database from: /home/pi/projects2/cedar-solve/tetra3/data/default_database.npz
+WARN cedar_server: Could not read file "./cedar_ui_prefs.binpb": Os { code: 2, kind: NotFound, message: "No such file or directory" }
+INFO cedar_server: Listening at 0.0.0.0:8080
+INFO ascom_alpaca::server: Bound Alpaca server bound_addr=[::]:11111
+```
+
+Here's what's happening:
+
+* Cedar-server is using `/tmp/cedar.sock` to communicate with the Tetra3 server.
+
+* The imx477 camera is detected. This is the Rpi High Quality camera.
+
+* The `tetra3_subprocess` stars up and loads the pattern database `default_database.npz`.
+
+* Cedar's preferences file was not found. This file will be created when the Cedar-aim
+  app first saves its settings.
+
+* Cedar-server is listening at port 8080 for connections from Cedar-aim.
+
+* Cedar-server is serving the Ascom Alpaca protocol, allowing SkySafari to connect
+  to the "telescope" emulated by Cedar-server.
+
+
+
 
 
 
