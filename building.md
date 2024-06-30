@@ -3,16 +3,18 @@
 Cedar is a client-server system. Cedar-server runs on your Raspberry Pi and
 hosts the camera, image processing algorithms, and the plate solving logic.
 
-The client is the Cedar-aim web app that runs on your mobile phone and provides
-the user interface to Cedar.
+The client is the Cedar-aim web app that runs on your mobile phone and runs
+Cedar's user interface.
 
 ## Supported platforms
 
-These instructions are for running Cedar-server on a Raspberry Pi 4B running
-Bookworm. For building at least 4GB RAM is recommended; for running at least 1GB
-RAM is recommended.
+These instructions are for building and running Cedar-server on a Raspberry Pi
+4B running Bookworm. For building, at least 4GB RAM is recommended; for running,
+at least 1GB RAM is recommended.
 
-The Cedar-aim web app works with both Android and IOS devices.
+The Cedar-aim web app works with both Android and IOS devices (phones/tablets)
+and also laptops (Windows/Mac/Linux). Basically, anything with a modern web
+browser can run Cedar-aim.
 
 ## Initial steps
 
@@ -21,13 +23,16 @@ The Cedar-aim web app works with both Android and IOS devices.
 To build and run Cedar, you will need to clone all of the following repos, all
 available at [github/smroid](https://github.com/smroid):
 
-* asi_camera2
-* cedar-aim
-* cedar-camera
-* cedar-detect
-* cedar-server
-* cedar-solve
-* tetra3_server
+* asi_camera2: Rust wrapper for the ASI camera SDK.
+* cedar-aim: Dart/Flutter web app. This is Cedar's user interface.
+* cedar-camera: Cedar's abstraction for interfacing to cameras.
+* cedar-detect: Cedar's image processing algorithms: background estimation,
+  noise estimation, hot pixel repair, software binning, star detection, star
+  centroiding.
+* cedar-server: The server-side integration of Cedar's functionality.
+* cedar-solve: Our fork of Tetra3 with significant performance and reliability
+  improvements.
+* tetra3_server: A gRPC encapsulation allowing Rust code to invoke Cedar-solve.
 
 You must clone these repos into sibling directories, for example
 `/home/pi/projects/cedar-camera`, `/home/pi/projects/cedar-detect`,
@@ -50,7 +55,7 @@ git clone https://github.com/smroid/tetra3_server.git
 Cedar-aim is implemented in Flutter and requires some initial setup. Please
 follow the official Flutter
 [instructions](https://docs.flutter.dev/get-started/install/linux/web) to
-install Flutter tooling.
+install Flutter tooling on your system.
 
 Now that you have the Flutter SDK, it's time to build the Cedar-aim web app.
 
@@ -209,10 +214,10 @@ on what kind of camera you have.
 
 #### USB camera
 
-If you are using a USB camera such as the ASI120mm mini, you can use a ring mount
-to attach the camera to your scope. The Raspberry Pi running Cedar can sit on the
-ground with the USB cable running up to the camera, or you can also attach the
-Raspberry Pi to the telescope if you prefer.
+If you are using a USB camera such as the ASI120mm mini, you can use a ring
+mount to attach the camera to your scope. The Raspberry Pi running Cedar be
+anywhere, with the USB cable running up to the camera, or you can also attach
+the Raspberry Pi to the telescope if you prefer.
 
 #### Raspberry Pi camera
 
@@ -222,14 +227,14 @@ and the camera, such that when the box is attached to the telescope the camera
 will be pointed in the same direction as the scope.
 
 This is an excellent job for a 3d printer. We hope to publish a suitable case
-design in the cedar-serve repo in the near future.
+and mounting design in the cedar-serve repo in the near future.
 
 ### Setup Raspberry Pi Wi-Fi hotspot
 
 The Cedar-aim client must connect over the network to Cedar-server running on
-the Rpi. If you're observing from your rear deck you might be able to use your
-home Wi-Fi, but if you're at a deep sky site your Rpi will need to provide its
-own Wi-Fi hotspot.
+the Rpi. If you're observing from your home's rear deck you might be able to use
+your home Wi-Fi, but if you're at a deep sky site your Rpi will need to provide
+its own Wi-Fi hotspot.
 
 On Bookworm, https://forums.raspberrypi.com/viewtopic.php?t=357998 has good
 information on how to set up a Wi-Fi access point using NetworkManager. Here
