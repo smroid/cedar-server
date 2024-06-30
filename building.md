@@ -1,7 +1,7 @@
 # Building and running Cedar
 
-Cedar uses a client-server architecture. Cedar-server runs on your Raspberry Pi
-and hosts the camera, image processing algorithms, and the plate solving logic.
+Cedar is a client-server system. Cedar-server runs on your Raspberry Pi and
+hosts the camera, image processing algorithms, and the plate solving logic.
 
 The client is the Cedar-aim web app that runs on your mobile phone and provides
 the user interface to Cedar.
@@ -29,16 +29,11 @@ available at [github/smroid](https://github.com/smroid):
 * cedar-solve
 * tetra3_server
 
-Note the client app is [Cedar-aim](https://github.com/smroid/cedar-aim); it has
-its own instructions on how to build and run. The remainder of this document
-concerns Cedar-server only.
-
 You must clone these repos into sibling directories, for example
 `/home/pi/projects/cedar-camera`, `/home/pi/projects/cedar-detect`,
 `/home/pi/projects/cedar-server`, etc.
 
-If `/home/pi/projects` is your current directory, you can execute
-the commands:
+If `/home/pi/projects` is your current directory, you can execute the commands:
 
 ```
 git clone https://github.com/smroid/asi_camera2.git
@@ -52,10 +47,10 @@ git clone https://github.com/smroid/tetra3_server.git
 
 ### Build Cedar-aim
 
-Cedar-aim is implemented in Flutter and requires some initial setup. Please follow the
-official Flutter
-[instructions](https://docs.flutter.dev/get-started/install/linux/web) to install Flutter
-tools.
+Cedar-aim is implemented in Flutter and requires some initial setup. Please
+follow the official Flutter
+[instructions](https://docs.flutter.dev/get-started/install/linux/web) to
+install Flutter tooling.
 
 Now that you have the Flutter SDK, it's time to build the Cedar-aim web app.
 
@@ -65,7 +60,7 @@ protoc --experimental_allow_proto3_optional --dart_out=grpc:. --proto_path=../..
 flutter build web
 ```
 
-### Install Cedar-solve
+### Setup Cedar-solve
 
 Cedar-solve is implemented in Python and requires some initial setup.
 
@@ -91,7 +86,7 @@ cd python
 python -m grpc_tools.protoc -I../proto --python_out=. --pyi_out=. --grpc_python_out=. ../proto/tetra3.proto
 ```
 
-### Build
+### Build Cedar-server
 
 You will need to install the Rust toolchain if you don't have it already. Follow
 the instructions at the [Install Rust](https://www.rust-lang.org/tools/install)
@@ -107,7 +102,7 @@ cd cedar-server/src
 This builds Cedar-server and all of its dependencies. Rust crates are downloaded
 and built as needed. The initial build takes around a half hour on a Rpi 4.
 
-### Run
+### Run Cedar-server
 
 You can start the Cedar-server at the command line as follows:
 
@@ -151,21 +146,108 @@ Here's what's happening:
 * Cedar-server is serving the Ascom Alpaca protocol, allowing SkySafari to connect
   to the "telescope" emulated by Cedar-server.
 
+### Run Cedar-aim
 
+On a phone, tablet, or computer that is on the same network as the Raspberry Pi
+that is running Cedar-server, use a web browser to navigate to port 8080 of the
+IP address of your Rpi. In my case this is `raspberrypi.local:8080`; yours might
+be something like `192.168.1.114:8080`, depending on how your Rpi is set up on
+the network.
 
+If you're successful, you'll see the Cedar-aim setup screen. TODO: add screenshot.
 
+### Setup SkySafari
 
+If you have SkySafari 7 Plus or Pro, you can connect it to Cedar. To do so,
+follow these steps:
 
-Cedar-aim
+1. With Cedar-server running, start SkySafari.
 
-SkySafari
+2. Menu..Settings
 
+3. Telescope Presets
+
+4. Add Preset
+
+5. ASCOM Alpaca Connection
+
+6. Choose Auto-Detect, and press Scan Network For Devices button. After a delay
+   it should show CedarTelescopeEmulator in the DEVICES section. If this fails,
+   try Manual Configuration with your Raspberry Pi's IP address and press the
+   Check IP and Port For Devices button. If successful, it will show
+   CedarTelescopeEmulator in DEVICES.
+
+7. Next
+
+8. Edit the Preset Name if desired.
+
+9. Change ReadoutRate to 10 per second
+
+10. Save Preset
+
+11. On the main SkySafari screen, tap the Scope icon. Press Connect.
+
+Once you've succeeded in connecting SkySafari to Cedar (yay!), the SkySafari
+screen will display a reticle showing your telescope's current position as
+determined by Cedar's plate solving. If there is no plate solution, the
+telescope position will "wiggle" as an indication that it is currently unknown.
 
 ## Next steps
 
+Congratulations (hopefully)! You have successfully run Cedar-server, connected
+to it with Cedar-aim, and (optionally) configured SkySafari to work with
+Cedar-server.
 
-### Raspberry Pi Wi-Fi hotspot
+There are some follow-up steps you'll need to address to be able to use Cedar
+with your telescope in the field.
 
+### Mount camera to telescope
+
+The camera used by Cedar needs to be attached to your telescope, pointed
+in the same direction as the telescope. There are two approaches, depending
+on what kind of camera you have.
+
+#### USB camera
+
+If you are using a USB camera such as the ASI120mm mini, you can use a ring mount
+to attach the camera to your scope. The Raspberry Pi running Cedar can sit on the
+ground with the USB cable running up to the camera, or you can also attach the
+Raspberry Pi to the telescope if you prefer.
+
+#### Raspberry Pi camera
+
+A Raspberry Pi camera such as the HQ camera connects to the Rpi with a short and
+delicate ribbon cable. You will thus need some kind of box to hold both the Rpi
+and the camera, such that when the box is attached to the telescope the camera
+will be pointed in the same direction as the scope.
+
+This is an excellent job for a 3d printer. We hope to publish a suitable case
+design in the cedar-serve repo in the near future.
+
+### Setup Raspberry Pi Wi-Fi hotspot
+
+The Cedar-aim client must connect over the network to Cedar-server running on
+the Rpi. If you're observing from your rear deck you might be able to use your
+home Wi-Fi, but if you're at a deep sky site your Rpi will need to provide its
+own Wi-Fi hotspot.
+
+On Bookworm, https://forums.raspberrypi.com/viewtopic.php?t=357998 has good
+information on how to set up a Wi-Fi access point using NetworkManager. Here
+are the steps that worked for me:
+
+```
+sudo systemctl disable dnsmasq
+sudo systemctl stop dnsmasq
+sudo nmcli con delete cedar-ap
+sudo nmcli con add type wifi ifname wlan0 mode ap con-name cedar-ap ssid cedar autoconnect true
+sudo nmcli con modify cedar-ap 802-11-wireless.band bg
+sudo nmcli con modify cedar-ap 802-11-wireless.channel 9
+sudo nmcli con modify cedar-ap ipv4.method shared ipv4.address 192.168.4.1/24
+sudo nmcli con modify cedar-ap ipv6.method disabled
+sudo nmcli con modify cedar-ap wifi-sec.key-mgmt wpa-psk
+sudo nmcli con modify cedar-ap wifi-sec.psk "cedar123"
+sudo nmcli con up cedar-ap
+```
 
 ### Set up service
 
