@@ -65,6 +65,14 @@ protoc --experimental_allow_proto3_optional --dart_out=grpc:. --proto_path=../..
 flutter build web
 ```
 
+You may need to install `protoc` for the above to work:
+
+```
+sudo apt install python3-protobuf
+```
+
+Also, look at `https://pub.dev/packages/protoc_plugin`
+
 ### Setup Cedar-solve
 
 Cedar-solve is implemented in Python and requires some initial setup.
