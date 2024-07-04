@@ -13,5 +13,5 @@ Cedar-server:
 For more information about Cedar-server, see [about.md](about.md). For
 installation and running instructions, see [building.md](building.md).
 
-Please join the [Cedar Discord](<https://discord.gg/xbDrUyXP>) server
+Please join the [Cedar Discord](<https://discord.gg/JGMk4w2KKX>) server
 for discussions around Cedar-server and other related topics.
