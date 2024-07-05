@@ -7,11 +7,19 @@ reorganize 'cedar' repo to:
 * cedar-server
 * cedar-aim
 
+daylight alignment procedure
+* user points telescope at something far away such as a tree or corner
+  of building
+* cedar zooms the central alignment region to full screen
+* user taps on whatever is centered in telescope view
+
 auto-detect alt-az vs equatorial (with manual override)
 
 alert icon if observer location not yet set.
 
-calibrate for match_max_error
+option to show calibration results
+
+Tweak layout to equalize left and right panels, centering the image left/right.
 
 change license for Cedar Aim (server & app) to AGPL or negotiated.
 
@@ -23,6 +31,8 @@ Pacifier/busy indicator for capturing image
 eq vs alt/az setting
 * alt/az prompts for observer location if not known -- don't bother?
 * convey to SkySafari
+
+SkySafari can send time & location to telescope mount
 
 Support Stellarium telescope control
 
@@ -92,7 +102,6 @@ remote ops, proxied via phone
 * FOV control
 * capture image
 * show detected/solved stars option
-* dark calibration
 * show server log
 
 CPU temperature
@@ -105,6 +114,20 @@ interoperation with SkySafari
 * switch apps?
 * split screen?
 * picture-in-picture?
+* SkySafari "align" to refine alignment?
+
+Polar alignment technique:
+The method used in SharpCap, ASIAir and iPolar:
+1. With the mount in the home position and polar axis somewhere near the pole, take a frame;
+2. Rotate the polar axis approx 90 degrees, then
+3. Take a second frame.
+- the movement of the stars from one frame to the next defines circular arcs, all with a common centre. From the two frames determine where the polar axis is pointing.
+4. Plate-solve the frame from step 3.
+5. Determine the offset (altitude, azimuth) between the celestial pole and where the RA axis is pointing, and display this (ASIAir displays a bullseye, with the polar axis as a dot that has to be moved to the centre).
+- User then manually adjusts mount, accordingly.
+6. Repeat steps 3...5 until user presses "DONE".
+Helps if you watch SharpCap or ASIAir do this in action, in the hands of a competent user it takes a few minutes.
+
 
 help system
 * long press? (GestureDetector wrapped around a widget)
@@ -141,13 +164,11 @@ Preferences:
 * flip options? To match telescope FOV orientation.
   - sync with SkySafari?
 
-Dark calibration:
-* hot pixel map
-* obtain pattern noise to improve star detection
-
 Splash screen
 
-About page
+About screen
+* show server connection status.
+* if connected, show product name, version info, etc.
 
 Help page
 * mostly redirects attention to long-press aids?
