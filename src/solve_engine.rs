@@ -71,6 +71,7 @@ struct SolveState {
     solve_timeout: Duration,
     boresight_pixel: Option<ImageCoord>,
     distortion: f32,
+    match_max_error: f32,
     return_matches: bool,
 
     // Set if currently slewing to a target.
@@ -150,6 +151,7 @@ impl SolveEngine {
                 solve_timeout: Duration::from_secs(1),
                 boresight_pixel: None,
                 distortion: 0.0,
+                match_max_error: 0.005,
                 return_matches: true,
                 slew_target: None,
                 solve_interval_stats: ValueStatsAccumulator::new(stats_capacity),
@@ -215,6 +217,20 @@ impl SolveEngine {
         }
         let mut locked_state = self.state.lock().unwrap();
         locked_state.distortion = distortion;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+        Ok(())
+    }
+
+    pub fn set_match_max_error(&mut self, match_max_error: f32)
+                               -> Result<(), CanonicalError> {
+        if match_max_error < 0.0 {
+            return Err(invalid_argument_error(
+                format!("match_max_error must be non-negative; got {}",
+                        match_max_error).as_str()));
+        }
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.match_max_error = match_max_error;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
@@ -463,6 +479,7 @@ impl SolveEngine {
                     solve_request.target_sky_coords.push(slew_target.clone());
                 }
                 solve_request.distortion = Some(locked_state.distortion);
+                solve_request.match_max_error = Some(locked_state.match_max_error);
                 solve_request.return_matches = locked_state.return_matches;
                 frame_id = locked_state.frame_id;
             }

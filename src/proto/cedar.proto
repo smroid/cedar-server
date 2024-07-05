@@ -426,6 +426,9 @@ message CalibrationData {
   // Omitted if a sky/camera calibration has not succeeded.
   optional float lens_distortion = 5;
 
+  // The 'match_max_error' value that we pass to Tetra3's solve_from_centroids.
+  optional float match_max_error = 8;
+
   // The lens focal length in millimeters, derived from `fov_horizontal`
   // together with the camera's sensor's physical size.
   // Omitted if a sky/camera calibration has not succeeded.

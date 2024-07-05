@@ -147,23 +147,27 @@ impl Calibrator {
         Ok(Duration::from_secs_f32(scaled_exposure_duration_secs))
     }
 
-    // Result is FOV (degrees), lens distortion, solve duration.
+    // Result is FOV (degrees), lens distortion, match_max_error, solve duration.
     pub async fn calibrate_optical(
         &self,
         solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
         exposure_duration: Duration,
         solve_timeout: Duration,
         detection_binning: u32, detection_sigma: f32)
-        -> Result<(f32, f32, Duration), CanonicalError> {
-        // Goal: find the field of view, lens distortion, and representative
-        // plate solve time.
+        -> Result<(f32, f32, f32, Duration), CanonicalError> {
+        // Goal: find the field of view, lens distortion, match_max_error solver
+        // parameter, and representative plate solve time.
         //
         // Assumption: camera is focused and pointed at sky with stars.
         //
         // Approach:
         // * Grab an image, detect the stars.
-        // * Do a plate solution with no FOV estimate and distortion estimate.
+        // * Do a plate solution with no FOV estimate and no distortion estimate.
         //   Use a generous match_max_error value and a generous solve_timeout.
+        // * Use the plate solution to obtain FOV and lens distortion, and determine
+        //   an appropriate match_max_error value.
+        // * Do another plate solution with the known FOV, lens distortion, and
+        //   match_max_error to obtain a representative solution time.
         let _restore_settings = RestoreSettings::new(self.camera.clone());
 
         self.camera.lock().await.set_exposure_duration(exposure_duration)?;
@@ -187,13 +191,32 @@ impl Calibrator {
         solve_request.image_width = width as i32;
         solve_request.image_height = height as i32;
 
-        let solve_result_proto = solve_engine.lock().await.solve(solve_request).await?;
-        let solve_duration = std::time::Duration::try_from(
+        let mut solve_result_proto = solve_engine.lock().await.solve(solve_request.clone()).await?;
+        let mut solve_duration = std::time::Duration::try_from(
             solve_result_proto.solve_time.unwrap()).unwrap();
         if solve_result_proto.status.unwrap() == SolveStatus::MatchFound as i32 {
-            return Ok((solve_result_proto.fov.unwrap(),
-                       solve_result_proto.distortion.unwrap(),
-                       solve_duration));
+            let fov = solve_result_proto.fov.unwrap();  // Degrees.
+            let distortion = solve_result_proto.distortion.unwrap();
+
+            // Use the 90th percentile error residual as a basis for determining the
+            // 'match_max_error' argument to the solver.
+            let p90_error_deg = solve_result_proto.p90e.unwrap() / 3600.0;
+            let p90_err_frac = p90_error_deg / fov;  // As fraction of FOV.
+            let match_max_error = p90_err_frac * 2.0;
+
+            // Do another solve with now-known FOV, distortion, and
+            // match_max_error, to get a more representative solve_duration.
+            solve_request.fov_estimate = Some(fov);
+            solve_request.fov_max_error = Some(fov / 10.0);
+            solve_request.distortion = Some(distortion);
+            solve_request.match_max_error = Some(match_max_error);
+
+            solve_result_proto = solve_engine.lock().await.solve(solve_request).await?;
+            solve_duration = std::time::Duration::try_from(
+                solve_result_proto.solve_time.unwrap()).unwrap();
+            if solve_result_proto.status.unwrap() == SolveStatus::MatchFound as i32 {
+                return Ok((fov, distortion, match_max_error, solve_duration));
+            }
         }
         let status_enum =
             SolveStatus::try_from(solve_result_proto.status.unwrap()).unwrap();

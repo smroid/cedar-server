@@ -260,7 +260,7 @@ impl Cedar for MyCedar {
                     // FrameResult with a information about the ongoing
                     // calibration.
                     let state = self.state.clone();
-                    let solve_timeout = Duration::from_secs(5);
+                    let calibration_solve_timeout = Duration::from_secs(5);
                     let _task_handle: tokio::task::JoinHandle<
                             Result<tonic::Response<OperationSettings>, tonic::Status>> =
                         tokio::task::spawn(async move {
@@ -269,7 +269,7 @@ impl Cedar for MyCedar {
                                 locked_state.calibrating = true;
                                 locked_state.calibration_start = Instant::now();
                                 locked_state.calibration_duration_estimate =
-                                    Duration::from_secs(5) + solve_timeout;
+                                    Duration::from_secs(5) + calibration_solve_timeout;
                                 locked_state.solve_engine.lock().await.stop().await;
                                 locked_state.detect_engine.lock().await.stop().await;
                                 locked_state.calibration_data.lock().await.calibration_time =
@@ -277,7 +277,8 @@ impl Cedar for MyCedar {
                                         SystemTime::now()).unwrap());
                             }
                             // No locks held.
-                            let cal_result = Self::calibrate(state.clone(), solve_timeout).await;
+                            let cal_result = Self::calibrate(
+                                state.clone(), calibration_solve_timeout).await;
                             if let Err(x) = cal_result {
                                 // The only error we expect is Aborted.
                                 assert!(x.code == CanonicalErrorCode::Aborted);
@@ -531,10 +532,6 @@ impl MyCedar {
         if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
             debug!("Could not set offset: {:?}", e);
         }
-        let mut locked_solve_engine = state.solve_engine.lock().await;
-        locked_solve_engine.set_fov_estimate(/*fov_estimate=*/None)?;
-        locked_solve_engine.set_distortion(0.0)?;
-        locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
         *state.calibration_data.lock().await = CalibrationData{..Default::default()};
         Ok(())
     }
@@ -581,7 +578,9 @@ impl MyCedar {
                 if e.code == CanonicalErrorCode::Aborted {
                     return Err(e);
                 }
-                warn!{"Error while calibrating offset: {:?}, using 3", e};
+                if e.code != CanonicalErrorCode::Unimplemented {
+                    warn!{"Error while calibrating offset: {:?}, using 3", e};
+                }
                 Offset::new(3)  // Sane fallback value.
             }
         };
@@ -611,10 +610,11 @@ impl MyCedar {
             solve_engine.clone(), exp_duration, solve_timeout,
             binning, detection_sigma).await
         {
-            Ok((fov, distortion, solve_duration)) => {
+            Ok((fov, distortion, match_max_error, solve_duration)) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
                 locked_calibration_data.fov_horizontal = Some(fov);
                 locked_calibration_data.lens_distortion = Some(distortion);
+                locked_calibration_data.match_max_error = Some(match_max_error);
                 let sensor_width_mm = camera.lock().await.sensor_size().0;
                 let lens_fl_mm =
                     sensor_width_mm / (2.0 * (fov/2.0).to_radians()).tan();
@@ -631,15 +631,18 @@ impl MyCedar {
                 let mut locked_solve_engine = solve_engine.lock().await;
                 locked_solve_engine.set_fov_estimate(Some(fov))?;
                 locked_solve_engine.set_distortion(distortion)?;
+                locked_solve_engine.set_match_max_error(match_max_error)?;
                 locked_solve_engine.set_solve_timeout(operation_solve_timeout)?;
             }
             Err(e) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
                 locked_calibration_data.fov_horizontal = None;
                 locked_calibration_data.lens_distortion = None;
+                locked_calibration_data.match_max_error = None;
                 let mut locked_solve_engine = solve_engine.lock().await;
                 locked_solve_engine.set_fov_estimate(None)?;
                 locked_solve_engine.set_distortion(0.0)?;
+                locked_solve_engine.set_match_max_error(0.005)?;
                 // TODO: pass this in? Should come from command line, maybe is
                 // max solve time.
                 locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
