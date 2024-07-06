@@ -91,7 +91,7 @@ First:
 dart pub global activate protoc_plugin
 ```
 
-Add /home/cedar/.pub_cache/bin to your `PATH` environment variable.
+Add `/home/cedar/.pub-cache/bin` to your `PATH` environment variable.
 
 ```
 cd cedar-aim/cedar_flutter/lib
