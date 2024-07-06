@@ -18,6 +18,19 @@ browser can run Cedar-aim.
 
 ## Initial steps
 
+These instructions assume you've set up a Raspberry Pi 4 with the Bookworm
+version of Raspberry Pi OS. Make sure you've done the following:
+
+```
+sudo apt update; sudo apt full-upgrade
+sudo apt install git
+sudo apt install pip
+sudo apt install protobuf-compiler
+sudo apt install libjpeg-dev zlib1g-dev
+sudo apt install libcamera-dev
+sudo apt install libclang-dev
+```
+
 ### Clone repos
 
 To build and run Cedar, you will need to clone all of the following repos, all
@@ -52,26 +65,39 @@ git clone https://github.com/smroid/tetra3_server.git
 
 ### Build Cedar-aim
 
-Cedar-aim is implemented in Flutter and requires some initial setup. Please
-follow the official Flutter
-[instructions](https://docs.flutter.dev/get-started/install/linux/web) to
-install Flutter tooling on your system.
+Cedar-aim is implemented in Flutter and requires some initial setup
+to get the Flutter SDK:
+
+```
+sudo apt update
+sudo apt install snapd
+```
+
+At this point you need to reboot: `sudo reboot now` After rebooting, run:
+
+```
+sudo snap install snapd
+sudo snap install flutter --classic
+```
+
+Run `flutter doctor` to finalize Flutter installation and verify Flutter SDK is
+present. Flutter doctor will complain about a missing Android toolchain and maybe
+about Chrome; these aren't needed.
 
 Now that you have the Flutter SDK, it's time to build the Cedar-aim web app.
+First:
+
+```
+dart pub global activate protoc_plugin
+```
+
+Add /home/cedar/.pub_cache/bin to your `PATH` environment variable.
 
 ```
 cd cedar-aim/cedar_flutter/lib
 protoc --experimental_allow_proto3_optional --dart_out=grpc:. --proto_path=../../src/proto cedar.proto tetra3.proto google/protobuf/duration.proto google/protobuf/timestamp.proto
 flutter build web
 ```
-
-You may need to install `protoc` for the above to work:
-
-```
-sudo apt install python3-protobuf
-```
-
-Also, look at `https://pub.dev/packages/protoc_plugin`
 
 ### Setup Cedar-solve
 
