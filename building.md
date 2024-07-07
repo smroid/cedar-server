@@ -16,6 +16,62 @@ The Cedar-aim web app works with both Android and IOS devices (phones/tablets)
 and also laptops (Windows/Mac/Linux). Basically, anything with a modern web
 browser can run Cedar-aim.
 
+# Using the pre-built SD card image
+
+You can burn a pre-built image to your SD card (16GB or larger) which will boot
+your Rpi4 directly into running Cedar. This is by far the easiest way to get
+started!
+
+## Download and burn
+
+First: download the SD card image
+[cedar_rpi4_2024_jul_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi4_2024_jul_07.img.gz)
+to your computer.
+
+Second: burn an SD card (16GB or larger) with the image file you just downloaded
+using the [Raspberry Pi Imager](https://www.raspberrypi.com/software). Follow
+these steps:
+
+1. Under Choose Device, pick Raspberry Pi 4.
+
+2. Under Choose OS, scroll to the bottom and pick Use Custom. Select the .img
+   file you downloaded above.
+
+3. Click Choose Storage and select your SD card.
+
+4. IMPORTANT! Choose 'NO' on the 'Would you like to apply OS customization
+   settings?' The SD card image already has the appropriate customizations and
+   applying customizations here could break something.
+
+5. Raspberry Pi Imager will burn and verify your SD card.
+
+As an alternative to the above, if you're on Mac, Windows, or Intel/AMD Linux,
+you can use [balenaEtcher](https://etcher.balena.io/) which bypasses the
+questions/answers and just burns the SD card image.
+
+## Using the pre-built SD card image
+
+With the pre-built SD card you just burned, your Rpi4 is set up as follows:
+
+* SSH is enabled, in case you want to poke around. Username is 'cedar', password
+  is 'cedar'.
+* The Rpi puts up its own Wi-Fi hot spot. The SSID is 'cedar', password is
+  'cedar123'
+
+Insert the SD card and power up your Rpi4. Wait a minute or two, then on your phone,
+tablet, or laptop, join the 'cedar' Wi-Fi network (password is 'cedar123').
+
+Now, in your device's web browser, navigate to 'cedar.local:8080'. You should
+see Cedar's "setup" mode screen where the camera image is shown (assuming you
+have a camera connected!) for focusing and aligning. Under the hamburger menu,
+look for Settings, and enable Full Screen.
+
+# Building from source
+
+If you're more adventerous, you can start with a fresh Rpi OS install and build
+Cedar yourself. Note that the pre-built SD card image was prepared using the same
+instructions here.
+
 ## Initial steps
 
 These instructions assume you've set up a Raspberry Pi 4 with the Bookworm
@@ -23,12 +79,7 @@ version of Raspberry Pi OS. Make sure you've done the following:
 
 ```
 sudo apt update; sudo apt full-upgrade
-sudo apt install git
-sudo apt install pip
-sudo apt install protobuf-compiler
-sudo apt install libjpeg-dev zlib1g-dev
-sudo apt install libcamera-dev
-sudo apt install libclang-dev
+sudo apt install git pip protobuf-compiler libjpeg-dev zlib1g-dev libcamera-dev libclang-dev
 ```
 
 ### Clone repos
@@ -48,10 +99,10 @@ available at [github/smroid](https://github.com/smroid):
 * tetra3_server: A gRPC encapsulation allowing Rust code to invoke Cedar-solve.
 
 You must clone these repos into sibling directories, for example
-`/home/pi/projects/cedar-camera`, `/home/pi/projects/cedar-detect`,
-`/home/pi/projects/cedar-server`, etc.
+`/home/cedar/projects/cedar-camera`, `/home/cedar/projects/cedar-detect`,
+`/home/cedar/projects/cedar-server`, etc.
 
-If `/home/pi/projects` is your current directory, you can execute the commands:
+If `/home/cedar/projects` is your current directory, you can execute the commands:
 
 ```
 git clone https://github.com/smroid/asi_camera2.git
@@ -103,7 +154,7 @@ flutter build web
 
 Cedar-solve is implemented in Python and requires some initial setup.
 
-In the root directory of cedar-solve (e.g. `/home/pi/projects/cedar-solve`), do
+In the root directory of cedar-solve (e.g. `/home/cedar/projects/cedar-solve`), do
 the following:
 
 ```
@@ -117,7 +168,7 @@ to your .bashrc file.
 
 ### Set up tetra3_server component
 
-In the root directory of tetra3_server (e.g. `/home/pi/projects/tetra3_server`), do
+In the root directory of tetra3_server (e.g. `/home/cedar/projects/tetra3_server`), do
 the following:
 
 ```
@@ -163,7 +214,7 @@ WARN RPiSdn sdn.cpp:40 Using legacy SDN tuning - please consider moving SDN insi
 INFO RPI vc4.cpp:446 Registered camera /base/soc/i2c0mux/i2c@1/imx477@1a to Unicam device /dev/media4 and ISP device /dev/media1
 INFO cedar_server: Using camera imx477 4056x3040
 INFO cedar_server::tetra3_subprocess: Tetra3 subprocess started
-WARN cedar_server::tetra3_subprocess: Loading database from: /home/pi/projects2/cedar-solve/tetra3/data/default_database.npz
+WARN cedar_server::tetra3_subprocess: Loading database from: /home/cedar/projects/cedar-solve/tetra3/data/default_database.npz
 WARN cedar_server: Could not read file "./cedar_ui_prefs.binpb": Os { code: 2, kind: NotFound, message: "No such file or directory" }
 INFO cedar_server: Listening at 0.0.0.0:8080
 INFO ascom_alpaca::server: Bound Alpaca server bound_addr=[::]:11111
@@ -189,7 +240,7 @@ Here's what's happening:
 
 On a phone, tablet, or computer that is on the same network as the Raspberry Pi
 that is running Cedar-server, use a web browser to navigate to port 8080 of the
-IP address of your Rpi. In my case this is `raspberrypi.local:8080`; yours might
+IP address of your Rpi. In my case this is `cedar.local:8080`; yours might
 be something like `192.168.1.114:8080`, depending on how your Rpi is set up on
 the network.
 
@@ -293,13 +344,13 @@ sudo nmcli con up cedar-ap
 If you want Cedar-server to start automatically when you power up your
 Rpi, you can set up a systemd configuration to do this.
 
-First, create a file `/home/pi/run_cedar.sh` containing:
+First, create a file `/home/cedar/run_cedar.sh` containing:
 
 ```
 #!/bin/bash
-source /home/pi/projects/cedar-solve/.cedar_venv/bin/activate
-cd /home/pi/projects/cedar-server/src
-/home/pi/projects/cedar-server/target/release/cedar-server
+source /home/cedar/projects/cedar-solve/.cedar_venv/bin/activate
+cd /home/cedar/projects/cedar-server/src
+/home/cedar/projects/cedar-server/target/release/cedar-server
 ```
 
 Next, create a file `/lib/systemd/system/cedar.service` with:
@@ -309,9 +360,9 @@ Next, create a file `/lib/systemd/system/cedar.service` with:
 Description=Cedar server.
 
 [Service]
-User=pi
+User=cedar
 Type=simple
-ExecStart=/bin/bash /home/pi/run_cedar.sh
+ExecStart=/bin/bash /home/cedar/run_cedar.sh
 
 [Install]
 WantedBy=multi-user.target
