@@ -9,8 +9,8 @@ Cedar's user interface.
 ## Supported platforms
 
 These instructions are for building and running Cedar-server on a Raspberry Pi
-4B running Bookworm. For building, at least 4GB RAM is recommended; for running,
-at least 1GB RAM is recommended.
+4B (or 3B) running Bookworm. For building, at least 4GB RAM is recommended; for
+running, at least 1GB RAM is recommended.
 
 The Cedar-aim web app works with both Android and IOS devices (phones/tablets)
 and also laptops (Windows/Mac/Linux). Basically, anything with a modern web
@@ -26,13 +26,15 @@ started!
 
 First: download the SD card image
 [cedar_rpi4_2024_jul_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi4_2024_jul_07.img.gz)
+or
+[cedar_rpi3_2024_jul_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi3_2024_jul_07.img.gz)
 to your computer.
 
 Second: burn an SD card (16GB or larger) with the image file you just downloaded
 using the [Raspberry Pi Imager](https://www.raspberrypi.com/software). Follow
 these steps:
 
-1. Under Choose Device, pick Raspberry Pi 4.
+1. Under Choose Device, pick Raspberry Pi 4 (or 3 if appropriate).
 
 2. Under Choose OS, scroll to the bottom and pick Use Custom. Select the .img
    file you downloaded above.
@@ -45,13 +47,13 @@ these steps:
 
 5. Raspberry Pi Imager will burn and verify your SD card.
 
-As an alternative to the above, if you're on Mac, Windows, or Intel/AMD Linux,
-you can use [balenaEtcher](https://etcher.balena.io/) which bypasses the
-questions/answers and just burns the SD card image.
+As an alternative to the above, you can use
+[balenaEtcher](https://etcher.balena.io/) which bypasses the questions/answers
+and just burns the SD card image.
 
 ## Using the pre-built SD card image
 
-With the pre-built SD card you just burned, your Rpi4 is set up as follows:
+With the pre-built SD card you just burned, your Rpi is set up as follows:
 
 * SSH is enabled, in case you want to poke around. Username is 'cedar', password
   is 'cedar'.
@@ -74,13 +76,17 @@ instructions here.
 
 ## Initial steps
 
-These instructions assume you've set up a Raspberry Pi 4 with the Bookworm
+These instructions assume you've set up a Raspberry Pi 4 (or 3) with the Bookworm
 version of Raspberry Pi OS. Make sure you've done the following:
 
 ```
 sudo apt update; sudo apt full-upgrade
 sudo apt install git pip protobuf-compiler libjpeg-dev zlib1g-dev libcamera-dev libclang-dev
 ```
+
+Before going further, if your Rpi has only 1GB of RAM, you'll need to expand its
+swap space. Edit `/etc/dphys-swapfile` and change `CONF_SWAPSIZE=200` to
+`CONF_SWAPSIZE=2048`. After saving the file, restart your Rpi.
 
 ### Clone repos
 
@@ -190,7 +196,8 @@ cd cedar-server/src
 ```
 
 This builds Cedar-server and all of its dependencies. Rust crates are downloaded
-and built as needed. The initial build takes around a half hour on a Rpi 4.
+and built as needed. The initial build takes around a half hour on a Rpi 4 and
+well over an hour on a Rpi 3.
 
 ### Run Cedar-server
 
