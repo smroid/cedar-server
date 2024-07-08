@@ -19,16 +19,15 @@ browser can run Cedar-aim.
 # Using the pre-built SD card image
 
 You can burn a pre-built image to your SD card (16GB or larger) which will boot
-your Rpi4 directly into running Cedar. This is by far the easiest way to get
+your Rpi directly into running Cedar. This is by far the easiest way to get
 started!
 
 ## Download and burn
 
 First: download the SD card image
 [cedar_rpi4_2024_jul_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi4_2024_jul_07.img.gz)
-or
-[cedar_rpi3_2024_jul_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi3_2024_jul_07.img.gz)
-to your computer.
+to your computer. If you have a Rpi 3, use
+[cedar_rpi3_2024_jul_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi3_2024_jul_07.img.gz) instead.
 
 Second: burn an SD card (16GB or larger) with the image file you just downloaded
 using the [Raspberry Pi Imager](https://www.raspberrypi.com/software). Follow
