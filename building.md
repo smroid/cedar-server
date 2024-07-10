@@ -25,15 +25,14 @@ started!
 ## Download and burn
 
 First: download the SD card image
-[cedar_rpi4_2024_jul_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi4_2024_jul_07.img.gz)
-to your computer. If you have a Rpi 3, use
-[cedar_rpi3_2024_jul_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi3_2024_jul_07.img.gz) instead.
+[cedar_rpi4_2024_jul_09.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi4_2024_jul_09.img.gz)
+to your computer.
 
 Second: burn an SD card (16GB or larger) with the image file you just downloaded
 using the [Raspberry Pi Imager](https://www.raspberrypi.com/software). Follow
 these steps:
 
-1. Under Choose Device, pick Raspberry Pi 4 (or 3 if appropriate).
+1. Choose Device: ignore this.
 
 2. Under Choose OS, scroll to the bottom and pick Use Custom. Select the .img
    file you downloaded above.
