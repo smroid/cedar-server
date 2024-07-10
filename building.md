@@ -321,6 +321,11 @@ and mounting design in the cedar-serve repo in the near future.
 
 ### Setup Raspberry Pi Wi-Fi hotspot
 
+CAUTION! If to this point you've been connected to your Rpi over Wi-Fi, please
+switch to an Ethernet connection. The steps in this section will disrupt your
+Rpi's connection to Wi-Fi, because this section configures your Rpi to put up
+its own Wi-Fi hotspot.
+
 The Cedar-aim client must connect over the network to Cedar-server running on
 the Rpi. If you're observing from your home's rear deck you might be able to use
 your home Wi-Fi, but if you're at a deep sky site your Rpi will need to provide
