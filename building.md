@@ -151,7 +151,7 @@ Add `/home/cedar/.pub-cache/bin` to your `PATH` environment variable.
 ```
 cd cedar-aim/cedar_flutter/lib
 protoc --experimental_allow_proto3_optional --dart_out=grpc:. --proto_path=../../src/proto cedar.proto tetra3.proto google/protobuf/duration.proto google/protobuf/timestamp.proto
-flutter build web
+flutter build web --release
 ```
 
 ### Setup Cedar-solve
