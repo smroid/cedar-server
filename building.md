@@ -246,7 +246,7 @@ Here's what's happening:
 On a phone, tablet, or computer that is on the same network as the Raspberry Pi
 that is running Cedar-server, use a web browser to navigate to port 8080 of the
 IP address of your Rpi. In my case this is `cedar.local:8080`; yours might
-be something like `192.168.1.114:8080`, depending on how your Rpi is set up on
+be something like `192.168.4.1:8080`, depending on how your Rpi is set up on
 the network.
 
 If you're successful, you'll see the Cedar-aim setup screen. TODO: add screenshot.
