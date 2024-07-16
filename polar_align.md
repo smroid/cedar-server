@@ -13,7 +13,7 @@ In order to enable Cedar's polar alignment support, the following conditions
 must all be met:
 
 * Cedar must know your geographic location. Open Cedar Aim's menu, and look for
-  the item that is either "Location unknown" or "Location <lat> <long>". If the
+  the item that is either "Location unknown" or "Location `<lat>` `<long>`". If the
   location is unknown, tap on it to bring up a world map to enter your
   approximate location.
 
