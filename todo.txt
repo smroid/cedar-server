@@ -3,10 +3,6 @@ show matches/pattern stars in operate mode. Except when slewing?
 
 * enlarge display text (check on phone)
 
-reorganize 'cedar' repo to:
-* cedar-server
-* cedar-aim
-
 daylight alignment procedure
 * user points telescope at something far away such as a tree or corner
   of building
@@ -22,8 +18,6 @@ alert icon if observer location not yet set.
 option to show calibration results
 
 Tweak layout to equalize left and right panels, centering the image left/right.
-
-change license for Cedar Aim (server & app) to AGPL or negotiated.
 
 Remove refresh rate control. Go full speed; when dwelling for more than N
 seconds drop to 5hz.
@@ -64,8 +58,6 @@ Cedar Journal
 * capture Cedar Sky goto requests (and whether target was reached)
 * capture RA/DEC when long-enough dwell detected
 TBD
-
-Lens heater with slider control
 
 Cedar Sky
 Idea: OOBE should not require Sky Safari integration
@@ -117,19 +109,12 @@ interoperation with SkySafari
 * split screen?
 * picture-in-picture?
 * SkySafari "align" to refine alignment?
+* support LX200 (also for Nexus DSC)
 
 Polar alignment technique:
-The method used in SharpCap, ASIAir and iPolar:
-1. With the mount in the home position and polar axis somewhere near the pole, take a frame;
-2. Rotate the polar axis approx 90 degrees, then
-3. Take a second frame.
-- the movement of the stars from one frame to the next defines circular arcs, all with a common centre. From the two frames determine where the polar axis is pointing.
-4. Plate-solve the frame from step 3.
-5. Determine the offset (altitude, azimuth) between the celestial pole and where the RA axis is pointing, and display this (ASIAir displays a bullseye, with the polar axis as a dot that has to be moved to the centre).
-- User then manually adjusts mount, accordingly.
-6. Repeat steps 3...5 until user presses "DONE".
-Helps if you watch SharpCap or ASIAir do this in action, in the hands of a competent user it takes a few minutes.
-
+https://www.sharpcap.co.uk/sharpcap/features/polar-alignment
+https://github.com/ThemosTsikas/PhotoPolarAlign
+https://www.considine.net/aplanatic/align.htm
 
 help system
 * long press? (GestureDetector wrapped around a widget)
@@ -144,13 +129,14 @@ vignetting calibration
 Wifi management
 * access point, provisioning
 * switching wifi mode-- setting in web UI?
+* change channel
 * bluetooth? disable if not using?
-* access point power level (save battery)
 
 FITS support for saved images? Other formats?
 
 logging
 * observer log is separate
+* move cedar_log.txt to sane directory (cmd line arg?)
 
 command line options for camera binning: yes, no, auto.
 
@@ -171,6 +157,7 @@ Splash screen
 About screen
 * show server connection status.
 * if connected, show product name, version info, etc.
+* show wifi info
 
 Help page
 * mostly redirects attention to long-press aids?
