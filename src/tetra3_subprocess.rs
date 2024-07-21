@@ -161,7 +161,10 @@ impl Tetra3Subprocess {
             stopping: Arc::new(Mutex::new(false)),
         };
         t3_subprocess.make_wait_worker(child);
-        thread::sleep(Duration::from_secs(2));
+        // Note that it will take some time for the Tetra3 subprocess to start,
+        // load its pattern database, and start serving. Connecting clients
+        // should implement a backoff-retry scheme with a generous overall
+        // timeout.
         Ok(t3_subprocess)
     }
 

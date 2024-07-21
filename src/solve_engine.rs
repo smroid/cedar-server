@@ -102,7 +102,7 @@ impl SolveEngine {
     async fn connect(tetra3_server_address: String)
                      -> Result<Tetra3Client<tonic::transport::Channel>, CanonicalError> {
         // Set up gRPC client, connect to a UDS socket. URL is ignored.
-        let mut backoff = Duration::from_millis(1);
+        let mut backoff = Duration::from_millis(100);
         loop {
             let addr = tetra3_server_address.clone();
             let channel = Endpoint::try_from("http://[::]:50051").unwrap()
@@ -114,15 +114,15 @@ impl SolveEngine {
                     return Ok(Tetra3Client::new(ch));
                 },
                 Err(e) => {
-                    if backoff > Duration::from_secs(5) {
+                    if backoff > Duration::from_secs(20) {
                         return Err(failed_precondition_error(
                             format!("Error connecting to Tetra server at {:?}: {:?}",
                                     tetra3_server_address, e).as_str()));
                     }
-                    // Give time for tetra3_server binary to start up and accept
-                    // connections.
+                    // Give time for tetra3_server binary to start up, load its
+                    // pattern database, and start to accept connections.
                     tokio::time::sleep(backoff).await;
-                    backoff *= 2;
+                    backoff = backoff.mul_f32(1.5);
                 }
             }
         }
