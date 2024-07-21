@@ -9,6 +9,37 @@ use chrono::{Datelike, DateTime, Timelike, Utc};
 use std::f64::consts::PI;
 use std::time::SystemTime;
 
+/// Convert ra/dec (radians) to x/y/z on unit sphere.
+pub fn to_unit_vector(ra: f64, dec: f64) -> [f64; 3] {
+    [(ra.cos() * dec.cos()),  // x
+     (ra.sin() * dec.cos()),  // y
+     dec.sin()]               // z
+}
+
+/// Convert x/y/z on unitsphere to ra/dec (radians).
+pub fn from_unit_vector(v: &[f64; 3]) -> (f64, f64) {
+    let x = v[0];
+    let y = v[1];
+    let z = v[2];
+    let dec = z.asin();
+    let mut ra = y.atan2(x);
+    if ra < 0.0 {
+        ra += 2.0 * PI;
+    }
+    (ra, dec)
+}
+
+/// Converts angle (radians) to distance between two unit vectors with that
+/// angle between them.
+pub fn distance_from_angle(angle: f64) -> f64 {
+    2.0 * (angle / 2.0).sin()
+}
+
+/// Converts distance between two unit vectors the the angle between them.
+pub fn angle_from_distance(distance: f64) -> f64 {
+    2.0 * (0.5 * distance).asin()
+}
+
 /// Returns the separation, in radians, between the given celestial coordinates
 /// (in radians).
 pub fn angular_separation(p0_ra: f64, p0_dec: f64,
@@ -25,11 +56,11 @@ pub fn position_angle(p0_ra: f64, p0_dec: f64,
     // Adapted from
     // https://astronomy.stackexchange.com/questions/25306
     // (measuring-misalignment-between-two-positions-on-sky)
-
-    let sin_term = (0.5 * (p1_ra - p0_ra)).sin();
+    let ra_diff = p1_ra - p0_ra;
+    let sin_term = (0.5 * ra_diff).sin();
     let y = (p1_dec - p0_dec).sin() +
         2.0 * p0_dec.sin() * p1_dec.cos() * sin_term * sin_term;
-    let x = p0_dec.cos() * (p1_ra - p0_ra).sin();
+    let x = p0_dec.cos() * ra_diff.sin();
 
     x.atan2(y)
 }
@@ -98,6 +129,39 @@ mod tests {
     use chrono::{FixedOffset, TimeZone};
     use std::time::{Duration};
     use super::*;
+
+    #[test]
+    fn test_ra_dec_xyz() {
+        let mut v = to_unit_vector(0.0, PI / 4.0);
+        let (mut ra, mut dec) = from_unit_vector(&v);
+        assert_abs_diff_eq!(ra, 0.0, epsilon = 0.001);
+        assert_abs_diff_eq!(dec, PI / 4.0, epsilon = 0.001);
+
+        v = to_unit_vector(PI / 2.0, -PI / 4.0);
+        (ra, dec) = from_unit_vector(&v);
+        assert_abs_diff_eq!(ra, PI / 2.0, epsilon = 0.001);
+        assert_abs_diff_eq!(dec, -PI / 4.0, epsilon = 0.001);
+
+        v = to_unit_vector(PI, PI / 3.0);
+        (ra, dec) = from_unit_vector(&v);
+        assert_abs_diff_eq!(ra, PI, epsilon = 0.001);
+        assert_abs_diff_eq!(dec, PI / 3.0, epsilon = 0.001);
+
+        v = to_unit_vector(3.0 * PI / 2.0, 0.0);
+        (ra, dec) = from_unit_vector(&v);
+        assert_abs_diff_eq!(ra, 3.0 * PI / 2.0, epsilon = 0.001);
+        assert_abs_diff_eq!(dec, 0.0, epsilon = 0.001);
+    }
+
+    #[test]
+    fn test_distance_angle() {
+        assert_abs_diff_eq!(distance_from_angle(PI / 2.0), 1.414, epsilon = 0.001);
+        assert_abs_diff_eq!(distance_from_angle(PI), 2.0, epsilon = 0.001);
+
+        assert_abs_diff_eq!(angle_from_distance(0.0), 0.0, epsilon = 0.001);
+        assert_abs_diff_eq!(angle_from_distance(2_f64.sqrt()), PI / 2.0, epsilon = 0.001);
+        assert_abs_diff_eq!(angle_from_distance(2.0), PI, epsilon = 0.001);
+    }
 
     #[test]
     fn test_angular_separation() {
