@@ -256,31 +256,33 @@ If you're successful, you'll see the Cedar-aim setup screen. TODO: add screensho
 If you have SkySafari 7 Plus or Pro, you can connect it to Cedar. To do so,
 follow these steps:
 
-1. With Cedar-server running, start SkySafari.
+1. Make sure your phone or tablet is on Cedar's wifi network.
 
-2. Menu..Settings
+2. With Cedar-server running, start SkySafari.
 
-3. Telescope Presets
+3. Menu..Settings
 
-4. Add Preset
+4. Telescope Presets
 
-5. ASCOM Alpaca Connection
+5. Add Preset
 
-6. Choose Auto-Detect, and press Scan Network For Devices button. After a delay
+6. ASCOM Alpaca Connection
+
+7. Choose Auto-Detect, and press Scan Network For Devices button. After a delay
    it should show CedarTelescopeEmulator in the DEVICES section. If this fails,
    try Manual Configuration with your Raspberry Pi's IP address and press the
    Check IP and Port For Devices button. If successful, it will show
    CedarTelescopeEmulator in DEVICES.
 
-7. Next
+8. Next
 
-8. Edit the Preset Name if desired.
+9. Edit the Preset Name if desired.
 
-9. Change ReadoutRate to 10 per second
+10. Change ReadoutRate to 10 per second
 
-10. Save Preset
+11. Save Preset
 
-11. On the main SkySafari screen, tap the Scope icon. Press Connect.
+12. On the main SkySafari screen, tap the Scope icon. Press Connect.
 
 Once you've succeeded in connecting SkySafari to Cedar (yay!), the SkySafari
 screen will display a reticle showing your telescope's current position as
@@ -347,6 +349,14 @@ sudo nmcli con modify cedar-ap ipv6.method disabled
 sudo nmcli con modify cedar-ap wifi-sec.key-mgmt wpa-psk
 sudo nmcli con modify cedar-ap wifi-sec.psk "cedar123"
 sudo nmcli con up cedar-ap
+```
+
+If you want to change the ssid name or channel number, you can edit
+`/etc/NetworkManager/system-connections/cedar-ap.nmconnection`. After
+changing the `channel` and/or `ssid`, restart the network manger service:
+
+```
+sudo systemctl restart NetworkManager
 ```
 
 ### Set up service
