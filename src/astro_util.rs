@@ -29,6 +29,18 @@ pub fn from_unit_vector(v: &[f64; 3]) -> (f64, f64) {
     (ra, dec)
 }
 
+/// Return the Euclidean distance between the given vectors.
+pub fn distance(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
+    distance_sq(v1, v2).sqrt()
+}
+
+/// Return the square of the Euclidean distance between the given vectors.
+pub fn distance_sq(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
+    (v1[0] - v2[0]) * (v1[0] - v2[0]) +
+    (v1[1] - v2[1]) * (v1[1] - v2[1]) +
+    (v1[2] - v2[2]) * (v1[2] - v2[2])
+}
+
 /// Converts angle (radians) to distance between two unit vectors with that
 /// angle between them.
 pub fn distance_from_angle(angle: f64) -> f64 {
@@ -151,6 +163,14 @@ mod tests {
         (ra, dec) = from_unit_vector(&v);
         assert_abs_diff_eq!(ra, 3.0 * PI / 2.0, epsilon = 0.001);
         assert_abs_diff_eq!(dec, 0.0, epsilon = 0.001);
+    }
+
+    #[test]
+    fn test_distance() {
+        assert_eq!(distance(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]), 0.0);
+        assert_eq!(distance(&[1.0, 2.0, 3.0], &[1.0, 1.0, 3.0]), 1.0);
+        assert_abs_diff_eq!(distance(&[1.0, 2.0, 3.0], &[0.0, 0.0, 0.0]), 3.741,
+                            epsilon = 0.001);
     }
 
     #[test]
