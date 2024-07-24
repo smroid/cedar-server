@@ -1,0 +1,154 @@
+// Copyright (c) 2024 Steven Rosenthal smr@dt3.org
+// See LICENSE file in root directory for license terms.
+
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+import "cedar.proto";
+import "tetra3.proto";
+
+package cedar_sky;
+
+message CatalogDescription {
+  string label = 1;  // M, NGC, etc.
+  string name = 2;  // Messier, New General Catalog, etc.
+  string description = 3;
+  string source = 4;
+  optional string copyright = 5;
+  optional string license = 6;
+}
+
+message ObjectType {
+  string label = 1;  // Nebula, galaxy, double star, etc.
+  string broad_category = 2;  // e.g. 'cluster', whereas label might be
+                              // 'open cluster' or 'globular cluster' etc.
+}
+
+message Constellation {
+  string label = 1;  // e.g. Psc.
+  string name = 2;  // e.g. Pisces.
+}
+
+message CatalogEntry {
+  // These two fields combine to be globally unique entry label, e.g. 'M 51',
+  // 'NGC 3982'.
+  string catalog_label = 1;  // M, NGC, etc.
+  string catalog_entry = 2;  // 51, 3982, etc.
+
+  tetra3_server.CelestialCoord coord = 3;
+  optional Constellation constellation = 4;
+  ObjectType object_type = 5;
+
+  float magnitude = 6;  // Apparent magnitude.
+  optional string angular_size = 7;  // Arc minutes. Usually numeric.
+
+  optional string common_name = 8;  // Albireo, Horsehead, Crab Nebula, etc.
+  optional string notes = 9;
+}
+
+// Information needed to convert RA/Dec to Alt/Az.
+message LocationInfo {
+  cedar.LatLong observer_location = 1;
+  google.protobuf.Timestamp observing_time = 2;
+}
+
+message SkyLocationConstraint {
+  tetra3_server.CelestialCoord coord = 1;
+  float max_distance = 2;  // Degrees.
+}
+
+message CatalogConstraint {
+  repeated string catalog_label = 1;
+}
+
+message ObjectTypeConstraint {
+  repeated string object_type_label = 1;
+}
+
+enum Ordering {
+  UNSPECIFIED = 0;
+
+  // Brightest first
+  BRIGHTNESS = 1;
+
+  // A sky_location_constraint must be present. Closest first.
+  SKY_LOCATION = 2;
+
+  // `location_info` must be present. Highest first.
+  ELEVATION = 3;
+
+  // TODO: time until setting to within min_elevation, for marathons
+}
+
+// Specifies what constraint(s) to apply when retrieving catalog entries.
+message CatalogEntryRequest {
+  optional SkyLocationConstraint sky_location_constraint = 1;
+
+  // Requires `location_info`
+  optional float min_elevation = 2;
+
+  optional float faintest_magnitude = 3;
+
+  optional CatalogConstraint catalog_constraint = 4;
+
+  optional ObjectTypeConstraint object_type_constraint = 5;
+
+  optional Ordering ordering = 6;  // Default is to order by brightness.
+
+  // If two objects from different catalogs satisfy the constraint(s), and are
+  // within this angular distance of each other, only one is returned. The
+  // object from the smaller catalog is returned, so for example two objects are
+  // being returned and are within the `dedup_distance`, the entry from the
+  // Messier catalog is returned instead of the entry from the NGC catalog.
+  // If omitted, no deduping is done.
+  optional float dedup_distance = 7;  // Arcsec.
+
+  // If two objects from the same catalog satisfy the constraint(s), and are
+  // within this angular distance of each other, only one is returned. The
+  // brighter object is returned. If omitted, no decrowding is done.
+  optional float decrowd_distance = 8;  // Arcsec.
+
+  optional LocationInfo location_info = 9;
+}
+
+message SelectedCatalogEntry {
+  CatalogEntry entry = 1;
+
+  // Other entries, if any, that were suppressed due to `dedup_distance` in the
+  // CatalogEntryRequest.
+  repeated CatalogEntry deduped_entries = 2;
+
+  // Other entries, if any, that were suppressed due to `decrowd_distance` in
+  // the CatalogEntryRequest.
+  repeated CatalogEntry decrowded_entries = 3;
+}
+
+message CatalogEntryResponse {
+  // The catalog entries that satisfy the CatalogEntryRequest constraints.
+  repeated SelectedCatalogEntry entries = 1;
+}
+
+message CatalogDescriptionResponse {
+  repeated CatalogDescription catalog_descriptions = 1;
+}
+
+message ObjectTypeResponse {
+  repeated ObjectType object_types = 1;
+}
+
+message ConstellationResponse {
+  repeated Constellation constellations = 1;
+}
+
+message SkyEmptyMessage {}
+
+service CedarSky {
+  rpc QueryCatalogEntries(CatalogEntryRequest) returns (CatalogEntryResponse);
+
+  rpc GetCatalogDescriptionss(SkyEmptyMessage) returns (CatalogDescriptionResponse);
+
+  rpc GetObjectTypes(SkyEmptyMessage) returns (ObjectTypeResponse);
+
+  rpc GetConstellations(SkyEmptyMessage) returns (ConstellationResponse);
+}

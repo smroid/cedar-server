@@ -3,6 +3,7 @@
 
 pub mod astro_util;
 pub mod calibrator;
+pub mod cedar_sky_trait;
 pub mod detect_engine;
 pub mod motion_estimator;
 pub mod polar_analyzer;
@@ -20,5 +21,9 @@ pub mod tetra3_server {
 pub mod cedar {
     // The string specified here must match the proto package name.
     tonic::include_proto!("cedar");
+}
+pub mod cedar_sky {
+    // The string specified here must match the proto package name.
+    tonic::include_proto!("cedar_sky");
 }
 
