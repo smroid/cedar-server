@@ -284,6 +284,10 @@ follow these steps:
 
 12. On the main SkySafari screen, tap the Scope icon. Press Connect.
 
+13. On the main screen, tap the `Observe` icon, choose `Scope Display`, and
+    either enable `Telrad circles` or configure field of view indicators
+    appropriate for your telescope setup.
+
 Once you've succeeded in connecting SkySafari to Cedar (yay!), the SkySafari
 screen will display a reticle showing your telescope's current position as
 determined by Cedar's plate solving. If there is no plate solution, the
