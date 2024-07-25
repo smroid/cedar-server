@@ -10,9 +10,9 @@ cargo build $release_flag
 
 # Determine the path to the built program (assumes standard Cargo structure)
 if [[ -z "$release_flag" ]]; then
-    binary_path="../target/debug/cedar-server"
+    binary_path="../target/debug/cedar-box-server"
 else
-    binary_path="../target/release/cedar-server"
+    binary_path="../target/release/cedar-box-server"
 fi
 
 # Set capabilities

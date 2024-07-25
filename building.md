@@ -66,6 +66,8 @@ see Cedar's "setup" mode screen where the camera image is shown (assuming you
 have a camera connected!) for focusing and aligning. Under the hamburger menu,
 look for Settings, and enable Full Screen.
 
+See below for how to set up SkySafari to work with Cedar.
+
 # Building from source
 
 If you're more adventerous, you can start with a fresh Rpi OS install and build
@@ -204,7 +206,7 @@ You can start the Cedar-server at the command line as follows:
 ```
 cd cedar-server/src
 source ../../cedar-solve/.cedar_venv/bin/activate
-../target/release/cedar-server
+../target/release/cedar-box-server
 ```
 
 If things are working correctly, the output will be similar to:
@@ -374,7 +376,7 @@ First, create a file `/home/cedar/run_cedar.sh` containing:
 #!/bin/bash
 source /home/cedar/projects/cedar-solve/.cedar_venv/bin/activate
 cd /home/cedar/projects/cedar-server/src
-/home/cedar/projects/cedar-server/target/release/cedar-server
+/home/cedar/projects/cedar-server/target/release/cedar-box-server
 ```
 
 Next, create a file `/lib/systemd/system/cedar.service` with:

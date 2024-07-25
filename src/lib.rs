@@ -3,6 +3,7 @@
 
 pub mod astro_util;
 pub mod calibrator;
+pub mod cedar_server;
 pub mod cedar_sky_trait;
 pub mod detect_engine;
 pub mod motion_estimator;

@@ -3,9 +3,9 @@ name = "cedar-server"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]] # Bin to run the Cedar gRPC server.
-name = "cedar-server"
-path = "src/bin/cedar_server.rs"
+[[bin]] # Bin to run the Cedar Box gRPC server.
+name = "cedar-box-server"
+path = "src/bin/cedar_box_server.rs"
 
 [dependencies]
 approx = "0.5.1"

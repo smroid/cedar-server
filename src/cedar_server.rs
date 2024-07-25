@@ -35,25 +35,25 @@ use tracing_appender::{non_blocking::NonBlockingBuilder};
 
 use futures::join;
 
-use cedar_server::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
-use cedar_server::cedar::cedar_server::{Cedar, CedarServer};
-use cedar_server::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
-                          EmptyMessage, FixedSettings, FrameRequest, FrameResult,
-                          Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
-                          OperatingMode, OperationSettings, ProcessingStats, Rectangle,
-                          StarCentroid, Preferences, ServerInformationRequest,
-                          ServerInformationResult};
-use ::cedar_server::calibrator::Calibrator;
-use ::cedar_server::detect_engine::{DetectEngine, DetectResult};
-use ::cedar_server::scale_image::scale_image;
-use ::cedar_server::solve_engine::{PlateSolution, SolveEngine};
-use ::cedar_server::position_reporter::{TelescopePosition, create_alpaca_server};
-use ::cedar_server::motion_estimator::MotionEstimator;
-use ::cedar_server::polar_analyzer::PolarAnalyzer;
-use ::cedar_server::tetra3_subprocess::Tetra3Subprocess;
-use ::cedar_server::value_stats::ValueStatsAccumulator;
-use ::cedar_server::tetra3_server;
-use ::cedar_server::tetra3_server::{CelestialCoord, SolveResult as SolveResultProto, SolveStatus};
+use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
+use crate::cedar::cedar_server::{Cedar, CedarServer};
+use crate::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
+                   EmptyMessage, FixedSettings, FrameRequest, FrameResult,
+                   Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
+                   OperatingMode, OperationSettings, ProcessingStats, Rectangle,
+                   StarCentroid, Preferences, ServerInformationRequest,
+                   ServerInformationResult};
+use crate::calibrator::Calibrator;
+use crate::detect_engine::{DetectEngine, DetectResult};
+use crate::scale_image::scale_image;
+use crate::solve_engine::{PlateSolution, SolveEngine};
+use crate::position_reporter::{TelescopePosition, create_alpaca_server};
+use crate::motion_estimator::MotionEstimator;
+use crate::polar_analyzer::PolarAnalyzer;
+use crate::tetra3_subprocess::Tetra3Subprocess;
+use crate::value_stats::ValueStatsAccumulator;
+use crate::tetra3_server;
+use crate::tetra3_server::{CelestialCoord, SolveResult as SolveResultProto, SolveStatus};
 
 use self::multiplex_service::MultiplexService;
 
@@ -1272,8 +1272,8 @@ impl MyCedar {
 #[command(author, version, about, long_about=None)]
 struct Args {
     /// Path to tetra3_server.py script. Either set this on command line or set
-    /// up a symlink. Note that PYPATH must be set to include the tetra3.py
-    /// library location.
+    /// up a symlink. Note that the virtual environment for tetra3 must have
+    /// been activated.
     #[arg(long, default_value = "./tetra3_server.py")]
     tetra3_script: String,
 
@@ -1368,7 +1368,7 @@ fn parse_duration(arg: &str)
 // https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
 // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 #[tokio::main]
-async fn main() {
+pub async fn server_main() {
     let args = Args::parse();
 
     let file_appender = tracing_appender::rolling::never(&args.log_dir, &args.log_file);
