@@ -3,6 +3,10 @@ show matches/pattern stars in operate mode. Except when slewing?
 
 * enlarge display text (check on phone)
 
+Default database:
+* update for proper density
+* go down to 5deg? Helps 10deg fields that are partially obstructed. Doc this.
+
 daylight alignment procedure
 * user points telescope at something far away such as a tree or corner
   of building
@@ -11,7 +15,17 @@ daylight alignment procedure
 
 auto-detect alt-az vs equatorial (with manual override)
 
+clean up cedar-solve:
+* get rid of star detection/centroiding support. Must use cedar-detect or
+  some other detector/centroider.
+
 flutter app icons
+
+add (tm) at appropriate places for Cedar
+
+investigate tethered alternative to wifi
+
+"happy" sound on "align" button press.
 
 alert icon if observer location not yet set.
 
