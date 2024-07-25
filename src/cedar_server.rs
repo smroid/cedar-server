@@ -19,6 +19,8 @@ use chrono::offset::Local;
 use image::{GrayImage, ImageFormat};
 use image::io::Reader as ImageReader;
 
+use crate::cedar_sky_trait::CedarSkyTrait;
+
 use nix::time::{ClockId, clock_gettime, clock_settime};
 use nix::sys::time::TimeSpec;
 
@@ -1368,7 +1370,8 @@ fn parse_duration(arg: &str)
 // https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
 // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 #[tokio::main]
-pub async fn server_main() {
+pub async fn server_main(_product_name: &str, copyright: &str,
+                         _cedar_sky: &impl CedarSkyTrait) {
     let args = Args::parse();
 
     let file_appender = tracing_appender::rolling::never(&args.log_dir, &args.log_file);
@@ -1384,6 +1387,8 @@ pub async fn server_main() {
         .with(fmt::layer().with_writer(non_blocking_stdout))
         .with(fmt::layer().with_ansi(false).with_writer(non_blocking_file))
         .init();
+
+    info!("{}", copyright);
 
     info!("Using Tetra3 server {:?} listening at {:?}",
           args.tetra3_script, args.tetra3_socket);
