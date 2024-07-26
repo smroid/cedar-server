@@ -24,7 +24,7 @@ use crate::cedar_sky_trait::CedarSkyTrait;
 use nix::time::{ClockId, clock_gettime, clock_settime};
 use nix::sys::time::TimeSpec;
 
-use clap::Parser;
+use pico_args::Arguments;
 use axum::Router;
 use log::{debug, error, info, warn};
 use prost::Message;
@@ -1280,96 +1280,27 @@ impl MyCedar {
 // Command line arguments are provided to allow overrides to be applied to the
 // above rubric.
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about=None)]
-struct Args {
-    /// Path to tetra3_server.py script. Either set this on command line or set
-    /// up a symlink. Note that the virtual environment for tetra3 must have
-    /// been activated.
-    #[arg(long, default_value = "./tetra3_server.py")]
+#[derive(Debug)]
+struct AppArgs {
     tetra3_script: String,
-
-    /// Star catalog database for Tetra3 to load.
-    #[arg(long, default_value = "default_database")]
     tetra3_database: String,
-
-    /// Unix domain socket file for Tetra3 gRPC server. Server creates this file.
-    #[arg(long, default_value = "/tmp/cedar.sock")]
     tetra3_socket: String,
-
-    /// Camera interface to look for. Useful if there are multiple interfaces.
-    /// Currently supported values are "asi" and "rpi". Leave empty if you
-    /// are using only one camera interface, which is typical.
-    #[arg(long, default_value = "")]
     camera_interface: String,
-
-    /// Which camera (within the chosen camera interface) to use. Leave at 0
-    /// if you only have one camera on the chosen interface, which is typical.
-    #[arg(long, default_value_t = 0)]
     camera_index: i32,
-
-    /// Specifies whether binning is applied prior to CedarDetect processing,
-    /// and if so whether it is 2x2 binning or 4x4 binning. Legal values are 1
-    /// (no binning), 2, or 4.
-    /// Omit this to use the resolution-determined value.
-    #[arg(long)]
     binning: Option<u32>,
-
-    /// Specifies whether 2x2 sampling is applied (in addition to binning, if
-    /// any) when sending mode images to the UI.
-    /// Omit this to use the resolution-determined value.
-    #[arg(long)]
     display_sampling: Option<bool>,
-
-    /// Test image to use instead of camera.
-    #[arg(long, default_value = "")]
     test_image: String,
-
-    /// Minimum exposure duration, seconds.
-    #[arg(long, value_parser = parse_duration, default_value = "0.00001")]
     min_exposure: Duration,
-
-    /// Maximum exposure duration, seconds.
-    // For monochrome camera and f/1.4 lens, 200ms is a good maximum. For color
-    // camera and/or slower f/number, increase the maximum exposure accordingly.
-    #[arg(long, value_parser = parse_duration, default_value = "1.0")]
     max_exposure: Duration,
-
-    /// Target number of detected stars for auto-exposure. This is altered by
-    /// the OperationSettings.accuracy setting (multiplier ranging from 0.7 to
-    /// 1.4).
-    #[arg(long, default_value_t = 20)]
     star_count_goal: i32,
-
-    /// The S/N factor used to determine if a background-subtracted pixel is
-    /// bright enough relative to the noise measure to be considered part of a
-    /// star. This is altered by the OperationSettings.accuracy setting
-    /// (multiplier ranging from 0.7 to 1.4).
-    #[arg(long, default_value_t = 8.0)]
     sigma: f32,
-
-    /// Specifies a value below which `sigma` is not adjusted by the
-    /// OperationSettings.accuracy setting.
-    #[arg(long, default_value_t = 5.0)]
     min_sigma: f32,
-
-    /// Path to UI preferences file.
-    #[arg(long, default_value = "./cedar_ui_prefs.binpb")]
     ui_prefs: String,
-
-    /// Directory for log file(s).
-    #[arg(long, default_value = ".")]
     log_dir: String,
-
-    /// Name of log file.
-    #[arg(long, default_value = "cedar_log.txt")]
     log_file: String,
-
     // TODO: max solve time
 }
 
-// Adapted from
-// https://stackoverflow.com/questions/72313616/using-claps-deriveparser-how-can-i-accept-a-stdtimeduration
 fn parse_duration(arg: &str)
                   -> Result<std::time::Duration, std::num::ParseFloatError> {
     let seconds = arg.parse()?;
@@ -1382,8 +1313,71 @@ fn parse_duration(arg: &str)
 #[tokio::main]
 pub async fn server_main(product_name: &str, copyright: &str,
                          cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>) {
-    let args = Args::parse();
+    const HELP: &str = "\
+    USAGE:
+      cedar-box-server [OPTIONS]
 
+    FLAGS:
+      -h, --help                     Prints help information
+
+    OPTIONS:
+      --tetra3_script <path>         ./tetra3_server.py
+      --tetra3_database <name>       default_database
+      --tetra3_socket <path>         /tmp/cedar.sock
+      --camera_interface asi|rpi
+      --camera_index NUMBER
+      --binning 1|2|4
+      --display_sampling true|false
+      --test_image <path>
+      --min_exposure NUMBER          0.00001
+      --max_exposure NUMBER          1.0
+      --star_count_goal NUMBER       20
+      --sigma NUMBER                 8.0
+      --min_sigma NUMBER             5.0
+      --ui_prefs <path>              ./cedar_ui_prefs.binpb
+      --log_dir <path>               .
+      --log_file <file>              cedar_log.txt
+    ";
+
+    let mut pargs = Arguments::from_env();
+    if pargs.contains(["-h", "--help"]) {
+        print!("{}", HELP);
+        std::process::exit(0);
+    }
+    let args = AppArgs {
+        tetra3_script: pargs.value_from_str("--tetra3_script").
+            unwrap_or("./tetra3_server.py".to_string()),
+        tetra3_database: pargs.value_from_str("--tetra3_database").
+            unwrap_or("default_database".to_string()),
+        tetra3_socket: pargs.value_from_str("--tetra3_socket").
+            unwrap_or("/tmp/cedar.sock".to_string()),
+        camera_interface: pargs.value_from_str("--camera_interface").
+            unwrap_or("".to_string()),
+        camera_index: pargs.value_from_str("--camera_index").
+            unwrap_or(0),
+        binning: pargs.opt_value_from_str("--binning").unwrap(),
+        display_sampling: pargs.opt_value_from_str("--display_sampling").unwrap(),
+        test_image: pargs.value_from_str("--test_image").
+            unwrap_or("".to_string()),
+        min_exposure: pargs.value_from_fn("--min_exposure", parse_duration).
+            unwrap_or(parse_duration("0.00001").unwrap()),
+        max_exposure: pargs.value_from_fn("--max_exposure", parse_duration).
+            unwrap_or(parse_duration("1.0").unwrap()),
+        star_count_goal: pargs.value_from_str("--star_count_goal").
+            unwrap_or(20),
+        sigma: pargs.value_from_str("--sigma").
+            unwrap_or(8.0),
+        min_sigma: pargs.value_from_str("--min_sigma").
+            unwrap_or(5.0),
+        ui_prefs: pargs.value_from_str("--ui_prefs").
+            unwrap_or("./cedar_ui_prefs.binpb".to_string()),
+        log_dir: pargs.value_from_str("--log_dir").
+            unwrap_or(".".to_string()),
+        log_file: pargs.value_from_str("--log_file").
+            unwrap_or("cedar_log.txt".to_string()),
+    };
+
+    // Set up logging.
     let file_appender = tracing_appender::rolling::never(&args.log_dir, &args.log_file);
     // Create non-blocking writers for both the file and stdout
     let (non_blocking_file, _guard1) = NonBlockingBuilder::default()
@@ -1398,10 +1392,14 @@ pub async fn server_main(product_name: &str, copyright: &str,
         .with(fmt::layer().with_ansi(false).with_writer(non_blocking_file))
         .init();
 
+    let remaining = pargs.finish();
+    if !remaining.is_empty() {
+        warn!("Unused arguments left: {:?}.", remaining);
+    }
     info!("{}", copyright);
-
     info!("Using Tetra3 server {:?} listening at {:?}",
           args.tetra3_script, args.tetra3_socket);
+
     // Build the static content web service.
     let rest = Router::new().nest_service(
         "/", ServeDir::new("../cedar_flutter/build/web"));
