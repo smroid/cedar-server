@@ -92,6 +92,10 @@ struct MyCedar {
 
     // The path to our log file.
     log_file: PathBuf,
+
+    product_name: String,
+    copyright: String,
+    cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>,
 }
 
 struct CedarState {
@@ -1014,7 +1018,10 @@ impl MyCedar {
                      min_detection_sigma: f32,
                      stats_capacity: usize,
                      preferences_file: PathBuf,
-                     log_file: PathBuf) -> Self {
+                     log_file: PathBuf,
+                     product_name: &str,
+                     copyright: &str,
+                     cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>) -> Self {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration, max_exposure_duration,
             min_detection_sigma, base_detection_sigma,
@@ -1133,6 +1140,9 @@ impl MyCedar {
             state: state.clone(),
             preferences_file,
             log_file,
+            product_name: product_name.to_string(),
+            copyright: copyright.to_string(),
+            cedar_sky,
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;
@@ -1370,8 +1380,8 @@ fn parse_duration(arg: &str)
 // https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
 // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 #[tokio::main]
-pub async fn server_main(_product_name: &str, copyright: &str,
-                         _cedar_sky: &impl CedarSkyTrait) {
+pub async fn server_main(product_name: &str, copyright: &str,
+                         cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>) {
     let args = Args::parse();
 
     let file_appender = tracing_appender::rolling::never(&args.log_dir, &args.log_file);
@@ -1504,7 +1514,7 @@ pub async fn server_main(_product_name: &str, copyright: &str,
             // TODO: arg for this?
             /*stats_capacity=*/100,
             PathBuf::from(args.ui_prefs),
-            path,
+            path, product_name, copyright, cedar_sky,
         ).await
         )).into_service();
 
