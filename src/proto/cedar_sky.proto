@@ -5,7 +5,6 @@ syntax = "proto3";
 
 import "google/protobuf/timestamp.proto";
 
-import "cedar.proto";
 import "tetra3.proto";
 
 package cedar_sky;
@@ -49,8 +48,10 @@ message CatalogEntry {
 
 // Information needed to convert RA/Dec to Alt/Az.
 message LocationInfo {
-  cedar.LatLong observer_location = 1;
-  google.protobuf.Timestamp observing_time = 2;
+  // Degrees.
+  float latitude = 1;
+  float longitude = 2;
+  google.protobuf.Timestamp observing_time = 3;
 }
 
 message CatalogMatch {
