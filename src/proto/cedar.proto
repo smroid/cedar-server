@@ -103,6 +103,12 @@ message OperationSettings {
   // mount) or polar misalighment (tracked equatorial mount), only the RA/DEC
   // at the onset of dwelling is logged.
   optional bool log_dwelled_positions = 10;
+
+  // In OPERATE mode, if `catalog_entry_match` is present, this is used to
+  // determine the `catalog_entries` returned in each FrameResult.
+  // The `sky_location` and `location_info` fields are ignored here; this
+  // information is obtained elsewhere.
+  optional cedar_sky.CatalogEntryMatch catalog_entry_match = 11;
 }
 
 enum OperatingMode {
@@ -189,7 +195,7 @@ message FrameRequest {
   optional int32 prev_frame_id = 1;
 }
 
-// Next tag: 31.
+// Next tag: 32.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
@@ -293,6 +299,8 @@ message FrameResult {
   // Contains information, if available, about adjusting the equatorial mount's
   // polar axis alignment.
   PolarAlignAdvice polar_align_advice = 30;
+
+  repeated FovCatalogEntry catalog_entries = 31;
 
   // alerts
   // * prolonged loss of stars; need setup mode?
@@ -532,6 +540,13 @@ message ErrorBoundedValue {
   float error = 2;
 }
 
+// Represents a Cedar-sky catalog item in the current FOV that satisfies
+// the `catalog_entry_match` criteria.
+message FovCatalogEntry {
+  cedar_sky.CatalogEntry entry = 1;
+  ImageCoord image_pos = 2;
+}
+
 message ActionRequest {
   // Capture boresight offset. In focus mode, this is based on current location
   // of brightest peak in central region. Context:
@@ -574,6 +589,10 @@ message ServerInformationRequest {
 
 message ServerInformationResult {
   optional string log_content = 1;
+
+  // Product name.
+
+  // Server copyright.
 
   // Cedar version.
 

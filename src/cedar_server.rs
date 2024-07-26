@@ -1109,6 +1109,7 @@ impl MyCedar {
                     seconds: 1, nanos: 0,
                 }),
                 log_dwelled_positions: Some(false),
+                catalog_entry_match: None,
             },
             calibration_data: Arc::new(tokio::sync::Mutex::new(
                 CalibrationData{..Default::default()})),
