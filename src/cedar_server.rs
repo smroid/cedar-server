@@ -1310,8 +1310,12 @@ fn parse_duration(arg: &str)
 // Adapted from
 // https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
 // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
+
+// `args` If provided, we extract our command line args from it. The caller
+//     will have already extracted the args it cares about. If omitted, we
+//     process args from env::args_os.
 #[tokio::main]
-pub async fn server_main(product_name: &str, copyright: &str,
+pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright: &str,
                          cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>) {
     const HELP: &str = "\
     USAGE:
@@ -1339,7 +1343,11 @@ pub async fn server_main(product_name: &str, copyright: &str,
       --log_file <file>              cedar_log.txt
     ";
 
-    let mut pargs = Arguments::from_env();
+    let mut pargs = if args.is_some() {
+        args.unwrap()
+    } else {
+        Arguments::from_env()
+    };
     if pargs.contains(["-h", "--help"]) {
         print!("{}", HELP);
         std::process::exit(0);
