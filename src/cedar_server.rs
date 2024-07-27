@@ -372,6 +372,15 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
         }
+        if let Some(catalog_entry_match) = req.catalog_entry_match {
+            if self.cedar_sky.is_none() {
+                return Err(tonic::Status::unimplemented(
+                    format!("{} does not include Cedar Sky.", self.product_name)));
+            }
+            let mut locked_state = self.state.lock().await;
+            locked_state.operation_settings.catalog_entry_match =
+                Some(catalog_entry_match);
+        }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
     }
@@ -1093,6 +1102,11 @@ impl MyCedar {
                 &mut closure_polar_analyzer.lock().unwrap())
         });
         let dimensions = camera.lock().await.dimensions();
+        let catalog_entry_match = if cedar_sky.is_some() {
+            None  // TODO
+        } else {
+            None
+        };
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
             fixed_settings,
@@ -1109,7 +1123,7 @@ impl MyCedar {
                     seconds: 1, nanos: 0,
                 }),
                 log_dwelled_positions: Some(false),
-                catalog_entry_match: None,
+                catalog_entry_match,
             },
             calibration_data: Arc::new(tokio::sync::Mutex::new(
                 CalibrationData{..Default::default()})),

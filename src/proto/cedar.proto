@@ -106,8 +106,6 @@ message OperationSettings {
 
   // In OPERATE mode, if `catalog_entry_match` is present, this is used to
   // determine the `catalog_entries` returned in each FrameResult.
-  // The `sky_location` and `location_info` fields are ignored here; this
-  // information is obtained elsewhere.
   optional cedar_sky.CatalogEntryMatch catalog_entry_match = 11;
 }
 
@@ -300,6 +298,10 @@ message FrameResult {
   // polar axis alignment.
   PolarAlignAdvice polar_align_advice = 30;
 
+  // Lists the sky catalog entries that are present in the `plate_solution`
+  // field of view. The `catalog_entry_match` field in `operation_settings`
+  // determines what entries are included.
+  // Empty if `plate_solution` is absent or failed.
   repeated FovCatalogEntry catalog_entries = 31;
 
   // alerts

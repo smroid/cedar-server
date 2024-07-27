@@ -1,9 +1,8 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use crate::cedar_sky::{CatalogMatch, CatalogDescription,
-                       Constellation, LocationInfo, ObjectType,
-                       ObjectTypeMatch, Ordering, SelectedCatalogEntry};
+use crate::cedar_sky::{CatalogDescription, Constellation, LocationInfo,
+                       ObjectType, Ordering, SelectedCatalogEntry};
 use crate::tetra3_server::CelestialCoord;
 use canonical_error::CanonicalError;
 
@@ -15,8 +14,8 @@ pub trait CedarSkyTrait {
                              max_distance: Option<f32>,
                              min_elevation: Option<f32>,
                              faintest_magnitude: Option<f32>,
-                             catalog_match: Option<&CatalogMatch>,
-                             object_type_match: Option<&ObjectTypeMatch>,
+                             catalog_match: &Vec<String>,
+                             object_type_match: &Vec<String>,
                              ordering: Option<Ordering>,
                              dedup_distance: Option<f32>,
                              decrowd_distance: Option<f32>,
