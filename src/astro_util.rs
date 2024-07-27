@@ -9,6 +9,8 @@ use chrono::{Datelike, DateTime, Timelike, Utc};
 use std::f64::consts::PI;
 use std::time::SystemTime;
 
+extern crate nalgebra as na;
+
 /// Convert ra/dec (radians) to x/y/z on unit sphere.
 pub fn to_unit_vector(ra: f64, dec: f64) -> [f64; 3] {
     [(ra.cos() * dec.cos()),  // x
@@ -133,6 +135,138 @@ fn greenwich_mean_sidereal_time_from_system_time(time: SystemTime) -> f64 {
     limit_to_two_PI((gmst_hours * 15.0).to_radians())
 }
 
+/// Port of Tetra3's _distort_centroids() function. Note that argument is
+/// (x, y), in contrast to Tetra3 which reverses this.
+pub fn distort_centroid(centroid: &[f64; 2], width: usize, height: usize,
+                        distortion: f64) -> [f64; 2] {
+    let tol = 1e-6;
+    let maxiter = 30;
+    let k = distortion;
+
+    let (mut x, mut y) = (centroid[0], centroid[1]);
+    let width = width as f64;
+    let height = height as f64;
+
+    // Center.
+    x -= width / 2.0;
+    y -= height / 2.0;
+    let r_undist = 2.0 * (x * x + y * y).sqrt() / width;
+
+    // Initial guess, distorted at same position.
+    let mut r_dist = r_undist;
+    for _i in 0..maxiter {
+        let r_undist_est = r_dist * (1.0 - k * (r_dist * r_dist)) / (1.0 - k);
+        let dru_drd = (1.0 - 3.0 * k * (r_dist * r_dist))/(1.0 - k);
+        let error = r_undist - r_undist_est;
+        r_dist += error / dru_drd;
+        if error.abs() < tol {
+            break
+        }
+    }
+    x *= r_dist / r_undist;
+    y *= r_dist / r_undist;
+    // Decenter.
+    [x + width / 2.0, y + height / 2.0]
+}
+
+/// Port of Tetra3's _undistort_centroids() function. Note that the arguments is
+/// (x, y), in contrast to Tetra3 which reverses this.
+pub fn undistort_centroid(centroid: &[f64; 2], width: usize, height: usize,
+                          distortion: f64) -> [f64; 2] {
+    let k = distortion;
+
+    let (mut x, mut y) = (centroid[0], centroid[1]);
+    let width = width as f64;
+    let height = height as f64;
+    // Center.
+    x -= width / 2.0;
+    y -= height / 2.0;
+    let r_dist = 2.0 * (x * x + y * y).sqrt() / width;
+    // Scale.
+    let scale = (1.0 - k * (r_dist * r_dist)) / (1.0 - k);
+    x *= scale;
+    y *= scale;
+    // Decenter.
+    [x + width / 2.0, y + height / 2.0]
+}
+
+/// Port of Tetra3's transform_to_image_coords() function. Note that the
+/// return is [x, y], in contrast to Tetra3 which reverses it.
+pub fn transform_to_image_coord(celestial_coord: &[f64; 2],
+                                width: usize, height: usize, fov: f64,
+                                rotation_matrix: &[f64; 9], distortion: f64)
+                                -> [f64; 2] {
+    let ra = celestial_coord[0].to_radians();
+    let dec = celestial_coord[1].to_radians();
+
+    let celestial_vector = na::RowVector3::<f64>::new(
+        ra.cos() * dec.cos(),  // x
+        ra.sin() * dec.cos(),  // y
+        dec.sin()              // z
+    );
+    let rot_matrix = na::Matrix3::new(
+        rotation_matrix[0], rotation_matrix[1], rotation_matrix[2],
+        rotation_matrix[3], rotation_matrix[4], rotation_matrix[5],
+        rotation_matrix[6], rotation_matrix[7], rotation_matrix[8],);
+    let celestial_vector_derot =
+        rot_matrix * &celestial_vector.transpose();
+    let binding = celestial_vector_derot.column(0);
+    let slice = binding.as_slice();
+    let vec = [slice[0], slice[1], slice[2]];
+
+    distort_centroid(&compute_centroid(&vec, width, height, fov),
+                     width, height, distortion)
+}
+
+/// Port of Tetra3's transform_to_celestial_coords() function. Note that the
+/// coord arg is [x, y], in contrast to Tetra3 which reverses it.
+pub fn transform_to_celestial_coords(image_coord: &[f64; 2],
+                                     width: usize, height: usize, fov: f64,
+                                     rotation_matrix: &[f64; 9], distortion: f64)
+                                     -> [f64; 2] {
+    let rot_matrix = na::Matrix3::new(
+        rotation_matrix[0], rotation_matrix[1], rotation_matrix[2],
+        rotation_matrix[3], rotation_matrix[4], rotation_matrix[5],
+        rotation_matrix[6], rotation_matrix[7], rotation_matrix[8],);
+    let image_coord = undistort_centroid(
+        &image_coord, width, height, distortion);
+    let vec = compute_vector(&image_coord, width, height, fov);
+    let image_vector = na::RowVector3::<f64>::new(vec[0], vec[1], vec[2]);
+    let rotated_image_vector =
+        rot_matrix.transpose() * &image_vector.transpose();
+
+    let ra = rotated_image_vector[1].atan2(rotated_image_vector[0]).
+        to_degrees() % 360.0;
+    let dec = 90.0 - rotated_image_vector[2].acos().to_degrees();
+
+    [ra, dec]
+}
+
+/// Port (with minor changes) of Tetra3's _compute_vectors() function.
+fn compute_vector(centroid: &[f64; 2], width: usize, height: usize,
+                  fov: f64) -> [f64; 3] {
+    let width = width as f64;
+    let height = height as f64;
+    let scale_factor = 2.0 * (fov / 2.0).tan() / width;
+    let y = (width / 2.0 - centroid[0]) * scale_factor;
+    let z = (height / 2.0 - centroid[1]) * scale_factor;
+    let norm = (z * z + y * y + 1.0).sqrt();
+    [1.0 / norm, y / norm, z / norm]
+}
+
+/// Port (with minor changes) of Tetra3's _compute_centroids() function.
+fn compute_centroid(vector: &[f64; 3], width: usize, height: usize, fov: f64)
+                    -> [f64; 2] {
+    let width = width as f64;
+    let height = height as f64;
+    let (i, j, k) = (vector[0], vector[1], vector[2]);
+    let scale_factor = -width / 2.0 / (fov / 2.0).tan();
+    let x = scale_factor * j / i;
+    let y = scale_factor * k / i;
+
+    [x + width / 2.0, y + height / 2.0]
+}
+
 #[cfg(test)]
 mod tests {
     extern crate approx;
@@ -243,6 +377,33 @@ mod tests {
                             epsilon = 0.01);
         assert_abs_diff_eq!(dec, mizar_dec,
                             epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_distort_undistort() {
+        let centroid = [20.0, 100.0];
+        let distorted = distort_centroid(&centroid, 1024, 800, 0.01);
+        assert_abs_diff_eq!(distorted[0], 18.636, epsilon = 0.001);
+        assert_abs_diff_eq!(distorted[1], 99.168, epsilon = 0.001);
+        let undistorted = undistort_centroid(&distorted, 1024, 800, 0.01);
+        assert_abs_diff_eq!(undistorted[0], 20.0, epsilon = 0.001);
+        assert_abs_diff_eq!(undistorted[1], 100.0, epsilon = 0.001);
+    }
+
+    #[test]
+    fn test_transform_to_image_coord() {
+        let rotation_matrix = [0.5143930851217422, 0.4705764222800965, 0.7169083517249608,
+                               0.32501576652434216, 0.6666418828994508, -0.670785622591055,
+                               -0.7935770318560958, 0.5780540033235123, 0.18997121822036758];
+        let celestial_coords = [35.0, 50.0];
+        let img_coords = transform_to_image_coord(
+            &celestial_coords, 1024, 800, 10.0, &rotation_matrix, 0.01);
+        assert_abs_diff_eq!(img_coords[0], 497.371, epsilon = 0.001);
+        assert_abs_diff_eq!(img_coords[1], 391.065, epsilon = 0.001);
+        let out_celestial_coords = transform_to_celestial_coords(
+            &img_coords, 1024, 800, 10.0, &rotation_matrix, 0.01);
+        assert_abs_diff_eq!(out_celestial_coords[0], 35.0, epsilon = 0.001);
+        assert_abs_diff_eq!(out_celestial_coords[1], 50.0, epsilon = 0.001);
     }
 
 }  // mod tests.
