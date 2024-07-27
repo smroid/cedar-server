@@ -204,10 +204,7 @@ pub fn transform_to_image_coord(celestial_coord: &[f64; 2],
         ra.sin() * dec.cos(),  // y
         dec.sin()              // z
     );
-    let rot_matrix = na::Matrix3::new(
-        rotation_matrix[0], rotation_matrix[1], rotation_matrix[2],
-        rotation_matrix[3], rotation_matrix[4], rotation_matrix[5],
-        rotation_matrix[6], rotation_matrix[7], rotation_matrix[8],);
+    let rot_matrix = na::Matrix3::from_row_slice(rotation_matrix);
     let celestial_vector_derot =
         rot_matrix * &celestial_vector.transpose();
     let binding = celestial_vector_derot.column(0);
@@ -224,10 +221,7 @@ pub fn transform_to_celestial_coords(image_coord: &[f64; 2],
                                      width: usize, height: usize, fov: f64,
                                      rotation_matrix: &[f64; 9], distortion: f64)
                                      -> [f64; 2] {
-    let rot_matrix = na::Matrix3::new(
-        rotation_matrix[0], rotation_matrix[1], rotation_matrix[2],
-        rotation_matrix[3], rotation_matrix[4], rotation_matrix[5],
-        rotation_matrix[6], rotation_matrix[7], rotation_matrix[8],);
+    let rot_matrix = na::Matrix3::from_row_slice(rotation_matrix);
     let image_coord = undistort_centroid(
         &image_coord, width, height, distortion);
     let vec = compute_vector(&image_coord, width, height, fov);
