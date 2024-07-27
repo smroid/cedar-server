@@ -24,6 +24,8 @@ use crate::tetra3_server::tetra3_client::Tetra3Client;
 use crate::tetra3_subprocess::Tetra3Subprocess;
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
+use crate::cedar_sky_trait::CedarSkyTrait;
+use crate::cedar_sky::CatalogEntryMatch;
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram};
@@ -54,6 +56,9 @@ pub struct SolveEngine {
 
 // State shared between worker thread and the SolveEngine methods.
 struct SolveState {
+    cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>,
+    catalog_entry_match: Option<CatalogEntryMatch>,
+
     frame_id: Option<i32>,
 
     // Zero means go fast as star detections are computed.
@@ -129,6 +134,7 @@ impl SolveEngine {
     }
 
     pub async fn new(tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
+                     cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>,
                      detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
                      tetra3_server_address: String,
                      update_interval: Duration,
@@ -142,6 +148,8 @@ impl SolveEngine {
             tetra3_subprocess,
             client: Arc::new(tokio::sync::Mutex::new(client)),
             state: Arc::new(Mutex::new(SolveState{
+                cedar_sky,
+                catalog_entry_match: None,
                 frame_id: None,
                 update_interval,
                 minimum_stars: 4,
@@ -166,6 +174,21 @@ impl SolveEngine {
             worker_thread: None,
             solution_callback,
         })
+    }
+
+    // Tells whether this solve engine was constructed with a Cedar Sky
+    // implementation.
+    pub fn has_cedar_sky(&self) -> bool {
+        let locked_state = self.state.lock().unwrap();
+        locked_state.cedar_sky.is_some()
+    }
+
+    // Sets the parameters used to retrieve sky catalog entries for the solved
+    // FOV.
+    pub fn set_catalog_entry_match(
+        &mut self, catalog_entry_match: Option<CatalogEntryMatch>) {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.catalog_entry_match = catalog_entry_match;
     }
 
     // Determines how often the detect engine operates (obtains a DetectResult,
@@ -481,6 +504,9 @@ impl SolveEngine {
                 solve_request.distortion = Some(locked_state.distortion);
                 solve_request.match_max_error = Some(locked_state.match_max_error);
                 solve_request.return_matches = locked_state.return_matches;
+                if locked_state.cedar_sky.is_some() {
+                    solve_request.return_rotation_matrix = true;
+                }
                 frame_id = locked_state.frame_id;
             }
             // Get the most recent star detection result.
@@ -537,102 +563,20 @@ impl SolveEngine {
                 let tsr = tetra3_solve_result.as_ref().unwrap();
                 if tsr.status.unwrap() == SolveStatus::MatchFound as i32 {
                     locked_state.solve_success_stats.add_value(1.0);
+
                     // Let integration layer pass solution to SkySafari telescope
                     // interface and MotionEstimator. Integration layer returns current
                     // slew target, if any.
                     locked_state.slew_target =
                         solution_callback(Some(detect_result.clone()), Some(tsr.clone()));
-
-                    if let Some(ref mut slew_req) = slew_request {
-                        let coords;
-                        if tsr.target_coords.len() > 0 {
-                            coords = tsr.target_coords[0].clone();
-                        } else {
-                            coords = tsr.image_center_coords.as_ref().unwrap().clone();
-                        }
-                        let bs_ra = coords.ra.to_radians() as f64;
-                        let bs_dec = coords.dec.to_radians() as f64;
-                        let st_ra =
-                            slew_req.target.as_ref().unwrap().ra.to_radians() as f64;
-                        let st_dec =
-                            slew_req.target.as_ref().unwrap().dec.to_radians() as f64;
-                        slew_req.target_distance = Some(angular_separation(
-                            bs_ra, bs_dec, st_ra, st_dec).to_degrees() as f32);
-
-                        let mut angle = (position_angle(
-                            bs_ra, bs_dec, st_ra, st_dec).to_degrees() as f32 +
-                                         tsr.roll.unwrap()) % 360.0;
-                        // Arrange for angle to be 0..360.
-                        if angle < 0.0 {
-                            angle += 360.0;
-                        }
-                        slew_req.target_angle = Some(angle);
-
-                        if tsr.target_sky_to_image_coords.len() > 0 {
-                            let img_coord = &tsr.target_sky_to_image_coords[0];
-                            if img_coord.x >= 0.0 {
-                                let target_image_coord =
-                                    cedar::ImageCoord{x: img_coord.x, y: img_coord.y};
-                                slew_req.image_pos = Some(target_image_coord.clone());
-                                if img_coord.x > detect_result.center_region.left() as f32 &&
-                                    img_coord.x < detect_result.center_region.right() as f32 &&
-                                    img_coord.y > detect_result.center_region.top() as f32 &&
-                                    img_coord.y < detect_result.center_region.bottom() as f32
-                                {
-                                    slew_req.target_within_center_region = true;
-                                }
-                                // Is the target's image_pos close to the boresight's
-                                // image position?
-                                let boresight_pos;
-                                if let Some(bp) = &locked_state.boresight_pixel {
-                                    boresight_pos = bp.clone();
-                                } else {
-                                    boresight_pos = ImageCoord{
-                                        x: width as f32 / 2.0, y: height as f32 / 2.0};
-                                }
-                                let target_close_threshold =
-                                    std::cmp::min(width, height) as f32 / 16.0;
-	                        let target_boresight_distance =
-                                    ((target_image_coord.x - boresight_pos.x) *
-                                     (target_image_coord.x - boresight_pos.x) +
-                                     (target_image_coord.y - boresight_pos.y) *
-                                     (target_image_coord.y - boresight_pos.y)).sqrt();
-                                if target_boresight_distance < target_close_threshold {
-                                    let image_rect = Rect::at(0, 0).of_size(width, height);
-                                    // Get a sub-image centered on the boresight.
-                                    let bs_image_size = std::cmp::min(width, height) / 6;
-                                    boresight_image_region = Some(Rect::at(
-                                        boresight_pos.x as i32 - bs_image_size as i32/2,
-                                        boresight_pos.y as i32 - bs_image_size as i32/2)
-                                                                  .of_size(
-                                                                      bs_image_size as u32,
-                                                                      bs_image_size as u32));
-                                    boresight_image_region =
-                                        Some(boresight_image_region.
-                                             unwrap().intersect(image_rect).unwrap());
-                                    // We scale up the pixel values in the sub_image for good
-                                    // display visibility.
-                                    boresight_image = Some(
-                                        image.view(boresight_image_region.unwrap().left() as u32,
-                                                   boresight_image_region.unwrap().top() as u32,
-                                                   bs_image_size as u32,
-                                                   bs_image_size as u32).to_image());
-                                    let mut histogram: [u32; 256] = [0_u32; 256];
-                                    for pixel_value in boresight_image.as_ref().unwrap().pixels() {
-                                        histogram[pixel_value.0[0] as usize] += 1;
-                                    }
-                                    // Compute peak_value as the average of the 5 brightest pixels.
-                                    let peak_pixel_value = max(average_top_values(&histogram, 5), 64);
-                                    remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-                                    let min_pixel_value = get_level_for_fraction(&histogram, 0.9);
-                                    scale_image_mut(boresight_image.as_mut().unwrap(),
-                                                    min_pixel_value as u8,
-                                                    peak_pixel_value as u8,
-                                                    /*gamma=*/0.7);
-                                }
-                            }
-                        }
+                    if slew_request.is_some() {
+                        (boresight_image_region, boresight_image) =
+                            Self::handle_slew(
+                                image, &locked_state.boresight_pixel, &detect_result, tsr,
+                                &mut slew_request.as_mut().unwrap(), width, height);
                     }
+
+                    // TODO: sky catalog retrieval here.
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
                     solution_callback(Some(detect_result.clone()), None);
@@ -654,8 +598,111 @@ impl SolveEngine {
                 solve_success_stats: locked_state.solve_success_stats.value_stats.clone(),
             });
         }  // loop.
-    }
-}
+    }  // worker
+
+    fn handle_slew(image: &GrayImage,
+                   boresight_pixel: &Option<ImageCoord>,
+                   detect_result: &DetectResult,
+                   tetra3_solve_result: &SolveResultProto,
+                   slew_req: &mut cedar::SlewRequest,
+                   width: u32, height: u32)
+                   -> (Option<Rect>, Option<GrayImage>) {
+        let coords = if tetra3_solve_result.target_coords.len() > 0 {
+            tetra3_solve_result.target_coords[0].clone()
+        } else {
+            tetra3_solve_result.image_center_coords.as_ref().unwrap().clone()
+        };
+        let bs_ra = coords.ra.to_radians() as f64;
+        let bs_dec = coords.dec.to_radians() as f64;
+        let st_ra =
+            slew_req.target.as_ref().unwrap().ra.to_radians() as f64;
+        let st_dec =
+            slew_req.target.as_ref().unwrap().dec.to_radians() as f64;
+        slew_req.target_distance = Some(angular_separation(
+            bs_ra, bs_dec, st_ra, st_dec).to_degrees() as f32);
+
+        let mut angle = (position_angle(
+            bs_ra, bs_dec, st_ra, st_dec).to_degrees() as f32 +
+                         tetra3_solve_result.roll.unwrap()) % 360.0;
+        // Arrange for angle to be 0..360.
+        if angle < 0.0 {
+            angle += 360.0;
+        }
+        slew_req.target_angle = Some(angle);
+
+        if tetra3_solve_result.target_sky_to_image_coords.len() == 0 {
+            return (None, None);
+        }
+        let img_coord = &tetra3_solve_result.target_sky_to_image_coords[0];
+        if img_coord.x < 0.0 {
+            return (None, None);
+        }
+
+        let target_image_coord =
+            cedar::ImageCoord{x: img_coord.x, y: img_coord.y};
+        slew_req.image_pos = Some(target_image_coord.clone());
+        if img_coord.x > detect_result.center_region.left() as f32 &&
+            img_coord.x < detect_result.center_region.right() as f32 &&
+            img_coord.y > detect_result.center_region.top() as f32 &&
+            img_coord.y < detect_result.center_region.bottom() as f32
+        {
+            slew_req.target_within_center_region = true;
+        }
+        // Is the target's image_pos close to the boresight's
+        // image position?
+        let boresight_pos;
+        if let Some(bp) = boresight_pixel {
+            boresight_pos = bp.clone();
+        } else {
+            boresight_pos = ImageCoord{
+                x: width as f32 / 2.0, y: height as f32 / 2.0};
+        }
+        let target_close_threshold =
+            std::cmp::min(width, height) as f32 / 16.0;
+	let target_boresight_distance =
+            ((target_image_coord.x - boresight_pos.x) *
+             (target_image_coord.x - boresight_pos.x) +
+             (target_image_coord.y - boresight_pos.y) *
+             (target_image_coord.y - boresight_pos.y)).sqrt();
+        if target_boresight_distance >= target_close_threshold {
+            return (None, None);
+        }
+
+        let image_rect = Rect::at(0, 0).of_size(width, height);
+        // Get a sub-image centered on the boresight.
+        let bs_image_size = std::cmp::min(width, height) / 6;
+        let mut boresight_image_region = Some(Rect::at(
+            boresight_pos.x as i32 - bs_image_size as i32/2,
+            boresight_pos.y as i32 - bs_image_size as i32/2)
+                                      .of_size(
+                                          bs_image_size as u32,
+                                          bs_image_size as u32));
+        boresight_image_region =
+            Some(boresight_image_region.
+                 unwrap().intersect(image_rect).unwrap());
+        // We scale up the pixel values in the sub_image for good
+        // display visibility.
+        let mut boresight_image = Some(
+            image.view(boresight_image_region.unwrap().left() as u32,
+                       boresight_image_region.unwrap().top() as u32,
+                       bs_image_size as u32,
+                       bs_image_size as u32).to_image());
+        let mut histogram: [u32; 256] = [0_u32; 256];
+        for pixel_value in boresight_image.as_ref().unwrap().pixels() {
+            histogram[pixel_value.0[0] as usize] += 1;
+        }
+        // Compute peak_value as the average of the 5 brightest pixels.
+        let peak_pixel_value = max(average_top_values(&histogram, 5), 64);
+        remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
+        let min_pixel_value = get_level_for_fraction(&histogram, 0.9);
+        scale_image_mut(boresight_image.as_mut().unwrap(),
+                        min_pixel_value as u8,
+                        peak_pixel_value as u8,
+                        /*gamma=*/0.7);
+
+        (boresight_image_region, boresight_image)
+    }  // handle_slew
+}  // impl SolveEngine
 
 #[derive(Clone)]
 pub struct PlateSolution {

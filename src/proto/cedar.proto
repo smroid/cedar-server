@@ -107,6 +107,8 @@ message OperationSettings {
   // In OPERATE mode, if `catalog_entry_match` is present, this is used to
   // determine the `catalog_entries` returned in each FrameResult.
   optional cedar_sky.CatalogEntryMatch catalog_entry_match = 11;
+
+  // TODO: decrowd parameter for returned catalog entries?
 }
 
 enum OperatingMode {

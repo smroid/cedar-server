@@ -19,6 +19,7 @@ use chrono::offset::Local;
 use image::{GrayImage, ImageFormat};
 use image::io::Reader as ImageReader;
 
+use crate::cedar_sky::CatalogEntryMatch;
 use crate::cedar_sky_trait::CedarSkyTrait;
 
 use nix::time::{ClockId, clock_gettime, clock_settime};
@@ -94,8 +95,7 @@ struct MyCedar {
     log_file: PathBuf,
 
     product_name: String,
-    copyright: String,
-    cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>,
+    _copyright: String,
 }
 
 struct CedarState {
@@ -373,13 +373,15 @@ impl Cedar for MyCedar {
                 "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
         }
         if let Some(catalog_entry_match) = req.catalog_entry_match {
-            if self.cedar_sky.is_none() {
+            let mut locked_state = self.state.lock().await;
+            if !locked_state.solve_engine.lock().await.has_cedar_sky() {
                 return Err(tonic::Status::unimplemented(
                     format!("{} does not include Cedar Sky.", self.product_name)));
             }
-            let mut locked_state = self.state.lock().await;
             locked_state.operation_settings.catalog_entry_match =
-                Some(catalog_entry_match);
+                Some(catalog_entry_match.clone());
+            locked_state.solve_engine.lock().await.set_catalog_entry_match(
+                Some(catalog_entry_match));
         }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
@@ -1103,7 +1105,11 @@ impl MyCedar {
         });
         let dimensions = camera.lock().await.dimensions();
         let catalog_entry_match = if cedar_sky.is_some() {
-            None  // TODO
+            Some(CatalogEntryMatch {
+                faintest_magnitude: Some(12.0),
+                catalog_label: Vec::<String>::new(),
+                object_type_label: Vec::<String>::new(),
+            })
         } else {
             None
         };
@@ -1123,15 +1129,15 @@ impl MyCedar {
                     seconds: 1, nanos: 0,
                 }),
                 log_dwelled_positions: Some(false),
-                catalog_entry_match,
+                catalog_entry_match: catalog_entry_match.clone(),
             },
             calibration_data: Arc::new(tokio::sync::Mutex::new(
                 CalibrationData{..Default::default()})),
             detect_engine: detect_engine.clone(),
             tetra3_subprocess: tetra3_subprocess.clone(),
             solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
-                tetra3_subprocess.clone(), detect_engine.clone(), tetra3_uds,
-                /*update_interval=*/Duration::ZERO,
+                tetra3_subprocess.clone(), cedar_sky, detect_engine.clone(),
+                tetra3_uds, /*update_interval=*/Duration::ZERO,
                 stats_capacity, closure).await.unwrap())),
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
@@ -1156,8 +1162,7 @@ impl MyCedar {
             preferences_file,
             log_file,
             product_name: product_name.to_string(),
-            copyright: copyright.to_string(),
-            cedar_sky,
+            _copyright: copyright.to_string(),
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;
@@ -1165,6 +1170,8 @@ impl MyCedar {
             warn!("Could not set default settings on camera {:?}", x);
         }
         locked_state.detect_engine.lock().await.set_focus_mode(true, binning);
+        locked_state.solve_engine.lock().await.set_catalog_entry_match(
+            catalog_entry_match);
         Self::update_accuracy_adjusted_params(&*locked_state).await;
 
         cedar
