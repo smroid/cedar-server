@@ -18,7 +18,7 @@ canonical-error = "0.1.0"
 futures = "0.3.30"
 http-body = "1.0.0"
 hyper = { version = "0.14.28", features = ["http1", "http2"] }
-image = "0.25.1"
+image = "0.25.2"
 imageproc = "0.25.0"
 log = "0.4.19"
 medians = "3.0.5"
