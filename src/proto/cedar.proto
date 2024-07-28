@@ -303,7 +303,8 @@ message FrameResult {
   // Lists the sky catalog entries that are present in the `plate_solution`
   // field of view. The `catalog_entry_match` field in `operation_settings`
   // determines what entries are included.
-  // Empty if `plate_solution` is absent or failed.
+  // Empty if `plate_solution` is absent or failed or if Cedar Sky is not
+  // present.
   repeated FovCatalogEntry catalog_entries = 31;
 
   // alerts
