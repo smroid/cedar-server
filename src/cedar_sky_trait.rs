@@ -19,7 +19,7 @@ pub trait CedarSkyTrait {
                              ordering: Option<Ordering>,
                              dedup_distance: Option<f32>,
                              decrowd_distance: Option<f32>,
-                             sky_location: Option<CelestialCoord>,
+                             sky_location: Option<&CelestialCoord>,
                              location_info: Option<&LocationInfo>)
                              -> Result<Vec<SelectedCatalogEntry>, CanonicalError>;
 }

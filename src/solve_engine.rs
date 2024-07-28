@@ -12,11 +12,12 @@ use canonical_error::{CanonicalError, failed_precondition_error, invalid_argumen
 use chrono::{DateTime, Local, Utc};
 use image::{GenericImageView, GrayImage};
 use imageproc::rect::Rect;
-use log::{debug, error};
+use log::{debug, error, warn};
 use tonic::transport::{Endpoint, Uri};
 use tokio::net::UnixStream;
 use tower::service_fn;
 
+use crate::astro_util::transform_to_image_coord;
 use crate::tetra3_server::{CelestialCoord, ImageCoord, SolveRequest,
                            SolveResult as SolveResultProto,
                            SolveStatus};
@@ -24,6 +25,7 @@ use crate::tetra3_server::tetra3_client::Tetra3Client;
 use crate::tetra3_subprocess::Tetra3Subprocess;
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
+use crate::cedar::FovCatalogEntry;
 use crate::cedar_sky_trait::CedarSkyTrait;
 use crate::cedar_sky::CatalogEntryMatch;
 use cedar_detect::histogram_funcs::{average_top_values,
@@ -56,7 +58,7 @@ pub struct SolveEngine {
 
 // State shared between worker thread and the SolveEngine methods.
 struct SolveState {
-    cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>,
+    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
     catalog_entry_match: Option<CatalogEntryMatch>,
 
     frame_id: Option<i32>,
@@ -134,7 +136,7 @@ impl SolveEngine {
     }
 
     pub async fn new(tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
-                     cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>,
+                     cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
                      detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
                      tetra3_server_address: String,
                      update_interval: Duration,
@@ -555,6 +557,7 @@ impl SolveEngine {
 
             let elapsed = process_start_time.elapsed();
             let mut locked_state = state.lock().unwrap();
+            let mut fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
             if tetra3_solve_result.is_none() {
                 locked_state.solve_attempt_stats.add_value(0.0);
                 solution_callback(Some(detect_result.clone()), None);
@@ -563,20 +566,41 @@ impl SolveEngine {
                 let tsr = tetra3_solve_result.as_ref().unwrap();
                 if tsr.status.unwrap() == SolveStatus::MatchFound as i32 {
                     locked_state.solve_success_stats.add_value(1.0);
-
                     // Let integration layer pass solution to SkySafari telescope
                     // interface and MotionEstimator. Integration layer returns current
                     // slew target, if any.
                     locked_state.slew_target =
                         solution_callback(Some(detect_result.clone()), Some(tsr.clone()));
+
+                    let coords = if tsr.target_coords.len() > 0 {
+                        tsr.target_coords[0].clone()
+                    } else {
+                        tsr.image_center_coords.as_ref().unwrap().clone()
+                    };
                     if slew_request.is_some() {
                         (boresight_image_region, boresight_image) =
                             Self::handle_slew(
-                                image, &locked_state.boresight_pixel, &detect_result, tsr,
+                                image, &coords,
+                                &locked_state.boresight_pixel, &detect_result, tsr,
                                 &mut slew_request.as_mut().unwrap(), width, height);
                     }
-
-                    // TODO: sky catalog retrieval here.
+                    if locked_state.cedar_sky.is_some() {
+                        let mut rotation_matrix: [f64; 9] = [0.0; 9];
+                        for (idx, c) in tsr.rotation_matrix.as_ref().unwrap().matrix_elements
+                            .clone().into_iter().enumerate()
+                        {
+                            rotation_matrix[idx] = c as f64;
+                        }
+                        fov_catalog_entries = Some(Self::query_fov_catalog_entries(
+                            &coords,
+                            &locked_state.boresight_pixel,
+                            locked_state.cedar_sky.as_ref().unwrap(),
+                            locked_state.catalog_entry_match.as_ref().unwrap(),
+                            width, height,
+                            tsr.fov.unwrap(),
+                            tsr.distortion.unwrap(),
+                            &rotation_matrix));
+                    }
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
                     solution_callback(Some(detect_result.clone()), None);
@@ -587,6 +611,7 @@ impl SolveEngine {
             locked_state.plate_solution = Some(PlateSolution{
                 detect_result,
                 tetra3_solve_result,
+                fov_catalog_entries,
                 slew_request,
                 boresight_image,
                 boresight_image_region,
@@ -601,17 +626,13 @@ impl SolveEngine {
     }  // worker
 
     fn handle_slew(image: &GrayImage,
+                   coords: &CelestialCoord,
                    boresight_pixel: &Option<ImageCoord>,
                    detect_result: &DetectResult,
                    tetra3_solve_result: &SolveResultProto,
                    slew_req: &mut cedar::SlewRequest,
                    width: u32, height: u32)
                    -> (Option<Rect>, Option<GrayImage>) {
-        let coords = if tetra3_solve_result.target_coords.len() > 0 {
-            tetra3_solve_result.target_coords[0].clone()
-        } else {
-            tetra3_solve_result.image_center_coords.as_ref().unwrap().clone()
-        };
         let bs_ra = coords.ra.to_radians() as f64;
         let bs_dec = coords.dec.to_radians() as f64;
         let st_ra =
@@ -702,6 +723,72 @@ impl SolveEngine {
 
         (boresight_image_region, boresight_image)
     }  // handle_slew
+
+    fn query_fov_catalog_entries(coords: &CelestialCoord,
+                                 boresight_pixel: &Option<ImageCoord>,
+                                 cedar_sky: &Arc<Mutex<dyn CedarSkyTrait + Send>>,
+                                 catalog_entry_match: &CatalogEntryMatch,
+                                 width: u32, height: u32,
+                                 fov: f32, distortion: f32,
+                                 rotation_matrix: &[f64; 9])
+                                 -> Vec<FovCatalogEntry> {
+        let mut answer = Vec::<FovCatalogEntry>::new();
+
+        let bp = if boresight_pixel.is_some() {
+            boresight_pixel.clone().unwrap()
+        } else {
+            ImageCoord{x: width as f32 / 2.0, y: height as f32 / 2.0}
+        };
+
+        // Figure out radius from boresight for the catalog entry search.
+        let deg_per_pixel = fov / width as f32;
+        let h = f32::max(bp.x, width as f32 - bp.x);
+        let v = f32::max(bp.y, height as f32 - bp.y);
+        let radius_deg = (h * h + v * v).sqrt() * deg_per_pixel;
+
+        let query_result = cedar_sky.lock().unwrap().query_catalog_entries(
+            /*max_distance=*/Some(radius_deg),
+            /*min_elevation=*/None,
+            catalog_entry_match.faintest_magnitude,
+            &catalog_entry_match.catalog_label,
+            &catalog_entry_match.object_type_label,
+            /*ordering=*/None,
+            /*dedup_distance=*/Some(1.0),  // Arcsec.
+            // TODO: parameter for decrowd factor.
+            /*decrowd_distance=*/Some(3600.0 * fov / 20.0),  // Arcsec.
+            /*sky_location*/Some(&coords),
+            /*location_info=*/None);
+        if let Err(e) = query_result {
+            warn!("Error querying sky catalog: {:?}", e);
+            return answer;
+        }
+
+        let selected_catalog_entries = query_result.unwrap();
+        // Convert each catalog entry's celesital coordinates to image position,
+        // and discard those outside of our FOV.
+        for sce in selected_catalog_entries {
+            let entry = Some(sce.entry.unwrap());
+            let coord = entry.as_ref().unwrap().coord.clone().unwrap();
+            let img_coord = transform_to_image_coord(
+                &[coord.ra as f64, coord.dec as f64],
+                width as usize, height as usize,
+                fov as f64, &rotation_matrix, distortion as f64);
+            let x = img_coord[0] as f32;
+            if x < 0.0 || x >= width as f32 {
+                continue;
+            }
+            let y = img_coord[1] as f32;
+            if y < 0.0 || y >= height as f32 {
+                continue;
+            }
+            answer.push(
+                FovCatalogEntry {
+                    entry,
+                    image_pos: Some(cedar::ImageCoord { x, y }),
+                });
+        }
+        answer
+    }  // query_fov_catalog_entries
 }  // impl SolveEngine
 
 #[derive(Clone)]
@@ -712,6 +799,11 @@ pub struct PlateSolution {
     // The plate solution for `detect_result`. Omitted if a solve was not
     // attempted.
     pub tetra3_solve_result: Option<SolveResultProto>,
+
+    // These are the catalog entries, if any, that are in the `detect_result`
+    // image's FOV. Order is unspecified.
+    // None if there is no Cedar Sky implementation.
+    pub fov_catalog_entries: Option<Vec<FovCatalogEntry>>,
 
     // If the TelescopePosition has an active slew request, we populate
     // `slew_request` with its information.

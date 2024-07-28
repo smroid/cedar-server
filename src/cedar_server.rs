@@ -17,7 +17,7 @@ use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
 use image::{GrayImage, ImageFormat};
-use image::io::Reader as ImageReader;
+use image::ImageReader;
 
 use crate::cedar_sky::CatalogEntryMatch;
 use crate::cedar_sky_trait::CedarSkyTrait;
@@ -40,9 +40,10 @@ use futures::join;
 
 use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
-use crate::cedar::{Accuracy, ActionRequest, CalibrationData, CelestialCoordFormat,
-                   EmptyMessage, FixedSettings, FrameRequest, FrameResult,
-                   Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
+use crate::cedar::{Accuracy, ActionRequest, CalibrationData,
+                   CelestialCoordFormat, EmptyMessage, FixedSettings,
+                   FovCatalogEntry, FrameRequest, FrameResult, Image,
+                   ImageCoord, LatLong, LocationBasedInfo, MountType,
                    OperatingMode, OperationSettings, ProcessingStats, Rectangle,
                    StarCentroid, Preferences, ServerInformationRequest,
                    ServerInformationResult};
@@ -909,6 +910,14 @@ impl MyCedar {
                     image_data: bmp_buf,
                 });
             }
+            if let Some(fov_catalog_entries) = &psr.fov_catalog_entries {
+                frame_result.catalog_entries =
+                    Vec::<FovCatalogEntry>::with_capacity(
+                        fov_catalog_entries.len());
+                for fce in fov_catalog_entries {
+                    frame_result.catalog_entries.push(fce.clone());
+                }
+            }
         }
         if tetra3_solve_result.is_some() {
             let tsr = &tetra3_solve_result.unwrap();
@@ -1032,7 +1041,7 @@ impl MyCedar {
                      log_file: PathBuf,
                      product_name: &str,
                      copyright: &str,
-                     cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>) -> Self {
+                     cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>) -> Self {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration, max_exposure_duration,
             min_detection_sigma, base_detection_sigma,
@@ -1338,7 +1347,7 @@ fn parse_duration(arg: &str)
 //     process args from env::args_os.
 #[tokio::main]
 pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright: &str,
-                         cedar_sky: Option<Box<dyn CedarSkyTrait + Send + Sync>>) {
+                         cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>) {
     const HELP: &str = "\
     USAGE:
       cedar-box-server [OPTIONS]
