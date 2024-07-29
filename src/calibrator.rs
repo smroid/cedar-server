@@ -77,7 +77,7 @@ impl Calibrator {
 
     pub async fn calibrate_exposure_duration(
         &self, setup_exposure_duration: Duration, star_count_goal: i32,
-        detection_binning: u32, detection_sigma: f32,
+        detection_binning: u32, detection_sigma: f64,
         cancel_calibration: Arc<Mutex<bool>>)
         -> Result<Duration, CanonicalError> {
         // Goal: find the camera exposure duration that yields the desired
@@ -112,12 +112,12 @@ impl Calibrator {
         }
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         let mut star_goal_fraction =
-            f32::max(num_stars_detected as f32, 1.0) / star_count_goal as f32;
+            f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
         let mut scaled_exposure_duration_secs =
-            setup_exposure_duration.as_secs_f32() / star_goal_fraction;
+            setup_exposure_duration.as_secs_f64() / star_goal_fraction;
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            return Ok(Duration::from_secs_f32(scaled_exposure_duration_secs));
+            return Ok(Duration::from_secs_f64(scaled_exposure_duration_secs));
         }
         if *cancel_calibration.lock().unwrap() {
             return Err(aborted_error(
@@ -126,7 +126,7 @@ impl Calibrator {
 
         // Iterate with the refined exposure duration.
         self.camera.lock().await.set_exposure_duration(
-            Duration::from_secs_f32(scaled_exposure_duration_secs))?;
+            Duration::from_secs_f64(scaled_exposure_duration_secs))?;
         (_, stars, _) = self.acquire_image_get_stars(
             Some(frame_id), detection_binning, detection_sigma).await?;
 
@@ -137,14 +137,14 @@ impl Calibrator {
         }
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         star_goal_fraction =
-            f32::max(num_stars_detected as f32, 1.0) / star_count_goal as f32;
+            f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
         scaled_exposure_duration_secs =
-            setup_exposure_duration.as_secs_f32() / star_goal_fraction;
+            setup_exposure_duration.as_secs_f64() / star_goal_fraction;
         if star_goal_fraction < 0.5 || star_goal_fraction > 2.0 {
             warn!("Exposure time calibration diverged, goal fraction {}",
                   star_goal_fraction);
         }
-        Ok(Duration::from_secs_f32(scaled_exposure_duration_secs))
+        Ok(Duration::from_secs_f64(scaled_exposure_duration_secs))
     }
 
     // Result is FOV (degrees), lens distortion, match_max_error, solve duration.
@@ -153,8 +153,8 @@ impl Calibrator {
         solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
         exposure_duration: Duration,
         solve_timeout: Duration,
-        detection_binning: u32, detection_sigma: f32)
-        -> Result<(f32, f32, f32, Duration), CanonicalError> {
+        detection_binning: u32, detection_sigma: f64)
+        -> Result<(f64, f64, f64, Duration), CanonicalError> {
         // Goal: find the field of view, lens distortion, match_max_error solver
         // parameter, and representative plate solve time.
         //
@@ -234,7 +234,7 @@ impl Calibrator {
 
     async fn acquire_image_get_stars(
         &self, frame_id: Option<i32>,
-        detection_binning: u32, detection_sigma: f32)
+        detection_binning: u32, detection_sigma: f64)
         -> Result<(Arc<GrayImage>, Vec<StarDescription>, i32), CanonicalError>
     {
         let (captured_image, frame_id) =

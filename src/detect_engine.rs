@@ -27,8 +27,8 @@ pub struct DetectEngine {
     max_exposure_duration: Duration,
 
     // Parameters for star detection algorithm.
-    detection_min_sigma: f32,
-    detection_sigma: f32,
+    detection_min_sigma: f64,
+    detection_sigma: f64,
 
     // In operate mode (`focus_mode_enabled` is false), the auto-exposure
     // algorithm uses this as the desired number of detected stars. The
@@ -76,7 +76,7 @@ struct DetectState {
     // Value used to alter operating constants. A value >1 means the detection
     // logic and/or auto exposure system should be biased towards more accurate
     // operation; a value < 1 instead favors speed. Range is roughly [0.5 .. 1.5].
-    accuracy_multiplier: f32,
+    accuracy_multiplier: f64,
 
     detect_latency_stats: ValueStatsAccumulator,
 
@@ -99,8 +99,8 @@ impl Drop for DetectEngine {
 impl DetectEngine {
     pub fn new(min_exposure_duration: Duration,
                max_exposure_duration: Duration,
-               detection_min_sigma: f32,
-               detection_sigma: f32,
+               detection_min_sigma: f64,
+               detection_sigma: f64,
                star_count_goal: i32,
                camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                update_interval: Duration, auto_exposure: bool,
@@ -170,7 +170,7 @@ impl DetectEngine {
         // it finishes the current interval.
     }
 
-    pub fn get_detection_sigma(&self) -> f32 {
+    pub fn get_detection_sigma(&self) -> f64 {
         return self.detection_sigma;
     }
 
@@ -186,7 +186,7 @@ impl DetectEngine {
         // it finishes the current interval.
     }
 
-    pub fn set_accuracy_multiplier(&mut self, accuracy_multiplier: f32) {
+    pub fn set_accuracy_multiplier(&mut self, accuracy_multiplier: f64) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.accuracy_multiplier = accuracy_multiplier;
         // Don't need to do anything, worker thread will pick up the change when
@@ -308,8 +308,8 @@ impl DetectEngine {
 
     async fn worker(min_exposure_duration: Duration,
                     max_exposure_duration: Duration,
-                    detection_min_sigma: f32,
-                    detection_sigma: f32,
+                    detection_min_sigma: f64,
+                    detection_sigma: f64,
                     star_count_goal: i32,
                     state: Arc<Mutex<DetectState>>,
                     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
@@ -323,7 +323,7 @@ impl DetectEngine {
             let focus_mode_enabled: bool;
             let binning: u32;
             let calibrated_exposure_duration: Option<Duration>;
-            let accuracy_multiplier: f32;
+            let accuracy_multiplier: f64;
             {
                 let mut locked_state = state.lock().unwrap();
                 if locked_state.stop_request {
@@ -388,7 +388,7 @@ impl DetectEngine {
                 .of_size(center_width, center_height);
             let noise_estimate = estimate_noise_from_image(&image);
             let prev_exposure_duration_secs =
-                captured_image.capture_params.exposure_duration.as_secs_f32();
+                captured_image.capture_params.exposure_duration.as_secs_f64();
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
 
             let mut focus_aid: Option<FocusAid> = None;
@@ -414,7 +414,7 @@ impl DetectEngine {
                     // detector response.
 
                     // Move proportionally towards the goal.
-                    let correction_factor = brightness_goal / peak_value as f32;
+                    let correction_factor = brightness_goal / peak_value as f64;
                     // Don't adjust exposure time too often, is a bit janky
                     // because the camera re-initializes.
                     if correction_factor < 0.7 || correction_factor > 1.3 {
@@ -463,7 +463,7 @@ impl DetectEngine {
                     locked_state.eta = Some(Instant::now() + detect_duration);
                 }
             }
-            let adjusted_sigma = f32::max(detection_sigma * accuracy_multiplier,
+            let adjusted_sigma = f64::max(detection_sigma * accuracy_multiplier,
                                           detection_min_sigma);
             let (stars, hot_pixel_count, detect_binned_image, mut histogram) =
                 get_stars_from_image(
@@ -508,9 +508,9 @@ impl DetectEngine {
                 calibrated_exposure_duration.is_some()
             {
                 let adjusted_star_count_goal =
-                    star_count_goal as f32 * accuracy_multiplier;
+                    star_count_goal as f64 * accuracy_multiplier;
                 let adjusted_exposure_duration_secs =
-                    calibrated_exposure_duration.unwrap().as_secs_f32() * accuracy_multiplier;
+                    calibrated_exposure_duration.unwrap().as_secs_f64() * accuracy_multiplier;
 
                 let num_stars_detected = stars.len();
                 if num_stars_detected == 0 {
@@ -520,7 +520,7 @@ impl DetectEngine {
                     // >1 if we have more stars than goal; <1 if fewer stars than
                     // goal.
                     let star_goal_fraction =
-                        num_stars_detected as f32 / adjusted_star_count_goal;
+                        num_stars_detected as f64 / adjusted_star_count_goal;
                     // Don't adjust exposure time too often, is a bit janky because the
                     // camera re-initializes. Allow number of detected stars to greatly
                     // exceed goal, but don't allow much of a shortfall.
@@ -542,10 +542,10 @@ impl DetectEngine {
                             prev_exposure_duration_secs / star_goal_fraction;
                         // Bound exposure duration to be within two stops of
                         // adjusted_exposure_duration.
-                        new_exposure_duration_secs = f32::max(
+                        new_exposure_duration_secs = f64::max(
                             new_exposure_duration_secs,
                             adjusted_exposure_duration_secs / 4.0);
-                        new_exposure_duration_secs = f32::min(
+                        new_exposure_duration_secs = f64::min(
                             new_exposure_duration_secs,
                             adjusted_exposure_duration_secs * 4.0);
                     }
@@ -556,16 +556,16 @@ impl DetectEngine {
             // adjustment.
             if auto_exposure {
                 // Bound auto-exposure duration to given limits.
-                new_exposure_duration_secs = f32::max(new_exposure_duration_secs,
-                                                      min_exposure_duration.as_secs_f32());
-                new_exposure_duration_secs = f32::min(new_exposure_duration_secs,
-                                                      max_exposure_duration.as_secs_f32());
+                new_exposure_duration_secs = f64::max(new_exposure_duration_secs,
+                                                      min_exposure_duration.as_secs_f64());
+                new_exposure_duration_secs = f64::min(new_exposure_duration_secs,
+                                                      max_exposure_duration.as_secs_f64());
                 if prev_exposure_duration_secs != new_exposure_duration_secs {
                     debug!("Setting new exposure duration {}s",
                            new_exposure_duration_secs);
                     let mut locked_camera = camera.lock().await;
                     match locked_camera.set_exposure_duration(
-                        Duration::from_secs_f32(new_exposure_duration_secs)) {
+                        Duration::from_secs_f64(new_exposure_duration_secs)) {
                         Ok(()) => (),
                         Err(e) => {
                             error!("Error updating exposure duration: {}",
@@ -621,7 +621,7 @@ pub struct DetectResult {
     pub display_black_level: u8,
 
     // Estimate of the RMS noise of the full-resolution image.
-    pub noise_estimate: f32,
+    pub noise_estimate: f64,
 
     // The number of hot pixels detected by CedarDetect.
     pub hot_pixel_count: i32,
@@ -649,7 +649,7 @@ pub struct DetectResult {
 #[derive(Clone)]
 pub struct FocusAid {
     // See the corresponding field in FrameResult.
-    pub center_peak_position: (f32, f32),
+    pub center_peak_position: (f64, f64),
 
     // See the corresponding field in FrameResult.
     pub center_peak_value: u8,

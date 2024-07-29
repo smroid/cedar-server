@@ -60,8 +60,8 @@ message FixedSettings {
 
 message LatLong {
   // Degrees.
-  float latitude = 1;
-  float longitude = 2;
+  double latitude = 1;
+  double longitude = 2;
 }
 
 message OperationSettings {
@@ -144,7 +144,7 @@ message Preferences {
 
   // Diameter (in degrees) of the boresight circle displayed in operation
   // mode.
-  optional float eyepiece_fov = 2;
+  optional double eyepiece_fov = 2;
 
   // If true, the UI should favor red highlights instead of white.
   optional bool night_vision_theme = 3;
@@ -227,7 +227,7 @@ message FrameResult {
   google.protobuf.Timestamp capture_time = 9;
 
   // The camera temperature when `image` was captured.
-  float camera_temperature_celsius = 10;
+  double camera_temperature_celsius = 10;
 
   // The star candidates detected by CedarDetect; ordered by brightest
   // first.
@@ -235,7 +235,7 @@ message FrameResult {
 
   // Estimate of the RMS noise of the full-resolution image. In 8 bit ADU
   // units.
-  float noise_estimate = 26;
+  double noise_estimate = 26;
 
   // Information about Cedar's performance.
   ProcessingStats processing_stats = 8;
@@ -253,7 +253,7 @@ message FrameResult {
 
   // When `calibrating` is true, this field is an estimate of the progress of
   // the calibration, which can take several seconds.
-  optional float calibration_progress = 23;
+  optional double calibration_progress = 23;
 
   // Information returned when `operating_mode` is SETUP.
 
@@ -344,7 +344,7 @@ message StarCentroid {
 
   // Sum of the uint8 pixel values of the star's region. The estimated
   // background is subtracted.
-  float brightness = 4;
+  double brightness = 4;
 
   // Count of saturated pixel values.
   int32 num_saturated = 6;
@@ -353,8 +353,8 @@ message StarCentroid {
 message ImageCoord {
   // A location in full resolution image coordinates. (0.5, 0.5) corresponds to
   // the center of the image's upper left pixel.
-  float x = 1;
-  float y = 2;
+  double x = 1;
+  double y = 2;
 }
 
 // Diagnostic information summarizing Cedar's performance.
@@ -434,25 +434,25 @@ message CalibrationData {
   // The angular size (degrees) of the camera's width (longer dimension)
   // projected onto the sky.
   // Omitted if a sky/camera calibration has not succeeded.
-  optional float fov_horizontal = 4;
+  optional double fov_horizontal = 4;
 
   // Tetra3's estimate of the lens distortion (pincushion or barrel).
   // Omitted if a sky/camera calibration has not succeeded.
-  optional float lens_distortion = 5;
+  optional double lens_distortion = 5;
 
   // The 'match_max_error' value that we pass to Tetra3's solve_from_centroids.
-  optional float match_max_error = 8;
+  optional double match_max_error = 8;
 
   // The lens focal length in millimeters, derived from `fov_horizontal`
   // together with the camera's sensor's physical size.
   // Omitted if a sky/camera calibration has not succeeded.
-  optional float lens_fl_mm = 6;
+  optional double lens_fl_mm = 6;
 
   // The angular size of a pixel, in degrees. This is for the field center, as
   // the "pinhole" projection of sky angles onto a planar detector causes the
   // pixel/angle scale to vary as you move away from the center.
   // Omitted if a sky/camera calibration has not succeeded.
-  optional float pixel_angular_size = 7;
+  optional double pixel_angular_size = 7;
 }
 
 // When the observer's geographic location is known, the
@@ -462,18 +462,18 @@ message LocationBasedInfo {
   // relative to the boresight. Angle is measured in degrees, with zero being
   // the image's "up" direction (towards y=0); a positive zenith roll angle
   // means the zenith is counter-clockwise from image "up".
-  float zenith_roll_angle = 1;
+  double zenith_roll_angle = 1;
 
   // Altitude (degrees, relative to the local horizon) of the boresight.
-  float altitude = 2;
+  double altitude = 2;
 
   // Azimuth (degrees, positive clockwise from north) of the boresight.
-  float azimuth = 3;
+  double azimuth = 3;
 
   // Hour angle (degrees, -180..180). Negative hour angle means boresight
   // is approaching the meridian from east; positive means boresight
   // is moving away from the meridian towards west.
-  float hour_angle = 4;
+  double hour_angle = 4;
 }
 
 // Describes a telescope motion request from SkySafari.
@@ -483,7 +483,7 @@ message SlewRequest {
 
   // The distance, in degrees, between the boresight and the target. Omitted
   // if there is no valid plate solution.
-  optional float target_distance = 2;
+  optional double target_distance = 2;
 
   // The position angle (degrees) from the boresight to the target. If the
   // target is above the boresight in image coordinates, the position angle is
@@ -491,7 +491,7 @@ message SlewRequest {
   // a target_angle value of 90 degrees means the target is to the left of the
   // boresight in the image.
   // Omitted if there is no valid plate solution.
-  optional float target_angle = 3;
+  optional double target_angle = 3;
 
   // To move the boresight to the target, this is the angle by which the
   // telescope must be moved about the rotation axis (right ascension for
@@ -499,7 +499,7 @@ message SlewRequest {
   // east in equatorial, clockwise (viewed from above) in alt/az. Omitted if
   // alt/az mode and observer location has not been set.
   // Range: -180..180
-  optional float offset_rotation_axis = 5;
+  optional double offset_rotation_axis = 5;
 
   // To move the boresight to the target, this is the angle by which the
   // telescope must be moved about the other axis (declination for equatorial
@@ -507,7 +507,7 @@ message SlewRequest {
   // in equatorial, towards zenith in alt/az. Omitted if alt/az mode and
   // observer location has not been set.
   // Range: -180..180
-  optional float offset_tilt_axis = 6;
+  optional double offset_tilt_axis = 6;
 
   // Position of the target in FrameResult.image (in full image resolution
   // coordinates).
@@ -539,10 +539,10 @@ message PolarAlignAdvice {
 // A value estimate +/- an error estimate.
 message ErrorBoundedValue {
   // The estimated value.
-  float value = 1;
+  double value = 1;
 
   // Estimate of the RMS error of `value`.
-  float error = 2;
+  double error = 2;
 }
 
 // Represents a Cedar-sky catalog item in the current FOV that satisfies

@@ -633,12 +633,12 @@ impl MyCedar {
                 locked_calibration_data.fov_horizontal = Some(fov);
                 locked_calibration_data.lens_distortion = Some(distortion);
                 locked_calibration_data.match_max_error = Some(match_max_error);
-                let sensor_width_mm = camera.lock().await.sensor_size().0;
+                let sensor_width_mm = camera.lock().await.sensor_size().0 as f64;
                 let lens_fl_mm =
-                    sensor_width_mm / (2.0 * (fov/2.0).to_radians()).tan();
+                    sensor_width_mm / (2.0 * (fov / 2.0).to_radians()).tan();
                 locked_calibration_data.lens_fl_mm = Some(lens_fl_mm);
                 let pixel_width_mm =
-                    sensor_width_mm / camera.lock().await.dimensions().0 as f32;
+                    sensor_width_mm / camera.lock().await.dimensions().0 as f64;
                 locked_calibration_data.pixel_angular_size =
                     Some((pixel_width_mm / lens_fl_mm).atan().to_degrees());
 
@@ -702,8 +702,8 @@ impl MyCedar {
                 frame_result.calibrating = true;
                 let time_spent_calibrating = locked_state.calibration_start.elapsed();
                 let mut fraction =
-                    time_spent_calibrating.as_secs_f32() /
-                    locked_state.calibration_duration_estimate.as_secs_f32();
+                    time_spent_calibrating.as_secs_f64() /
+                    locked_state.calibration_duration_estimate.as_secs_f64();
                 if fraction > 1.0 {
                     fraction = 1.0;
                 }
@@ -752,7 +752,7 @@ impl MyCedar {
             captured_image.capture_params.exposure_duration).unwrap());
         frame_result.capture_time = Some(prost_types::Timestamp::try_from(
             captured_image.readout_time).unwrap());
-        frame_result.camera_temperature_celsius = captured_image.temperature.0 as f32;
+        frame_result.camera_temperature_celsius = captured_image.temperature.0 as f64;
 
         let mut centroids = Vec::<StarCentroid>::new();
         for star in &detect_result.star_candidates {
@@ -779,8 +779,8 @@ impl MyCedar {
                 height: detect_result.center_region.height() as i32});
 
             let ic = ImageCoord {
-                x: fa.center_peak_position.0 as f32,
-                y: fa.center_peak_position.1 as f32,
+                x: fa.center_peak_position.0,
+                y: fa.center_peak_position.1,
             };
             *locked_state.center_peak_position.lock().unwrap() = Some(ic.clone());
             frame_result.center_peak_position = Some(ic);
@@ -929,8 +929,8 @@ impl MyCedar {
                 } else {
                     celestial_coords = tsr.image_center_coords.as_ref().unwrap().clone();
                 }
-                let bs_ra = celestial_coords.ra.to_radians() as f64;
-                let bs_dec = celestial_coords.dec.to_radians() as f64;
+                let bs_ra = celestial_coords.ra.to_radians();
+                let bs_dec = celestial_coords.dec.to_radians();
 
                 if frame_result.slew_request.is_some() &&
                     locked_state.preferences.mount_type == Some(MountType::Equatorial.into())
@@ -939,7 +939,7 @@ impl MyCedar {
                     // Compute the movement required in RA and Dec to move boresight to
                     // target.
                     let target_ra = slew_request.target.as_ref().unwrap().ra;
-                    let mut rel_ra = target_ra - bs_ra.to_degrees() as f32;
+                    let mut rel_ra = target_ra - bs_ra.to_degrees();
                     if rel_ra < -180.0 {
                         rel_ra += 360.0;
                     }
@@ -949,13 +949,13 @@ impl MyCedar {
                     slew_request.offset_rotation_axis = Some(rel_ra);
 
                     let target_dec = slew_request.target.as_ref().unwrap().dec;
-                    let rel_dec = target_dec - bs_dec.to_degrees() as f32;
+                    let rel_dec = target_dec - bs_dec.to_degrees();
                     slew_request.offset_tilt_axis = Some(rel_dec);
                 }
                 if fixed_settings.observer_location.is_some() {
                     let geo_location = fixed_settings.observer_location.clone().unwrap();
-                    let lat = geo_location.latitude.to_radians() as f64;
-                    let long = geo_location.longitude.to_radians() as f64;
+                    let lat = geo_location.latitude.to_radians();
+                    let long = geo_location.longitude.to_radians();
                     let time = captured_image.readout_time;
                     // alt/az of boresight. Also boresight hour angle.
                     let (bs_alt, bs_az, bs_ha) =
@@ -966,7 +966,7 @@ impl MyCedar {
                         0.0,
                         lat, long, time);
                     let mut zenith_roll_angle = (position_angle(
-                        bs_ra, bs_dec, z_ra, z_dec).to_degrees() as f32 +
+                        bs_ra, bs_dec, z_ra, z_dec).to_degrees() +
                                                  tsr.roll.unwrap()) % 360.0;
                     // Arrange for angle to be 0..360.
                     if zenith_roll_angle < 0.0 {
@@ -974,9 +974,9 @@ impl MyCedar {
                     }
                     frame_result.location_based_info =
                         Some(LocationBasedInfo{zenith_roll_angle,
-                                               altitude: bs_alt.to_degrees() as f32,
-                                               azimuth: bs_az.to_degrees() as f32,
-                                               hour_angle: bs_ha.to_degrees() as f32,
+                                               altitude: bs_alt.to_degrees(),
+                                               azimuth: bs_az.to_degrees(),
+                                               hour_angle: bs_ha.to_degrees(),
                         });
 
                     if frame_result.slew_request.is_some() &&
@@ -988,8 +988,8 @@ impl MyCedar {
                         let target_ra = slew_request.target.as_ref().unwrap().ra;
                         let target_dec = slew_request.target.as_ref().unwrap().dec;
                         let (target_alt, target_az, _target_ha) =
-                            alt_az_from_equatorial(target_ra.to_radians() as f64,
-                                                   target_dec.to_radians() as f64,
+                            alt_az_from_equatorial(target_ra.to_radians(),
+                                                   target_dec.to_radians(),
                                                    lat, long, time);
                         let mut rel_az = target_az.to_degrees() - bs_az.to_degrees();
                         if rel_az < -180.0 {
@@ -998,10 +998,10 @@ impl MyCedar {
                         if rel_az > 180.0 {
                             rel_az -= 360.0;
                         }
-                        slew_request.offset_rotation_axis = Some(rel_az as f32);
+                        slew_request.offset_rotation_axis = Some(rel_az);
 
                         let rel_alt = target_alt.to_degrees() - bs_alt.to_degrees();
-                        slew_request.offset_tilt_axis = Some(rel_alt as f32);
+                        slew_request.offset_tilt_axis = Some(rel_alt);
                     }
                 }
             }
@@ -1013,8 +1013,8 @@ impl MyCedar {
             frame_result.boresight_position = Some(ImageCoord{x: bs.x, y: bs.y});
         } else {
             frame_result.boresight_position =
-                Some(ImageCoord{x: locked_state.width as f32 / 2.0,
-                                y: locked_state.height as f32 / 2.0});
+                Some(ImageCoord{x: locked_state.width as f64 / 2.0,
+                                y: locked_state.height as f64 / 2.0});
         }
         frame_result.calibration_data =
             Some(locked_state.calibration_data.lock().await.clone());
@@ -1034,8 +1034,8 @@ impl MyCedar {
                      binning: u32,
                      display_sampling: bool,
                      base_star_count_goal: i32,
-                     base_detection_sigma: f32,
-                     min_detection_sigma: f32,
+                     base_detection_sigma: f64,
+                     min_detection_sigma: f64,
                      stats_capacity: usize,
                      preferences_file: PathBuf,
                      log_file: PathBuf,
@@ -1099,7 +1099,7 @@ impl MyCedar {
         let closure_telescope_position = telescope_position.clone();
         let motion_estimator = Arc::new(Mutex::new(MotionEstimator::new(
             /*gap_tolerance=*/Duration::from_secs(3),
-            /*bump_tolerance=*/Duration::from_secs_f32(2.0))));
+            /*bump_tolerance=*/Duration::from_secs_f64(2.0))));
         let closure_polar_analyzer = polar_analyzer.clone();
         let closure = Arc::new(move |detect_result: Option<DetectResult>,
                                      solve_result_proto: Option<SolveResultProto>|
@@ -1233,28 +1233,28 @@ impl MyCedar {
             } else {
                 coords = solve_result_proto.image_center_coords.as_ref().unwrap().clone();
             }
-            telescope_position.boresight_ra = coords.ra as f64;
-            telescope_position.boresight_dec = coords.dec as f64;
+            telescope_position.boresight_ra = coords.ra;
+            telescope_position.boresight_dec = coords.dec;
             telescope_position.boresight_valid = true;
             let readout_time = detect_result.unwrap().captured_image.readout_time;
             motion_estimator.add(readout_time, Some(coords.clone()), solve_result_proto.rmse);
             if let Some(geo_location) = geo_location {
-                let lat = geo_location.latitude.to_radians() as f64;
-                let long = geo_location.longitude.to_radians() as f64;
-                let bs_ra = coords.ra.to_radians() as f64;
-                let bs_dec = coords.dec.to_radians() as f64;
+                let lat = geo_location.latitude.to_radians();
+                let long = geo_location.longitude.to_radians();
+                let bs_ra = coords.ra.to_radians();
+                let bs_dec = coords.dec.to_radians();
                 // alt/az of boresight. Also boresight hour angle.
                 let (_alt, _az, ha) =
                     alt_az_from_equatorial(bs_ra, bs_dec, lat, long, readout_time);
                 polar_analyzer.process_solution(&coords,
-                                                ha.to_degrees() as f32,
+                                                ha.to_degrees(),
                                                 geo_location.latitude,
                                                 &motion_estimator.get_estimate());
             }
         }
         if telescope_position.slew_active {
-            Some(CelestialCoord{ra: telescope_position.slew_target_ra as f32,
-                                dec: telescope_position.slew_target_dec as f32})
+            Some(CelestialCoord{ra: telescope_position.slew_target_ra,
+                                dec: telescope_position.slew_target_dec})
         } else {
             None
         }
@@ -1324,8 +1324,8 @@ struct AppArgs {
     min_exposure: Duration,
     max_exposure: Duration,
     star_count_goal: i32,
-    sigma: f32,
-    min_sigma: f32,
+    sigma: f64,
+    min_sigma: f64,
     ui_prefs: String,
     log_dir: String,
     log_file: String,
@@ -1335,7 +1335,7 @@ struct AppArgs {
 fn parse_duration(arg: &str)
                   -> Result<std::time::Duration, std::num::ParseFloatError> {
     let seconds = arg.parse()?;
-    Ok(std::time::Duration::from_secs_f32(seconds))
+    Ok(std::time::Duration::from_secs_f64(seconds))
 }
 
 // Adapted from

@@ -72,13 +72,13 @@ struct SolveState {
 
     // Parameters for plate solver. See documentation of Tetra3's
     // solve_from_centroids() function for a description of these items.
-    fov_estimate: Option<f32>,
-    match_radius: f32,
-    match_threshold: f32,
+    fov_estimate: Option<f64>,
+    match_radius: f64,
+    match_threshold: f64,
     solve_timeout: Duration,
     boresight_pixel: Option<ImageCoord>,
-    distortion: f32,
-    match_max_error: f32,
+    distortion: f64,
+    match_max_error: f64,
     return_matches: bool,
 
     // Set if currently slewing to a target.
@@ -206,7 +206,7 @@ impl SolveEngine {
         Ok(())
     }
 
-    pub fn set_fov_estimate(&mut self, fov_estimate: Option<f32>)
+    pub fn set_fov_estimate(&mut self, fov_estimate: Option<f64>)
                             -> Result<(), CanonicalError> {
         let mut locked_state = self.state.lock().unwrap();
         if fov_estimate.is_some() && fov_estimate.unwrap() <= 0.0 {
@@ -233,7 +233,7 @@ impl SolveEngine {
         Ok(locked_state.boresight_pixel.clone())
     }
 
-    pub fn set_distortion(&mut self, distortion: f32)
+    pub fn set_distortion(&mut self, distortion: f64)
                                -> Result<(), CanonicalError> {
         if distortion < -0.2 || distortion > 0.2 {
             return Err(invalid_argument_error(
@@ -247,7 +247,7 @@ impl SolveEngine {
         Ok(())
     }
 
-    pub fn set_match_max_error(&mut self, match_max_error: f32)
+    pub fn set_match_max_error(&mut self, match_max_error: f64)
                                -> Result<(), CanonicalError> {
         if match_max_error < 0.0 {
             return Err(invalid_argument_error(
@@ -589,7 +589,7 @@ impl SolveEngine {
                         for (idx, c) in tsr.rotation_matrix.as_ref().unwrap().matrix_elements
                             .clone().into_iter().enumerate()
                         {
-                            rotation_matrix[idx] = c as f64;
+                            rotation_matrix[idx] = c;
                         }
                         fov_catalog_entries = Some(Self::query_fov_catalog_entries(
                             &coords,
@@ -633,17 +633,17 @@ impl SolveEngine {
                    slew_req: &mut cedar::SlewRequest,
                    width: u32, height: u32)
                    -> (Option<Rect>, Option<GrayImage>) {
-        let bs_ra = coords.ra.to_radians() as f64;
-        let bs_dec = coords.dec.to_radians() as f64;
+        let bs_ra = coords.ra.to_radians();
+        let bs_dec = coords.dec.to_radians();
         let st_ra =
-            slew_req.target.as_ref().unwrap().ra.to_radians() as f64;
+            slew_req.target.as_ref().unwrap().ra.to_radians();
         let st_dec =
-            slew_req.target.as_ref().unwrap().dec.to_radians() as f64;
+            slew_req.target.as_ref().unwrap().dec.to_radians();
         slew_req.target_distance = Some(angular_separation(
-            bs_ra, bs_dec, st_ra, st_dec).to_degrees() as f32);
+            bs_ra, bs_dec, st_ra, st_dec).to_degrees());
 
         let mut angle = (position_angle(
-            bs_ra, bs_dec, st_ra, st_dec).to_degrees() as f32 +
+            bs_ra, bs_dec, st_ra, st_dec).to_degrees() +
                          tetra3_solve_result.roll.unwrap()) % 360.0;
         // Arrange for angle to be 0..360.
         if angle < 0.0 {
@@ -662,10 +662,10 @@ impl SolveEngine {
         let target_image_coord =
             cedar::ImageCoord{x: img_coord.x, y: img_coord.y};
         slew_req.image_pos = Some(target_image_coord.clone());
-        if img_coord.x > detect_result.center_region.left() as f32 &&
-            img_coord.x < detect_result.center_region.right() as f32 &&
-            img_coord.y > detect_result.center_region.top() as f32 &&
-            img_coord.y < detect_result.center_region.bottom() as f32
+        if img_coord.x > detect_result.center_region.left() as f64 &&
+            img_coord.x < detect_result.center_region.right() as f64  &&
+            img_coord.y > detect_result.center_region.top() as f64  &&
+            img_coord.y < detect_result.center_region.bottom() as f64
         {
             slew_req.target_within_center_region = true;
         }
@@ -676,10 +676,10 @@ impl SolveEngine {
             boresight_pos = bp.clone();
         } else {
             boresight_pos = ImageCoord{
-                x: width as f32 / 2.0, y: height as f32 / 2.0};
+                x: width as f64 / 2.0, y: height as f64 / 2.0};
         }
         let target_close_threshold =
-            std::cmp::min(width, height) as f32 / 16.0;
+            std::cmp::min(width, height) as f64 / 16.0;
 	let target_boresight_distance =
             ((target_image_coord.x - boresight_pos.x) *
              (target_image_coord.x - boresight_pos.x) +
@@ -729,7 +729,7 @@ impl SolveEngine {
                                  cedar_sky: &Arc<Mutex<dyn CedarSkyTrait + Send>>,
                                  catalog_entry_match: &CatalogEntryMatch,
                                  width: u32, height: u32,
-                                 fov: f32, distortion: f32,
+                                 fov: f64, distortion: f64,
                                  rotation_matrix: &[f64; 9])
                                  -> Vec<FovCatalogEntry> {
         let mut answer = Vec::<FovCatalogEntry>::new();
@@ -737,13 +737,13 @@ impl SolveEngine {
         let bp = if boresight_pixel.is_some() {
             boresight_pixel.clone().unwrap()
         } else {
-            ImageCoord{x: width as f32 / 2.0, y: height as f32 / 2.0}
+            ImageCoord{x: width as f64 / 2.0, y: height as f64 / 2.0}
         };
 
         // Figure out radius from boresight for the catalog entry search.
-        let deg_per_pixel = fov / width as f32;
-        let h = f32::max(bp.x, width as f32 - bp.x);
-        let v = f32::max(bp.y, height as f32 - bp.y);
+        let deg_per_pixel = fov / width as f64;
+        let h = f64::max(bp.x, width as f64 - bp.x);
+        let v = f64::max(bp.y, height as f64 - bp.y);
         let radius_deg = (h * h + v * v).sqrt() * deg_per_pixel;
 
         let query_result = cedar_sky.lock().unwrap().query_catalog_entries(
@@ -770,15 +770,15 @@ impl SolveEngine {
             let entry = Some(sce.entry.unwrap());
             let coord = entry.as_ref().unwrap().coord.clone().unwrap();
             let img_coord = transform_to_image_coord(
-                &[coord.ra as f64, coord.dec as f64],
+                &[coord.ra, coord.dec],
                 width as usize, height as usize,
-                fov as f64, &rotation_matrix, distortion as f64);
-            let x = img_coord[0] as f32;
-            if x < 0.0 || x >= width as f32 {
+                fov, &rotation_matrix, distortion);
+            let x = img_coord[0];
+            if x < 0.0 || x >= width as f64 {
                 continue;
             }
-            let y = img_coord[1] as f32;
-            if y < 0.0 || y >= height as f32 {
+            let y = img_coord[1];
+            if y < 0.0 || y >= height as f64 {
                 continue;
             }
             answer.push(

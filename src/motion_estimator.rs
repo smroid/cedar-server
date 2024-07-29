@@ -10,15 +10,15 @@ use crate::tetra3_server::CelestialCoord;
 pub struct MotionEstimate {
     // Estimated rate of RA boresight movement eastward (positive) or westward
     // (negative). Unit is degrees per second.
-    pub ra_rate: f32,
+    pub ra_rate: f64,
     // Estimate of the RMS error in `ra_rate`.
-    pub ra_rate_error: f32,
+    pub ra_rate_error: f64,
 
     // Estimated rate of DEC boresight movement northward (positive) or southward
     // (negative). Unit is degrees per second.
-    pub dec_rate: f32,
+    pub dec_rate: f64,
     // Estimate of the RMS error in `ra_rate`.
-    pub dec_rate_error: f32,
+    pub dec_rate_error: f64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -93,7 +93,7 @@ impl MotionEstimator {
     //     arcseconds) of the plate solution. This represents the noise level
     //     associated with `position`.
     pub fn add(&mut self, mut time: SystemTime, position: Option<CelestialCoord>,
-               position_rmse: Option<f32>) {
+               position_rmse: Option<f64>) {
         let prev_time = self.prev_time;
         let prev_pos = self.prev_position.clone();
         if position.is_some() {
@@ -130,7 +130,7 @@ impl MotionEstimator {
             return;
         }
         let position = position.unwrap();
-        let position_rmse = position_rmse.unwrap() / 3600.0;  // arcsec->deg.
+        let position_rmse = position_rmse.unwrap() as f64 / 3600.0;  // arcsec->deg.
         match self.state {
             State::Unknown => {
                 self.set_state(State::Moving);
@@ -192,22 +192,22 @@ impl MotionEstimator {
         if ra_rate.count() < 3 {
             None
         } else {
-            Some(MotionEstimate{ra_rate: ra_rate.slope() as f32,
-                                ra_rate_error: ra_rate.rate_interval_bound() as f32,
-                                dec_rate: dec_rate.slope() as f32,
-                                dec_rate_error: dec_rate.rate_interval_bound() as f32}
+            Some(MotionEstimate{ra_rate: ra_rate.slope(),
+                                ra_rate_error: ra_rate.rate_interval_bound(),
+                                dec_rate: dec_rate.slope(),
+                                dec_rate_error: dec_rate.rate_interval_bound()}
             )
         }
     }
 
     // pos_rmse: position error estimate in degrees.
-    fn is_stopped(time: SystemTime, pos: &CelestialCoord, pos_rmse: f32,
+    fn is_stopped(time: SystemTime, pos: &CelestialCoord, pos_rmse: f64,
                   prev_time: SystemTime, prev_pos: &CelestialCoord) -> bool {
         let elapsed_secs =
-            time.duration_since(prev_time).unwrap().as_secs_f32();
+            time.duration_since(prev_time).unwrap().as_secs_f64();
 
         // Max movement rate below which we are considered to be stopped.
-        let max_rate = f32::max(pos_rmse * 8.0, Self::SIDEREAL_RATE * 2.0);
+        let max_rate = f64::max(pos_rmse as f64 * 8.0, Self::SIDEREAL_RATE * 2.0);
 
         let dec_rate = Self::dec_change(prev_pos.dec, pos.dec) / elapsed_secs;
         if dec_rate.abs() > max_rate {
@@ -217,18 +217,18 @@ impl MotionEstimator {
         ra_rate.abs() <= max_rate
     }
 
-    const SIDEREAL_RATE: f32 = 15.04 / 3600.0;  // Degrees per second.
+    const SIDEREAL_RATE: f64 = 15.04 / 3600.0;  // Degrees per second.
 
     // Computes the change in declination between `prev_dec` and `cur_dec`. All
     // are in degrees.
-    fn dec_change(prev_dec: f32, cur_dec: f32) -> f32 {
+    fn dec_change(prev_dec: f64, cur_dec: f64) -> f64 {
         cur_dec - prev_dec
     }
 
     // Computes the change in right ascension between `prev_ra` and `cur_ra`.
     // Care is taken when crossing the 360..0 boundary.
     // All are in degrees.
-    fn ra_change(mut prev_ra: f32, mut cur_ra: f32) -> f32 {
+    fn ra_change(mut prev_ra: f64, mut cur_ra: f64) -> f64 {
         if prev_ra < 45.0 && cur_ra > 315.0 {
             prev_ra += 360.0;
         }

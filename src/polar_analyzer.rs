@@ -28,8 +28,8 @@ impl PolarAnalyzer {
     //   latitude).
     // When certain other conditions are met, this function updates the
     // `polar_align_advice` state.
-    pub fn process_solution(&mut self, boresight_pos: &CelestialCoord, hour_angle: f32,
-                            latitude: f32, motion_estimate: &Option<MotionEstimate>) {
+    pub fn process_solution(&mut self, boresight_pos: &CelestialCoord, hour_angle: f64,
+                            latitude: f64, motion_estimate: &Option<MotionEstimate>) {
         self.polar_align_advice.azimuth_correction = None;
         self.polar_align_advice.altitude_correction = None;
         if motion_estimate.is_none() {
@@ -38,7 +38,7 @@ impl PolarAnalyzer {
         }
         let motion_estimate = motion_estimate.as_ref().unwrap();
         // `hour_angle` and `latitude` args: degrees.
-        const SIDEREAL_RATE: f32 = 15.04 / 3600.0;  // Degrees per second.
+        const SIDEREAL_RATE: f64 = 15.04 / 3600.0;  // Degrees per second.
         // If we're on a tracking equatorial mount that is at least roughly
         // polar-aligned, the ra_rate will be close to zero.
         if motion_estimate.ra_rate.abs() > SIDEREAL_RATE * 0.3 {
@@ -52,12 +52,12 @@ impl PolarAnalyzer {
 
         // Degrees (plus or minus) within which the declination must be zero for
         // polar alignment to be evaluated.
-        const DEC_TOLERANCE: f32 = 15.0;
+        const DEC_TOLERANCE: f64 = 15.0;
 
         // Hours (plus or minus) around the meridian for polar alignment azimuth
         // evaluation; hours (doubled) above east or west horizon for polar alignment
         // elevation evaluation.
-        const HA_TOLERANCE: f32 = 1.0;
+        const HA_TOLERANCE: f64 = 1.0;
 
         let dec = boresight_pos.dec;
         if dec > DEC_TOLERANCE || dec < -DEC_TOLERANCE {
