@@ -211,8 +211,9 @@ pub fn transform_to_image_coord(celestial_coord: &[f64; 2],
     let slice = binding.as_slice();
     let vec = [slice[0], slice[1], slice[2]];
 
-    distort_centroid(&compute_centroid(&vec, width, height, fov),
-                     width, height, distortion)
+    distort_centroid(
+        &compute_centroid(&vec, width, height, fov.to_radians()),
+        width, height, distortion)
 }
 
 /// Port of Tetra3's transform_to_celestial_coords() function. Note that the
@@ -224,7 +225,7 @@ pub fn transform_to_celestial_coords(image_coord: &[f64; 2],
     let rot_matrix = na::Matrix3::from_row_slice(rotation_matrix);
     let image_coord = undistort_centroid(
         &image_coord, width, height, distortion);
-    let vec = compute_vector(&image_coord, width, height, fov);
+    let vec = compute_vector(&image_coord, width, height, fov.to_radians());
     let image_vector = na::RowVector3::<f64>::new(vec[0], vec[1], vec[2]);
     let rotated_image_vector =
         rot_matrix.transpose() * &image_vector.transpose();
@@ -238,10 +239,10 @@ pub fn transform_to_celestial_coords(image_coord: &[f64; 2],
 
 /// Port (with minor changes) of Tetra3's _compute_vectors() function.
 fn compute_vector(centroid: &[f64; 2], width: usize, height: usize,
-                  fov: f64) -> [f64; 3] {
+                  fov_rad: f64) -> [f64; 3] {
     let width = width as f64;
     let height = height as f64;
-    let scale_factor = 2.0 * (fov / 2.0).tan() / width;
+    let scale_factor = 2.0 * (fov_rad / 2.0).tan() / width;
     let y = (width / 2.0 - centroid[0]) * scale_factor;
     let z = (height / 2.0 - centroid[1]) * scale_factor;
     let norm = (z * z + y * y + 1.0).sqrt();
@@ -249,12 +250,12 @@ fn compute_vector(centroid: &[f64; 2], width: usize, height: usize,
 }
 
 /// Port (with minor changes) of Tetra3's _compute_centroids() function.
-fn compute_centroid(vector: &[f64; 3], width: usize, height: usize, fov: f64)
+fn compute_centroid(vector: &[f64; 3], width: usize, height: usize, fov_rad: f64)
                     -> [f64; 2] {
     let width = width as f64;
     let height = height as f64;
     let (i, j, k) = (vector[0], vector[1], vector[2]);
-    let scale_factor = -width / 2.0 / (fov / 2.0).tan();
+    let scale_factor = -width / 2.0 / (fov_rad / 2.0).tan();
     let x = scale_factor * j / i;
     let y = scale_factor * k / i;
 
@@ -389,15 +390,15 @@ mod tests {
         let rotation_matrix = [0.5143930851217422, 0.4705764222800965, 0.7169083517249608,
                                0.32501576652434216, 0.6666418828994508, -0.670785622591055,
                                -0.7935770318560958, 0.5780540033235123, 0.18997121822036758];
-        let celestial_coords = [35.0, 50.0];
+        let celestial_coords = [38.0, 45.0];
         let img_coords = transform_to_image_coord(
             &celestial_coords, 1024, 800, 10.0, &rotation_matrix, 0.01);
-        assert_abs_diff_eq!(img_coords[0], 497.371, epsilon = 0.001);
-        assert_abs_diff_eq!(img_coords[1], 391.065, epsilon = 0.001);
+        assert_abs_diff_eq!(img_coords[0], 529.486, epsilon = 0.001);
+        assert_abs_diff_eq!(img_coords[1], 727.513, epsilon = 0.001);
         let out_celestial_coords = transform_to_celestial_coords(
             &img_coords, 1024, 800, 10.0, &rotation_matrix, 0.01);
-        assert_abs_diff_eq!(out_celestial_coords[0], 35.0, epsilon = 0.001);
-        assert_abs_diff_eq!(out_celestial_coords[1], 50.0, epsilon = 0.001);
+        assert_abs_diff_eq!(out_celestial_coords[0], 38.0, epsilon = 0.001);
+        assert_abs_diff_eq!(out_celestial_coords[1], 45.0, epsilon = 0.001);
     }
 
 }  // mod tests.
