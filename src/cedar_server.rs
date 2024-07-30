@@ -1459,11 +1459,6 @@ pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright:
             std::process::exit(1);
         }
     };
-    info!("Using camera {} {}x{}",
-          abstract_cam.model(),
-          abstract_cam.dimensions().0,
-          abstract_cam.dimensions().1);
-    let mpix = (abstract_cam.dimensions().0 * abstract_cam.dimensions().1) as f64 / 1000000.0;
 
     let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>> =
         match args.test_image.as_str() {
@@ -1476,6 +1471,16 @@ pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright:
             Arc::new(tokio::sync::Mutex::new(Box::new(ImageCamera::new(img_u8).unwrap())))
         },
     };
+    let mpix;
+    {
+        let locked_camera = camera.lock().await;
+        info!("Using camera {} {}x{}",
+              locked_camera.model(),
+              locked_camera.dimensions().0,
+              locked_camera.dimensions().1);
+        mpix = (locked_camera.dimensions().0 * locked_camera.dimensions().1)
+            as f64 / 1000000.0;
+    }
 
     // Initialize binning/sampling parameters based on sensor resolution.
     let mut binning = 1_u32;
