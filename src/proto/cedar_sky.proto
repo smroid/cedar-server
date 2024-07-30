@@ -36,6 +36,8 @@ message QueryCatalogRequest {
   // If two objects from the same catalog satisfy the criteria, and are
   // within this angular distance of each other, only one is returned. The
   // brighter object is returned. If omitted, no decrowding is done.
+  // If both `dedup_distance` and `decrowd_distance` are given, the dedup
+  // distance must be less than the decrowd distance value.
   optional double decrowd_distance = 7;  // Arcsec.
 
   optional Ordering ordering = 8;  // Default is to order by brightness.
