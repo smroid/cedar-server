@@ -3,7 +3,7 @@
 
 use std::fs;
 use std::io;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -11,6 +11,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use cargo_metadata::MetadataCommand;
 use cedar_camera::abstract_camera::{AbstractCamera, Offset, bin_2x2, sample_2x2};
 use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
@@ -41,12 +42,12 @@ use futures::join;
 use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{Accuracy, ActionRequest, CalibrationData,
-                   CelestialCoordFormat, EmptyMessage, FixedSettings,
-                   FovCatalogEntry, FrameRequest, FrameResult, Image,
-                   ImageCoord, LatLong, LocationBasedInfo, MountType,
+                   CelestialCoordFormat, EmptyMessage, FeatureLevel,
+                   FixedSettings, FovCatalogEntry, FrameRequest, FrameResult,
+                   Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
                    OperatingMode, OperationSettings, ProcessingStats, Rectangle,
-                   StarCentroid, Preferences, ServerInformationRequest,
-                   ServerInformationResult};
+                   StarCentroid, Preferences, ServerLogRequest, ServerLogResult,
+                   ServerInformation};
 use crate::calibrator::Calibrator;
 use crate::detect_engine::{DetectEngine, DetectResult};
 use crate::scale_image::scale_image;
@@ -96,7 +97,11 @@ struct MyCedar {
     log_file: PathBuf,
 
     product_name: String,
-    _copyright: String,
+    copyright: String,
+
+    cedar_version: String,
+    processor_model: String,
+    os_version: String,
 }
 
 struct CedarState {
@@ -147,21 +152,18 @@ struct CedarState {
 
 #[tonic::async_trait]
 impl Cedar for MyCedar {
-    async fn get_server_information(
-        &self, request: tonic::Request<ServerInformationRequest>)
-        -> Result<tonic::Response<ServerInformationResult>, tonic::Status>
+    async fn get_server_log(
+        &self, request: tonic::Request<ServerLogRequest>)
+        -> Result<tonic::Response<ServerLogResult>, tonic::Status>
     {
-        let req: ServerInformationRequest = request.into_inner();
-        let mut response = ServerInformationResult::default();
-
-        if let Some(log_request) = req.log_request {
-            let tail = Self::read_file_tail(&self.log_file, log_request);
-            if let Err(e) = tail {
-                return Err(tonic::Status::failed_precondition(
-                    format!("Error reading log file {:?}: {:?}.", self.log_file, e)));
-            }
-            response.log_content = Some(tail.unwrap());
+        let req: ServerLogRequest = request.into_inner();
+        let tail = Self::read_file_tail(&self.log_file, req.log_request);
+        if let Err(e) = tail {
+            return Err(tonic::Status::failed_precondition(
+                format!("Error reading log file {:?}: {:?}.", self.log_file, e)));
         }
+        let mut response = ServerLogResult::default();
+        response.log_content = tail.unwrap();
 
         Ok(tonic::Response::new(response))
     }
@@ -435,8 +437,9 @@ impl Cedar for MyCedar {
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let req: FrameRequest = request.into_inner();
-        let frame_result = Self::get_next_frame(
+        let mut frame_result = Self::get_next_frame(
             self.state.clone(), req.prev_frame_id).await;
+        frame_result.server_information = Some(self.get_server_information().await);
         Ok(tonic::Response::new(frame_result))
     }
 
@@ -514,6 +517,47 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
+    async fn get_server_information(&self) -> ServerInformation {
+        let camera_model;
+        let camera_image_width;
+        let camera_image_height;
+        {
+            let locked_state = self.state.lock().await;
+            let locked_camera = locked_state.camera.lock().await;
+            camera_model = locked_camera.model();
+            (camera_image_width, camera_image_height) = locked_camera.dimensions();
+        }
+
+        let feature_level = if self.product_name == "Hopper" {
+            if camera_model == "imx296" {
+                FeatureLevel::Plus
+            } else {
+                FeatureLevel::Basic
+            }
+        } else {
+            FeatureLevel::Diy
+        } as i32;
+
+        let temp_str =
+            fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").unwrap();
+        let cpu_temperature = temp_str.trim().parse::<f32>().unwrap() / 1000.0;
+
+        ServerInformation {
+            product_name: self.product_name.clone(),
+            copyright: self.copyright.clone(),
+            cedar_server_version: self.cedar_version.clone(),
+            feature_level,
+            processor_model: self.processor_model.clone(),
+            os_version: self.os_version.clone(),
+            cpu_temperature,
+            server_time: Some(prost_types::Timestamp::try_from(
+                SystemTime::now()).unwrap()),
+            camera_model,
+            camera_image_width,
+            camera_image_height,
+        }
+    }
+
     fn fill_in_time(fixed_settings: &mut FixedSettings) {
         if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
             let mut pst = prost_types::Timestamp::default();
@@ -1166,12 +1210,35 @@ impl MyCedar {
             serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
             overall_latency_stats: ValueStatsAccumulator::new(stats_capacity),
         }));
+
+        let metadata = MetadataCommand::new()
+            .exec()
+            .expect("Failed to get cargo metadata");
+        let package = metadata.root_package().expect("Failed to get root package");
+        let cedar_version = package.version.to_string();
+        let processor_model =
+            fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap();
+
+        let reader = BufReader::new(fs::File::open("/etc/os-release").unwrap());
+        let mut os_version: String = "".to_string();
+        for line in reader.lines() {
+            let line = line.unwrap();
+            if line.starts_with("PRETTY_NAME=") {
+                let parts: Vec<&str> = line.split('=').collect();
+                os_version = parts[1].to_string();
+                break;
+            }
+        }
+
         let cedar = MyCedar {
             state: state.clone(),
             preferences_file,
             log_file,
             product_name: product_name.to_string(),
-            _copyright: copyright.to_string(),
+            copyright: copyright.to_string(),
+            cedar_version,
+            processor_model,
+            os_version,
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;

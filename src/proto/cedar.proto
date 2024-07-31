@@ -36,6 +36,37 @@ package cedar;
 // the gRPC protocol defined in this proto file. Similarly, Cedar's gRPC
 // integration with Tetra3 is described in a separate proto file.
 
+enum FeatureLevel {
+  FEATURE_LEVEL_UNSPECIFIED = 0;
+  DIY = 1;
+  BASIC = 2;
+  PLUS = 3;
+}
+message ServerInformation {
+  string product_name = 1;
+
+  string copyright = 2;
+
+  string cedar_server_version = 3;
+
+  FeatureLevel feature_level = 4;
+
+  string processor_model = 5;  // Which Rpi model.
+  string os_version = 6;
+
+  float cpu_temperature = 7;  // Celsius.
+
+  google.protobuf.Timestamp server_time = 8;
+
+  string camera_model = 9;
+  int32 camera_image_width = 10;
+  int32 camera_image_height = 11;
+
+  // Network info (hosted network, or access point?)
+
+  // Status of SkySafari integration; SkySafari version.
+}
+
 message FixedSettings {
   optional LatLong observer_location = 2;
 
@@ -65,8 +96,6 @@ message LatLong {
 }
 
 message OperationSettings {
-  // TODO: Camera number.
-
   // Defaults to SETUP mode.
   optional OperatingMode operating_mode = 4;
 
@@ -195,11 +224,14 @@ message FrameRequest {
   optional int32 prev_frame_id = 1;
 }
 
-// Next tag: 32.
+// Next tag: 33.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
   int32 frame_id = 1;
+
+  // Information about Cedar-server.
+  ServerInformation server_information = 32;
 
   // The current FixedSettings on the server.
   FixedSettings fixed_settings = 27;
@@ -584,50 +616,19 @@ message ActionRequest {
   optional bool save_image = 5;
 }
 
-message ServerInformationRequest {
+message ServerLogRequest {
   // Specifies how many bytes (most recent) of the server log to retrieve.
-  optional int32 log_request = 1;
-
-  // Empty.
-  // TODO: int to request N most recent lines of server log
+  int32 log_request = 1;
 }
 
-message ServerInformationResult {
-  optional string log_content = 1;
-
-  // Product name.
-
-  // Server copyright.
-
-  // Cedar version.
-
-  // Tetra3 version.
-
-  // Star catalog information.
-
-  // Processor info.
-  // * model: RPi or other board model
-  // * OS version, etc.
-  // * RAM present, used, free
-  // * temperature
-  // * free disk space
-
-  // Network info (hosted network, or access point?)
-
-  // Current time (UTC) on Cedar server.
-
-  // ordered list of detected cameras; for each:
-  // * Camera make/model
-  // * Resolution
-
-  // Status of SkySafari integration; SkySafari version.
+message ServerLogResult {
+  string log_content = 1;
 }
 
 message EmptyMessage {}
 
 service Cedar {
-  // Returns information about the Cedar server.
-  rpc GetServerInformation(ServerInformationRequest) returns (ServerInformationResult);
+  rpc GetServerLog(ServerLogRequest) returns (ServerLogResult);
 
   // Changes zero or more of Cedar's "fixed" settings. If a field is omitted
   // from the supplied FixedSettings, that setting is not updated. Returns the
