@@ -1,6 +1,7 @@
 # About Cedar-server
 
-Cedar-server implements a plate solving pipeline to help you aim your telescope.
+Cedar™ is an electronic finder that uses a real-time plate solving pipeline to
+help you aim your telescope.
 
 Cedar-server's design provides rich functionality, high performance, reliable
 operation, and simple usage. To the greatest extent possible, all internal
