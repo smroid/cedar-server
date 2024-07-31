@@ -1,6 +1,3 @@
-show matches/pattern stars in operate mode. Except when slewing?
-* make this a preference, is ugly
-
 * enlarge display text (check on phone)
 
 Default database:
@@ -14,10 +11,6 @@ daylight alignment procedure
 * user taps on whatever is centered in telescope view
 
 auto-detect alt-az vs equatorial (with manual override)
-
-clean up cedar-solve:
-* get rid of star detection/centroiding support. Must use cedar-detect or
-  some other detector/centroider.
 
 flutter app icons
 
@@ -52,6 +45,10 @@ Cedar Pole Align
 * alert if not tracking mount (or not roughly polar aligned)
 * guidance for where to point scope
 * king method?
+Polar alignment technique:
+https://www.sharpcap.co.uk/sharpcap/features/polar-alignment
+https://github.com/ThemosTsikas/PhotoPolarAlign
+https://www.considine.net/aplanatic/align.htm
 
 status LED
 * cedar server liveness
@@ -74,22 +71,26 @@ Cedar Journal
 TBD
 
 Cedar Sky
-Idea: OOBE should not require Sky Safari integration
-* rudimentary catalog of "beginner" objects
-  - brightness
-  - size
-  - object type (bright star, planet, nebula, double star, open cluster,
-    globular cluster, galaxy)
-* slider for brightness limit
-* selector boxes for object types
-* display selected objects in FOV. Tap to bring up info and goto button.
-* option for whole-sky (more than 5deg above current horizon) vs. near (within 45deg)
-  current boresight (ranked by distance). Maybe a slider, with far setting being
-  whole sky.
-* ephemeris for planets/asteroids
-* cloud-enabled: comets, other interlopers
+Remaining work:
+* tap on item in aim view
+  - get info
+  - hit push-to
+* browser
+  - check boxes and sliders to control what's selected
+  - get info
+  - hit push-to
+* solar system object ephemeris
+* add more catalogs
+  - Caldwell (list, not catalog-- affects display logic re naming)
+  - double stars
+  - stars down to some limit
+  - galaxies?
+  - what else?
+* way to add new solar system object, e.g. comet
+  - cloud-based?
+* marathon ordering (advanced)
 
-Goto ra/dec button: pops up text entry field
+Push-to ra/dec button: pops up text entry field
 
 remote ops, proxied via phone
 * update cedar server
@@ -124,11 +125,6 @@ interoperation with SkySafari
 * picture-in-picture?
 * SkySafari "align" to refine alignment?
 * support LX200 (also for Nexus DSC)
-
-Polar alignment technique:
-https://www.sharpcap.co.uk/sharpcap/features/polar-alignment
-https://github.com/ThemosTsikas/PhotoPolarAlign
-https://www.considine.net/aplanatic/align.htm
 
 help system
 * long press? (GestureDetector wrapped around a widget)
