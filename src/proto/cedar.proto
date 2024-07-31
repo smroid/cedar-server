@@ -38,7 +38,7 @@ package cedar;
 
 enum FeatureLevel {
   FEATURE_LEVEL_UNSPECIFIED = 0;
-  DIY = 1;
+  DIY = 1;  // Does not have Cedar sky.
   BASIC = 2;
   PLUS = 3;
 }
