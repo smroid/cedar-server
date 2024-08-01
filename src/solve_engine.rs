@@ -756,6 +756,7 @@ impl SolveEngine {
             /*dedup_distance=*/Some(1.0),  // Arcsec.
             // TODO: parameter for decrowd factor.
             /*decrowd_distance=*/Some(3600.0 * fov / 20.0),  // Arcsec.
+            /*limit_result*/Some(50),
             /*sky_location*/Some(&coords),
             /*location_info=*/None);
         if let Err(e) = query_result {
@@ -763,7 +764,7 @@ impl SolveEngine {
             return answer;
         }
 
-        let selected_catalog_entries = query_result.unwrap();
+        let selected_catalog_entries = query_result.unwrap().0;
         // Convert each catalog entry's celesital coordinates to image position,
         // and discard those outside of our FOV.
         for sce in selected_catalog_entries {
