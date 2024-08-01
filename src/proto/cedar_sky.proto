@@ -16,7 +16,6 @@ message QueryCatalogRequest {
   CatalogEntryMatch catalog_entry_match = 1;
 
   optional double max_distance = 2;  // Degrees; requires `sky_location`.
-
   optional double min_elevation = 3;  // Degrees; requires `location_info`
 
   // Current telescope pointing direction, if known.
@@ -41,6 +40,11 @@ message QueryCatalogRequest {
   optional double decrowd_distance = 7;  // Arcsec.
 
   optional Ordering ordering = 8;  // Default is to order by brightness.
+
+  // If given, caps the number of `entries` in QueryCatalogResponse.
+  optional int32 limit_result = 9;
+
+  // TODO: text search.
 }
 
 // Specifies what intrinsic criteria to apply when matching catalog entries.
@@ -54,8 +58,6 @@ message CatalogEntryMatch {
 
   // What object type(s) to search. Empty means no constraint on object type.
   repeated string object_type_label = 3;
-
-  // TODO: text search.
 }
 
 // Information needed to convert RA/Dec to Alt/Az.
@@ -78,12 +80,17 @@ enum Ordering {
   // `location_info` must be present. Highest first.
   ELEVATION = 3;
 
-  // TODO: time until setting to within min_elevation, for marathons
+  // TODO: MARATHON: time until setting to within min_elevation.
 }
 
 message QueryCatalogResponse {
   // The catalog entries that satisfy the QueryCatalogRequest criteria.
   repeated SelectedCatalogEntry entries = 1;
+
+  // If `limit_result` is specified in QueryCatalogRequest, this will
+  // be the number of entries that were truncated after the limit was
+  // reached.
+  int32 truncated_count = 2;
 }
 
 message SelectedCatalogEntry {
@@ -145,16 +152,4 @@ message Constellation {
 
 message ConstellationResponse {
   repeated Constellation constellations = 1;
-}
-
-message SkyEmptyMessage {}
-
-service CedarSky {
-  rpc QueryCatalogEntries(QueryCatalogRequest) returns (QueryCatalogResponse);
-
-  rpc GetCatalogDescriptionss(SkyEmptyMessage) returns (CatalogDescriptionResponse);
-
-  rpc GetObjectTypes(SkyEmptyMessage) returns (ObjectTypeResponse);
-
-  rpc GetConstellations(SkyEmptyMessage) returns (ConstellationResponse);
 }

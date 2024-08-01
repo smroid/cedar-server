@@ -658,4 +658,10 @@ service Cedar {
 
   // Performs the requested action(s).
   rpc InitiateAction(ActionRequest) returns (EmptyMessage);
+
+  // For Cedar Sky, if implemented in Cedar server. See cedar_sky.proto.
+  rpc QueryCatalogEntries(cedar_sky.QueryCatalogRequest) returns (cedar_sky.QueryCatalogResponse);
+  rpc GetCatalogDescriptions(EmptyMessage) returns (cedar_sky.CatalogDescriptionResponse);
+  rpc GetObjectTypes(EmptyMessage) returns (cedar_sky.ObjectTypeResponse);
+  rpc GetConstellations(EmptyMessage) returns (cedar_sky.ConstellationResponse);
 }

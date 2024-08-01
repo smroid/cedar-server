@@ -20,7 +20,9 @@ use chrono::offset::Local;
 use image::{GrayImage, ImageFormat};
 use image::ImageReader;
 
-use crate::cedar_sky::CatalogEntryMatch;
+use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntryMatch,
+                       ConstellationResponse, ObjectTypeResponse, Ordering,
+                       QueryCatalogRequest, QueryCatalogResponse};
 use crate::cedar_sky_trait::CedarSkyTrait;
 
 use nix::time::{ClockId, clock_gettime, clock_settime};
@@ -115,6 +117,9 @@ struct CedarState {
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<Mutex<TelescopePosition>>,
     polar_analyzer: Arc<Mutex<PolarAnalyzer>>,
+
+    // Not all builds of Cedar-server support Cedar-sky.
+    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
 
     // See "About Resolutions" below.
     // Whether (and how much, 2x2 or 4x4) the acquired image is binned prior to
@@ -377,7 +382,7 @@ impl Cedar for MyCedar {
         }
         if let Some(catalog_entry_match) = req.catalog_entry_match {
             let mut locked_state = self.state.lock().await;
-            if !locked_state.solve_engine.lock().await.has_cedar_sky() {
+            if locked_state.cedar_sky.is_none() {
                 return Err(tonic::Status::unimplemented(
                     format!("{} does not include Cedar Sky.", self.product_name)));
             }
@@ -388,7 +393,7 @@ impl Cedar for MyCedar {
         }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
-    }
+    }  // update_operation_settings().
 
     async fn update_preferences(
         &self, request: tonic::Request<Preferences>)
@@ -513,6 +518,109 @@ impl Cedar for MyCedar {
             }
         }
         Ok(tonic::Response::new(EmptyMessage{}))
+    }  // initiate_action().
+
+    async fn query_catalog_entries(
+        &self, request: tonic::Request<QueryCatalogRequest>)
+        -> Result<tonic::Response<QueryCatalogResponse>, tonic::Status>
+    {
+        let locked_state = self.state.lock().await;
+        if locked_state.cedar_sky.is_none() {
+            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+        }
+        let req: QueryCatalogRequest = request.into_inner();
+        let limit_result = match req.limit_result {
+            Some(l) => Some(l as usize),
+            None => None,
+        };
+        let ordering = match req.ordering {
+            Some(1) => Some(Ordering::Brightness),
+            Some(2) => Some(Ordering::SkyLocation),
+            Some(3) => Some(Ordering::Elevation),
+            _ => Some(Ordering::Brightness),
+        };
+        let catalog_entry_match = req.catalog_entry_match.as_ref().unwrap();
+        let result = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().query_catalog_entries(
+            req.max_distance,
+            req.min_elevation,
+            catalog_entry_match.faintest_magnitude,
+            &catalog_entry_match.catalog_label,
+            &catalog_entry_match.object_type_label,
+            ordering,
+            req.dedup_distance,
+            req.decrowd_distance,
+            limit_result,
+            req.sky_location.as_ref(),
+            req.location_info.as_ref());
+        if let Err(e) = result {
+            return Err(tonic_status(e));
+        }
+        let (entries, truncated_count) = result.unwrap();
+
+        let mut response = QueryCatalogResponse::default();
+        for entry in entries {
+            response.entries.push(entry);
+        }
+        response.truncated_count = truncated_count as i32;
+
+        Ok(tonic::Response::new(response))
+    }  // query_catalog_entries().
+
+    async fn get_catalog_descriptions(
+        &self, _request: tonic::Request<EmptyMessage>)
+        -> Result<tonic::Response<CatalogDescriptionResponse>, tonic::Status>
+    {
+        let locked_state = self.state.lock().await;
+        if locked_state.cedar_sky.is_none() {
+            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+        }
+        let catalog_descriptions =
+            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_descriptions();
+
+        let mut response = CatalogDescriptionResponse::default();
+        for cd in catalog_descriptions {
+            response.catalog_descriptions.push(cd);
+        }
+
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_object_types(
+        &self, _request: tonic::Request<EmptyMessage>)
+        -> Result<tonic::Response<ObjectTypeResponse>, tonic::Status>
+    {
+        let locked_state = self.state.lock().await;
+        if locked_state.cedar_sky.is_none() {
+            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+        }
+        let object_types =
+            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_object_types();
+
+        let mut response = ObjectTypeResponse::default();
+        for ot in object_types {
+            response.object_types.push(ot);
+        }
+
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_constellations(
+        &self, _request: tonic::Request<EmptyMessage>)
+        -> Result<tonic::Response<ConstellationResponse>, tonic::Status>
+    {
+        let locked_state = self.state.lock().await;
+        if locked_state.cedar_sky.is_none() {
+            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+        }
+        let constellations =
+            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_constellations();
+
+        let mut response = ConstellationResponse::default();
+        for c in constellations {
+            response.constellations.push(c);
+        }
+
+        Ok(tonic::Response::new(response))
     }
 }
 
@@ -528,14 +636,14 @@ impl MyCedar {
             (camera_image_width, camera_image_height) = locked_camera.dimensions();
         }
 
-        let feature_level = if self.product_name == "Hopper" {
-            if camera_model == "imx296" {
-                FeatureLevel::Plus
-            } else {
-                FeatureLevel::Basic
-            }
-        } else {
+        let feature_level = if self.product_name.eq_ignore_ascii_case("Cedar-Box") {
             FeatureLevel::Diy
+        } else {
+            if camera_model == "imx296" {
+                FeatureLevel::Plus  // Hopper Plus.
+            } else {
+                FeatureLevel::Basic  // Hopper.
+            }
         } as i32;
 
         let temp_str =
@@ -1189,13 +1297,14 @@ impl MyCedar {
             detect_engine: detect_engine.clone(),
             tetra3_subprocess: tetra3_subprocess.clone(),
             solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
-                tetra3_subprocess.clone(), cedar_sky, detect_engine.clone(),
+                tetra3_subprocess.clone(), cedar_sky.clone(), detect_engine.clone(),
                 tetra3_uds, /*update_interval=*/Duration::ZERO,
                 stats_capacity, closure).await.unwrap())),
             calibrator: Arc::new(tokio::sync::Mutex::new(
                 Calibrator::new(camera.clone()))),
             telescope_position,
             polar_analyzer,
+            cedar_sky,
             binning, display_sampling,
             preferences,
             scaled_image: None,

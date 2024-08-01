@@ -178,13 +178,6 @@ impl SolveEngine {
         })
     }
 
-    // Tells whether this solve engine was constructed with a Cedar Sky
-    // implementation.
-    pub fn has_cedar_sky(&self) -> bool {
-        let locked_state = self.state.lock().unwrap();
-        locked_state.cedar_sky.is_some()
-    }
-
     // Sets the parameters used to retrieve sky catalog entries for the solved
     // FOV.
     pub fn set_catalog_entry_match(
