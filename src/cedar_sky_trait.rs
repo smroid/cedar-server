@@ -19,7 +19,8 @@ pub trait CedarSkyTrait {
                              ordering: Option<Ordering>,
                              dedup_distance: Option<f64>,
                              decrowd_distance: Option<f64>,
+                             limit_result: Option<usize>,
                              sky_location: Option<&CelestialCoord>,
                              location_info: Option<&LocationInfo>)
-                             -> Result<Vec<SelectedCatalogEntry>, CanonicalError>;
+                             -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError>;
 }
