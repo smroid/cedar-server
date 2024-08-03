@@ -104,6 +104,7 @@ struct MyCedar {
     cedar_version: String,
     processor_model: String,
     os_version: String,
+    serial_number: String,
 }
 
 struct CedarState {
@@ -657,6 +658,7 @@ impl MyCedar {
             feature_level,
             processor_model: self.processor_model.clone(),
             os_version: self.os_version.clone(),
+            serial_number: self.serial_number.clone(),
             cpu_temperature,
             server_time: Some(prost_types::Timestamp::try_from(
                 SystemTime::now()).unwrap()),
@@ -1327,6 +1329,8 @@ impl MyCedar {
         let cedar_version = package.version.to_string();
         let processor_model =
             fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap();
+        let serial_number =
+            fs::read_to_string("/sys/firmware/devicetree/base/serial-number").unwrap();
 
         let reader = BufReader::new(fs::File::open("/etc/os-release").unwrap());
         let mut os_version: String = "".to_string();
@@ -1348,6 +1352,7 @@ impl MyCedar {
             cedar_version,
             processor_model,
             os_version,
+            serial_number,
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;
@@ -1556,7 +1561,7 @@ pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright:
         Arguments::from_env()
     };
     if pargs.contains(["-h", "--help"]) {
-        print!("{}", HELP);
+        println!("{}", HELP);
         std::process::exit(0);
     }
     let args = AppArgs {
@@ -1612,6 +1617,8 @@ pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright:
         warn!("Unused arguments left: {:?}.", remaining);
     }
     info!("{}", copyright);
+    // TODO: log more information: product name, cedar version, processor model, os version,
+    // serial number.
     info!("Using Tetra3 server {:?} listening at {:?}",
           args.tetra3_script, args.tetra3_socket);
 
