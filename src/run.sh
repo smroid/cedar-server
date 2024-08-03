@@ -3,6 +3,7 @@
 # Check for the --release flag
 if [[ "$1" == "--release" ]]; then
     release_flag="--release"
+    shift
 fi
 
 # Build with Cargo
@@ -19,4 +20,4 @@ fi
 sudo setcap cap_sys_time+ep "$binary_path"
 
 # Start the binary we just built.
-$binary_path
+"$binary_path" "$@"
