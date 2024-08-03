@@ -53,6 +53,7 @@ message ServerInformation {
 
   string processor_model = 5;  // Which Rpi model.
   string os_version = 6;
+  string serial_number = 12;
 
   float cpu_temperature = 7;  // Celsius.
 
