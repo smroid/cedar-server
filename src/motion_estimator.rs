@@ -84,7 +84,7 @@ impl MotionEstimator {
     }
 
     // `time` Time at which the image corresponding to `boresight_position` was
-    //     captured. Must not be earlier than `time` passed to previous add()
+    //     captured. Should not be earlier than `time` passed to previous add()
     //     call.
     // `position` A successfully plate-solved determination of the telescope's
     //     aim point as of `time`. None if there was no solution (perhaps
@@ -92,7 +92,7 @@ impl MotionEstimator {
     // `position_rmse` If `position` is provided, this will be the RMS error (in
     //     arcseconds) of the plate solution. This represents the noise level
     //     associated with `position`.
-    pub fn add(&mut self, mut time: SystemTime, position: Option<CelestialCoord>,
+    pub fn add(&mut self, time: SystemTime, position: Option<CelestialCoord>,
                position_rmse: Option<f64>) {
         let prev_time = self.prev_time;
         let prev_pos = self.prev_position.clone();
@@ -101,6 +101,7 @@ impl MotionEstimator {
             self.prev_position = position.clone();
         }
         if prev_time.is_none() {
+            assert!(prev_pos.is_none());
             if position.is_some() {
                 // This is the first call to add() with a position.
                 self.set_state(State::Moving);
@@ -108,13 +109,10 @@ impl MotionEstimator {
             return;
         }
         let prev_time = prev_time.unwrap();
-        let prev_pos = prev_pos.unwrap();
         if time <= prev_time {
+            // This can happen when the client updates the server's system time.
             warn!("Time arg regressed from {:?} to {:?}", prev_time, time);
-            time = prev_time + Duration::from_micros(1);
-            if position.is_some() {
-                self.prev_time = Some(time);
-            }
+            return;
         }
 
         if position.is_none() {
@@ -131,6 +129,7 @@ impl MotionEstimator {
         }
         let position = position.unwrap();
         let position_rmse = position_rmse.unwrap() as f64 / 3600.0;  // arcsec->deg.
+        let prev_pos = prev_pos.unwrap();
         match self.state {
             State::Unknown => {
                 self.set_state(State::Moving);
