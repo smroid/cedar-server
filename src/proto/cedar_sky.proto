@@ -51,12 +51,13 @@ message QueryCatalogRequest {
 message CatalogEntryMatch {
   // Limiting magnitude. If provided, objects fainter than the limit are
   // excluded.
-  optional double faintest_magnitude = 1;
+  optional int32 faintest_magnitude = 1;
 
-  // What catalog(s) to search. Empty means no constraint on catalog label.
+  // What catalog(s) to search. Note: if empty, queries will return no results.
   repeated string catalog_label = 2;
 
-  // What object type(s) to search. Empty means no constraint on object type.
+  // What object type(s) to search. Note: if empty, queries will return no
+  // results.
   repeated string object_type_label = 3;
 }
 

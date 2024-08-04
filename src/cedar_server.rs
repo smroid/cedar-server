@@ -1268,11 +1268,21 @@ impl MyCedar {
         });
         let dimensions = camera.lock().await.dimensions();
         let catalog_entry_match = if cedar_sky.is_some() {
-            Some(CatalogEntryMatch {
-                faintest_magnitude: Some(12.0),
-                catalog_label: Vec::<String>::new(),
-                object_type_label: Vec::<String>::new(),
-            })
+            let mut cat_match =
+                Some(CatalogEntryMatch {
+                    faintest_magnitude: Some(15),
+                    catalog_label: Vec::<String>::new(),
+                    object_type_label: Vec::<String>::new(),
+                });
+            // TODO: initialize from `preferences`.
+            let cm_ref = cat_match.as_mut().unwrap();
+            cm_ref.catalog_label = vec![
+                "M".to_string(), "NGC".to_string(), "IC".to_string(), "IAU".to_string()];
+            cm_ref.object_type_label = vec![
+                "star".to_string(), "open_cluster".to_string(),
+                "globular_cluster".to_string(), "galaxy".to_string(),
+                "planetary nebula".to_string(), "nebula".to_string()];
+            cat_match
         } else {
             None
         };
