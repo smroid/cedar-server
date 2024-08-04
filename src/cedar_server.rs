@@ -542,36 +542,28 @@ impl Cedar for MyCedar {
         };
         let catalog_entry_match = req.catalog_entry_match.as_ref().unwrap();
 
-        let mut sky_location: Option<CelestialCoord> = None;
-        if req.max_distance.is_some() {
-            let plate_solution = locked_state.solve_engine.lock().await.
-                get_next_result(None).await;
-            let tsr = &plate_solution.tetra3_solve_result;
-            if tsr.is_none() || tsr.as_ref().unwrap().status != Some(SolveStatus::MatchFound.into()) {
-                return Err(tonic::Status::failed_precondition(
-                    "'max_distance' constraint requires a known boresight position"));
-            }
-            let tsr_ref = tsr.as_ref().unwrap();
-            if tsr_ref.target_coords.len() > 0 {
-                sky_location = Some(tsr_ref.target_coords[0].clone());
+        let plate_solution = locked_state.solve_engine.lock().await.
+            get_next_result(None).await;
+        let sky_location =
+            if let Some(tsr) = plate_solution.tetra3_solve_result.as_ref() {
+                if tsr.target_coords.len() > 0 {
+                    Some(tsr.target_coords[0].clone())
+                } else {
+                    Some(tsr.image_center_coords.as_ref().unwrap().clone())
+                }
             } else {
-                sky_location = Some(tsr_ref.image_center_coords.as_ref().unwrap().clone());
-            }
-        }
-
-        let mut location_info: Option<LocationInfo> = None;
-        if req.min_elevation.is_some() {
-            let fsr = &locked_state.fixed_settings.lock();
-            let fixed_settings = fsr.as_ref().unwrap();
-            if fixed_settings.observer_location.is_none() {
-                return Err(tonic::Status::failed_precondition(
-                    "'min_elevation' constraint requires a known observer geolocation"));
-            }
-            location_info = Some(LocationInfo {
-                observer_location: fixed_settings.observer_location.as_ref().unwrap().clone(),
-                observing_time: SystemTime::now(),
-            });
-        }
+                None
+            };
+        let fixed_settings = locked_state.fixed_settings.lock();
+        let location_info =
+            if let Some(obs_loc) = &fixed_settings.unwrap().observer_location {
+                Some(LocationInfo {
+                    observer_location: obs_loc.clone(),
+                    observing_time: SystemTime::now(),
+                })
+            } else {
+                None
+            };
 
         let result = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().query_catalog_entries(
             req.max_distance,

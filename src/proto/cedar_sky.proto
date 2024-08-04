@@ -13,13 +13,13 @@ message QueryCatalogRequest {
   // Constraints relative to information about the sky objects themselves.
   CatalogEntryMatch catalog_entry_match = 1;
 
-  // Distance from the current telescope boresight position in the sky. Requires
-  // that Cedar has a plate solution.
+  // Distance from the current telescope boresight position in the sky. Ignored
+  // if Cedar has no plate solution.
   optional double max_distance = 2;  // Degrees.
 
-  // Elevation relative to the current horizon. Requires that Cedar knows the
-  // observer location and current time.
-  optional double min_elevation = 3;  // Degrees; requires `location_info`
+  // Elevation relative to the current horizon. Ignored if Cedar does not know
+  // the observer location and current time.
+  optional double min_elevation = 3;  // Degrees.
 
   // If two objects from different catalogs satisfy the criteria, and are
   // within this angular distance of each other, only one is returned. The
