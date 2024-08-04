@@ -23,7 +23,7 @@ use image::ImageReader;
 use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntryMatch,
                        ConstellationResponse, ObjectTypeResponse, Ordering,
                        QueryCatalogRequest, QueryCatalogResponse};
-use crate::cedar_sky_trait::CedarSkyTrait;
+use crate::cedar_sky_trait::{CedarSkyTrait, LocationInfo};
 
 use nix::time::{ClockId, clock_gettime, clock_settime};
 use nix::sys::time::TimeSpec;
@@ -541,6 +541,38 @@ impl Cedar for MyCedar {
             _ => Some(Ordering::Brightness),
         };
         let catalog_entry_match = req.catalog_entry_match.as_ref().unwrap();
+
+        let mut sky_location: Option<CelestialCoord> = None;
+        if req.max_distance.is_some() {
+            let plate_solution = locked_state.solve_engine.lock().await.
+                get_next_result(None).await;
+            let tsr = &plate_solution.tetra3_solve_result;
+            if tsr.is_none() || tsr.as_ref().unwrap().status != Some(SolveStatus::MatchFound.into()) {
+                return Err(tonic::Status::failed_precondition(
+                    "'max_distance' constraint requires a known boresight position"));
+            }
+            let tsr_ref = tsr.as_ref().unwrap();
+            if tsr_ref.target_coords.len() > 0 {
+                sky_location = Some(tsr_ref.target_coords[0].clone());
+            } else {
+                sky_location = Some(tsr_ref.image_center_coords.as_ref().unwrap().clone());
+            }
+        }
+
+        let mut location_info: Option<LocationInfo> = None;
+        if req.min_elevation.is_some() {
+            let fsr = &locked_state.fixed_settings.lock();
+            let fixed_settings = fsr.as_ref().unwrap();
+            if fixed_settings.observer_location.is_none() {
+                return Err(tonic::Status::failed_precondition(
+                    "'min_elevation' constraint requires a known observer geolocation"));
+            }
+            location_info = Some(LocationInfo {
+                observer_location: fixed_settings.observer_location.as_ref().unwrap().clone(),
+                observing_time: SystemTime::now(),
+            });
+        }
+
         let result = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().query_catalog_entries(
             req.max_distance,
             req.min_elevation,
@@ -551,8 +583,8 @@ impl Cedar for MyCedar {
             req.dedup_distance,
             req.decrowd_distance,
             limit_result,
-            req.sky_location.as_ref(),
-            req.location_info.as_ref());
+            sky_location,
+            location_info);
         if let Err(e) = result {
             return Err(tonic_status(e));
         }
@@ -1279,8 +1311,8 @@ impl MyCedar {
             cm_ref.catalog_label = vec![
                 "M".to_string(), "NGC".to_string(), "IC".to_string(), "IAU".to_string()];
             cm_ref.object_type_label = vec![
-                "star".to_string(), "open_cluster".to_string(),
-                "globular_cluster".to_string(), "galaxy".to_string(),
+                "star".to_string(), "open cluster".to_string(),
+                "globular cluster".to_string(), "galaxy".to_string(),
                 "planetary nebula".to_string(), "nebula".to_string()];
             cat_match
         } else {

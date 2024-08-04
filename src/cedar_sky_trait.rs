@@ -1,10 +1,18 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use crate::cedar_sky::{CatalogDescription, Constellation, LocationInfo,
+use std::time::SystemTime;
+
+use crate::cedar_sky::{CatalogDescription, Constellation,
                        ObjectType, Ordering, SelectedCatalogEntry};
+use crate::cedar::LatLong;
 use crate::tetra3_server::CelestialCoord;
 use canonical_error::CanonicalError;
+
+pub struct LocationInfo {
+    pub observer_location: LatLong,
+    pub observing_time: SystemTime,
+}
 
 pub trait CedarSkyTrait {
     fn get_catalog_descriptions(&self) -> Vec<CatalogDescription>;
@@ -20,7 +28,7 @@ pub trait CedarSkyTrait {
                              dedup_distance: Option<f64>,
                              decrowd_distance: Option<f64>,
                              limit_result: Option<usize>,
-                             sky_location: Option<&CelestialCoord>,
-                             location_info: Option<&LocationInfo>)
+                             sky_location: Option<CelestialCoord>,
+                             location_info: Option<LocationInfo>)
                              -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError>;
 }

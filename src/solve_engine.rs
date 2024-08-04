@@ -750,7 +750,7 @@ impl SolveEngine {
             // TODO: parameter for decrowd factor.
             /*decrowd_distance=*/Some(3600.0 * fov / 20.0),  // Arcsec.
             /*limit_result*/Some(50),
-            /*sky_location*/Some(&coords),
+            /*sky_location*/Some(coords.clone()),
             /*location_info=*/None);
         if let Err(e) = query_result {
             warn!("Error querying sky catalog: {:?}", e);

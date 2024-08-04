@@ -3,8 +3,6 @@
 
 syntax = "proto3";
 
-import "google/protobuf/timestamp.proto";
-
 import "tetra3.proto";
 
 package cedar_sky;
@@ -15,14 +13,13 @@ message QueryCatalogRequest {
   // Constraints relative to information about the sky objects themselves.
   CatalogEntryMatch catalog_entry_match = 1;
 
-  optional double max_distance = 2;  // Degrees; requires `sky_location`.
+  // Distance from the current telescope boresight position in the sky. Requires
+  // that Cedar has a plate solution.
+  optional double max_distance = 2;  // Degrees.
+
+  // Elevation relative to the current horizon. Requires that Cedar knows the
+  // observer location and current time.
   optional double min_elevation = 3;  // Degrees; requires `location_info`
-
-  // Current telescope pointing direction, if known.
-  optional tetra3_server.CelestialCoord sky_location = 4;
-
-  // Observer geolocation and date/time, if known.
-  optional LocationInfo location_info = 5;
 
   // If two objects from different catalogs satisfy the criteria, and are
   // within this angular distance of each other, only one is returned. The
@@ -30,19 +27,19 @@ message QueryCatalogRequest {
   // being returned and are within the `dedup_distance`, the entry from the
   // Messier catalog is returned instead of the entry from the NGC catalog.
   // If omitted, no deduping is done.
-  optional double dedup_distance = 6;  // Arcsec.
+  optional double dedup_distance = 4;  // Arcsec.
 
   // If two objects from the same catalog satisfy the criteria, and are
   // within this angular distance of each other, only one is returned. The
   // brighter object is returned. If omitted, no decrowding is done.
   // If both `dedup_distance` and `decrowd_distance` are given, the dedup
   // distance must be less than the decrowd distance value.
-  optional double decrowd_distance = 7;  // Arcsec.
+  optional double decrowd_distance = 5;  // Arcsec.
 
-  optional Ordering ordering = 8;  // Default is to order by brightness.
+  optional Ordering ordering = 6;  // Default is to order by brightness.
 
   // If given, caps the number of `entries` in QueryCatalogResponse.
-  optional int32 limit_result = 9;
+  optional int32 limit_result = 7;
 
   // TODO: text search.
 }
@@ -59,14 +56,6 @@ message CatalogEntryMatch {
   // What object type(s) to search. Note: if empty, queries will return no
   // results.
   repeated string object_type_label = 3;
-}
-
-// Information needed to convert RA/Dec to Alt/Az.
-message LocationInfo {
-  // Degrees.
-  double latitude = 1;
-  double longitude = 2;
-  google.protobuf.Timestamp observing_time = 3;
 }
 
 enum Ordering {
