@@ -25,7 +25,6 @@ pub trait CedarSkyTrait {
                              catalog_label: &Vec<String>,
                              object_type_label: &Vec<String>,
                              ordering: Option<Ordering>,
-                             dedup_distance: Option<f64>,
                              decrowd_distance: Option<f64>,
                              limit_result: Option<usize>,
                              sky_location: Option<CelestialCoord>,

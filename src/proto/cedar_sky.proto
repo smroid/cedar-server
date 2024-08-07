@@ -21,19 +21,9 @@ message QueryCatalogRequest {
   // the observer location and current time.
   optional double min_elevation = 3;  // Degrees.
 
-  // If two objects from different catalogs satisfy the criteria, and are
-  // within this angular distance of each other, only one is returned. The
-  // object from the smaller catalog is returned, so for example two objects are
-  // being returned and are within the `dedup_distance`, the entry from the
-  // Messier catalog is returned instead of the entry from the NGC catalog.
-  // If omitted, no deduping is done.
-  optional double dedup_distance = 4;  // Arcsec.
-
   // If two objects from the same catalog satisfy the criteria, and are
   // within this angular distance of each other, only one is returned. The
   // brighter object is returned. If omitted, no decrowding is done.
-  // If both `dedup_distance` and `decrowd_distance` are given, the dedup
-  // distance must be less than the decrowd distance value.
   optional double decrowd_distance = 5;  // Arcsec.
 
   optional Ordering ordering = 6;  // Default is to order by brightness.
@@ -64,10 +54,12 @@ enum Ordering {
   // Brightest first.
   BRIGHTNESS = 1;
 
-  // `sky_location` must be present. Closest first.
+  // Closest first. If no plate solution is available, reverts to brightness
+  // ordering.
   SKY_LOCATION = 2;
 
-  // `location_info` must be present. Highest first.
+  // Highest first. If observer geolocation is unknown, reverts to brightness
+  // ordering.
   ELEVATION = 3;
 
   // TODO: MARATHON: time until setting to within min_elevation.
@@ -87,12 +79,22 @@ message SelectedCatalogEntry {
   CatalogEntry entry = 1;
 
   // Other entries, if any, that were suppressed due to `dedup_distance` in the
-  // QueryCatalogRequest.
+  // Cedar sky implementation.
   repeated CatalogEntry deduped_entries = 2;
 
   // Other entries, if any, that were suppressed due to `decrowd_distance` in
   // the QueryCatalogRequest.
   repeated CatalogEntry decrowded_entries = 3;
+
+  // Computed information, available if observer location/time is known.
+
+  // Altitude (degrees, relative to the local horizon).
+  optional double altitude = 4;
+
+  // Azimuth (degrees, positive clockwise from north).
+  optional double azimuth = 5;
+
+  // TODO: if below horizon, rising time; if above horizon, setting time.
 }
 
 message CatalogEntry {

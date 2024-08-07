@@ -572,7 +572,6 @@ impl Cedar for MyCedar {
             &catalog_entry_match.catalog_label,
             &catalog_entry_match.object_type_label,
             ordering,
-            req.dedup_distance,
             req.decrowd_distance,
             limit_result,
             sky_location,
