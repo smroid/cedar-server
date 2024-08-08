@@ -1561,6 +1561,7 @@ fn parse_duration(arg: &str)
 //     process args from env::args_os.
 #[tokio::main]
 pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright: &str,
+                         flutter_app_path: &str,
                          cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>) {
     const HELP: &str = "\
     USAGE:
@@ -1657,7 +1658,7 @@ pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright:
 
     // Build the static content web service.
     let rest = Router::new().nest_service(
-        "/", ServeDir::new("../cedar_flutter/build/web"));
+        "/", ServeDir::new(flutter_app_path));
 
     let camera_interface = match args.camera_interface.as_str() {
         "" => None,
