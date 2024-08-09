@@ -182,6 +182,12 @@ cd python
 python -m grpc_tools.protoc -I../proto --python_out=. --pyi_out=. --grpc_python_out=. ../proto/tetra3.proto
 ```
 
+### Enable ASI camera
+
+If you are using an ASI camera, go to the asi_camera2 project directory and run
+the `install.sh` script. You can skip this if you are using a Raspberry Pi
+camera.
+
 ### Build Cedar-server
 
 You will need to install the Rust toolchain if you don't have it already. Follow
