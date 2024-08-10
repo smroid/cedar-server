@@ -24,6 +24,7 @@ pub trait CedarSkyTrait {
                              faintest_magnitude: Option<i32>,
                              catalog_label: &Vec<String>,
                              object_type_label: &Vec<String>,
+                             text_search: Option<String>,
                              ordering: Option<Ordering>,
                              decrowd_distance: Option<f64>,
                              limit_result: Option<usize>,

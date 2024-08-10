@@ -571,6 +571,7 @@ impl Cedar for MyCedar {
             catalog_entry_match.faintest_magnitude,
             &catalog_entry_match.catalog_label,
             &catalog_entry_match.object_type_label,
+            req.text_search,
             ordering,
             req.decrowd_distance,
             limit_result,
@@ -1669,25 +1670,25 @@ pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright:
             std::process::exit(1);
         }
     };
-    let abstract_cam = match select_camera(camera_interface, args.camera_index) {
-        Ok(cam) => cam,
-        Err(e) => {
-            error!("Could not select camera: {:?}", e);
-            std::process::exit(1);
-        }
-    };
 
     let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>> =
-        match args.test_image.as_str() {
-        "" => Arc::new(tokio::sync::Mutex::new(abstract_cam)),
-        _ => {
+        if args.test_image != "" {
             let input_path = PathBuf::from(&args.test_image);
             let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
             let img_u8 = img.to_luma8();
             info!("Using test image {} instead of camera.", args.test_image);
             Arc::new(tokio::sync::Mutex::new(Box::new(ImageCamera::new(img_u8).unwrap())))
-        },
-    };
+        } else {
+            let abstract_cam = match select_camera(camera_interface, args.camera_index) {
+                Ok(cam) => cam,
+                Err(e) => {
+                    error!("Could not select camera: {:?}", e);
+                    std::process::exit(1);
+                }
+            };
+            Arc::new(tokio::sync::Mutex::new(abstract_cam))
+        };
+
     let mpix;
     {
         let locked_camera = camera.lock().await;

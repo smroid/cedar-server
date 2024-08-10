@@ -31,7 +31,14 @@ message QueryCatalogRequest {
   // If given, caps the number of `entries` in QueryCatalogResponse.
   optional int32 limit_result = 7;
 
-  // TODO: text search.
+  // If given, applies a text match as an additional constraint. The server
+  // canonicalizes the given string, removing dangerous characters, tokenizing
+  // it, etc. Each token is treated as a prefix search term, and multiple
+  // token terms are combined with implicit AND; order is not significant.
+  // Thus, |andr gal| and |gal andr| both match "Andromeda Galaxy".
+  optional string text_search = 8;
+
+  // TODO: specific catalog entries to look up.
 }
 
 // Specifies what intrinsic criteria to apply when matching catalog entries.

@@ -745,6 +745,7 @@ impl SolveEngine {
             catalog_entry_match.faintest_magnitude,
             &catalog_entry_match.catalog_label,
             &catalog_entry_match.object_type_label,
+            /*text_search*/None,
             /*ordering=*/None,
             // TODO: parameter for decrowd factor.
             /*decrowd_distance=*/Some(3600.0 * fov / 20.0),  // Arcsec.
