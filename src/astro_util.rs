@@ -320,9 +320,15 @@ mod tests {
         let p1_ra = PI + 1.0;
         let p1_dec = 1.0;
 
-        assert_abs_diff_eq!(angular_separation(p0_ra, p0_dec, p1_ra, p1_dec),
-                            1.27,
-                            epsilon = 0.01);
+        let sep = angular_separation(p0_ra, p0_dec, p1_ra, p1_dec);
+        assert_abs_diff_eq!(sep, 1.27, epsilon = 0.01);
+
+        // Compute it a different way.
+        let vec0 = to_unit_vector(p0_ra, p0_dec);
+        let vec1 = to_unit_vector(p1_ra, p1_dec);
+        let vec_dist = distance(&vec0, &vec1);
+        let sep2 = angle_from_distance(vec_dist);
+        assert_abs_diff_eq!(sep, sep2, epsilon = 0.01);
     }
 
     #[test]
