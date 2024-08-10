@@ -608,6 +608,9 @@ message ActionRequest {
   // unplugging the power!
   optional bool shutdown_server = 3;
 
+  // Cedar-sky is initiating a goto operation.
+  optional cedar_sky.CatalogEntry initiate_slew = 6;
+
   // Tells SkySafari that the slew is finished (or discontinued).
   optional bool stop_slew = 4;
 
