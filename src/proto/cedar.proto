@@ -38,7 +38,7 @@ package cedar;
 
 enum FeatureLevel {
   FEATURE_LEVEL_UNSPECIFIED = 0;
-  DIY = 1;  // Does not have Cedar sky.
+  DIY = 1;
   BASIC = 2;
   PLUS = 3;
 }
@@ -319,8 +319,8 @@ message FrameResult {
   // - FixedSettings.observer_location is absent.
   optional LocationBasedInfo location_based_info = 29;
 
-  // If present, SkySafari is requesting that the telescope's pointing should be
-  // changed.
+  // If present, SkySafari or Cedar Sky is requesting that the telescope's
+  // pointing should be changed.
   optional SlewRequest slew_request = 24;
 
   // If the boresight is close to the slew target, the server returns a full
@@ -509,10 +509,13 @@ message LocationBasedInfo {
   double hour_angle = 4;
 }
 
-// Describes a telescope motion request from SkySafari.
+// Describes a telescope motion request from SkySafari or Cedar Sky.
 message SlewRequest {
   // Identifies the target coordinate of the telescope motion request.
   tetra3_server.CelestialCoord target = 1;
+
+  // The Cedar Sky catalog entry, if any, for `target`.
+  optional cedar_sky.CatalogEntry target_catalog_entry = 8;
 
   // The distance, in degrees, between the boresight and the target. Omitted
   // if there is no valid plate solution.
@@ -608,8 +611,8 @@ message ActionRequest {
   // unplugging the power!
   optional bool shutdown_server = 3;
 
-  // Cedar-sky is initiating a goto operation.
-  optional cedar_sky.CatalogEntry initiate_slew = 6;
+  // Cedar-aim is initiating a goto operation.
+  optional tetra3_server.CelestialCoord initiate_slew = 6;
 
   // Tells SkySafari that the slew is finished (or discontinued).
   optional bool stop_slew = 4;

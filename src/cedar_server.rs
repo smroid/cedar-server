@@ -509,6 +509,12 @@ impl Cedar for MyCedar {
                         format!("sudo shutdown error: {:?}.", error_str)));
             }
         }
+        if let Some(slew_coord) = req.initiate_slew {
+            info!("Got slew request {:?}", slew_coord);  // TEMPORARY
+            // TODO: lookup in Cedar Sky, if we have it.
+            // TODO: post catalog info, if any.
+            // TODO: initiate slew.
+        }
         if req.stop_slew.unwrap_or(false) {
             locked_state.telescope_position.lock().unwrap().slew_active = false;
         }
