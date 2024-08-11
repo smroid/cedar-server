@@ -18,6 +18,9 @@ pub trait CedarSkyTrait {
     fn get_catalog_descriptions(&self) -> Vec<CatalogDescription>;
     fn get_object_types(&self) -> Vec<ObjectType>;
     fn get_constellations(&self) -> Vec<Constellation>;
+
+    /// Returns the selected catalog entries, plus the number of entries left off
+    /// because of `limit_result`.
     fn query_catalog_entries(&self,
                              max_distance: Option<f64>,
                              min_elevation: Option<f64>,

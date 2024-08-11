@@ -27,7 +27,7 @@ use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 use crate::cedar::FovCatalogEntry;
 use crate::cedar_sky_trait::CedarSkyTrait;
-use crate::cedar_sky::CatalogEntryMatch;
+use crate::cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering};
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram};
@@ -457,9 +457,6 @@ impl SolveEngine {
             let mut solve_request = SolveRequest::default();
             let minimum_stars;
             let frame_id;
-            let mut slew_request = None;
-            let mut boresight_image: Option<GrayImage> = None;
-            let mut boresight_image_region: Option<Rect> = None;
             {
                 let locked_state = state.lock().unwrap();
                 minimum_stars = locked_state.minimum_stars;
@@ -492,8 +489,6 @@ impl SolveEngine {
                     solve_request.target_pixels.push(boresight_pixel.clone());
                 }
                 if let Some(slew_target) = &locked_state.slew_target {
-                    slew_request = Some(cedar::SlewRequest{
-                        target: Some(slew_target.clone()), ..Default::default()});
                     solve_request.target_sky_coords.push(slew_target.clone());
                 }
                 solve_request.distortion = Some(locked_state.distortion);
@@ -551,6 +546,9 @@ impl SolveEngine {
             let elapsed = process_start_time.elapsed();
             let mut locked_state = state.lock().unwrap();
             let mut fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
+            let mut slew_request = None;
+            let mut boresight_image: Option<GrayImage> = None;
+            let mut boresight_image_region: Option<Rect> = None;
             if tetra3_solve_result.is_none() {
                 locked_state.solve_attempt_stats.add_value(0.0);
                 solution_callback(Some(detect_result.clone()), None);
@@ -559,24 +557,27 @@ impl SolveEngine {
                 let tsr = tetra3_solve_result.as_ref().unwrap();
                 if tsr.status.unwrap() == SolveStatus::MatchFound as i32 {
                     locked_state.solve_success_stats.add_value(1.0);
-                    // Let integration layer pass solution to SkySafari telescope
-                    // interface and MotionEstimator. Integration layer returns current
-                    // slew target, if any.
-                    locked_state.slew_target =
-                        solution_callback(Some(detect_result.clone()), Some(tsr.clone()));
 
-                    let coords = if tsr.target_coords.len() > 0 {
+                    let boresight_coords = if tsr.target_coords.len() > 0 {
                         tsr.target_coords[0].clone()
                     } else {
                         tsr.image_center_coords.as_ref().unwrap().clone()
                     };
-                    if slew_request.is_some() {
-                        (boresight_image_region, boresight_image) =
+
+                    // Let integration layer pass solution to SkySafari telescope
+                    // interface and MotionEstimator. Integration layer returns current
+                    // slew target coords, if any.
+                    locked_state.slew_target =
+                        solution_callback(Some(detect_result.clone()), Some(tsr.clone()));
+                    if let Some(target_coords) = &locked_state.slew_target {
+                        (slew_request, boresight_image_region, boresight_image) =
                             Self::handle_slew(
-                                image, &coords,
+                                &locked_state.cedar_sky,
+                                target_coords, image, &boresight_coords,
                                 &locked_state.boresight_pixel, &detect_result, tsr,
-                                &mut slew_request.as_mut().unwrap(), width, height);
+                                width, height);
                     }
+
                     if locked_state.cedar_sky.is_some() {
                         let mut rotation_matrix: [f64; 9] = [0.0; 9];
                         for (idx, c) in tsr.rotation_matrix.as_ref().unwrap().matrix_elements
@@ -585,7 +586,7 @@ impl SolveEngine {
                             rotation_matrix[idx] = c;
                         }
                         fov_catalog_entries = Some(Self::query_fov_catalog_entries(
-                            &coords,
+                            &boresight_coords,
                             &locked_state.boresight_pixel,
                             locked_state.cedar_sky.as_ref().unwrap(),
                             locked_state.catalog_entry_match.as_ref().unwrap(),
@@ -618,21 +619,59 @@ impl SolveEngine {
         }  // loop.
     }  // worker
 
-    fn handle_slew(image: &GrayImage,
-                   coords: &CelestialCoord,
+    // Given a target, finds the closest catalog entry within 1 arcmin. Returns
+    // the closest catalog entry, if any, and the distance in degrees between
+    // the catalog entry and the target.
+    fn get_catalog_entry_for_target(cedar_sky: &Arc<Mutex<dyn CedarSkyTrait + Send>>,
+                                    target_coords: &CelestialCoord)
+                                    -> (Option<CatalogEntry>, Option<f64>) {
+        let query_result = cedar_sky.lock().unwrap().query_catalog_entries(
+            /*max_distance=*/Some(1.0 / 60.0),  // 1 arcmin.
+            /*min_elevation=*/None,
+            /*faintest_magnitude=*/None,
+            /*catalog_label=*/&vec![],
+            /*object_type_label=*/&vec![],
+            /*text_search*/None,
+            /*ordering=*/Some(Ordering::SkyLocation),
+            /*decrowd_distance=*/None,
+            /*limit_result*/None,
+            /*sky_location*/Some(target_coords.clone()),
+            /*location_info=*/None);
+        if let Err(e) = query_result {
+            warn!("Error querying sky catalog: {:?}", e);
+            return (None, None);
+        }
+        let (selected_catalog_entries, _overflow) = query_result.unwrap();
+        if selected_catalog_entries.is_empty() {
+            return (None, None);
+        }
+        let closest_entry = selected_catalog_entries[0].entry.clone().unwrap();
+        let (target_ra, target_dec) = (target_coords.ra.to_radians(),
+                                       target_coords.dec.to_radians());
+        let entry_coord = closest_entry.coord.as_ref().unwrap();
+        let (entry_ra, entry_dec) = (entry_coord.ra.to_radians(),
+                                     entry_coord.dec.to_radians());
+        let distance = angular_separation(target_ra, target_dec,
+                                          entry_ra, entry_dec).to_degrees();
+        (Some(closest_entry), Some(distance))
+    }
+
+    fn handle_slew(cedar_sky: &Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+                   target_coords: &CelestialCoord,
+                   image: &GrayImage,
+                   boresight_coords: &CelestialCoord,
                    boresight_pixel: &Option<ImageCoord>,
                    detect_result: &DetectResult,
                    tetra3_solve_result: &SolveResultProto,
-                   slew_req: &mut cedar::SlewRequest,
                    width: u32, height: u32)
-                   -> (Option<Rect>, Option<GrayImage>) {
-        let bs_ra = coords.ra.to_radians();
-        let bs_dec = coords.dec.to_radians();
-        let st_ra =
-            slew_req.target.as_ref().unwrap().ra.to_radians();
-        let st_dec =
-            slew_req.target.as_ref().unwrap().dec.to_radians();
-        slew_req.target_distance = Some(angular_separation(
+                   -> (Option<cedar::SlewRequest>, Option<Rect>, Option<GrayImage>) {
+        let mut slew_request = cedar::SlewRequest{
+            target: Some(target_coords.clone()), ..Default::default()};
+        let bs_ra = boresight_coords.ra.to_radians();
+        let bs_dec = boresight_coords.dec.to_radians();
+        let st_ra = target_coords.ra.to_radians();
+        let st_dec = target_coords.dec.to_radians();
+        slew_request.target_distance = Some(angular_separation(
             bs_ra, bs_dec, st_ra, st_dec).to_degrees());
 
         let mut angle = (position_angle(
@@ -642,25 +681,34 @@ impl SolveEngine {
         if angle < 0.0 {
             angle += 360.0;
         }
-        slew_req.target_angle = Some(angle);
+        slew_request.target_angle = Some(angle);
+
+        if let Some(cedar_sky) = cedar_sky {
+            // See if Cedar-sky has a catalog object corresponding to the slew
+            // target's RA/Dec.
+            let (catalog_entry, distance) = Self::get_catalog_entry_for_target(
+                cedar_sky, target_coords);
+            slew_request.target_catalog_entry = catalog_entry;
+            slew_request.target_catalog_entry_distance = distance;
+        }
 
         if tetra3_solve_result.target_sky_to_image_coords.len() == 0 {
-            return (None, None);
+            return (Some(slew_request), None, None);
         }
         let img_coord = &tetra3_solve_result.target_sky_to_image_coords[0];
         if img_coord.x < 0.0 {
-            return (None, None);
+            return (Some(slew_request), None, None);
         }
 
         let target_image_coord =
             cedar::ImageCoord{x: img_coord.x, y: img_coord.y};
-        slew_req.image_pos = Some(target_image_coord.clone());
+        slew_request.image_pos = Some(target_image_coord.clone());
         if img_coord.x > detect_result.center_region.left() as f64 &&
             img_coord.x < detect_result.center_region.right() as f64  &&
             img_coord.y > detect_result.center_region.top() as f64  &&
             img_coord.y < detect_result.center_region.bottom() as f64
         {
-            slew_req.target_within_center_region = true;
+            slew_request.target_within_center_region = true;
         }
         // Is the target's image_pos close to the boresight's
         // image position?
@@ -679,7 +727,7 @@ impl SolveEngine {
              (target_image_coord.y - boresight_pos.y) *
              (target_image_coord.y - boresight_pos.y)).sqrt();
         if target_boresight_distance >= target_close_threshold {
-            return (None, None);
+            return (Some(slew_request), None, None);
         }
 
         let image_rect = Rect::at(0, 0).of_size(width, height);
@@ -714,10 +762,10 @@ impl SolveEngine {
                         peak_pixel_value as u8,
                         /*gamma=*/0.7);
 
-        (boresight_image_region, boresight_image)
+        (Some(slew_request), boresight_image_region, boresight_image)
     }  // handle_slew
 
-    fn query_fov_catalog_entries(coords: &CelestialCoord,
+    fn query_fov_catalog_entries(boresight_coords: &CelestialCoord,
                                  boresight_pixel: &Option<ImageCoord>,
                                  cedar_sky: &Arc<Mutex<dyn CedarSkyTrait + Send>>,
                                  catalog_entry_match: &CatalogEntryMatch,
@@ -750,7 +798,7 @@ impl SolveEngine {
             // TODO: parameter for decrowd factor.
             /*decrowd_distance=*/Some(3600.0 * fov / 20.0),  // Arcsec.
             /*limit_result*/Some(50),
-            /*sky_location*/Some(coords.clone()),
+            /*sky_location*/Some(boresight_coords.clone()),
             /*location_info=*/None);
         if let Err(e) = query_result {
             warn!("Error querying sky catalog: {:?}", e);

@@ -47,11 +47,12 @@ message CatalogEntryMatch {
   // excluded.
   optional int32 faintest_magnitude = 1;
 
-  // What catalog(s) to search. Note: if empty, queries will return no results.
+  // What catalog(s) to search. Note: if empty, no filtering on catalog is
+  // done.
   repeated string catalog_label = 2;
 
-  // What object type(s) to search. Note: if empty, queries will return no
-  // results.
+  // What object type(s) to search. Note: if empty, no filtering on object
+  // type is done.
   repeated string object_type_label = 3;
 }
 
