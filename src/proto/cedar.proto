@@ -673,6 +673,7 @@ service Cedar {
 
   // For Cedar Sky, if implemented in Cedar server. See cedar_sky.proto.
   rpc QueryCatalogEntries(cedar_sky.QueryCatalogRequest) returns (cedar_sky.QueryCatalogResponse);
+  rpc GetCatalogEntry(cedar_sky.CatalogEntryKey) returns (cedar_sky.CatalogEntry);
   rpc GetCatalogDescriptions(EmptyMessage) returns (cedar_sky.CatalogDescriptionResponse);
   rpc GetObjectTypes(EmptyMessage) returns (cedar_sky.ObjectTypeResponse);
   rpc GetConstellations(EmptyMessage) returns (cedar_sky.ConstellationResponse);

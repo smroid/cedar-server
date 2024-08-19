@@ -37,8 +37,6 @@ message QueryCatalogRequest {
   // token terms are combined with implicit AND; order is not significant.
   // Thus, |andr gal| and |gal andr| both match "Andromeda Galaxy".
   optional string text_search = 8;
-
-  // TODO: specific catalog entries to look up.
 }
 
 // Specifies what intrinsic criteria to apply when matching catalog entries.
@@ -152,4 +150,10 @@ message Constellation {
 
 message ConstellationResponse {
   repeated Constellation constellations = 1;
+}
+
+message CatalogEntryKey {
+  string cat_label = 1;  // Corresponds to catalog_description.label. PL, AST,
+                         // or COM.
+  string entry = 2;  // Corresponds to catalog_entry.entry field.
 }

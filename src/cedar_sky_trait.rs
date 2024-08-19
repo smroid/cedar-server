@@ -3,7 +3,8 @@
 
 use std::time::SystemTime;
 
-use crate::cedar_sky::{CatalogDescription, Constellation,
+use crate::cedar_sky::{CatalogDescription, CatalogEntryKey,
+                       CatalogEntry, Constellation,
                        ObjectType, Ordering, SelectedCatalogEntry};
 use crate::cedar::LatLong;
 use crate::tetra3_server::CelestialCoord;
@@ -15,6 +16,10 @@ pub struct LocationInfo {
 }
 
 pub trait CedarSkyTrait {
+    /// Checks to see if the solar system ephemeris has completed processing,
+    /// and if so, absorbs its contents.
+    fn check_solar_system_completion(&mut self);
+
     fn get_catalog_descriptions(&self) -> Vec<CatalogDescription>;
     fn get_object_types(&self) -> Vec<ObjectType>;
     fn get_constellations(&self) -> Vec<Constellation>;
@@ -34,4 +39,8 @@ pub trait CedarSkyTrait {
                              sky_location: Option<CelestialCoord>,
                              location_info: Option<LocationInfo>)
                              -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError>;
+    fn get_catalog_entry(&self,
+                         entry_key: CatalogEntryKey,
+                         location_info: Option<LocationInfo>)
+                         -> Result<CatalogEntry, CanonicalError>;
 }

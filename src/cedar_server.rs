@@ -20,7 +20,8 @@ use chrono::offset::Local;
 use image::{GrayImage, ImageFormat};
 use image::ImageReader;
 
-use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntryMatch,
+use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntry,
+                       CatalogEntryKey, CatalogEntryMatch,
                        ConstellationResponse, ObjectTypeResponse, Ordering,
                        QueryCatalogRequest, QueryCatalogResponse};
 use crate::cedar_sky_trait::{CedarSkyTrait, LocationInfo};
@@ -206,6 +207,9 @@ impl Cedar for MyCedar {
             info!("Updated server time to {:?}", Local::now());
             // Don't store the client time in our fixed_settings state, but
             // arrange to return our current time.
+            // TODO: initiate solar system object processing in Cedar Sky.
+            // TODO: check for solar system processing completion prior to
+            // all Cedar Sky calls.
         }
         if let Some(_session_name) = req.session_name {
             return Err(tonic::Status::unimplemented(
@@ -596,6 +600,38 @@ impl Cedar for MyCedar {
 
         Ok(tonic::Response::new(response))
     }  // query_catalog_entries().
+
+    async fn get_catalog_entry(
+        &self, request: tonic::Request<CatalogEntryKey>)
+        -> Result<tonic::Response<CatalogEntry>, tonic::Status>
+    {
+        let locked_state = self.state.lock().await;
+        if locked_state.cedar_sky.is_none() {
+            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+        }
+        let req: CatalogEntryKey = request.into_inner();
+
+        let fixed_settings = locked_state.fixed_settings.lock();
+        let location_info =
+            if let Some(obs_loc) = &fixed_settings.unwrap().observer_location {
+                Some(LocationInfo {
+                    observer_location: obs_loc.clone(),
+                    observing_time: SystemTime::now(),
+                })
+            } else {
+                None
+            };
+        let x = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_entry(
+            req, location_info);
+        match x {
+            Ok(entry) => {
+                Ok(tonic::Response::new(entry))
+            },
+            Err(e) => {
+                return Err(tonic_status(e));
+            }
+        }
+    }  // get_catalog_entries().
 
     async fn get_catalog_descriptions(
         &self, _request: tonic::Request<EmptyMessage>)
