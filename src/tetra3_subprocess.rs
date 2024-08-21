@@ -97,14 +97,7 @@ impl Tetra3Subprocess {
         })
     }
 
-    fn make_wait_worker(&mut self, mut child: Child) {
-        let got_signal = Arc::new(AtomicBool::new(false));
-        let got_signal2 = got_signal.clone();
-        ctrlc::set_handler(move || {
-            info!("Got control-c");
-            got_signal2.store(true, Ordering::Relaxed);
-        }).unwrap();
-
+    fn make_wait_worker(&mut self, mut child: Child, got_signal: Arc<AtomicBool>) {
         let tetra3_script_path = self.tetra3_script_path.clone();
         let tetra3_database = self.tetra3_database.clone();
         let pid = self.pid.clone();
@@ -114,12 +107,12 @@ impl Tetra3Subprocess {
                 let stdout_worker = Self::make_stdout_worker(child.stdout.take().unwrap());
                 let stderr_worker = Self::make_stderr_worker(child.stderr.take().unwrap());
                 let child_status;
+                let mut killed = false;
                 loop {
                     if got_signal.load(Ordering::Relaxed) {
                         info!("Killing {:?}", tetra3_script_path);
                         child.kill().unwrap();
-                        info!("Exiting");
-                        std::process::exit(-1);
+                        killed = true;
                     }
                     match child.try_wait() {
                         Ok(Some(status)) => {
@@ -127,7 +120,7 @@ impl Tetra3Subprocess {
                             break;
                         },
                         Ok(None) => {
-                            thread::sleep(Duration::from_millis(10));
+                            thread::sleep(Duration::from_millis(100));
                             continue;  // Wait again for signal or child exit.
                         },
                         Err(e) => panic!("Unexpected child.wait() error {:?}", e),
@@ -137,6 +130,9 @@ impl Tetra3Subprocess {
                 stderr_worker.join().unwrap();
                 if *stopping.lock().unwrap() {
                     info!("Tetra3 subprocess stopped");
+                    break;
+                }
+                if killed {
                     break;
                 }
                 error!("Tetra3 unexpectedly exited with status={:?}; will respawn",
@@ -150,7 +146,8 @@ impl Tetra3Subprocess {
 
     // Assumes PYPATH is properly set up.
     pub fn new(tetra3_script_path: impl AsRef<OsStr>,
-               tetra3_database: impl AsRef<OsStr>) -> Result<Self, CanonicalError> {
+               tetra3_database: impl AsRef<OsStr>,
+               got_signal: Arc<AtomicBool>) -> Result<Self, CanonicalError> {
         let tetra3_script_path: OsString = tetra3_script_path.as_ref().to_os_string();
         let tetra3_database: OsString = tetra3_database.as_ref().to_os_string();
         let child = Self::make_child(&tetra3_script_path, &tetra3_database)?;
@@ -160,7 +157,7 @@ impl Tetra3Subprocess {
             pid: Arc::new(Mutex::new(pid)),
             stopping: Arc::new(Mutex::new(false)),
         };
-        t3_subprocess.make_wait_worker(child);
+        t3_subprocess.make_wait_worker(child, got_signal);
         // Note that it will take some time for the Tetra3 subprocess to start,
         // load its pattern database, and start serving. Connecting clients
         // should implement a backoff-retry scheme with a generous overall

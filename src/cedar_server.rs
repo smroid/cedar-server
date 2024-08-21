@@ -9,6 +9,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime};
 
 use cargo_metadata::MetadataCommand;
@@ -207,9 +208,12 @@ impl Cedar for MyCedar {
             info!("Updated server time to {:?}", Local::now());
             // Don't store the client time in our fixed_settings state, but
             // arrange to return our current time.
-            // TODO: initiate solar system object processing in Cedar Sky.
-            // TODO: check for solar system processing completion prior to
-            // all Cedar Sky calls.
+            if locked_state.cedar_sky.is_some() {
+                locked_state.cedar_sky.as_ref().unwrap().lock().unwrap()
+                    .initiate_solar_system_processing(SystemTime::now());
+                // TODO: check for solar system processing completion prior to
+                // all Cedar Sky calls.
+            }
         }
         if let Some(_session_name) = req.session_name {
             return Err(tonic::Status::unimplemented(
@@ -575,6 +579,7 @@ impl Cedar for MyCedar {
                 None
             };
 
+        locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().check_solar_system_completion();
         let result = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().query_catalog_entries(
             req.max_distance,
             req.min_elevation,
@@ -621,6 +626,7 @@ impl Cedar for MyCedar {
             } else {
                 None
             };
+        locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().check_solar_system_completion();
         let x = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_entry(
             req, location_info);
         match x {
@@ -641,6 +647,7 @@ impl Cedar for MyCedar {
         if locked_state.cedar_sky.is_none() {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
+        locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().check_solar_system_completion();
         let catalog_descriptions =
             locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_descriptions();
 
@@ -1249,6 +1256,7 @@ impl MyCedar {
                      tetra3_script: String,
                      tetra3_database: String,
                      tetra3_uds: String,
+                     got_signal: Arc<AtomicBool>,
                      camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                      telescope_position: Arc<Mutex<TelescopePosition>>,
                      binning: u32,
@@ -1272,7 +1280,7 @@ impl MyCedar {
             /*focus_mode_enabled=*/true,
             stats_capacity)));
         let tetra3_subprocess = Arc::new(Mutex::new(
-            Tetra3Subprocess::new(tetra3_script, tetra3_database).unwrap()));
+            Tetra3Subprocess::new(tetra3_script, tetra3_database, got_signal).unwrap()));
         let mut preferences = Preferences{
             celestial_coord_format: Some(CelestialCoordFormat::HmsDms.into()),
             eyepiece_fov: Some(1.0),
@@ -1599,17 +1607,16 @@ fn parse_duration(arg: &str)
 // https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
 // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 
-// `args` If provided, we extract our command line args from it. The caller
-//     will have already extracted the args it cares about. If omitted, we
-//     process args from env::args_os.
-#[tokio::main]
-pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright: &str,
-                         flutter_app_path: &str,
-                         cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>) {
+// `get_dependencies` Is called to obtain the CedarSkyTrait implementation, if
+//     any. This function is called after logging has been set up and
+//     `server_main()`s command line arguments have been consumed. The
+//     AtomicBool is set to true if control-c occurs.
+pub fn server_main(
+    product_name: &str, copyright: &str,
+    flutter_app_path: &str,
+    get_dependencies: fn(Arguments, Arc<AtomicBool>)
+                         -> Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>) {
     const HELP: &str = "\
-    USAGE:
-      cedar-box-server [OPTIONS]
-
     FLAGS:
       -h, --help                     Prints help information
 
@@ -1632,11 +1639,7 @@ pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright:
       --log_file <file>              cedar_log.txt
     ";
 
-    let mut pargs = if args.is_some() {
-        args.unwrap()
-    } else {
-        Arguments::from_env()
-    };
+    let mut pargs = Arguments::from_env();
     if pargs.contains(["-h", "--help"]) {
         println!("{}", HELP);
         std::process::exit(0);
@@ -1688,11 +1691,26 @@ pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright:
         .with(fmt::layer().with_writer(non_blocking_stdout))
         .with(fmt::layer().with_ansi(false).with_writer(non_blocking_file))
         .init();
-
     let remaining = pargs.finish();
-    if !remaining.is_empty() {
-        warn!("Unused arguments left: {:?}.", remaining);
-    }
+
+    let got_signal = Arc::new(AtomicBool::new(false));
+    let got_signal2 = got_signal.clone();
+    ctrlc::set_handler(move || {
+        info!("Got control-c");
+        got_signal2.store(true, AtomicOrdering::Relaxed);
+        std::thread::sleep(Duration::from_secs(2));
+        info!("Exiting");
+        std::process::exit(-1);
+    }).unwrap();
+
+    let cedar_sky = get_dependencies(Arguments::from_vec(remaining), got_signal.clone());
+    async_main(args, product_name, copyright, flutter_app_path, got_signal, cedar_sky);
+}
+
+#[tokio::main]
+async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
+                    flutter_app_path: &str, got_signal: Arc<AtomicBool>,
+                    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>) {
     info!("{}", copyright);
     // TODO: log more information: product name, cedar version, processor model, os version,
     // serial number.
@@ -1810,6 +1828,7 @@ pub async fn server_main(args: Option<Arguments>, product_name: &str, copyright:
         .add_service(CedarServer::new(MyCedar::new(
             args.min_exposure, args.max_exposure,
             args.tetra3_script, args.tetra3_database, args.tetra3_socket,
+            got_signal,
             camera, shared_telescope_position.clone(),
             binning, display_sampling,
             args.star_count_goal, args.sigma, args.min_sigma,

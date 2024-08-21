@@ -16,6 +16,9 @@ pub struct LocationInfo {
 }
 
 pub trait CedarSkyTrait {
+    /// Initiates processing of solar system ephemeris entries.
+    fn initiate_solar_system_processing(&mut self, time: SystemTime);
+
     /// Checks to see if the solar system ephemeris has completed processing,
     /// and if so, absorbs its contents.
     fn check_solar_system_completion(&mut self);
