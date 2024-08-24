@@ -122,7 +122,7 @@ struct CedarState {
     polar_analyzer: Arc<Mutex<PolarAnalyzer>>,
 
     // Not all builds of Cedar-server support Cedar-sky.
-    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
 
     // See "About Resolutions" below.
     // Whether (and how much, 2x2 or 4x4) the acquired image is binned prior to
@@ -188,7 +188,8 @@ impl Cedar for MyCedar {
             info!("Updated observer location to {:?}", observer_location);
         }
         if let Some(current_time) = req.current_time {
-            let current_time = TimeSpec::new(current_time.seconds, current_time.nanos as i64);
+            let current_time =
+                TimeSpec::new(current_time.seconds, current_time.nanos as i64);
             if let Err(e) = clock_settime(ClockId::CLOCK_REALTIME, current_time) {
                 if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
                     // If our current time is close to the client's time, just
@@ -209,8 +210,8 @@ impl Cedar for MyCedar {
             // Don't store the client time in our fixed_settings state, but
             // arrange to return our current time.
             if locked_state.cedar_sky.is_some() {
-                locked_state.cedar_sky.as_ref().unwrap().lock().unwrap()
-                    .initiate_solar_system_processing(SystemTime::now());
+                locked_state.cedar_sky.as_ref().unwrap().lock().await
+                    .initiate_solar_system_processing(SystemTime::now()).await;
                 // TODO: check for solar system processing completion prior to
                 // all Cedar Sky calls.
             }
@@ -239,7 +240,8 @@ impl Cedar for MyCedar {
                 if locked_state.calibrating {
                     // Cancel calibration.
                     *locked_state.cancel_calibration.lock().unwrap() = true;
-                    locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+                    locked_state.tetra3_subprocess.lock().unwrap()
+                        .send_interrupt_signal();
                 }
                 if locked_state.operation_settings.operating_mode ==
                     Some(OperatingMode::Operate as i32)
@@ -254,7 +256,9 @@ impl Cedar for MyCedar {
                     }
                     locked_state.solve_engine.lock().await.stop().await;
                     Self::reset_session_stats(locked_state.deref_mut()).await;
-                    if let Err(x) = Self::set_pre_calibration_defaults(&*locked_state).await {
+                    if let Err(x) = Self::set_pre_calibration_defaults(
+                        &*locked_state).await
+                    {
                         return Err(tonic_status(x));
                     }
                     locked_state.detect_engine.lock().await.set_focus_mode(
@@ -285,7 +289,8 @@ impl Cedar for MyCedar {
                     let state = self.state.clone();
                     let calibration_solve_timeout = Duration::from_secs(5);
                     let _task_handle: tokio::task::JoinHandle<
-                            Result<tonic::Response<OperationSettings>, tonic::Status>> =
+                            Result<tonic::Response<OperationSettings>,
+                                   tonic::Status>> =
                         tokio::task::spawn(async move {
                             {
                                 let mut locked_state = state.lock().await;
@@ -295,7 +300,8 @@ impl Cedar for MyCedar {
                                     Duration::from_secs(5) + calibration_solve_timeout;
                                 locked_state.solve_engine.lock().await.stop().await;
                                 locked_state.detect_engine.lock().await.stop().await;
-                                locked_state.calibration_data.lock().await.calibration_time =
+                                locked_state.calibration_data.lock().await
+                                    .calibration_time =
                                     Some(prost_types::Timestamp::try_from(
                                         SystemTime::now()).unwrap());
                             }
@@ -311,7 +317,8 @@ impl Cedar for MyCedar {
                             locked_state.calibrating = false;
                             if *locked_state.cancel_calibration.lock().unwrap() {
                                 // Calibration was cancelled. Stay in Setup mode.
-                                *locked_state.cancel_calibration.lock().unwrap() = false;
+                                *locked_state.cancel_calibration.lock().unwrap() =
+                                    false;
                             } else {
                                 // Transition into Operate mode.
                                 locked_state.detect_engine.lock().await.set_focus_mode(
@@ -398,7 +405,7 @@ impl Cedar for MyCedar {
             locked_state.operation_settings.catalog_entry_match =
                 Some(catalog_entry_match.clone());
             locked_state.solve_engine.lock().await.set_catalog_entry_match(
-                Some(catalog_entry_match));
+                Some(catalog_entry_match)).await;
         }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
@@ -475,7 +482,8 @@ impl Cedar for MyCedar {
                     None => None,
                 };
                 if let Err(x) =
-                    locked_state.solve_engine.lock().await.set_boresight_pixel(boresight_pos)
+                    locked_state.solve_engine.lock().await.set_boresight_pixel(
+                        boresight_pos).await
                 {
                     return Err(tonic_status(x));
                 }
@@ -489,7 +497,7 @@ impl Cedar for MyCedar {
                         if let Err(x) = locked_state.solve_engine.lock().await.
                             set_boresight_pixel(Some(tetra3_server::ImageCoord{
                                 x: boresight_pos.x,
-                                y: boresight_pos.y}))
+                                y: boresight_pos.y})).await
                         {
                             return Err(tonic_status(x));
                         }
@@ -579,8 +587,10 @@ impl Cedar for MyCedar {
                 None
             };
 
-        locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().check_solar_system_completion();
-        let result = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().query_catalog_entries(
+        locked_state.cedar_sky.as_ref().unwrap().lock().await
+            .check_solar_system_completion().await;
+        let result =
+            locked_state.cedar_sky.as_ref().unwrap().lock().await.query_catalog_entries(
             req.max_distance,
             req.min_elevation,
             catalog_entry_match.faintest_magnitude,
@@ -626,9 +636,10 @@ impl Cedar for MyCedar {
             } else {
                 None
             };
-        locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().check_solar_system_completion();
-        let x = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_entry(
-            req, location_info);
+        locked_state.cedar_sky.as_ref().unwrap().lock().await
+            .check_solar_system_completion().await;
+        let x = locked_state.cedar_sky.as_ref().unwrap().lock().await.get_catalog_entry(
+            req, location_info).await;
         match x {
             Ok(entry) => {
                 Ok(tonic::Response::new(entry))
@@ -637,7 +648,7 @@ impl Cedar for MyCedar {
                 return Err(tonic_status(e));
             }
         }
-    }  // get_catalog_entries().
+    }  // get_catalog_entry().
 
     async fn get_catalog_descriptions(
         &self, _request: tonic::Request<EmptyMessage>)
@@ -647,9 +658,10 @@ impl Cedar for MyCedar {
         if locked_state.cedar_sky.is_none() {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
-        locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().check_solar_system_completion();
+        locked_state.cedar_sky.as_ref().unwrap().lock().await
+            .check_solar_system_completion().await;
         let catalog_descriptions =
-            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_descriptions();
+            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_catalog_descriptions();
 
         let mut response = CatalogDescriptionResponse::default();
         for cd in catalog_descriptions {
@@ -668,7 +680,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
         let object_types =
-            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_object_types();
+            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_object_types();
 
         let mut response = ObjectTypeResponse::default();
         for ot in object_types {
@@ -687,7 +699,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
         let constellations =
-            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_constellations();
+            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_constellations();
 
         let mut response = ConstellationResponse::default();
         for c in constellations {
@@ -759,12 +771,12 @@ impl MyCedar {
                                  -> Result<(), CanonicalError> {
         state.camera.lock().await.set_update_interval(update_interval)?;
         state.detect_engine.lock().await.set_update_interval(update_interval)?;
-        state.solve_engine.lock().await.set_update_interval(update_interval)
+        state.solve_engine.lock().await.set_update_interval(update_interval).await
     }
 
     async fn reset_session_stats(state: &mut CedarState) {
         state.detect_engine.lock().await.reset_session_stats();
-        state.solve_engine.lock().await.reset_session_stats();
+        state.solve_engine.lock().await.reset_session_stats().await;
         state.serve_latency_stats.reset_session();
         state.overall_latency_stats.reset_session();
     }
@@ -874,10 +886,10 @@ impl MyCedar {
                         std::cmp::max(solve_duration * 10, Duration::from_millis(500)),
                         Duration::from_secs(1));  // TODO: max solve time cmd line arg
                 let mut locked_solve_engine = solve_engine.lock().await;
-                locked_solve_engine.set_fov_estimate(Some(fov))?;
-                locked_solve_engine.set_distortion(distortion)?;
-                locked_solve_engine.set_match_max_error(match_max_error)?;
-                locked_solve_engine.set_solve_timeout(operation_solve_timeout)?;
+                locked_solve_engine.set_fov_estimate(Some(fov)).await?;
+                locked_solve_engine.set_distortion(distortion).await?;
+                locked_solve_engine.set_match_max_error(match_max_error).await?;
+                locked_solve_engine.set_solve_timeout(operation_solve_timeout).await?;
             }
             Err(e) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
@@ -885,12 +897,12 @@ impl MyCedar {
                 locked_calibration_data.lens_distortion = None;
                 locked_calibration_data.match_max_error = None;
                 let mut locked_solve_engine = solve_engine.lock().await;
-                locked_solve_engine.set_fov_estimate(None)?;
-                locked_solve_engine.set_distortion(0.0)?;
-                locked_solve_engine.set_match_max_error(0.005)?;
+                locked_solve_engine.set_fov_estimate(None).await?;
+                locked_solve_engine.set_distortion(0.0).await?;
+                locked_solve_engine.set_match_max_error(0.005).await?;
                 // TODO: pass this in? Should come from command line, maybe is
                 // max solve time.
-                locked_solve_engine.set_solve_timeout(Duration::from_secs(1))?;
+                locked_solve_engine.set_solve_timeout(Duration::from_secs(1)).await?;
                 if e.code == CanonicalErrorCode::Aborted {
                     return Err(e);
                 }
@@ -1234,7 +1246,7 @@ impl MyCedar {
             }
         }
         let boresight_position =
-            locked_state.solve_engine.lock().await.boresight_pixel().expect(
+            locked_state.solve_engine.lock().await.boresight_pixel().await.expect(
                 "solve_engine.boresight_pixel() should not fail");
         if let Some(bs) = boresight_position {
             frame_result.boresight_position = Some(ImageCoord{x: bs.x, y: bs.y});
@@ -1251,25 +1263,27 @@ impl MyCedar {
         frame_result
     }
 
-    pub async fn new(min_exposure_duration: Duration,
-                     max_exposure_duration: Duration,
-                     tetra3_script: String,
-                     tetra3_database: String,
-                     tetra3_uds: String,
-                     got_signal: Arc<AtomicBool>,
-                     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-                     telescope_position: Arc<Mutex<TelescopePosition>>,
-                     binning: u32,
-                     display_sampling: bool,
-                     base_star_count_goal: i32,
-                     base_detection_sigma: f64,
-                     min_detection_sigma: f64,
-                     stats_capacity: usize,
-                     preferences_file: PathBuf,
-                     log_file: PathBuf,
-                     product_name: &str,
-                     copyright: &str,
-                     cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>) -> Self {
+    pub async fn new(
+        min_exposure_duration: Duration,
+        max_exposure_duration: Duration,
+        tetra3_script: String,
+        tetra3_database: String,
+        tetra3_uds: String,
+        got_signal: Arc<AtomicBool>,
+        camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+        telescope_position: Arc<Mutex<TelescopePosition>>,
+        binning: u32,
+        display_sampling: bool,
+        base_star_count_goal: i32,
+        base_detection_sigma: f64,
+        min_detection_sigma: f64,
+        stats_capacity: usize,
+        preferences_file: PathBuf,
+        log_file: PathBuf,
+        product_name: &str,
+        copyright: &str,
+        cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>) -> Self
+    {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration, max_exposure_duration,
             min_detection_sigma, base_detection_sigma,
@@ -1445,7 +1459,7 @@ impl MyCedar {
         }
         locked_state.detect_engine.lock().await.set_focus_mode(true, binning);
         locked_state.solve_engine.lock().await.set_catalog_entry_match(
-            catalog_entry_match);
+            catalog_entry_match).await;
         Self::update_accuracy_adjusted_params(&*locked_state).await;
 
         cedar
@@ -1615,7 +1629,7 @@ pub fn server_main(
     product_name: &str, copyright: &str,
     flutter_app_path: &str,
     get_dependencies: fn(Arguments, Arc<AtomicBool>)
-                         -> Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>) {
+                         -> Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>) {
     const HELP: &str = "\
     FLAGS:
       -h, --help                     Prints help information
@@ -1710,7 +1724,7 @@ pub fn server_main(
 #[tokio::main]
 async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                     flutter_app_path: &str, got_signal: Arc<AtomicBool>,
-                    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>) {
+                    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>) {
     info!("{}", copyright);
     // TODO: log more information: product name, cedar version, processor model, os version,
     // serial number.

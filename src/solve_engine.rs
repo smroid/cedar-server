@@ -8,7 +8,8 @@ use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use canonical_error::{CanonicalError, failed_precondition_error, invalid_argument_error};
+use canonical_error::{CanonicalError,
+                      failed_precondition_error, invalid_argument_error};
 use chrono::{DateTime, Local, Utc};
 use image::{GenericImageView, GrayImage};
 use imageproc::rect::Rect;
@@ -41,7 +42,7 @@ pub struct SolveEngine {
     client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
 
     // Our state, shared between SolveEngine methods and the worker thread.
-    state: Arc<Mutex<SolveState>>,
+    state: Arc<tokio::sync::Mutex<SolveState>>,
 
     // Detect engine settings can be adjusted behind our back.
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
@@ -49,8 +50,8 @@ pub struct SolveEngine {
     // Executes worker().
     worker_thread: Option<tokio::task::JoinHandle<()>>,
 
-    // Called whenever worker() finishes an evaluation. Return value is sky coordinate
-    // of slew target, if any.
+    // Called whenever worker() finishes an evaluation. Return value is sky
+    // coordinate of slew target, if any.
     solution_callback: Arc<dyn Fn(Option<DetectResult>,
                                   Option<SolveResultProto>)
                                   -> Option<CelestialCoord> + Send + Sync>,
@@ -58,7 +59,7 @@ pub struct SolveEngine {
 
 // State shared between worker thread and the SolveEngine methods.
 struct SolveState {
-    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     catalog_entry_match: Option<CatalogEntryMatch>,
 
     frame_id: Option<i32>,
@@ -106,8 +107,10 @@ impl Drop for SolveEngine {
 }
 
 impl SolveEngine {
-    async fn connect(tetra3_server_address: String)
-                     -> Result<Tetra3Client<tonic::transport::Channel>, CanonicalError> {
+    async fn connect(
+        tetra3_server_address: String)
+        -> Result<Tetra3Client<tonic::transport::Channel>, CanonicalError>
+    {
         // Set up gRPC client, connect to a UDS socket. URL is ignored.
         let mut backoff = Duration::from_millis(100);
         loop {
@@ -122,9 +125,9 @@ impl SolveEngine {
                 },
                 Err(e) => {
                     if backoff > Duration::from_secs(20) {
-                        return Err(failed_precondition_error(
-                            format!("Error connecting to Tetra server at {:?}: {:?}",
-                                    tetra3_server_address, e).as_str()));
+                        return Err(failed_precondition_error(format!(
+                            "Error connecting to Tetra server at {:?}: {:?}",
+                            tetra3_server_address, e).as_str()));
                     }
                     // Give time for tetra3_server binary to start up, load its
                     // pattern database, and start to accept connections.
@@ -135,21 +138,23 @@ impl SolveEngine {
         }
     }
 
-    pub async fn new(tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
-                     cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
-                     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-                     tetra3_server_address: String,
-                     update_interval: Duration,
-                     stats_capacity: usize,
-                     solution_callback: Arc<dyn Fn(Option<DetectResult>,
-                                                   Option<SolveResultProto>)
-                                                   -> Option<CelestialCoord> + Send + Sync>)
-                     -> Result<Self, CanonicalError> {
+    pub async fn new(
+        tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
+        cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+        detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
+        tetra3_server_address: String,
+        update_interval: Duration,
+        stats_capacity: usize,
+        solution_callback: Arc<dyn Fn(Option<DetectResult>,
+                                      Option<SolveResultProto>)
+                                      -> Option<CelestialCoord> + Send + Sync>)
+        -> Result<Self, CanonicalError>
+    {
         let client = Self::connect(tetra3_server_address).await?;
         Ok(SolveEngine{
             tetra3_subprocess,
             client: Arc::new(tokio::sync::Mutex::new(client)),
-            state: Arc::new(Mutex::new(SolveState{
+            state: Arc::new(tokio::sync::Mutex::new(SolveState{
                 cedar_sky,
                 catalog_entry_match: None,
                 frame_id: None,
@@ -180,9 +185,9 @@ impl SolveEngine {
 
     // Sets the parameters used to retrieve sky catalog entries for the solved
     // FOV.
-    pub fn set_catalog_entry_match(
+    pub async fn set_catalog_entry_match(
         &mut self, catalog_entry_match: Option<CatalogEntryMatch>) {
-        let mut locked_state = self.state.lock().unwrap();
+        let mut locked_state = self.state.lock().await;
         locked_state.catalog_entry_match = catalog_entry_match;
     }
 
@@ -190,18 +195,18 @@ impl SolveEngine {
     // produces a PlateSolution).
     // An interval of zero means run continuously-- as soon as a PlateSolution
     // is produced, the next one is started.
-    pub fn set_update_interval(&mut self, update_interval: Duration)
-                               -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
+    pub async fn set_update_interval(&mut self, update_interval: Duration)
+                                     -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().await;
         locked_state.update_interval = update_interval;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
     }
 
-    pub fn set_fov_estimate(&mut self, fov_estimate: Option<f64>)
-                            -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
+    pub async fn set_fov_estimate(&mut self, fov_estimate: Option<f64>)
+                                  -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().await;
         if fov_estimate.is_some() && fov_estimate.unwrap() <= 0.0 {
             return Err(invalid_argument_error(
                 format!("fov_estimate must be positive; got {}",
@@ -213,64 +218,67 @@ impl SolveEngine {
         Ok(())
     }
 
-    pub fn set_boresight_pixel(&mut self, boresight_pixel: Option<ImageCoord>)
-                               -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
+    pub async fn set_boresight_pixel(
+        &mut self, boresight_pixel: Option<ImageCoord>)
+        -> Result<(), CanonicalError>
+    {
+        let mut locked_state = self.state.lock().await;
         locked_state.boresight_pixel = boresight_pixel;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
     }
-    pub fn boresight_pixel(&self) -> Result<Option<ImageCoord>, CanonicalError> {
-        let locked_state = self.state.lock().unwrap();
+    pub async fn boresight_pixel(&self)
+                                 -> Result<Option<ImageCoord>, CanonicalError> {
+        let locked_state = self.state.lock().await;
         Ok(locked_state.boresight_pixel.clone())
     }
 
-    pub fn set_distortion(&mut self, distortion: f64)
-                               -> Result<(), CanonicalError> {
+    pub async fn set_distortion(&mut self, distortion: f64)
+                                -> Result<(), CanonicalError> {
         if distortion < -0.2 || distortion > 0.2 {
             return Err(invalid_argument_error(
                 format!("distortion must be in [-0.2, 0.2]; got {}",
                         distortion).as_str()));
         }
-        let mut locked_state = self.state.lock().unwrap();
+        let mut locked_state = self.state.lock().await;
         locked_state.distortion = distortion;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
     }
 
-    pub fn set_match_max_error(&mut self, match_max_error: f64)
-                               -> Result<(), CanonicalError> {
+    pub async fn set_match_max_error(&mut self, match_max_error: f64)
+                                     -> Result<(), CanonicalError> {
         if match_max_error < 0.0 {
             return Err(invalid_argument_error(
                 format!("match_max_error must be non-negative; got {}",
                         match_max_error).as_str()));
         }
-        let mut locked_state = self.state.lock().unwrap();
+        let mut locked_state = self.state.lock().await;
         locked_state.match_max_error = match_max_error;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
     }
 
-    pub fn set_minimum_stars(&mut self, minimum_stars: i32)
-                             -> Result<(), CanonicalError> {
+    pub async fn set_minimum_stars(&mut self, minimum_stars: i32)
+                                   -> Result<(), CanonicalError> {
         if minimum_stars < 4 {
             return Err(invalid_argument_error(
                 format!("minimum_stars must be at least 4; got {}",
                         minimum_stars).as_str()));
         }
-        let mut locked_state = self.state.lock().unwrap();
+        let mut locked_state = self.state.lock().await;
         locked_state.minimum_stars = minimum_stars;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
     }
 
-    pub fn set_solve_timeout(&mut self, solve_timeout: Duration)
-                             -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
+    pub async fn set_solve_timeout(&mut self, solve_timeout: Duration)
+                                   -> Result<(), CanonicalError> {
+        let mut locked_state = self.state.lock().await;
         locked_state.solve_timeout = solve_timeout;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
@@ -291,7 +299,9 @@ impl SolveEngine {
     /// If `prev_frame_id` is supplied, the call blocks while the current result
     /// has the same id value.
     /// Returns: the processed result along with its frame_id value.
-    pub async fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> PlateSolution {
+    pub async fn get_next_result(
+        &mut self, prev_frame_id: Option<i32>) -> PlateSolution
+    {
         // Start worker thread if terminated or not yet started.
         self.start().await;
 
@@ -301,7 +311,7 @@ impl SolveEngine {
         loop {
             let mut sleep_duration = Duration::from_millis(1);
             {
-                let locked_state = self.state.lock().unwrap();
+                let locked_state = self.state.lock().await;
                 if locked_state.plate_solution.is_some() &&
                     (prev_frame_id.is_none() ||
                      prev_frame_id.unwrap() !=
@@ -321,8 +331,8 @@ impl SolveEngine {
         }
     }
 
-    pub fn reset_session_stats(&mut self) {
-        let mut state = self.state.lock().unwrap();
+    pub async fn reset_session_stats(&mut self) {
+        let mut state = self.state.lock().await;
         state.solve_interval_stats.reset_session();
         state.solve_latency_stats.reset_session();
         state.solve_attempt_stats.reset_session();
@@ -333,8 +343,8 @@ impl SolveEngine {
     pub async fn save_image(&self) -> Result<(), CanonicalError> {
         // Grab most recent image.
         let mut locked_detect_engine = self.detect_engine.lock().await;
-        let captured_image =
-            &locked_detect_engine.get_next_result(/*frame_id=*/None).await.captured_image;
+        let captured_image = &locked_detect_engine.get_next_result(
+            /*frame_id=*/None).await.captured_image;
         let image: &GrayImage = &captured_image.image;
         let readout_time: &SystemTime = &captured_image.readout_time;
         let exposure_duration_ms =
@@ -348,19 +358,20 @@ impl SolveEngine {
 
         // Generate file name.
         let filename = format!("img_{}ms_{}.bmp",
-                               exposure_duration_ms, datetime_local.format("%Y%m%d_%H%M%S"));
+                               exposure_duration_ms,
+                               datetime_local.format("%Y%m%d_%H%M%S"));
         // Write to current directory.
         match image.save(filename) {
             Ok(()) => Ok(()),
             Err(x) => {
-            return Err(failed_precondition_error(
-                format!("Error saving file: {:?}", x).as_str()));
+                return Err(failed_precondition_error(
+                    format!("Error saving file: {:?}", x).as_str()));
             }
         }
     }
 
     pub async fn solve(&self, solve_request: SolveRequest)
-             -> Result<SolveResultProto, CanonicalError> {
+                       -> Result<SolveResultProto, CanonicalError> {
         Self::solve_with_client(self.client.clone(), solve_request).await
     }
 
@@ -405,14 +416,14 @@ impl SolveEngine {
     pub async fn stop(&mut self) {
         if self.worker_thread.is_some() {
             self.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
-            self.state.lock().unwrap().stop_request = true;
+            self.state.lock().await.stop_request = true;
             self.worker_thread.take().unwrap().await.unwrap();
         }
     }
 
     async fn worker(
         client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
-        state: Arc<Mutex<SolveState>>,
+        state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         solution_callback: Arc<dyn Fn(Option<DetectResult>,
                                       Option<SolveResultProto>)
@@ -423,7 +434,7 @@ impl SolveEngine {
         loop {
             let update_interval: Duration;
             {
-                let mut locked_state = state.lock().unwrap();
+                let mut locked_state = state.lock().await;
                 update_interval = locked_state.update_interval;
                 if locked_state.stop_request {
                     debug!("Stopping solve engine");
@@ -438,17 +449,17 @@ impl SolveEngine {
                 let next_update_time = lrt + update_interval;
                 if next_update_time > now {
                     let delay = next_update_time - now;
-                    state.lock().unwrap().eta = Some(Instant::now() + delay);
+                    state.lock().await.eta = Some(Instant::now() + delay);
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                state.lock().unwrap().eta = None;
+                state.lock().await.eta = None;
             }
 
             // Time to do a solve processing cycle.
             if let Some(lrt) = last_result_time {
                 let elapsed = lrt.elapsed();
-                let mut locked_state = state.lock().unwrap();
+                let mut locked_state = state.lock().await;
                 locked_state.solve_interval_stats.add_value(elapsed.as_secs_f64());
             }
             last_result_time = Some(now);
@@ -458,7 +469,7 @@ impl SolveEngine {
             let minimum_stars;
             let frame_id;
             {
-                let locked_state = state.lock().unwrap();
+                let locked_state = state.lock().await;
                 minimum_stars = locked_state.minimum_stars;
 
                 // Set up SolveRequest.
@@ -500,11 +511,14 @@ impl SolveEngine {
                 frame_id = locked_state.frame_id;
             }
             // Get the most recent star detection result.
-            if let Some(delay_est) = detect_engine.lock().await.estimate_delay(frame_id) {
-                state.lock().unwrap().eta = Some(Instant::now() + delay_est);
+            if let Some(delay_est) =
+                detect_engine.lock().await.estimate_delay(frame_id)
+            {
+                state.lock().await.eta = Some(Instant::now() + delay_est);
             }
-            detect_result = detect_engine.lock().await.get_next_result(frame_id).await;
-            state.lock().unwrap().deref_mut().frame_id = Some(detect_result.frame_id);
+            detect_result =
+                detect_engine.lock().await.get_next_result(frame_id).await;
+            state.lock().await.deref_mut().frame_id = Some(detect_result.frame_id);
 
             let image: &GrayImage = &detect_result.captured_image.image;
             let (width, height) = image.dimensions();
@@ -523,7 +537,7 @@ impl SolveEngine {
             let mut solve_finish_time: Option<SystemTime> = None;
             if detect_result.star_candidates.len() >= minimum_stars as usize {
                 {
-                    let mut locked_state = state.lock().unwrap();
+                    let mut locked_state = state.lock().await;
                     if let Some(recent_stats) =
                         &locked_state.solve_latency_stats.value_stats.recent
                     {
@@ -544,7 +558,7 @@ impl SolveEngine {
             }
 
             let elapsed = process_start_time.elapsed();
-            let mut locked_state = state.lock().unwrap();
+            let mut locked_state = state.lock().await;
             let mut fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
             let mut slew_request = None;
             let mut boresight_image: Option<GrayImage> = None;
@@ -575,13 +589,13 @@ impl SolveEngine {
                                 &locked_state.cedar_sky,
                                 target_coords, image, &boresight_coords,
                                 &locked_state.boresight_pixel, &detect_result, tsr,
-                                width, height);
+                                width, height).await;
                     }
 
                     if locked_state.cedar_sky.is_some() {
                         let mut rotation_matrix: [f64; 9] = [0.0; 9];
-                        for (idx, c) in tsr.rotation_matrix.as_ref().unwrap().matrix_elements
-                            .clone().into_iter().enumerate()
+                        for (idx, c) in tsr.rotation_matrix.as_ref().unwrap()
+                            .matrix_elements.clone().into_iter().enumerate()
                         {
                             rotation_matrix[idx] = c;
                         }
@@ -593,7 +607,7 @@ impl SolveEngine {
                             width, height,
                             tsr.fov.unwrap(),
                             tsr.distortion.unwrap(),
-                            &rotation_matrix));
+                            &rotation_matrix).await);
                     }
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
@@ -622,10 +636,11 @@ impl SolveEngine {
     // Given a target, finds the closest catalog entry within 1 arcmin. Returns
     // the closest catalog entry, if any, and the distance in degrees between
     // the catalog entry and the target.
-    fn get_catalog_entry_for_target(cedar_sky: &Arc<Mutex<dyn CedarSkyTrait + Send>>,
-                                    target_coords: &CelestialCoord)
-                                    -> (Option<CatalogEntry>, Option<f64>) {
-        let query_result = cedar_sky.lock().unwrap().query_catalog_entries(
+    async fn get_catalog_entry_for_target(
+        cedar_sky: &Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>,
+        target_coords: &CelestialCoord)
+        -> (Option<CatalogEntry>, Option<f64>) {
+        let query_result = cedar_sky.lock().await.query_catalog_entries(
             /*max_distance=*/Some(1.0 / 60.0),  // 1 arcmin.
             /*min_elevation=*/None,
             /*faintest_magnitude=*/None,
@@ -656,15 +671,17 @@ impl SolveEngine {
         (Some(closest_entry), Some(distance))
     }
 
-    fn handle_slew(cedar_sky: &Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
-                   target_coords: &CelestialCoord,
-                   image: &GrayImage,
-                   boresight_coords: &CelestialCoord,
-                   boresight_pixel: &Option<ImageCoord>,
-                   detect_result: &DetectResult,
-                   tetra3_solve_result: &SolveResultProto,
-                   width: u32, height: u32)
-                   -> (Option<cedar::SlewRequest>, Option<Rect>, Option<GrayImage>) {
+    async fn handle_slew(
+        cedar_sky: &Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+        target_coords: &CelestialCoord,
+        image: &GrayImage,
+        boresight_coords: &CelestialCoord,
+        boresight_pixel: &Option<ImageCoord>,
+        detect_result: &DetectResult,
+        tetra3_solve_result: &SolveResultProto,
+        width: u32, height: u32)
+        -> (Option<cedar::SlewRequest>, Option<Rect>, Option<GrayImage>)
+    {
         let mut slew_request = cedar::SlewRequest{
             target: Some(target_coords.clone()), ..Default::default()};
         let bs_ra = boresight_coords.ra.to_radians();
@@ -687,7 +704,7 @@ impl SolveEngine {
             // See if Cedar-sky has a catalog object corresponding to the slew
             // target's RA/Dec.
             let (catalog_entry, distance) = Self::get_catalog_entry_for_target(
-                cedar_sky, target_coords);
+                cedar_sky, target_coords).await;
             slew_request.target_catalog_entry = catalog_entry;
             slew_request.target_catalog_entry_distance = distance;
         }
@@ -736,9 +753,9 @@ impl SolveEngine {
         let mut boresight_image_region = Some(Rect::at(
             boresight_pos.x as i32 - bs_image_size as i32/2,
             boresight_pos.y as i32 - bs_image_size as i32/2)
-                                      .of_size(
-                                          bs_image_size as u32,
-                                          bs_image_size as u32));
+                                              .of_size(
+                                                  bs_image_size as u32,
+                                                  bs_image_size as u32));
         boresight_image_region =
             Some(boresight_image_region.
                  unwrap().intersect(image_rect).unwrap());
@@ -765,14 +782,15 @@ impl SolveEngine {
         (Some(slew_request), boresight_image_region, boresight_image)
     }  // handle_slew
 
-    fn query_fov_catalog_entries(boresight_coords: &CelestialCoord,
-                                 boresight_pixel: &Option<ImageCoord>,
-                                 cedar_sky: &Arc<Mutex<dyn CedarSkyTrait + Send>>,
-                                 catalog_entry_match: &CatalogEntryMatch,
-                                 width: u32, height: u32,
-                                 fov: f64, distortion: f64,
-                                 rotation_matrix: &[f64; 9])
-                                 -> Vec<FovCatalogEntry> {
+    async fn query_fov_catalog_entries(
+        boresight_coords: &CelestialCoord,
+        boresight_pixel: &Option<ImageCoord>,
+        cedar_sky: &Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>,
+        catalog_entry_match: &CatalogEntryMatch,
+        width: u32, height: u32,
+        fov: f64, distortion: f64,
+        rotation_matrix: &[f64; 9])
+        -> Vec<FovCatalogEntry> {
         let mut answer = Vec::<FovCatalogEntry>::new();
 
         let bp = if boresight_pixel.is_some() {
@@ -787,7 +805,7 @@ impl SolveEngine {
         let v = f64::max(bp.y, height as f64 - bp.y);
         let radius_deg = (h * h + v * v).sqrt() * deg_per_pixel;
 
-        let query_result = cedar_sky.lock().unwrap().query_catalog_entries(
+        let query_result = cedar_sky.lock().await.query_catalog_entries(
             /*max_distance=*/Some(radius_deg),
             /*min_elevation=*/None,
             catalog_entry_match.faintest_magnitude,

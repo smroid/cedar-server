@@ -3,6 +3,8 @@
 
 use std::time::SystemTime;
 
+use async_trait::async_trait;
+
 use crate::cedar_sky::{CatalogDescription, CatalogEntryKey,
                        CatalogEntry, Constellation,
                        ObjectType, Ordering, SelectedCatalogEntry};
@@ -15,13 +17,14 @@ pub struct LocationInfo {
     pub observing_time: SystemTime,
 }
 
+#[async_trait]
 pub trait CedarSkyTrait {
     /// Initiates processing of solar system ephemeris entries.
-    fn initiate_solar_system_processing(&mut self, time: SystemTime);
+    async fn initiate_solar_system_processing(&mut self, time: SystemTime);
 
     /// Checks to see if the solar system ephemeris has completed processing,
     /// and if so, absorbs its contents.
-    fn check_solar_system_completion(&mut self);
+    async fn check_solar_system_completion(&mut self);
 
     fn get_catalog_descriptions(&self) -> Vec<CatalogDescription>;
     fn get_object_types(&self) -> Vec<ObjectType>;
@@ -42,8 +45,11 @@ pub trait CedarSkyTrait {
                              sky_location: Option<CelestialCoord>,
                              location_info: Option<LocationInfo>)
                              -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError>;
-    fn get_catalog_entry(&self,
-                         entry_key: CatalogEntryKey,
-                         location_info: Option<LocationInfo>)
-                         -> Result<CatalogEntry, CanonicalError>;
+
+    /// Return the selected catalog entry. If it is a solar system object the
+    /// current position is calculated using `location_info`.
+    async fn get_catalog_entry(&mut self,
+                               entry_key: CatalogEntryKey,
+                               location_info: Option<LocationInfo>)
+                               -> Result<CatalogEntry, CanonicalError>;
 }

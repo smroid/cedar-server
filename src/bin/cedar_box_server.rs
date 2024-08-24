@@ -9,10 +9,11 @@ use pico_args::Arguments;
 use cedar_server::cedar_server::server_main;
 
 fn main() {
-    server_main("Cedar-Box",
-                "Copyright (c) 2024 Steven Rosenthal smr@dt3.org.\n\
-                 Licensed for non-commercial use.\n\
-                 See LICENSE.md at https://github.com/smroid/cedar-server",
-                /*flutter_app_path=*/"../../cedar-aim/cedar_flutter/build/web",
-                |_pargs: Arguments, _got_signal: Arc::<AtomicBool>| { None });
+    server_main(
+        "Cedar-Box",
+        "Copyright (c) 2024 Steven Rosenthal smr@dt3.org.\n\
+         Licensed for non-commercial use.\n\
+         See LICENSE.md at https://github.com/smroid/cedar-server",
+        /*flutter_app_path=*/"../../cedar-aim/cedar_flutter/build/web",
+        /*get_dependencies=*/|_pargs: Arguments, _got_signal: Arc::<AtomicBool>| { None });
 }
