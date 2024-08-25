@@ -1354,7 +1354,7 @@ impl MyCedar {
             Self::solution_callback(
                 detect_result,
                 solve_result_proto,
-                closure_fixed_settings.lock().unwrap().observer_location.clone(),
+                &mut closure_fixed_settings.lock().unwrap(),
                 &mut closure_telescope_position.lock().unwrap(),
                 &mut motion_estimator.lock().unwrap(),
                 &mut closure_polar_analyzer.lock().unwrap())
@@ -1499,7 +1499,7 @@ impl MyCedar {
 
     fn solution_callback(detect_result: Option<DetectResult>,
                          solve_result_proto: Option<SolveResultProto>,
-                         geo_location: Option<LatLong>,
+                         fixed_settings: &mut FixedSettings,
                          telescope_position: &mut TelescopePosition,
                          motion_estimator: &mut MotionEstimator,
                          polar_analyzer: &mut PolarAnalyzer) -> Option<CelestialCoord> {
@@ -1522,6 +1522,23 @@ impl MyCedar {
             telescope_position.boresight_valid = true;
             let readout_time = detect_result.unwrap().captured_image.readout_time;
             motion_estimator.add(readout_time, Some(coords.clone()), solve_result_proto.rmse);
+
+            // Has SkySafari reported the site geolocation?
+            if telescope_position.site_latitude.is_some() &&
+                telescope_position.site_longitude.is_some()
+            {
+                let observer_location = LatLong{
+                    latitude: telescope_position.site_latitude.unwrap(),
+                    longitude: telescope_position.site_longitude.unwrap(),
+                };
+                fixed_settings.observer_location = Some(observer_location.clone());
+                info!("Updated observer location from Alpaca to {:?}",
+                      observer_location);
+                telescope_position.site_latitude = None;
+                telescope_position.site_longitude = None;
+            }
+
+            let geo_location = &fixed_settings.observer_location;
             if let Some(geo_location) = geo_location {
                 let lat = geo_location.latitude.to_radians();
                 let long = geo_location.longitude.to_radians();
@@ -1543,7 +1560,7 @@ impl MyCedar {
             None
         }
     }
-}
+}  // impl MyCedar.
 
 // About Resolutions
 //
