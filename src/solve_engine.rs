@@ -560,6 +560,7 @@ impl SolveEngine {
             let elapsed = process_start_time.elapsed();
             let mut locked_state = state.lock().await;
             let mut fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
+            let mut decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
             let mut slew_request = None;
             let mut boresight_image: Option<GrayImage> = None;
             let mut boresight_image_region: Option<Rect> = None;
@@ -599,7 +600,7 @@ impl SolveEngine {
                         {
                             rotation_matrix[idx] = c;
                         }
-                        fov_catalog_entries = Some(Self::query_fov_catalog_entries(
+                        let result = Self::query_fov_catalog_entries(
                             &boresight_coords,
                             &locked_state.boresight_pixel,
                             locked_state.cedar_sky.as_ref().unwrap(),
@@ -607,7 +608,9 @@ impl SolveEngine {
                             width, height,
                             tsr.fov.unwrap(),
                             tsr.distortion.unwrap(),
-                            &rotation_matrix).await);
+                            &rotation_matrix).await;
+                        (fov_catalog_entries, decrowded_fov_catalog_entries) =
+                            (Some(result.0), Some(result.1));
                     }
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
@@ -620,6 +623,7 @@ impl SolveEngine {
                 detect_result,
                 tetra3_solve_result,
                 fov_catalog_entries,
+                decrowded_fov_catalog_entries,
                 slew_request,
                 boresight_image,
                 boresight_image_region,
@@ -782,6 +786,34 @@ impl SolveEngine {
         (Some(slew_request), boresight_image_region, boresight_image)
     }  // handle_slew
 
+    fn make_fov_catalog_entry(entry: &CatalogEntry, width: usize, height: usize,
+                              fov: f64, distortion: f64,
+                              rotation_matrix: &[f64; 9])
+                              -> Option<FovCatalogEntry>
+    {
+        let coord = entry.coord.clone().unwrap();
+        let img_coord = transform_to_image_coord(
+            &[coord.ra, coord.dec],
+            width as usize, height as usize,
+            fov, &rotation_matrix, distortion);
+        let x = img_coord[0];
+        if x < 0.0 || x >= width as f64 {
+            return None;
+        }
+        let y = img_coord[1];
+        if y < 0.0 || y >= height as f64 {
+            return None;
+        }
+        Some(FovCatalogEntry {
+            entry: Some(entry.clone()),
+            image_pos: Some(cedar::ImageCoord { x, y }),
+        })
+    }
+
+    // Returns two lists of FovCatalogEntry. The first one is the entries that
+    // survived decrowding (they are brighter than very nearby entries); the
+    // second one is the decrowded entries (close to an entry in the first
+    // collection but fainter).
     async fn query_fov_catalog_entries(
         boresight_coords: &CelestialCoord,
         boresight_pixel: &Option<ImageCoord>,
@@ -790,8 +822,9 @@ impl SolveEngine {
         width: u32, height: u32,
         fov: f64, distortion: f64,
         rotation_matrix: &[f64; 9])
-        -> Vec<FovCatalogEntry> {
-        let mut answer = Vec::<FovCatalogEntry>::new();
+        -> (Vec<FovCatalogEntry>, Vec<FovCatalogEntry>) {
+        let mut answer = Vec::<FovCatalogEntry>::new();  // Decrowd survivors.
+        let mut culled = Vec::<FovCatalogEntry>::new();  // Decrowd victims.
 
         let bp = if boresight_pixel.is_some() {
             boresight_pixel.clone().unwrap()
@@ -820,34 +853,30 @@ impl SolveEngine {
             /*location_info=*/None);
         if let Err(e) = query_result {
             warn!("Error querying sky catalog: {:?}", e);
-            return answer;
+            return (answer, culled);
         }
 
         let selected_catalog_entries = query_result.unwrap().0;
-        // Convert each catalog entry's celesital coordinates to image position,
-        // and discard those outside of our FOV.
         for sce in selected_catalog_entries {
-            let entry = Some(sce.entry.unwrap());
-            let coord = entry.as_ref().unwrap().coord.clone().unwrap();
-            let img_coord = transform_to_image_coord(
-                &[coord.ra, coord.dec],
-                width as usize, height as usize,
-                fov, &rotation_matrix, distortion);
-            let x = img_coord[0];
-            if x < 0.0 || x >= width as f64 {
-                continue;
+            let entry = sce.entry.unwrap();
+            // Convert each catalog entry's celesital coordinates to image
+            // position, and discard those outside of our FOV.
+            if let Some(fce) = Self::make_fov_catalog_entry(
+                &entry, width as usize, height as usize, fov,
+                distortion, rotation_matrix)
+            {
+                answer.push(fce);
             }
-            let y = img_coord[1];
-            if y < 0.0 || y >= height as f64 {
-                continue;
+            for decrowded in sce.decrowded_entries {
+                if let Some(fce) = Self::make_fov_catalog_entry(
+                    &decrowded, width as usize, height as usize, fov,
+                    distortion, rotation_matrix)
+                {
+                    culled.push(fce);
+                }
             }
-            answer.push(
-                FovCatalogEntry {
-                    entry,
-                    image_pos: Some(cedar::ImageCoord { x, y }),
-                });
         }
-        answer
+        (answer, culled)
     }  // query_fov_catalog_entries
 }  // impl SolveEngine
 
@@ -864,6 +893,7 @@ pub struct PlateSolution {
     // image's FOV. Order is unspecified.
     // None if there is no Cedar Sky implementation.
     pub fov_catalog_entries: Option<Vec<FovCatalogEntry>>,
+    pub decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>>,
 
     // If the TelescopePosition has an active slew request, we populate
     // `slew_request` with its information.

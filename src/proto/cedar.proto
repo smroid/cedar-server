@@ -225,7 +225,7 @@ message FrameRequest {
   optional int32 prev_frame_id = 1;
 }
 
-// Next tag: 33.
+// Next tag: 34.
 message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
@@ -338,7 +338,11 @@ message FrameResult {
   // determines what entries are included.
   // Empty if `plate_solution` is absent or failed or if Cedar Sky is not
   // present.
-  repeated FovCatalogEntry catalog_entries = 31;
+  // The FOV catalog entries that dominate their crowd and should be labelled.
+  repeated FovCatalogEntry labeled_catalog_entries = 31;
+  // The decrowded FOV catalog entries that the UI can display, but should
+  // not label to avoid clutter.
+  repeated FovCatalogEntry unlabeled_catalog_entries = 33;
 
   // alerts
   // * prolonged loss of stars; need setup mode?

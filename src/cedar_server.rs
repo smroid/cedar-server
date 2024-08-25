@@ -212,8 +212,6 @@ impl Cedar for MyCedar {
             if locked_state.cedar_sky.is_some() {
                 locked_state.cedar_sky.as_ref().unwrap().lock().await
                     .initiate_solar_system_processing(SystemTime::now()).await;
-                // TODO: check for solar system processing completion prior to
-                // all Cedar Sky calls.
             }
         }
         if let Some(_session_name) = req.session_name {
@@ -1149,12 +1147,19 @@ impl MyCedar {
                     image_data: bmp_buf,
                 });
             }
-            if let Some(fov_catalog_entries) = &psr.fov_catalog_entries {
-                frame_result.catalog_entries =
-                    Vec::<FovCatalogEntry>::with_capacity(
-                        fov_catalog_entries.len());
-                for fce in fov_catalog_entries {
-                    frame_result.catalog_entries.push(fce.clone());
+            // Return catalog objects that are in the field of view.
+            if let Some(fces) = &psr.fov_catalog_entries {
+                frame_result.labeled_catalog_entries =
+                    Vec::<FovCatalogEntry>::with_capacity(fces.len());
+                for fce in fces {
+                    frame_result.labeled_catalog_entries.push(fce.clone());
+                }
+            }
+            if let Some(decrowded_fces) = &psr.decrowded_fov_catalog_entries {
+                frame_result.unlabeled_catalog_entries =
+                    Vec::<FovCatalogEntry>::with_capacity(decrowded_fces.len());
+                for fce in decrowded_fces {
+                    frame_result.unlabeled_catalog_entries.push(fce.clone());
                 }
             }
         }
