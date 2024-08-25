@@ -50,11 +50,13 @@ pub struct SolveEngine {
     // Executes worker().
     worker_thread: Option<tokio::task::JoinHandle<()>>,
 
-    // Called whenever worker() finishes an evaluation. Return value is sky
-    // coordinate of slew target, if any.
+    // Called whenever worker() finishes an evaluation. Return value:
+    // (sky coordinate of slew target (if any),
+    //  sky coordinate of sync operation (if any))
     solution_callback: Arc<dyn Fn(Option<DetectResult>,
                                   Option<SolveResultProto>)
-                                  -> Option<CelestialCoord> + Send + Sync>,
+                                  -> (Option<CelestialCoord>, Option<CelestialCoord>)
+                           + Send + Sync>,
 }
 
 // State shared between worker thread and the SolveEngine methods.
@@ -147,7 +149,9 @@ impl SolveEngine {
         stats_capacity: usize,
         solution_callback: Arc<dyn Fn(Option<DetectResult>,
                                       Option<SolveResultProto>)
-                                      -> Option<CelestialCoord> + Send + Sync>)
+                                      -> (Option<CelestialCoord>,
+                                          Option<CelestialCoord>)
+                               + Send + Sync>)
         -> Result<Self, CanonicalError>
     {
         let client = Self::connect(tetra3_server_address).await?;
@@ -427,7 +431,9 @@ impl SolveEngine {
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         solution_callback: Arc<dyn Fn(Option<DetectResult>,
                                       Option<SolveResultProto>)
-                                      -> Option<CelestialCoord> + Send + Sync>) {
+                                      -> (Option<CelestialCoord>,
+                                          Option<CelestialCoord>)
+                               + Send + Sync>) {
         debug!("Starting solve engine");
         // Keep track of when we started the solve cycle.
         let mut last_result_time: Option<Instant> = None;
@@ -505,9 +511,7 @@ impl SolveEngine {
                 solve_request.distortion = Some(locked_state.distortion);
                 solve_request.match_max_error = Some(locked_state.match_max_error);
                 solve_request.return_matches = locked_state.return_matches;
-                if locked_state.cedar_sky.is_some() {
-                    solve_request.return_rotation_matrix = true;
-                }
+                solve_request.return_rotation_matrix = true;
                 frame_id = locked_state.frame_id;
             }
             // Get the most recent star detection result.
@@ -582,8 +586,9 @@ impl SolveEngine {
                     // Let integration layer pass solution to SkySafari telescope
                     // interface and MotionEstimator. Integration layer returns current
                     // slew target coords, if any.
-                    locked_state.slew_target =
+                    let (slew_target, sync_coord) =
                         solution_callback(Some(detect_result.clone()), Some(tsr.clone()));
+                    locked_state.slew_target = slew_target;
                     if let Some(target_coords) = &locked_state.slew_target {
                         (slew_request, boresight_image_region, boresight_image) =
                             Self::handle_slew(
@@ -592,14 +597,37 @@ impl SolveEngine {
                                 &locked_state.boresight_pixel, &detect_result, tsr,
                                 width, height).await;
                     }
+                    let mut rotation_matrix: [f64; 9] = [0.0; 9];
+                    for (idx, c) in tsr.rotation_matrix.as_ref().unwrap()
+                        .matrix_elements.clone().into_iter().enumerate()
+                    {
+                        rotation_matrix[idx] = c;
+                    }
+                    if let Some(sync_coord) = sync_coord {
+                        // SkySafari user has invoked "Sync" operation on some
+                        // sky object, indicating that this object is centered at
+                        // the telescope boresight. We update the boresight pixel
+                        // accordingly.
+                        // First, translate `sync_coord` to image coordinates.
+                        let xy = transform_to_image_coord(
+                            &[sync_coord.ra, sync_coord.dec],
+                            width as usize, height as usize,
+                            tsr.fov.unwrap(),
+                            &rotation_matrix,
+                            tsr.distortion.unwrap());
+                        // Only accept the boresight if it is in central portion
+                        // of the image.
+                        let img_coord = ImageCoord{x: xy[0], y: xy[1]};
+                        if Self::point_in_region(&img_coord,
+                                                 &detect_result.center_region) {
+                            locked_state.boresight_pixel = Some(img_coord);
+                        } else {
+                            warn!("Rejecting non-central boresight sync at {:?}",
+                                  img_coord);
+                        }
+                    }
 
                     if locked_state.cedar_sky.is_some() {
-                        let mut rotation_matrix: [f64; 9] = [0.0; 9];
-                        for (idx, c) in tsr.rotation_matrix.as_ref().unwrap()
-                            .matrix_elements.clone().into_iter().enumerate()
-                        {
-                            rotation_matrix[idx] = c;
-                        }
                         let result = Self::query_fov_catalog_entries(
                             &boresight_coords,
                             &locked_state.boresight_pixel,
@@ -724,11 +752,7 @@ impl SolveEngine {
         let target_image_coord =
             cedar::ImageCoord{x: img_coord.x, y: img_coord.y};
         slew_request.image_pos = Some(target_image_coord.clone());
-        if img_coord.x > detect_result.center_region.left() as f64 &&
-            img_coord.x < detect_result.center_region.right() as f64  &&
-            img_coord.y > detect_result.center_region.top() as f64  &&
-            img_coord.y < detect_result.center_region.bottom() as f64
-        {
+        if Self::point_in_region(&img_coord, &detect_result.center_region) {
             slew_request.target_within_center_region = true;
         }
         // Is the target's image_pos close to the boresight's
@@ -785,6 +809,13 @@ impl SolveEngine {
 
         (Some(slew_request), boresight_image_region, boresight_image)
     }  // handle_slew
+
+    fn point_in_region(img_coord: &ImageCoord, region: &Rect) -> bool {
+        img_coord.x > region.left() as f64 &&
+            img_coord.x < region.right() as f64 &&
+            img_coord.y > region.top() as f64 &&
+            img_coord.y < region.bottom() as f64
+    }
 
     fn make_fov_catalog_entry(entry: &CatalogEntry, width: usize, height: usize,
                               fov: f64, distortion: f64,

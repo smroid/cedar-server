@@ -1502,7 +1502,10 @@ impl MyCedar {
                          fixed_settings: &mut FixedSettings,
                          telescope_position: &mut TelescopePosition,
                          motion_estimator: &mut MotionEstimator,
-                         polar_analyzer: &mut PolarAnalyzer) -> Option<CelestialCoord> {
+                         polar_analyzer: &mut PolarAnalyzer)
+                         -> (Option<CelestialCoord>, Option<CelestialCoord>)
+    {
+        let mut sync_coord: Option<CelestialCoord> = None;
         if solve_result_proto.is_none() {
             telescope_position.boresight_valid = false;
             if let Some(detect_result) = detect_result {
@@ -1532,10 +1535,20 @@ impl MyCedar {
                     longitude: telescope_position.site_longitude.unwrap(),
                 };
                 fixed_settings.observer_location = Some(observer_location.clone());
-                info!("Updated observer location from Alpaca to {:?}",
-                      observer_location);
+                info!("Alpaca updated observer location to {:?}", observer_location);
                 telescope_position.site_latitude = None;
                 telescope_position.site_longitude = None;
+            }
+            // Has SkySafari done a "sync"?
+            if telescope_position.sync_ra.is_some() &&
+                telescope_position.sync_dec.is_some()
+            {
+                sync_coord = Some(CelestialCoord{
+                    ra: telescope_position.sync_ra.unwrap(),
+                    dec: telescope_position.sync_dec.unwrap()});
+                info!("Alpaca synced boresight to {:?}", sync_coord);
+                telescope_position.sync_ra = None;
+                telescope_position.sync_dec = None;
             }
 
             let geo_location = &fixed_settings.observer_location;
@@ -1554,10 +1567,11 @@ impl MyCedar {
             }
         }
         if telescope_position.slew_active {
-            Some(CelestialCoord{ra: telescope_position.slew_target_ra,
-                                dec: telescope_position.slew_target_dec})
+            (Some(CelestialCoord{ra: telescope_position.slew_target_ra,
+                                 dec: telescope_position.slew_target_dec}),
+             sync_coord)
         } else {
-            None
+            (None, sync_coord)
         }
     }
 }  // impl MyCedar.
