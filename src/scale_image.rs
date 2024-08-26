@@ -25,7 +25,7 @@ fn compute_lut(min_pixel_value: u8,
 // Copy the image, mapping min_pixel_value..peak_pixel_value to 0..255 by
 // applying a gamma and scale factor.
 pub fn scale_image(
-    image: &GrayImage, mut min_pixel_value: u8, peak_pixel_value: u8, gamma: f32)
+    image: &GrayImage, min_pixel_value: u8, peak_pixel_value: u8, gamma: f32)
     -> GrayImage {
     let lut = compute_lut(min_pixel_value, peak_pixel_value, gamma);
 
@@ -38,7 +38,7 @@ pub fn scale_image(
 
 // In-place variant of scale_image().
 pub fn scale_image_mut(
-    image: &mut GrayImage, mut min_pixel_value: u8, peak_pixel_value: u8, gamma: f32) {
+    image: &mut GrayImage, min_pixel_value: u8, peak_pixel_value: u8, gamma: f32) {
     let lut = compute_lut(min_pixel_value, peak_pixel_value, gamma);
 
     for pixel in image.pixels_mut() {
