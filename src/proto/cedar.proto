@@ -167,7 +167,8 @@ enum Accuracy {
   ACCURATE = 3;
 }
 
-// User interface preferences that are stored durably on the server.
+// User interface preferences and operation settings that are stored durably on
+// the server.
 message Preferences {
   // How the user interface should display celestial coordinates.
   optional CelestialCoordFormat celestial_coord_format = 1;
@@ -190,7 +191,30 @@ message Preferences {
   // target slew direction instructions.
   optional MountType mount_type = 6;
 
-  // TODO: save image format (bmp, tiff, jpg, webp, FITS)
+  // The saved location. On server startup we use this to initialize the
+  // corresponding FixedSettings field. Note: do not update this via
+  // UpdatePreferences().
+  optional LatLong observer_location = 7;
+
+  // Saved accuracy setting. On server startup we use this to initialize the
+  // corresponding OperationSettings field. Note: do not update this via
+  // UpdatePreferences().
+  optional Accuracy accuracy = 8;
+
+  // Saved dwell interval. On server startup we use this to initialize the
+  // corresponding OperationSettings field. Note: do not update this via
+  // UpdatePreferences().
+  optional google.protobuf.Duration update_interval = 9;
+
+  // Saved catalog object selection criteria for FOV image decoration. On server
+  // startup we use this to initialize the corresponding OperationSettings
+  // field. Note: do not update this via UpdatePreferences().
+  optional cedar_sky.CatalogEntryMatch catalog_entry_match = 11;
+
+  // Additional catalog entry selection parameters used in the UI.
+  optional double max_distance = 12;  // Degrees.
+  optional double min_elevation = 13;  // Degrees.
+  optional cedar_sky.Ordering ordering = 14;  // Default is to order by brightness.
 }
 
 enum CelestialCoordFormat {

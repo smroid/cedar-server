@@ -132,10 +132,10 @@ struct CedarState {
     // UI.
     display_sampling: bool,
 
-    // We host the user interface preferences here. These do not affect server
-    // operation; we reflect them out to all clients and persist them to a
-    // server-side file.
-    preferences: Preferences,
+    // We host the user interface preferences and some operation settings here.
+    // On startup we apply some of these to `operation_settings`; we reflect
+    // them out to all clients and persist them to a server-side file.
+    preferences: Arc<Mutex<Preferences>>,
 
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
@@ -181,12 +181,15 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<FixedSettings>, tonic::Status>
     {
         let req: FixedSettings = request.into_inner();
-        let locked_state = self.state.lock().await;
         if let Some(observer_location) = req.observer_location {
-            locked_state.fixed_settings.lock().unwrap().observer_location =
+            self.state.lock().await.fixed_settings.lock().unwrap().observer_location =
                 Some(observer_location.clone());
+            let preferences = Preferences{observer_location: Some(observer_location.clone()),
+                                          ..Default::default()};
+            self.update_preferences(tonic::Request::new(preferences)).await?;
             info!("Updated observer location to {:?}", observer_location);
         }
+        let locked_state = self.state.lock().await;
         if let Some(current_time) = req.current_time {
             let current_time =
                 TimeSpec::new(current_time.seconds, current_time.nanos as i64);
@@ -364,9 +367,14 @@ impl Cedar for MyCedar {
             locked_state.operation_settings.exposure_time = Some(exp_time);
         }
         if let Some(accuracy) = req.accuracy {
-            let mut locked_state = self.state.lock().await;
-            locked_state.operation_settings.accuracy = Some(accuracy);
-            Self::update_accuracy_adjusted_params(&*locked_state).await;
+            {
+                let mut locked_state = self.state.lock().await;
+                locked_state.operation_settings.accuracy = Some(accuracy);
+                Self::update_accuracy_adjusted_params(&*locked_state).await;
+            }
+            let preferences = Preferences{accuracy: Some(accuracy),
+                                          ..Default::default()};
+            self.update_preferences(tonic::Request::new(preferences)).await?;
         }
         if let Some(update_interval) = req.update_interval {
             if update_interval.seconds < 0 || update_interval.nanos < 0 {
@@ -375,16 +383,22 @@ impl Cedar for MyCedar {
             }
             let std_duration = std::time::Duration::try_from(
                 update_interval.clone()).unwrap();
-            let mut locked_state = self.state.lock().await;
-            if locked_state.operation_settings.operating_mode ==
-                Some(OperatingMode::Operate as i32)
             {
-                if let Err(x) = Self::set_update_interval(&*locked_state,
-                                                          std_duration).await {
-                    return Err(tonic_status(x));
+                let mut locked_state = self.state.lock().await;
+                if locked_state.operation_settings.operating_mode ==
+                    Some(OperatingMode::Operate as i32)
+                {
+                    if let Err(x) = Self::set_update_interval(&*locked_state,
+                                                              std_duration).await {
+                        return Err(tonic_status(x));
+                    }
                 }
+                locked_state.operation_settings.update_interval =
+                    Some(update_interval.clone());
             }
-            locked_state.operation_settings.update_interval = Some(update_interval);
+            let preferences = Preferences{update_interval: Some(update_interval),
+                                          ..Default::default()};
+            self.update_preferences(tonic::Request::new(preferences)).await?;
         }
         if let Some(_dwell_update_interval) = req.dwell_update_interval {
             return Err(tonic::Status::unimplemented(
@@ -395,15 +409,21 @@ impl Cedar for MyCedar {
                 "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
         }
         if let Some(catalog_entry_match) = req.catalog_entry_match {
-            let mut locked_state = self.state.lock().await;
-            if locked_state.cedar_sky.is_none() {
-                return Err(tonic::Status::unimplemented(
-                    format!("{} does not include Cedar Sky.", self.product_name)));
+            {
+                let mut locked_state = self.state.lock().await;
+                if locked_state.cedar_sky.is_none() {
+                    return Err(tonic::Status::unimplemented(
+                        format!("{} does not include Cedar Sky.", self.product_name)));
+                }
+                locked_state.operation_settings.catalog_entry_match =
+                    Some(catalog_entry_match.clone());
+                locked_state.solve_engine.lock().await.set_catalog_entry_match(
+                    Some(catalog_entry_match.clone())).await;
             }
-            locked_state.operation_settings.catalog_entry_match =
-                Some(catalog_entry_match.clone());
-            locked_state.solve_engine.lock().await.set_catalog_entry_match(
-                Some(catalog_entry_match)).await;
+            let preferences = Preferences{
+                catalog_entry_match: Some(catalog_entry_match),
+                ..Default::default()};
+            self.update_preferences(tonic::Request::new(preferences)).await?;
         }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
@@ -412,45 +432,52 @@ impl Cedar for MyCedar {
     async fn update_preferences(
         &self, request: tonic::Request<Preferences>)
         -> Result<tonic::Response<Preferences>, tonic::Status> {
-        let mut locked_state = self.state.lock().await;
+        let locked_state = self.state.lock().await;
         let req: Preferences = request.into_inner();
+        let mut our_prefs = locked_state.preferences.lock().unwrap();
         if let Some(coord_format) = req.celestial_coord_format {
-            locked_state.preferences.celestial_coord_format = Some(coord_format);
+            our_prefs.celestial_coord_format = Some(coord_format);
         }
         if let Some(eyepiece_fov) = req.eyepiece_fov {
-            locked_state.preferences.eyepiece_fov = Some(eyepiece_fov);
+            our_prefs.eyepiece_fov = Some(eyepiece_fov);
         }
         if let Some(night_vision) = req.night_vision_theme {
-            locked_state.preferences.night_vision_theme = Some(night_vision);
+            our_prefs.night_vision_theme = Some(night_vision);
         }
         if let Some(show_perf) = req.show_perf_stats {
-            locked_state.preferences.show_perf_stats = Some(show_perf);
+            our_prefs.show_perf_stats = Some(show_perf);
         }
         if let Some(hide_app_bar) = req.hide_app_bar {
-            locked_state.preferences.hide_app_bar = Some(hide_app_bar);
+            our_prefs.hide_app_bar = Some(hide_app_bar);
         }
         if let Some(mount_type) = req.mount_type {
-            locked_state.preferences.mount_type = Some(mount_type);
+            our_prefs.mount_type = Some(mount_type);
         }
-
+        if let Some(observer_location) = req.observer_location {
+            our_prefs.observer_location = Some(observer_location);
+        }
+        if let Some(accuracy) = req.accuracy {
+            our_prefs.accuracy = Some(accuracy);
+        }
+        if let Some(update_interval) = req.update_interval {
+            our_prefs.update_interval = Some(update_interval);
+        }
+        if let Some(catalog_entry_match) = req.catalog_entry_match {
+            our_prefs.catalog_entry_match = Some(catalog_entry_match);
+        }
+        if let Some(max_distance) = req.max_distance {
+            our_prefs.max_distance = Some(max_distance);
+        }
+        if let Some(min_elevation) = req.min_elevation {
+            our_prefs.max_distance = Some(min_elevation);
+        }
+        if let Some(ordering) = req.ordering {
+            our_prefs.ordering = Some(ordering);
+        }
         // Write updated preferences to file.
-        let prefs_path = Path::new(&self.preferences_file);
-        let scratch_path = prefs_path.with_extension("tmp");
+        Self::write_preferences_file(&self.preferences_file, &our_prefs);
 
-        let mut buf = vec![];
-        if let Err(e) = locked_state.preferences.encode(&mut buf) {
-            warn!("Could not encode preferences: {:?}", e);
-            return Ok(tonic::Response::new(locked_state.preferences.clone()));
-        }
-        if let Err(e) = fs::write(&scratch_path, buf) {
-            warn!("Could not write file: {:?}", e);
-            return Ok(tonic::Response::new(locked_state.preferences.clone()));
-        }
-        if let Err(e) = fs::rename(scratch_path, prefs_path) {
-            warn!("Could not rename file: {:?}", e);
-        }
-
-        Ok(tonic::Response::new(locked_state.preferences.clone()))
+        Ok(tonic::Response::new(our_prefs.clone()))
     }
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
@@ -709,6 +736,26 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
+    fn write_preferences_file(preferences_file: &PathBuf, preferences: &Preferences) {
+        // Write updated preferences to file.
+        let prefs_path = Path::new(preferences_file);
+        let scratch_path = prefs_path.with_extension("tmp");
+
+        let mut buf = vec![];
+        if let Err(e) = preferences.encode(&mut buf) {
+            warn!("Could not encode preferences: {:?}", e);
+            return;
+        }
+        if let Err(e) = fs::write(&scratch_path, buf) {
+            warn!("Could not write file: {:?}", e);
+            return;
+        }
+        if let Err(e) = fs::rename(scratch_path, prefs_path) {
+            warn!("Could not rename file: {:?}", e);
+            return;
+        }
+    }
+
     async fn get_server_information(&self) -> ServerInformation {
         let camera_model;
         let camera_image_width;
@@ -931,7 +978,8 @@ impl MyCedar {
             // Fill in our current time.
             Self::fill_in_time(&mut fixed_settings);
             frame_result.fixed_settings = Some(fixed_settings.clone());
-            frame_result.preferences = Some(locked_state.preferences.clone());
+            frame_result.preferences =
+                Some(locked_state.preferences.lock().unwrap().clone());
             frame_result.operation_settings =
                 Some(locked_state.operation_settings.clone());
 
@@ -1176,8 +1224,9 @@ impl MyCedar {
                 let bs_ra = celestial_coords.ra.to_radians();
                 let bs_dec = celestial_coords.dec.to_radians();
 
+                let mount_type = locked_state.preferences.lock().unwrap().mount_type;
                 if frame_result.slew_request.is_some() &&
-                    locked_state.preferences.mount_type == Some(MountType::Equatorial.into())
+                    mount_type == Some(MountType::Equatorial.into())
                 {
                     let slew_request = frame_result.slew_request.as_mut().unwrap();
                     // Compute the movement required in RA and Dec to move boresight to
@@ -1224,7 +1273,7 @@ impl MyCedar {
                         });
 
                     if frame_result.slew_request.is_some() &&
-                        locked_state.preferences.mount_type == Some(MountType::AltAz.into())
+                        mount_type == Some(MountType::AltAz.into())
                     {
                         let slew_request = frame_result.slew_request.as_mut().unwrap();
                         // Compute the movement required in azimuith and altitude to move
@@ -1300,6 +1349,8 @@ impl MyCedar {
             stats_capacity)));
         let tetra3_subprocess = Arc::new(Mutex::new(
             Tetra3Subprocess::new(tetra3_script, tetra3_database, got_signal).unwrap()));
+
+        // Set up initial Preferences to use if preferences file cannot be loaded.
         let mut preferences = Preferences{
             celestial_coord_format: Some(CelestialCoordFormat::HmsDms.into()),
             eyepiece_fov: Some(1.0),
@@ -1307,6 +1358,45 @@ impl MyCedar {
             show_perf_stats: Some(false),
             hide_app_bar: Some(false),
             mount_type: Some(MountType::Equatorial.into()),
+            observer_location: None,
+            accuracy: Some(Accuracy::Balanced.into()),
+            update_interval: Some(prost_types::Duration {
+                seconds: 0, nanos: 0,
+            }),
+            catalog_entry_match: if cedar_sky.is_some() {
+                let mut cat_match =
+                    Some(CatalogEntryMatch {
+                        faintest_magnitude: Some(12),
+                        catalog_label: Vec::<String>::new(),
+                        object_type_label: Vec::<String>::new(),
+                    });
+                let cm_ref = cat_match.as_mut().unwrap();
+                // All catalog labels.
+                cm_ref.catalog_label = vec![
+                    "M".to_string(), "NGC".to_string(), "IC".to_string(),
+                    "IAU".to_string(),
+                    "PL".to_string(), "AST".to_string(), "COM".to_string()];
+                // All object types.
+                cm_ref.object_type_label = vec![
+                    "star".to_string(), "double star".to_string(),
+                    "star association".to_string(),
+                    "open cluster".to_string(), "globular cluster".to_string(),
+                    "star cluster + nebula".to_string(),
+                    "galaxy".to_string(), "galaxy pair".to_string(),
+                    "galaxy triplet".to_string(), "galaxy group".to_string(),
+                    "planetary nebula".to_string(), "HII ionized region".to_string(),
+                    "dark nebula".to_string(), "emission nebula".to_string(),
+                    "nebula".to_string(), "reflection nebula".to_string(),
+                    "supernova remnant".to_string(), "nova star".to_string(),
+                    "planet".to_string(), "minor planet".to_string(),
+                    "asteroid".to_string(), "comet".to_string()];
+                cat_match
+            } else {
+                None
+            },
+            max_distance: None,
+            min_elevation: Some(20.0),
+            ordering: Some(Ordering::Brightness.into()),
         };
 
         // Load UI preferences file.
@@ -1331,8 +1421,10 @@ impl MyCedar {
             }
         }
 
+        let shared_preferences = Arc::new(Mutex::new(preferences.clone()));
+
         let fixed_settings = Arc::new(Mutex::new(FixedSettings {
-            observer_location: None,
+            observer_location: preferences.observer_location.clone(),
             current_time: None,
             session_name: None,
             max_exposure_time: Some(
@@ -1343,6 +1435,8 @@ impl MyCedar {
 
         // Define callback invoked from SolveEngine().
         let closure_fixed_settings = fixed_settings.clone();
+        let closure_preferences = shared_preferences.clone();
+        let closure_preferences_file = preferences_file.clone();
         let closure_telescope_position = telescope_position.clone();
         let motion_estimator = Arc::new(Mutex::new(MotionEstimator::new(
             /*gap_tolerance=*/Duration::from_secs(3),
@@ -1355,30 +1449,13 @@ impl MyCedar {
                 detect_result,
                 solve_result_proto,
                 &mut closure_fixed_settings.lock().unwrap(),
+                &mut closure_preferences.lock().unwrap(),
+                closure_preferences_file.clone(),
                 &mut closure_telescope_position.lock().unwrap(),
                 &mut motion_estimator.lock().unwrap(),
                 &mut closure_polar_analyzer.lock().unwrap())
         });
         let dimensions = camera.lock().await.dimensions();
-        let catalog_entry_match = if cedar_sky.is_some() {
-            let mut cat_match =
-                Some(CatalogEntryMatch {
-                    faintest_magnitude: Some(15),
-                    catalog_label: Vec::<String>::new(),
-                    object_type_label: Vec::<String>::new(),
-                });
-            // TODO: initialize from `preferences`.
-            let cm_ref = cat_match.as_mut().unwrap();
-            cm_ref.catalog_label = vec![
-                "M".to_string(), "NGC".to_string(), "IC".to_string(), "IAU".to_string()];
-            cm_ref.object_type_label = vec![
-                "star".to_string(), "open cluster".to_string(),
-                "globular cluster".to_string(), "galaxy".to_string(),
-                "planetary nebula".to_string(), "nebula".to_string()];
-            cat_match
-        } else {
-            None
-        };
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
             fixed_settings,
@@ -1387,15 +1464,11 @@ impl MyCedar {
                 exposure_time: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
-                accuracy: Some(Accuracy::Balanced.into()),
-                update_interval: Some(prost_types::Duration {
-                    seconds: 0, nanos: 0,
-                }),
-                dwell_update_interval: Some(prost_types::Duration {
-                    seconds: 1, nanos: 0,
-                }),
+                accuracy: preferences.accuracy,
+                update_interval: preferences.update_interval.clone(),
+                dwell_update_interval: None,
                 log_dwelled_positions: Some(false),
-                catalog_entry_match: catalog_entry_match.clone(),
+                catalog_entry_match: preferences.catalog_entry_match.clone(),
             },
             calibration_data: Arc::new(tokio::sync::Mutex::new(
                 CalibrationData{..Default::default()})),
@@ -1411,7 +1484,7 @@ impl MyCedar {
             polar_analyzer,
             cedar_sky,
             binning, display_sampling,
-            preferences,
+            preferences: shared_preferences,
             scaled_image: None,
             scaled_image_binning_factor: 1,
             width: dimensions.0 as u32,
@@ -1464,7 +1537,7 @@ impl MyCedar {
         }
         locked_state.detect_engine.lock().await.set_focus_mode(true, binning);
         locked_state.solve_engine.lock().await.set_catalog_entry_match(
-            catalog_entry_match).await;
+            preferences.catalog_entry_match.clone()).await;
         Self::update_accuracy_adjusted_params(&*locked_state).await;
 
         cedar
@@ -1500,6 +1573,8 @@ impl MyCedar {
     fn solution_callback(detect_result: Option<DetectResult>,
                          solve_result_proto: Option<SolveResultProto>,
                          fixed_settings: &mut FixedSettings,
+                         preferences: &mut Preferences,
+                         preferences_file: PathBuf,
                          telescope_position: &mut TelescopePosition,
                          motion_estimator: &mut MotionEstimator,
                          polar_analyzer: &mut PolarAnalyzer)
@@ -1538,6 +1613,10 @@ impl MyCedar {
                 info!("Alpaca updated observer location to {:?}", observer_location);
                 telescope_position.site_latitude = None;
                 telescope_position.site_longitude = None;
+                // Save in preferences.
+                preferences.observer_location = Some(observer_location.clone());
+                // Write updated preferences to file.
+                Self::write_preferences_file(&preferences_file, &preferences);
             }
             // Has SkySafari done a "sync"?
             if telescope_position.sync_ra.is_some() &&
