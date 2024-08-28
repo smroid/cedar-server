@@ -472,10 +472,10 @@ impl Cedar for MyCedar {
             our_prefs.max_distance = Some(max_distance);
         }
         if let Some(min_elevation_active) = req.min_elevation_active {
-            our_prefs.max_distance_active = Some(min_elevation_active);
+            our_prefs.min_elevation_active = Some(min_elevation_active);
         }
         if let Some(min_elevation) = req.min_elevation {
-            our_prefs.max_distance = Some(min_elevation);
+            our_prefs.min_elevation = Some(min_elevation);
         }
         if let Some(ordering) = req.ordering {
             our_prefs.ordering = Some(ordering);
