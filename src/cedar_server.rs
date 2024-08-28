@@ -1366,6 +1366,8 @@ impl MyCedar {
             catalog_entry_match: if cedar_sky.is_some() {
                 let mut cat_match =
                     Some(CatalogEntryMatch {
+                        // TODO: make initial limiting magnitude deeper for
+                        // plus model.
                         faintest_magnitude: Some(12),
                         catalog_label: Vec::<String>::new(),
                         object_type_label: Vec::<String>::new(),
@@ -1392,28 +1394,33 @@ impl MyCedar {
                     "asteroid".to_string(), "comet".to_string()];
                 cat_match
             } else {
-                None
+                None  // No Cedar sky.
             },
             max_distance: None,
             min_elevation: Some(20.0),
             ordering: Some(Ordering::Brightness.into()),
         };
 
+        // If there is a preferences file, read it and merge its contents into
+        // initial `preferences`. Fields that are present in the both
+        // `preferences` and the preferences file will replace those in initial
+        // `preferences`.
+
         // Load UI preferences file.
         let prefs_path = Path::new(&preferences_file);
-        let bytes = fs::read(prefs_path);
-        if let Err(e) = bytes {
+        let file_prefs_bytes = fs::read(prefs_path);
+        if let Err(e) = file_prefs_bytes {
             warn!("Could not read file {:?}: {:?}", preferences_file, e);
         } else {
-            match Preferences::decode(bytes.unwrap().as_slice()) {
-                Ok(mut p) => {
-                    if p.eyepiece_fov.unwrap() < 0.1 {
-                        p.eyepiece_fov = Some(0.1);
+            match Preferences::decode(file_prefs_bytes.as_ref().unwrap().as_slice()) {
+                Ok(mut file_prefs) => {
+                    if file_prefs.eyepiece_fov.unwrap() < 0.1 {
+                        file_prefs.eyepiece_fov = Some(0.1);
                     }
-                    if p.eyepiece_fov.unwrap() > 2.0 {
-                        p.eyepiece_fov = Some(2.0);
+                    if file_prefs.eyepiece_fov.unwrap() > 2.0 {
+                        file_prefs.eyepiece_fov = Some(2.0);
                     }
-                    preferences = p;
+                    preferences.merge(&*file_prefs_bytes.unwrap()).unwrap();
                 }
                 Err(e) => {
                     warn!("Could not decode preferences {:?}", e);
@@ -2109,3 +2116,35 @@ mod multiplex_service {
             .is_some()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::cedar::Preferences;
+    use prost::Message;
+
+    #[test]
+    fn test_proto_merge() {
+        let mut prefs1 = Preferences{
+            eyepiece_fov: Some(1.0),
+            night_vision_theme: Some(true),
+            ..Default::default()
+        };
+        let prefs2 = Preferences{
+            night_vision_theme: Some(false),
+            show_perf_stats: Some(true),
+            ..Default::default()
+        };
+        let prefs2_bytes = Preferences::encode_to_vec(&prefs2);
+        prefs1.merge(&*prefs2_bytes).unwrap();
+
+        // Field present only in prefs1.
+        assert_eq!(prefs1.eyepiece_fov, Some(1.0));
+
+        // Field present on both protos, take prefs2 value.
+        assert_eq!(prefs1.night_vision_theme, Some(false));
+
+        // Field present only in prefs2.
+        assert_eq!(prefs1.show_perf_stats, Some(true));
+    }
+
+}  // mod tests.
