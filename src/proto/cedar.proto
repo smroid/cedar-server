@@ -212,8 +212,13 @@ message Preferences {
   optional cedar_sky.CatalogEntryMatch catalog_entry_match = 11;
 
   // Additional catalog entry selection parameters used in the UI.
+
+  optional bool max_distance_active = 15;
   optional double max_distance = 12;  // Degrees.
+
+  optional bool min_elevation_active = 16;
   optional double min_elevation = 13;  // Degrees.
+
   optional cedar_sky.Ordering ordering = 14;  // Default is to order by brightness.
 }
 

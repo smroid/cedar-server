@@ -465,8 +465,14 @@ impl Cedar for MyCedar {
         if let Some(catalog_entry_match) = req.catalog_entry_match {
             our_prefs.catalog_entry_match = Some(catalog_entry_match);
         }
+        if let Some(max_distance_active) = req.max_distance_active {
+            our_prefs.max_distance_active = Some(max_distance_active);
+        }
         if let Some(max_distance) = req.max_distance {
             our_prefs.max_distance = Some(max_distance);
+        }
+        if let Some(min_elevation_active) = req.min_elevation_active {
+            our_prefs.max_distance_active = Some(min_elevation_active);
         }
         if let Some(min_elevation) = req.min_elevation {
             our_prefs.max_distance = Some(min_elevation);
@@ -1396,7 +1402,9 @@ impl MyCedar {
             } else {
                 None  // No Cedar sky.
             },
-            max_distance: None,
+            max_distance_active: Some(false),
+            max_distance: Some(60.0),
+            min_elevation_active: Some(true),
             min_elevation: Some(20.0),
             ordering: Some(Ordering::Brightness.into()),
         };
@@ -1419,6 +1427,12 @@ impl MyCedar {
                     }
                     if file_prefs.eyepiece_fov.unwrap() > 2.0 {
                         file_prefs.eyepiece_fov = Some(2.0);
+                    }
+                    if file_prefs.catalog_entry_match.is_some() {
+                        // The protobuf merge() function accumulates into
+                        // repeated fields of the destination; we don't want
+                        // this.
+                        preferences.catalog_entry_match = None;
                     }
                     preferences.merge(&*file_prefs_bytes.unwrap()).unwrap();
                 }
@@ -2146,5 +2160,4 @@ mod tests {
         // Field present only in prefs2.
         assert_eq!(prefs1.show_perf_stats, Some(true));
     }
-
 }  // mod tests.
