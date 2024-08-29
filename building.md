@@ -25,7 +25,7 @@ started!
 ## Download and burn
 
 First: download the SD card image
-[cedar_rpi4_2024_jul_20.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi4_2024_jul_20.img.gz)
+[cedar_rpi_2024_aug_28.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_aug_28.img.gz)
 to your computer.
 
 Second: burn an SD card (16GB or larger) with the image file you just downloaded
@@ -382,6 +382,7 @@ First, create a file `/home/cedar/run_cedar.sh` containing:
 #!/bin/bash
 source /home/cedar/projects/cedar-solve/.cedar_venv/bin/activate
 cd /home/cedar/projects/cedar-server/src
+export PATH=/home/cedar/.cargo/bin:$PATH
 /home/cedar/projects/cedar-server/target/release/cedar-box-server
 ```
 
