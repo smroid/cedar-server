@@ -22,8 +22,8 @@ pub trait CedarSkyTrait {
     /// Initiates processing of solar system ephemeris entries.
     async fn initiate_solar_system_processing(&mut self, time: SystemTime);
 
-    /// Checks to see if the solar system ephemeris has completed processing,
-    /// and if so, absorbs its contents.
+    /// Checks to see if the solar system ephemeris has completed processing
+    /// and absorbs its contents.
     async fn check_solar_system_completion(&mut self);
 
     fn get_catalog_descriptions(&self) -> Vec<CatalogDescription>;
