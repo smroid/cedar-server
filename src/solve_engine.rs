@@ -878,7 +878,7 @@ impl SolveEngine {
             /*text_search*/None,
             /*ordering=*/None,
             // TODO: parameter for decrowd factor.
-            /*decrowd_distance=*/Some(3600.0 * fov / 20.0),  // Arcsec.
+            /*decrowd_distance=*/Some(3600.0 * fov / 15.0),  // Arcsec.
             /*limit_result*/Some(50),
             /*sky_location*/Some(boresight_coords.clone()),
             /*location_info=*/None);

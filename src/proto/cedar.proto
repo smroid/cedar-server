@@ -220,6 +220,12 @@ message Preferences {
   optional double min_elevation = 13;  // Degrees.
 
   optional cedar_sky.Ordering ordering = 14;  // Default is to order by brightness.
+
+  // Advanced mode vs. basic mode.
+  optional bool advanced = 17;
+
+  // 0: normal; -1: smaller; +1: bigger.
+  optional int32 text_size_index = 18;
 }
 
 enum CelestialCoordFormat {

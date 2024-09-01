@@ -266,6 +266,7 @@ impl Cedar for MyCedar {
                         true, locked_state.binning);
                     locked_state.operation_settings.operating_mode =
                         Some(OperatingMode::Setup as i32);
+                    locked_state.telescope_position.lock().unwrap().slew_active = false;
                 }
             } else if new_operating_mode == OperatingMode::Operate as i32 {
                 let locked_state = self.state.lock().await;
@@ -479,6 +480,12 @@ impl Cedar for MyCedar {
         }
         if let Some(ordering) = req.ordering {
             our_prefs.ordering = Some(ordering);
+        }
+        if let Some(advanced) = req.advanced {
+            our_prefs.advanced = Some(advanced);
+        }
+        if let Some(text_size_index) = req.text_size_index {
+            our_prefs.text_size_index = Some(text_size_index);
         }
         // Write updated preferences to file.
         Self::write_preferences_file(&self.preferences_file, &our_prefs);
@@ -1407,6 +1414,8 @@ impl MyCedar {
             min_elevation_active: Some(true),
             min_elevation: Some(20.0),
             ordering: Some(Ordering::Brightness.into()),
+            advanced: Some(false),
+            text_size_index: Some(0),
         };
 
         // If there is a preferences file, read it and merge its contents into
