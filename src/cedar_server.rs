@@ -445,9 +445,6 @@ impl Cedar for MyCedar {
         if let Some(night_vision) = req.night_vision_theme {
             our_prefs.night_vision_theme = Some(night_vision);
         }
-        if let Some(show_perf) = req.show_perf_stats {
-            our_prefs.show_perf_stats = Some(show_perf);
-        }
         if let Some(hide_app_bar) = req.hide_app_bar {
             our_prefs.hide_app_bar = Some(hide_app_bar);
         }
@@ -487,6 +484,9 @@ impl Cedar for MyCedar {
         if let Some(text_size_index) = req.text_size_index {
             our_prefs.text_size_index = Some(text_size_index);
         }
+        if let Some(boresight_pixel) = req.boresight_pixel {
+            our_prefs.boresight_pixel = Some(boresight_pixel);
+        }
         // Write updated preferences to file.
         Self::write_preferences_file(&self.preferences_file, &our_prefs);
 
@@ -505,12 +505,14 @@ impl Cedar for MyCedar {
     async fn initiate_action(&self, request: tonic::Request<ActionRequest>)
                              -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req: ActionRequest = request.into_inner();
-        let locked_state = self.state.lock().await;
         if req.capture_boresight.unwrap_or(false) {
-            let operating_mode = locked_state.operation_settings.operating_mode.or(
+            let operating_mode =
+                self.state.lock().await.operation_settings.operating_mode.or(
                     Some(OperatingMode::Setup as i32)).unwrap();
+            let save_boresight_pos;
             if operating_mode == OperatingMode::Setup as i32 {
-                let boresight_pos =
+                let locked_state = self.state.lock().await;
+                let bsp =
                     match locked_state.center_peak_position.lock().unwrap().as_ref()
                 {
                     Some(pos) => Some(tetra3_server::ImageCoord{
@@ -521,24 +523,28 @@ impl Cedar for MyCedar {
                 };
                 if let Err(x) =
                     locked_state.solve_engine.lock().await.set_boresight_pixel(
-                        boresight_pos).await
+                        bsp.clone()).await
                 {
                     return Err(tonic_status(x));
                 }
+                save_boresight_pos = Some(ImageCoord{x: bsp.as_ref().unwrap().x,
+                                                     y: bsp.as_ref().unwrap().y});
             } else {
                 // Operate mode.
+                let locked_state = self.state.lock().await;
                 let plate_solution = locked_state.solve_engine.lock().await.
                     get_next_result(None).await;
                 if let Some(slew_request) = plate_solution.slew_request {
                     if slew_request.target_within_center_region {
-                        let boresight_pos = slew_request.image_pos.unwrap();
+                        let bsp = slew_request.image_pos.unwrap();
                         if let Err(x) = locked_state.solve_engine.lock().await.
                             set_boresight_pixel(Some(tetra3_server::ImageCoord{
-                                x: boresight_pos.x,
-                                y: boresight_pos.y})).await
+                                x: bsp.x,
+                                y: bsp.y})).await
                         {
                             return Err(tonic_status(x));
                         }
+                        save_boresight_pos = Some(bsp);
                     } else {
                         return Err(tonic::Status::failed_precondition(
                             "Target not in center region."));
@@ -548,7 +554,14 @@ impl Cedar for MyCedar {
                         format!("Not in Setup mode: {:?}.", operating_mode)));
                 }
             }
+            if let Some(bsp) = save_boresight_pos {
+                let preferences = Preferences{
+                    boresight_pixel: Some(bsp),
+                    ..Default::default()};
+                self.update_preferences(tonic::Request::new(preferences)).await?;
+            }
         }
+        let locked_state = self.state.lock().await;
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
             std::thread::sleep(Duration::from_secs(2));
@@ -1313,8 +1326,7 @@ impl MyCedar {
             }
         }
         let boresight_position =
-            locked_state.solve_engine.lock().await.boresight_pixel().await.expect(
-                "solve_engine.boresight_pixel() should not fail");
+            locked_state.solve_engine.lock().await.boresight_pixel().await;
         if let Some(bs) = boresight_position {
             frame_result.boresight_position = Some(ImageCoord{x: bs.x, y: bs.y});
         } else {
@@ -1368,9 +1380,8 @@ impl MyCedar {
             celestial_coord_format: Some(CelestialCoordFormat::HmsDms.into()),
             eyepiece_fov: Some(1.0),
             night_vision_theme: Some(false),
-            show_perf_stats: Some(false),
-            hide_app_bar: Some(false),
-            mount_type: Some(MountType::Equatorial.into()),
+            hide_app_bar: Some(true),
+            mount_type: Some(MountType::AltAz.into()),
             observer_location: None,
             accuracy: Some(Accuracy::Balanced.into()),
             update_interval: Some(prost_types::Duration {
@@ -1416,6 +1427,7 @@ impl MyCedar {
             ordering: Some(Ordering::Brightness.into()),
             advanced: Some(false),
             text_size_index: Some(0),
+            boresight_pixel: None,
         };
 
         // If there is a preferences file, read it and merge its contents into
@@ -1451,10 +1463,10 @@ impl MyCedar {
             }
         }
 
-        let shared_preferences = Arc::new(Mutex::new(preferences.clone()));
+        let shared_preferences = Arc::new(Mutex::new(preferences));
 
         let fixed_settings = Arc::new(Mutex::new(FixedSettings {
-            observer_location: preferences.observer_location.clone(),
+            observer_location: shared_preferences.lock().unwrap().observer_location.clone(),
             current_time: None,
             session_name: None,
             max_exposure_time: Some(
@@ -1472,10 +1484,17 @@ impl MyCedar {
             /*gap_tolerance=*/Duration::from_secs(3),
             /*bump_tolerance=*/Duration::from_secs_f64(2.0))));
         let closure_polar_analyzer = polar_analyzer.clone();
-        let closure = Arc::new(move |detect_result: Option<DetectResult>,
+        let closure = Arc::new(move |boresight_pixel: Option<tetra3_server::ImageCoord>,
+                                     detect_result: Option<DetectResult>,
                                      solve_result_proto: Option<SolveResultProto>|
         {
+            let bsp = match boresight_pixel {
+                Some(pos) => Some(tetra3_server::ImageCoord{
+                    x: pos.x, y: pos.y}),
+                None => None,
+            };
             Self::solution_callback(
+                bsp,
                 detect_result,
                 solve_result_proto,
                 &mut closure_fixed_settings.lock().unwrap(),
@@ -1485,6 +1504,7 @@ impl MyCedar {
                 &mut motion_estimator.lock().unwrap(),
                 &mut closure_polar_analyzer.lock().unwrap())
         });
+        let locked_preferences = shared_preferences.lock().unwrap();
         let dimensions = camera.lock().await.dimensions();
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
@@ -1494,11 +1514,11 @@ impl MyCedar {
                 exposure_time: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),
-                accuracy: preferences.accuracy,
-                update_interval: preferences.update_interval.clone(),
+                accuracy: locked_preferences.accuracy,
+                update_interval: locked_preferences.update_interval.clone(),
                 dwell_update_interval: None,
                 log_dwelled_positions: Some(false),
-                catalog_entry_match: preferences.catalog_entry_match.clone(),
+                catalog_entry_match: locked_preferences.catalog_entry_match.clone(),
             },
             calibration_data: Arc::new(tokio::sync::Mutex::new(
                 CalibrationData{..Default::default()})),
@@ -1514,7 +1534,7 @@ impl MyCedar {
             polar_analyzer,
             cedar_sky,
             binning, display_sampling,
-            preferences: shared_preferences,
+            preferences: shared_preferences.clone(),
             scaled_image: None,
             scaled_image_binning_factor: 1,
             width: dimensions.0 as u32,
@@ -1567,7 +1587,12 @@ impl MyCedar {
         }
         locked_state.detect_engine.lock().await.set_focus_mode(true, binning);
         locked_state.solve_engine.lock().await.set_catalog_entry_match(
-            preferences.catalog_entry_match.clone()).await;
+            locked_preferences.catalog_entry_match.clone()).await;
+        if let Some(bsp) = &locked_preferences.boresight_pixel {
+            locked_state.solve_engine.lock().await.set_boresight_pixel(
+                Some(tetra3_server::ImageCoord{
+                    x: bsp.x, y: bsp.y})).await.unwrap();
+        }
         Self::update_accuracy_adjusted_params(&*locked_state).await;
 
         cedar
@@ -1600,7 +1625,8 @@ impl MyCedar {
         Ok(content)
     }
 
-    fn solution_callback(detect_result: Option<DetectResult>,
+    fn solution_callback(boresight_pixel: Option<tetra3_server::ImageCoord>,
+                         detect_result: Option<DetectResult>,
                          solve_result_proto: Option<SolveResultProto>,
                          fixed_settings: &mut FixedSettings,
                          preferences: &mut Preferences,
@@ -1610,6 +1636,20 @@ impl MyCedar {
                          polar_analyzer: &mut PolarAnalyzer)
                          -> (Option<CelestialCoord>, Option<CelestialCoord>)
     {
+        // Notice when solve engine has recently changed its boresight due
+        // to a previous call to this callback function reporting a SkySafari
+        // sync.
+        if let Some(bp) = boresight_pixel {
+            let cedar_bp = ImageCoord{x: bp.x, y: bp.y};
+            if preferences.boresight_pixel.is_none() ||
+                cedar_bp != *preferences.boresight_pixel.as_ref().unwrap()
+            {
+                // Save in preferences.
+                preferences.boresight_pixel = Some(cedar_bp);
+                // Write updated preferences to file.
+                Self::write_preferences_file(&preferences_file, &preferences);
+            }
+        }
         let mut sync_coord: Option<CelestialCoord> = None;
         if solve_result_proto.is_none() {
             telescope_position.boresight_valid = false;
@@ -2154,7 +2194,7 @@ mod tests {
         };
         let prefs2 = Preferences{
             night_vision_theme: Some(false),
-            show_perf_stats: Some(true),
+            hide_app_bar: Some(true),
             ..Default::default()
         };
         let prefs2_bytes = Preferences::encode_to_vec(&prefs2);
@@ -2167,6 +2207,6 @@ mod tests {
         assert_eq!(prefs1.night_vision_theme, Some(false));
 
         // Field present only in prefs2.
-        assert_eq!(prefs1.show_perf_stats, Some(true));
+        assert_eq!(prefs1.hide_app_bar, Some(true));
     }
 }  // mod tests.

@@ -53,7 +53,8 @@ pub struct SolveEngine {
     // Called whenever worker() finishes an evaluation. Return value:
     // (sky coordinate of slew target (if any),
     //  sky coordinate of sync operation (if any))
-    solution_callback: Arc<dyn Fn(Option<DetectResult>,
+    solution_callback: Arc<dyn Fn(Option<ImageCoord>,
+                                  Option<DetectResult>,
                                   Option<SolveResultProto>)
                                   -> (Option<CelestialCoord>, Option<CelestialCoord>)
                            + Send + Sync>,
@@ -147,7 +148,8 @@ impl SolveEngine {
         tetra3_server_address: String,
         update_interval: Duration,
         stats_capacity: usize,
-        solution_callback: Arc<dyn Fn(Option<DetectResult>,
+        solution_callback: Arc<dyn Fn(Option<ImageCoord>,
+                                      Option<DetectResult>,
                                       Option<SolveResultProto>)
                                       -> (Option<CelestialCoord>,
                                           Option<CelestialCoord>)
@@ -232,10 +234,9 @@ impl SolveEngine {
         // it finishes the current interval.
         Ok(())
     }
-    pub async fn boresight_pixel(&self)
-                                 -> Result<Option<ImageCoord>, CanonicalError> {
+    pub async fn boresight_pixel(&self) -> Option<ImageCoord> {
         let locked_state = self.state.lock().await;
-        Ok(locked_state.boresight_pixel.clone())
+        locked_state.boresight_pixel.clone()
     }
 
     pub async fn set_distortion(&mut self, distortion: f64)
@@ -429,7 +430,8 @@ impl SolveEngine {
         client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-        solution_callback: Arc<dyn Fn(Option<DetectResult>,
+        solution_callback: Arc<dyn Fn(Option<ImageCoord>,
+                                      Option<DetectResult>,
                                       Option<SolveResultProto>)
                                       -> (Option<CelestialCoord>,
                                           Option<CelestialCoord>)
@@ -445,7 +447,7 @@ impl SolveEngine {
                 if locked_state.stop_request {
                     debug!("Stopping solve engine");
                     locked_state.stop_request = false;
-                    solution_callback(None, None);
+                    solution_callback(None, None, None);
                     return;  // Exit thread.
                 }
             }
@@ -570,7 +572,8 @@ impl SolveEngine {
             let mut boresight_image_region: Option<Rect> = None;
             if tetra3_solve_result.is_none() {
                 locked_state.solve_attempt_stats.add_value(0.0);
-                solution_callback(Some(detect_result.clone()), None);
+                solution_callback(locked_state.boresight_pixel.clone(),
+                                  Some(detect_result.clone()), None);
             } else {
                 locked_state.solve_attempt_stats.add_value(1.0);
                 let tsr = tetra3_solve_result.as_ref().unwrap();
@@ -587,7 +590,8 @@ impl SolveEngine {
                     // interface and MotionEstimator. Integration layer returns current
                     // slew target coords, if any.
                     let (slew_target, sync_coord) =
-                        solution_callback(Some(detect_result.clone()), Some(tsr.clone()));
+                        solution_callback(locked_state.boresight_pixel.clone(),
+                                          Some(detect_result.clone()), Some(tsr.clone()));
                     locked_state.slew_target = slew_target;
                     if let Some(target_coords) = &locked_state.slew_target {
                         (slew_request, boresight_image_region, boresight_image) =
@@ -621,6 +625,11 @@ impl SolveEngine {
                         if Self::point_in_region(&img_coord,
                                                  &detect_result.center_region) {
                             locked_state.boresight_pixel = Some(img_coord);
+                            // Note: we should update the boresight in the saved
+                            // preferences, but we don't have access to the
+                            // cedar_server logic here. Instead, we leave it to
+                            // the cedar_server logic to notice the boresight
+                            // change and update the saved prefs.
                         } else {
                             warn!("Rejecting non-central boresight sync at {:?}",
                                   img_coord);
@@ -642,7 +651,8 @@ impl SolveEngine {
                     }
                 } else {
                     locked_state.solve_success_stats.add_value(0.0);
-                    solution_callback(Some(detect_result.clone()), None);
+                    solution_callback(locked_state.boresight_pixel.clone(),
+                                      Some(detect_result.clone()), None);
                 }
                 locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
             }

@@ -180,9 +180,6 @@ message Preferences {
   // If true, the UI should favor red highlights instead of white.
   optional bool night_vision_theme = 3;
 
-  // If true, the UI continuously displays (some) Cedar performance statistics.
-  optional bool show_perf_stats = 4;
-
   // If true, the UI app bar is hidden to allow full screen operation.
   optional bool hide_app_bar = 5;
 
@@ -226,6 +223,13 @@ message Preferences {
 
   // 0: normal; -1: smaller; +1: bigger.
   optional int32 text_size_index = 18;
+
+  // Saved boresight position. On server startup we use this to initialize the
+  // internal state which appears at FrameResult.boresight_position. Note: do
+  // not update this via UpdatePreferences().
+  optional ImageCoord boresight_pixel = 19;
+
+  reserved 4;
 }
 
 enum CelestialCoordFormat {
