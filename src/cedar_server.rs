@@ -18,7 +18,7 @@ use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
-use image::{GrayImage, ImageFormat};
+use image::{GenericImageView, GrayImage, ImageFormat};
 use image::ImageReader;
 
 use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntry,
@@ -325,6 +325,11 @@ impl Cedar for MyCedar {
                                 // Transition into Operate mode.
                                 locked_state.detect_engine.lock().await.set_focus_mode(
                                     false, locked_state.binning);
+                                // Turn off daylight mode.
+                                locked_state.detect_engine.lock().await.set_daylight_mode(
+                                    false);
+                                locked_state.operation_settings.daylight_mode =
+                                    Some(false);
                                 locked_state.solve_engine.lock().await.start().await;
                                 // Restore OPERATE mode update interval.
                                 let std_duration;
@@ -355,6 +360,17 @@ impl Cedar for MyCedar {
                     format!("Got invalid operating_mode: {}.", new_operating_mode)));
             }
         }  // Update operating_mode.
+        if let Some(new_daylight_mode) = req.daylight_mode {
+            let mut locked_state = self.state.lock().await;
+            if locked_state.operation_settings.operating_mode ==
+                Some(OperatingMode::Operate as i32) {
+                return Err(tonic::Status::failed_precondition(
+                    "Ignoring daylight_mode while in OPERATE mode."));
+            }
+            locked_state.detect_engine.lock().await.set_daylight_mode(
+                new_daylight_mode);
+            locked_state.operation_settings.daylight_mode = Some(new_daylight_mode);
+        }
         if let Some(exp_time) = req.exposure_time {
             if exp_time.seconds < 0 || exp_time.nanos < 0 {
                 return Err(tonic::Status::invalid_argument(
@@ -991,7 +1007,7 @@ impl MyCedar {
 
         let mut frame_result = FrameResult {..Default::default()};
         let mut fixed_settings;
-        let image_rectangle;
+        let mut image_rectangle;
         {
             let locked_state = state.lock().await;
             image_rectangle = Rectangle{
@@ -1132,20 +1148,37 @@ impl MyCedar {
                 image_data: center_peak_bmp_buf,
             });
         } else {
-            peak_value = detect_result.peak_star_pixel;
+            peak_value = detect_result.peak_value;
             *locked_state.center_peak_position.lock().unwrap() = None;
         }
 
         // Populate `image` as requested.
         let mut disp_image = &captured_image.image;
-        if detect_result.binned_image.is_some() {
-            disp_image = detect_result.binned_image.as_ref().unwrap();
-        }
         let mut resized_disp_image = disp_image;
         let resize_result: Arc<GrayImage>;
-        if display_sampling {
-            resize_result = Arc::new(sample_2x2(disp_image.deref().clone()));
+        let binning_factor;
+        if locked_state.operation_settings.daylight_mode.unwrap() {
+            image_rectangle = Rectangle {
+                origin_x: detect_result.center_region.left(),
+                origin_y: detect_result.center_region.top(),
+                width: detect_result.center_region.width() as i32,
+                height: detect_result.center_region.height() as i32};
+            resize_result = Arc::new(disp_image.deref().view(
+                image_rectangle.origin_x as u32,
+                image_rectangle.origin_y as u32,
+                image_rectangle.width as u32,
+                image_rectangle.height as u32).to_image());
             resized_disp_image = &resize_result;
+            binning_factor = 1;
+        } else {
+            if detect_result.binned_image.is_some() {
+                disp_image = detect_result.binned_image.as_ref().unwrap();
+            }
+            if display_sampling {
+                resize_result = Arc::new(sample_2x2(disp_image.deref().clone()));
+                resized_disp_image = &resize_result;
+            }
+            binning_factor = locked_state.binning * if display_sampling { 2 } else { 1 }
         }
 
         let mut bmp_buf = Vec::<u8>::new();
@@ -1160,7 +1193,6 @@ impl MyCedar {
         scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
                               ImageFormat::Bmp).unwrap();
 
-        let binning_factor = locked_state.binning * if display_sampling { 2 } else { 1 };
         locked_state.scaled_image_binning_factor = binning_factor;
         frame_result.image = Some(Image{
             binning_factor: binning_factor as i32,
@@ -1368,9 +1400,6 @@ impl MyCedar {
             min_detection_sigma, base_detection_sigma,
             base_star_count_goal,
             camera.clone(),
-            /*update_interval=*/Duration::ZERO,
-            /*auto_exposure=*/true,
-            /*focus_mode_enabled=*/true,
             stats_capacity)));
         let tetra3_subprocess = Arc::new(Mutex::new(
             Tetra3Subprocess::new(tetra3_script, tetra3_database, got_signal).unwrap()));
@@ -1511,6 +1540,7 @@ impl MyCedar {
             fixed_settings,
             operation_settings: OperationSettings {
                 operating_mode: Some(OperatingMode::Setup as i32),
+                daylight_mode: Some(false),
                 exposure_time: Some(prost_types::Duration {
                     seconds: 0, nanos: 0,
                 }),

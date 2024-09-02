@@ -63,6 +63,10 @@ struct DetectState {
     // True means populate `DetectResult.focus_aid` info.
     focus_mode_enabled: bool,
 
+    // Relevant only with `focus_mode_enabled`==true. Affects auto-exposure and
+    // turns off focus aids and star detection.
+    daylight_mode: bool,
+
     // When running CedarDetect, this supplies the `binning` value used.
     // See "About Resolutions" in cedar_server.rs.
     binning: u32,
@@ -103,8 +107,7 @@ impl DetectEngine {
                detection_sigma: f64,
                star_count_goal: i32,
                camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-               update_interval: Duration, auto_exposure: bool,
-               focus_mode_enabled: bool, stats_capacity: usize)
+               stats_capacity: usize)
                -> Self {
         DetectEngine{
             min_exposure_duration,
@@ -115,9 +118,10 @@ impl DetectEngine {
             camera: camera.clone(),
             state: Arc::new(Mutex::new(DetectState{
                 frame_id: None,
-                auto_exposure,
-                update_interval,
-                focus_mode_enabled,
+                auto_exposure: true,
+                update_interval: Duration::ZERO,
+                focus_mode_enabled: true,
+                daylight_mode: false,
                 binning: 1,
                 calibrated_exposure_duration: None,
                 accuracy_multiplier: 1.0,
@@ -166,6 +170,13 @@ impl DetectEngine {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.focus_mode_enabled = enabled;
         locked_state.binning = binning;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+    }
+
+    pub fn set_daylight_mode(&mut self, enabled: bool) {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.daylight_mode = enabled;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -321,6 +332,7 @@ impl DetectEngine {
             let auto_exposure: bool;
             let update_interval: Duration;
             let focus_mode_enabled: bool;
+            let daylight_mode: bool;
             let binning: u32;
             let calibrated_exposure_duration: Option<Duration>;
             let accuracy_multiplier: f64;
@@ -335,6 +347,7 @@ impl DetectEngine {
                 auto_exposure = locked_state.auto_exposure;
                 update_interval = locked_state.update_interval;
                 focus_mode_enabled = locked_state.focus_mode_enabled;
+                daylight_mode = locked_state.daylight_mode;
                 binning = locked_state.binning;
                 calibrated_exposure_duration =
                     locked_state.calibrated_exposure_duration;
@@ -392,13 +405,14 @@ impl DetectEngine {
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
 
             let mut focus_aid: Option<FocusAid> = None;
+            let mut peak_value = 0;
             if focus_mode_enabled {
                 let roi_summary = summarize_region_of_interest(
                     &image, &center_region, noise_estimate, detection_sigma);
                 let mut roi_histogram = roi_summary.histogram;
 
                 // Compute peak_value as the average of the 5 brightest pixels.
-                let peak_value = average_top_values(&roi_histogram, 5);
+                peak_value = average_top_values(&roi_histogram, 5);
 
                 if auto_exposure {
                     // Adjust exposure time based on peak value of center_region.
@@ -423,134 +437,143 @@ impl DetectEngine {
                     }
                 }  // auto_exposure
 
-                let image_rect = Rect::at(0, 0).of_size(width, height);
-                // Get a small sub-image centered on the peak coordinates.
-                let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
-                let sub_image_size = 30;
-                let peak_region =
-                    Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
-                             (peak_position.1 as i32 - sub_image_size/2) as i32)
-                    .of_size(sub_image_size as u32, sub_image_size as u32);
-                let peak_region = peak_region.intersect(image_rect).unwrap();
-                debug!("peak {} at x/y {}/{}",
-                       peak_value, peak_region.left(), peak_region.top());
-                // Get a good black level for display.
-                remove_stars_from_histogram(&mut roi_histogram, /*sigma=*/8.0);
-                let black_level = get_level_for_fraction(&roi_histogram, 0.9);
+                if !daylight_mode {
+                    let image_rect = Rect::at(0, 0).of_size(width, height);
+                    // Get a small sub-image centered on the peak coordinates.
+                    let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
+                    let sub_image_size = 30;
+                    let peak_region =
+                        Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
+                                 (peak_position.1 as i32 - sub_image_size/2) as i32)
+                        .of_size(sub_image_size as u32, sub_image_size as u32);
+                    let peak_region = peak_region.intersect(image_rect).unwrap();
+                    debug!("peak {} at x/y {}/{}",
+                           peak_value, peak_region.left(), peak_region.top());
+                    // Get a good black level for display.
+                    remove_stars_from_histogram(&mut roi_histogram, /*sigma=*/8.0);
+                    let black_level = get_level_for_fraction(&roi_histogram, 0.9);
 
-                // We scale up the pixel values in the peak_image for good
-                // display visibility.
-                let mut peak_image = image.view(peak_region.left() as u32,
-                                                peak_region.top() as u32,
-                                                sub_image_size as u32,
-                                                sub_image_size as u32).to_image();
-                scale_image_mut(&mut peak_image, black_level as u8, peak_value, /*gamma=*/0.7);
-                focus_aid = Some(FocusAid{
-                    center_peak_position: peak_position,
-                    center_peak_value: peak_value,
-                    peak_image,
-                    peak_image_region: peak_region,
-                });
+                    // We scale up the pixel values in the peak_image for good
+                    // display visibility.
+                    let mut peak_image = image.view(peak_region.left() as u32,
+                                                    peak_region.top() as u32,
+                                                    sub_image_size as u32,
+                                                    sub_image_size as u32).to_image();
+                    scale_image_mut(&mut peak_image, black_level as u8, peak_value, /*gamma=*/0.7);
+                    focus_aid = Some(FocusAid{
+                        center_peak_position: peak_position,
+                        center_peak_value: peak_value,
+                        peak_image,
+                        peak_image_region: peak_region,
+                    });
+                }  // not daylight_mode.
             }  // focus_mode_enabled
 
-            // Run CedarDetect on the image.
-            {
-                let mut locked_state = state.lock().unwrap();
-                if let Some(recent_stats) =
-                    &locked_state.detect_latency_stats.value_stats.recent
+            let mut black_level = 0;
+            let mut binned_image: Option<Arc<GrayImage>> = None;
+            let mut stars: Vec<StarDescription> = vec![];
+            let mut hot_pixel_count = 0;
+
+            if !daylight_mode {
+                // Run CedarDetect on the image.
                 {
-                    let detect_duration = Duration::from_secs_f64(recent_stats.min);
-                    locked_state.eta = Some(Instant::now() + detect_duration);
-                }
-            }
-            let adjusted_sigma = f64::max(detection_sigma * accuracy_multiplier,
-                                          detection_min_sigma);
-            let (stars, hot_pixel_count, detect_binned_image, mut histogram) =
-                get_stars_from_image(
-                    &image, noise_estimate,
-                    adjusted_sigma, /*deprecated_max_size=*/1,
-                    binning,
-                    /*detect_hot_pixels=*/true,
-                    /*return_binned_image=*/binning != 1);
-            let binned_image = if let Some(bi) = detect_binned_image {
-                Some(Arc::new(bi))
-            } else {
-                None
-            };
-
-            // Average the peak pixels of the N brightest stars.
-            let mut sum_peak: i32 = 0;
-            let mut num_peak = 0;
-            const NUM_PEAKS: i32 = 10;
-            for star in &stars {
-                sum_peak += star.peak_value as i32;
-                num_peak += 1;
-                if num_peak >= NUM_PEAKS {
-                    break;
-                }
-            }
-            let peak_star_pixel =
-                if num_peak == 0 {
-                    255
-                } else {
-                    sum_peak / num_peak
-                };
-            assert!(peak_star_pixel <= 255);
-
-            // Get a good black level for display.
-            remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-            let black_level = get_level_for_fraction(&histogram, 0.99);
-
-            let elapsed = process_start_time.elapsed();
-            state.lock().unwrap().detect_latency_stats.add_value(elapsed.as_secs_f64());
-
-            if !focus_mode_enabled && auto_exposure &&
-                calibrated_exposure_duration.is_some()
-            {
-                let adjusted_star_count_goal =
-                    star_count_goal as f64 * accuracy_multiplier;
-                let adjusted_exposure_duration_secs =
-                    calibrated_exposure_duration.unwrap().as_secs_f64() * accuracy_multiplier;
-
-                let num_stars_detected = stars.len();
-                if num_stars_detected == 0 {
-                    // Revert to safety: use adjusted calibrated exposure duration.
-                    new_exposure_duration_secs = adjusted_exposure_duration_secs;
-                } else {
-                    // >1 if we have more stars than goal; <1 if fewer stars than
-                    // goal.
-                    let star_goal_fraction =
-                        num_stars_detected as f64 / adjusted_star_count_goal;
-                    // Don't adjust exposure time too often, is a bit janky because the
-                    // camera re-initializes. Allow number of detected stars to greatly
-                    // exceed goal, but don't allow much of a shortfall.
-                    if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
-                        // What is the relationship between exposure time and number
-                        // of stars detected?
-                        // * If we increase the exposure time by 2.5x, we'll be able
-                        //   to detect stars 40% as bright. This corresponds to an
-                        //   increase of one stellar magnitude.
-                        // * Per https://www.hnsky.org/star_count, at mag=5 a one
-                        //   magnitude increase corresponds to around 3x the number
-                        //   of stars.
-                        // * 2.5x and 3x are "close enough", so we model the number
-                        //   of detectable stars as being simply proportional to the
-                        //   exposure time. This is OK because we'll only be varying
-                        //   the exposure time a modest amount relative to the
-                        //   adjusted_exposure_duration.
-                        new_exposure_duration_secs =
-                            prev_exposure_duration_secs / star_goal_fraction;
-                        // Bound exposure duration to be within two stops of
-                        // adjusted_exposure_duration.
-                        new_exposure_duration_secs = f64::max(
-                            new_exposure_duration_secs,
-                            adjusted_exposure_duration_secs / 4.0);
-                        new_exposure_duration_secs = f64::min(
-                            new_exposure_duration_secs,
-                            adjusted_exposure_duration_secs * 4.0);
+                    let mut locked_state = state.lock().unwrap();
+                    if let Some(recent_stats) =
+                        &locked_state.detect_latency_stats.value_stats.recent
+                    {
+                        let detect_duration = Duration::from_secs_f64(recent_stats.min);
+                        locked_state.eta = Some(Instant::now() + detect_duration);
                     }
                 }
-            }
+                let adjusted_sigma = f64::max(detection_sigma * accuracy_multiplier,
+                                              detection_min_sigma);
+                let detect_binned_image;
+                let mut histogram;
+                (stars, hot_pixel_count, detect_binned_image, histogram) =
+                    get_stars_from_image(
+                        &image, noise_estimate,
+                        adjusted_sigma, /*deprecated_max_size=*/1,
+                        binning,
+                        /*detect_hot_pixels=*/true,
+                        /*return_binned_image=*/binning != 1);
+                binned_image = if let Some(bi) = detect_binned_image {
+                    Some(Arc::new(bi))
+                } else {
+                    None
+                };
+
+                // Average the peak pixels of the N brightest stars.
+                let mut sum_peak: i32 = 0;
+                let mut num_peak = 0;
+                const NUM_PEAKS: i32 = 10;
+                for star in &stars {
+                    sum_peak += star.peak_value as i32;
+                    num_peak += 1;
+                    if num_peak >= NUM_PEAKS {
+                        break;
+                    }
+                }
+                peak_value =
+                    if num_peak == 0 {
+                        255
+                    } else {
+                        (sum_peak / num_peak) as u8
+                    };
+
+                // Get a good black level for display.
+                remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
+                black_level = get_level_for_fraction(&histogram, 0.99);
+
+                if !focus_mode_enabled && auto_exposure &&
+                    calibrated_exposure_duration.is_some()
+                {
+                    let adjusted_star_count_goal =
+                        star_count_goal as f64 * accuracy_multiplier;
+                    let adjusted_exposure_duration_secs =
+                        calibrated_exposure_duration.unwrap().as_secs_f64() * accuracy_multiplier;
+
+                    let num_stars_detected = stars.len();
+                    if num_stars_detected == 0 {
+                        // Revert to safety: use adjusted calibrated exposure duration.
+                        new_exposure_duration_secs = adjusted_exposure_duration_secs;
+                    } else {
+                        // >1 if we have more stars than goal; <1 if fewer stars than
+                        // goal.
+                        let star_goal_fraction =
+                            num_stars_detected as f64 / adjusted_star_count_goal;
+                        // Don't adjust exposure time too often, is a bit janky because the
+                        // camera re-initializes. Allow number of detected stars to greatly
+                        // exceed goal, but don't allow much of a shortfall.
+                        if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
+                            // What is the relationship between exposure time and number
+                            // of stars detected?
+                            // * If we increase the exposure time by 2.5x, we'll be able
+                            //   to detect stars 40% as bright. This corresponds to an
+                            //   increase of one stellar magnitude.
+                            // * Per https://www.hnsky.org/star_count, at mag=5 a one
+                            //   magnitude increase corresponds to around 3x the number
+                            //   of stars.
+                            // * 2.5x and 3x are "close enough", so we model the number
+                            //   of detectable stars as being simply proportional to the
+                            //   exposure time. This is OK because we'll only be varying
+                            //   the exposure time a modest amount relative to the
+                            //   adjusted_exposure_duration.
+                            new_exposure_duration_secs =
+                                prev_exposure_duration_secs / star_goal_fraction;
+                            // Bound exposure duration to be within two stops of
+                            // adjusted_exposure_duration.
+                            new_exposure_duration_secs = f64::max(
+                                new_exposure_duration_secs,
+                                adjusted_exposure_duration_secs / 4.0);
+                            new_exposure_duration_secs = f64::min(
+                                new_exposure_duration_secs,
+                                adjusted_exposure_duration_secs * 4.0);
+                        }
+                    }
+                }
+            }  // !daylight_mode
+            let elapsed = process_start_time.elapsed();
+            state.lock().unwrap().detect_latency_stats.add_value(elapsed.as_secs_f64());
 
             // Update camera exposure time if auto-exposure calls for an
             // adjustment.
@@ -587,7 +610,7 @@ impl DetectEngine {
                 display_black_level: black_level as u8,
                 noise_estimate,
                 hot_pixel_count: hot_pixel_count as i32,
-                peak_star_pixel: peak_star_pixel as u8,
+                peak_value,
                 focus_aid,
                 center_region,
                 processing_duration: elapsed,
@@ -627,8 +650,9 @@ pub struct DetectResult {
     pub hot_pixel_count: i32,
 
     // The peak pixel value of star_candidates. If star_candidates is empty,
-    // this value is fixed to 255.
-    pub peak_star_pixel: u8,
+    // this value is fixed to 255. If daylight_mode, this is the value of the
+    // brightest part of the central regioin.
+    pub peak_value: u8,
 
     // Included if `focus_mode_enabled`.
     pub focus_aid: Option<FocusAid>,

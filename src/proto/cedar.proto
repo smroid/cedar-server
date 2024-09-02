@@ -100,8 +100,17 @@ message OperationSettings {
   // Defaults to SETUP mode.
   optional OperatingMode operating_mode = 4;
 
+  // Relevant only in SETUP mode. Instead of trying to detect a star in the
+  // central region (for focusing and boresight aligning), Cedar server instead
+  // exposes the image in a conventional photographic fashion and returns the
+  // central third of the image for magnified display at the client.
+  // ActionRequest.designate_boresight is then used to convey the user's
+  // identification of the image coordinate corresponding to the telescope's FOV
+  // center.
+  optional bool daylight_mode = 1;
+
   // The camera exposure integration time. Zero selects automatic exposure.
-  // Default is zero (auto).
+  // Default is zero (auto). TODO: remove this?
   optional google.protobuf.Duration exposure_time = 5;
 
   // Controls the speed vs accuracy. Default is BALANCED. Only relevant in
@@ -287,9 +296,13 @@ message FrameResult {
 
   // Information returned regardless of `operating_mode`.
 
-  // The image from which information in this FrameResult is derived. Note that
-  // this image has stretch/gamma applied for better visibility of dark
-  // features.
+  // The image from which information in this FrameResult is derived. This image
+  // is from the entire sensor, typically with some amount of binning. However,
+  // if OperationSettings.daylight_mode is in effect, the image is only of
+  // `center_region` and is not binned. Note that this image has stretch/gamma
+  // applied for better visibility of dark features (unless
+  // OperationSettings.daylight_mode is in effect, in which case a more natural
+  // rendering is used).
   Image image = 3;
 
   // The camera exposure integration time for `image`.
@@ -314,7 +327,7 @@ message FrameResult {
 
   // The position in full resolution image coordinates of the captured
   // boresight. If no boresight has been captured, is the image center. See
-  // ActionRequest.capture_boresight.
+  // ActionRequest.capture_boresight and designate_boresight.
   ImageCoord boresight_position = 21;
 
   // When transitioning from SETUP mode to OPERATE mode, Cedar does a brief
@@ -330,19 +343,19 @@ message FrameResult {
   // Information returned when `operating_mode` is SETUP.
 
   // Identifies the center region used for brightest-star detection for focusing
-  // support. In full resolution image coordinates.
+  // support, and also in `daylight_mode`. In full resolution image coordinates.
   optional Rectangle center_region = 11;
 
   // The estimated position of the brightest point in `center_region`. In full
-  // resolution image coordinates.
+  // resolution image coordinates. Not used in `daylight_mode`.
   optional ImageCoord center_peak_position = 12;
 
-  // The pixel value at the center_peak_position.
+  // The pixel value at the center_peak_position. Not used in `daylight_mode`.
   optional int32 center_peak_value = 6;
 
   // A small high resolution crop of `image` centered at `center_peak_position`.
   // Note that this image has stretch/gamma applied for better visibility of
-  // dark features.
+  // dark features. Not used in `daylight_mode`.
   optional Image center_peak_image = 13;
 
   // Information returned when `operating_mode` is OPERATE.
@@ -653,6 +666,13 @@ message ActionRequest {
   // This lets the user update/refine the boresight offset when the user
   // has centered the target in the telescope's field of view.
   optional bool capture_boresight = 1;
+
+  // In SETUP mode with OperationSettings.daylight_mode in effect, this conveys
+  // which part of the image the user tapped to designate the telescope's FOV
+  // center. The image coordinates are within FrameResult.image; Cedar server
+  // logic reconstructs the full-image coordinates by taking
+  // FrameResult.center_region into account.
+  optional ImageCoord designate_boresight = 2;
 
   // Shut down the computer on which the Cedar server is running. Do this before
   // unplugging the power!
