@@ -135,6 +135,16 @@ impl DetectEngine {
         }
     }
 
+    // Utility function to get the central region (wherein the boresight is
+    // required to be located) for a given image size.
+    pub fn get_central_region(width: u32, height: u32) -> Rect {
+        let center_width = width / 3;
+        let center_height = height / 3;
+        Rect::at(((width - center_width) / 2) as i32,
+                 ((height - center_height) / 2) as i32)
+            .of_size(center_width, center_height)
+    }
+
     // If `exp_time` is zero, enables auto exposure. In setup mode, auto
     // exposure is based on a histogram of the central region, and aims to make
     // the brightest part of the central region bright but not saturated. In
@@ -394,23 +404,21 @@ impl DetectEngine {
             let process_start_time = Instant::now();
             let image: &GrayImage = &captured_image.image;
             let (width, height) = image.dimensions();
-            let center_width = width / 3;
-            let center_height = height / 3;
-            let center_region = Rect::at(((width - center_width) / 2) as i32,
-                                         ((height - center_height) / 2) as i32)
-                .of_size(center_width, center_height);
+            let center_region = Self::get_central_region(width, height);
             let noise_estimate = estimate_noise_from_image(&image);
             let prev_exposure_duration_secs =
                 captured_image.capture_params.exposure_duration.as_secs_f64();
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
 
             let mut focus_aid: Option<FocusAid> = None;
+            let mut black_level = 0;
             let mut peak_value = 0;
             if focus_mode_enabled {
                 let roi_summary = summarize_region_of_interest(
                     &image, &center_region, noise_estimate, detection_sigma);
                 let mut roi_histogram = roi_summary.histogram;
 
+                black_level = get_level_for_fraction(&roi_histogram, 0.01);
                 // Compute peak_value as the average of the 5 brightest pixels.
                 peak_value = average_top_values(&roi_histogram, 5);
 
@@ -451,7 +459,7 @@ impl DetectEngine {
                            peak_value, peak_region.left(), peak_region.top());
                     // Get a good black level for display.
                     remove_stars_from_histogram(&mut roi_histogram, /*sigma=*/8.0);
-                    let black_level = get_level_for_fraction(&roi_histogram, 0.9);
+                    let region_black_level = get_level_for_fraction(&roi_histogram, 0.9);
 
                     // We scale up the pixel values in the peak_image for good
                     // display visibility.
@@ -459,7 +467,8 @@ impl DetectEngine {
                                                     peak_region.top() as u32,
                                                     sub_image_size as u32,
                                                     sub_image_size as u32).to_image();
-                    scale_image_mut(&mut peak_image, black_level as u8, peak_value, /*gamma=*/0.7);
+                    scale_image_mut(
+                        &mut peak_image, region_black_level as u8, peak_value, /*gamma=*/0.7);
                     focus_aid = Some(FocusAid{
                         center_peak_position: peak_position,
                         center_peak_value: peak_value,
@@ -469,7 +478,6 @@ impl DetectEngine {
                 }  // not daylight_mode.
             }  // focus_mode_enabled
 
-            let mut black_level = 0;
             let mut binned_image: Option<Arc<GrayImage>> = None;
             let mut stars: Vec<StarDescription> = vec![];
             let mut hot_pixel_count = 0;

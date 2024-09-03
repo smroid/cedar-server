@@ -525,7 +525,7 @@ impl Cedar for MyCedar {
             let operating_mode =
                 self.state.lock().await.operation_settings.operating_mode.or(
                     Some(OperatingMode::Setup as i32)).unwrap();
-            let save_boresight_pos;
+            let mut save_boresight_pos: Option<ImageCoord> = None;
             if operating_mode == OperatingMode::Setup as i32 {
                 let locked_state = self.state.lock().await;
                 let bsp =
@@ -543,8 +543,11 @@ impl Cedar for MyCedar {
                 {
                     return Err(tonic_status(x));
                 }
-                save_boresight_pos = Some(ImageCoord{x: bsp.as_ref().unwrap().x,
-                                                     y: bsp.as_ref().unwrap().y});
+                if bsp.is_some() {
+                    save_boresight_pos = Some(ImageCoord{
+                        x: bsp.as_ref().unwrap().x,
+                        y: bsp.as_ref().unwrap().y});
+                }
             } else {
                 // Operate mode.
                 let locked_state = self.state.lock().await;
@@ -576,6 +579,33 @@ impl Cedar for MyCedar {
                     ..Default::default()};
                 self.update_preferences(tonic::Request::new(preferences)).await?;
             }
+        }  // capture_boresight.
+        if let Some(mut bsp) = req.designate_boresight {
+            let central_region;
+            {
+                let locked_state = self.state.lock().await;
+                if !locked_state.operation_settings.daylight_mode.unwrap() {
+                    return Err(tonic::Status::failed_precondition(
+                        "Ignoring designate_boresight when not in daylight_mode."));
+                }
+                central_region = DetectEngine::get_central_region(
+                    locked_state.width, locked_state.height);
+                // Correct to full image coordinates.
+                bsp.x += central_region.left() as f64;
+                bsp.y += central_region.top() as f64;
+                if let Err(x) = locked_state.solve_engine.lock().await.
+                    set_boresight_pixel(Some(tetra3_server::ImageCoord{
+                        x: bsp.x,
+                        y: bsp.y})).await
+                {
+                    return Err(tonic_status(x));
+                }
+                drop(locked_state);
+            }
+            let preferences = Preferences{
+                boresight_pixel: Some(bsp),
+                ..Default::default()};
+            self.update_preferences(tonic::Request::new(preferences)).await?;
         }
         let locked_state = self.state.lock().await;
         if req.shutdown_server.unwrap_or(false) {
@@ -1163,6 +1193,7 @@ impl MyCedar {
                 origin_y: detect_result.center_region.top(),
                 width: detect_result.center_region.width() as i32,
                 height: detect_result.center_region.height() as i32};
+            frame_result.center_region = Some(image_rectangle.clone());
             resize_result = Arc::new(disp_image.deref().view(
                 image_rectangle.origin_x as u32,
                 image_rectangle.origin_y as u32,
@@ -1173,6 +1204,7 @@ impl MyCedar {
         } else {
             if detect_result.binned_image.is_some() {
                 disp_image = detect_result.binned_image.as_ref().unwrap();
+                resized_disp_image = disp_image;
             }
             if display_sampling {
                 resize_result = Arc::new(sample_2x2(disp_image.deref().clone()));
@@ -1491,6 +1523,21 @@ impl MyCedar {
                 },
             }
         }
+        let dimensions = camera.lock().await.dimensions();
+        if let Some(ref bsp) = preferences.boresight_pixel {
+            // Validate boresight_pixel loaded from preferences, to make sure it
+            // is within the central region. This could be violated if e.g. we
+            // changed camera since the preferences were saved.
+            let central_region = DetectEngine::get_central_region(
+                dimensions.0 as u32, dimensions.1 as u32);
+            if bsp.x < central_region.left() as f64 ||
+                bsp.x > central_region.right() as f64 ||
+                bsp.y < central_region.top() as f64 ||
+                bsp.y > central_region.bottom() as f64
+            {
+                preferences.boresight_pixel = None;
+            }
+        }
 
         let shared_preferences = Arc::new(Mutex::new(preferences));
 
@@ -1534,7 +1581,6 @@ impl MyCedar {
                 &mut closure_polar_analyzer.lock().unwrap())
         });
         let locked_preferences = shared_preferences.lock().unwrap();
-        let dimensions = camera.lock().await.dimensions();
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
             camera: camera.clone(),
             fixed_settings,
