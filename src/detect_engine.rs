@@ -176,17 +176,12 @@ impl DetectEngine {
         Ok(())
     }
 
-    pub fn set_focus_mode(&mut self, enabled: bool, binning: u32) {
+    pub fn set_focus_mode(&mut self, enabled: bool, daylight_mode: bool,
+                          binning: u32) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.focus_mode_enabled = enabled;
+        locked_state.daylight_mode = daylight_mode;
         locked_state.binning = binning;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-    }
-
-    pub fn set_daylight_mode(&mut self, enabled: bool) {
-        let mut locked_state = self.state.lock().unwrap();
-        locked_state.daylight_mode = enabled;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -475,7 +470,7 @@ impl DetectEngine {
                         peak_image,
                         peak_image_region: peak_region,
                     });
-                }  // not daylight_mode.
+                }  // !daylight_mode.
             }  // focus_mode_enabled
 
             let mut binned_image: Option<Arc<GrayImage>> = None;
@@ -612,7 +607,7 @@ impl DetectEngine {
             let mut locked_state = state.lock().unwrap();
             locked_state.detect_result = Some(DetectResult{
                 frame_id: locked_state.frame_id.unwrap(),
-                captured_image: captured_image,
+                captured_image,
                 binned_image,
                 star_candidates: stars,
                 display_black_level: black_level as u8,
@@ -620,6 +615,7 @@ impl DetectEngine {
                 hot_pixel_count: hot_pixel_count as i32,
                 peak_value,
                 focus_aid,
+                daylight_mode,
                 center_region,
                 processing_duration: elapsed,
                 detect_latency_stats:
@@ -664,6 +660,9 @@ pub struct DetectResult {
 
     // Included if `focus_mode_enabled`.
     pub focus_aid: Option<FocusAid>,
+
+    // Indicates whether daylight_mode was in effect for this result.
+    pub daylight_mode: bool,
 
     // See the corresponding field in FrameResult. Note that this is populated
     // even when not in `focus_mode_enabled`.
