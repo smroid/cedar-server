@@ -25,7 +25,7 @@ started!
 ## Download and burn
 
 First: download the SD card image
-[cedar_rpi_2024_aug_28.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_aug_28.img.gz)
+[cedar_rpi_2024_sep_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_sep_07.img.gz)
 to your computer.
 
 Second: burn an SD card (16GB or larger) with the image file you just downloaded
