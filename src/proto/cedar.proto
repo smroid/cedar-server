@@ -298,8 +298,8 @@ message FrameResult {
 
   // The image from which information in this FrameResult is derived. This image
   // is from the entire sensor, typically with some amount of binning. However,
-  // if OperationSettings.daylight_mode is in effect, the image is only of
-  // `center_region` and is not binned. Note that this image has stretch/gamma
+  // if OperationSettings.daylight_mode is in effect, the image is only of the
+  // center region and is not binned. Note that this image has stretch/gamma
   // applied for better visibility of dark features (unless
   // OperationSettings.daylight_mode is in effect, in which case a more natural
   // rendering is used).
