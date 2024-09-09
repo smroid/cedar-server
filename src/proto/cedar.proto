@@ -512,8 +512,7 @@ message CalibrationData {
   // Operation mode varies the exposure duration around this value based on
   // the current detected star count.
   // If no calibration has succeeded, this will have reasonable default value
-  // based on setup mode's auto exposure (or manual exposure setting during
-  // setup).
+  // based on setup mode's auto exposure.
   optional google.protobuf.Duration target_exposure_time = 2;
 
   // The camera offset value [0..20] found to be needed to avoid black crush.
