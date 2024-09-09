@@ -911,7 +911,6 @@ impl MyCedar {
         if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
             debug!("Could not set offset: {:?}", e);
         }
-        *state.calibration_data.lock().await = CalibrationData{..Default::default()};
         Ok(())
     }
 
@@ -1665,12 +1664,19 @@ impl MyCedar {
         let metadata = MetadataCommand::new()
             .exec()
             .expect("Failed to get cargo metadata");
-        let package = metadata.root_package().expect("Failed to get root package");
-        let cedar_version = package.version.to_string();
+        let mut cedar_version: String = "".to_string();
+        for package in metadata.packages {
+            if package.name == "cedar-server" {
+                cedar_version = package.version.to_string();
+                break;
+            }
+        }
         let processor_model =
-            fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap();
+            fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap()
+            .trim_end_matches('\0').to_string();
         let serial_number =
-            fs::read_to_string("/sys/firmware/devicetree/base/serial-number").unwrap();
+            fs::read_to_string("/sys/firmware/devicetree/base/serial-number").unwrap()
+            .trim_end_matches('\0').to_string();
 
         let reader = BufReader::new(fs::File::open("/etc/os-release").unwrap());
         let mut os_version: String = "".to_string();
@@ -1678,7 +1684,7 @@ impl MyCedar {
             let line = line.unwrap();
             if line.starts_with("PRETTY_NAME=") {
                 let parts: Vec<&str> = line.split('=').collect();
-                os_version = parts[1].to_string();
+                os_version = parts[1].trim_matches('"').to_string();
                 break;
             }
         }
