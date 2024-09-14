@@ -59,13 +59,29 @@ message ServerInformation {
 
   google.protobuf.Timestamp server_time = 8;
 
-  string camera_model = 9;
-  int32 camera_image_width = 10;
-  int32 camera_image_height = 11;
+  // Omitted if no camera detected.
+  optional CameraModel camera = 9;
 
-  // Network info (hosted network, or access point?)
+  // Network info.
+  optional WiFiAccessPoint wifi_access_point = 10;
+  // TODO: optional info for wifi client mode, mutually exclusive with
+  // access point.
 
   // Status of SkySafari integration; SkySafari version.
+}
+
+message CameraModel {
+  string model = 1;
+  int32 image_width = 2;
+  int32 image_height = 3;
+}
+
+// Information about the WiFi access point that Cedar server puts
+// up.
+message WiFiAccessPoint {
+  optional string ssid = 1;
+  optional string psk = 2;  // WiFi password.
+  optional int32 channel = 3;
 }
 
 message FixedSettings {
@@ -688,6 +704,11 @@ message ActionRequest {
   // on the server with the current date/time incorporated into the filename.
   // TODO: return filename? Provide rename action?
   optional bool save_image = 5;
+
+  // Update ssid, psk, and/or channel setting for Cedar server's
+  // WiFi access point. TODO: Switches to access point mode if currently
+  // in client mode.
+  optional WiFiAccessPoint wifi_access_point = 7;
 }
 
 message ServerLogRequest {

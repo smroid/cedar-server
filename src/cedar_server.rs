@@ -45,7 +45,7 @@ use futures::join;
 
 use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
-use crate::cedar::{Accuracy, ActionRequest, CalibrationData,
+use crate::cedar::{Accuracy, ActionRequest, CalibrationData, CameraModel,
                    CelestialCoordFormat, EmptyMessage, FeatureLevel,
                    FixedSettings, FovCatalogEntry, FrameRequest, FrameResult,
                    Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
@@ -110,7 +110,13 @@ struct MyCedar {
 }
 
 struct CedarState {
+    // The `camera` field is always populated with a usable AbstractCamera.
+    // If `has_camera` is false, this means no hardware camera was successfully
+    // detected, in which case `camera` is faked up to be an ImageCamera with
+    // uniform grey content.
+    has_camera: bool,
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+
     fixed_settings: Arc<Mutex<FixedSettings>>,
     calibration_data: Arc<tokio::sync::Mutex<CalibrationData>>,
     operation_settings: OperationSettings,
@@ -141,10 +147,6 @@ struct CedarState {
     scaled_image: Option<Arc<GrayImage>>,
     scaled_image_binning_factor: u32,
     scaled_image_frame_id: i32,
-
-    // Full resolution dimensions.
-    width: u32,
-    height: u32,
 
     calibrating: bool,
     cancel_calibration: Arc<Mutex<bool>>,
@@ -588,11 +590,12 @@ impl Cedar for MyCedar {
                 }
                 // Correct to full image coordinates. We're zoomed in to the
                 // center by 2x.
-                bsp.x += (locked_state.width / 4) as f64;
-                bsp.y += (locked_state.height / 4) as f64;
+                let (width, height) = locked_state.camera.lock().await.dimensions();
+                bsp.x += (width / 4) as f64;
+                bsp.y += (height / 4) as f64;
                 // Is the point within the central region? If not, quietly ignore.
                 let central_region = DetectEngine::get_central_region(
-                    locked_state.width, locked_state.height);
+                    width as u32, height as u32);
                 if bsp.x >= central_region.left() as f64 &&
                     bsp.x <= central_region.right() as f64 &&
                     bsp.y >= central_region.top() as f64 &&
@@ -834,12 +837,14 @@ impl MyCedar {
     }
 
     async fn get_server_information(&self) -> ServerInformation {
+        let has_camera;
         let camera_model;
         let camera_image_width;
         let camera_image_height;
         {
             let locked_state = self.state.lock().await;
             let locked_camera = locked_state.camera.lock().await;
+            has_camera = locked_state.has_camera;
             camera_model = locked_camera.model();
             (camera_image_width, camera_image_height) = locked_camera.dimensions();
         }
@@ -858,6 +863,14 @@ impl MyCedar {
             fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").unwrap();
         let cpu_temperature = temp_str.trim().parse::<f32>().unwrap() / 1000.0;
 
+        let camera = if has_camera {
+            Some(CameraModel{model: camera_model,
+                             image_width: camera_image_width,
+                             image_height: camera_image_height})
+        } else {
+            None
+        };
+
         ServerInformation {
             product_name: self.product_name.clone(),
             copyright: self.copyright.clone(),
@@ -869,9 +882,8 @@ impl MyCedar {
             cpu_temperature,
             server_time: Some(prost_types::Timestamp::try_from(
                 SystemTime::now()).unwrap()),
-            camera_model,
-            camera_image_width,
-            camera_image_height,
+            camera,
+            wifi_access_point: None,  // TODO
         }
     }
 
@@ -1042,12 +1054,13 @@ impl MyCedar {
         let mut frame_result = FrameResult {..Default::default()};
         let mut fixed_settings;
         let mut image_rectangle;
+        let width;
+        let height;
         {
             let locked_state = state.lock().await;
+            (width, height) = locked_state.camera.lock().await.dimensions();
             image_rectangle = Rectangle{
-                origin_x: 0, origin_y: 0,
-                width: locked_state.width as i32,
-                height: locked_state.height as i32,
+                origin_x: 0, origin_y: 0, width, height,
             };
 
             fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
@@ -1198,10 +1211,10 @@ impl MyCedar {
         if detect_result.daylight_mode {
             // Crop in to the central region by 2x.
             image_rectangle = Rectangle {
-                origin_x: locked_state.width as i32 / 4,
-                origin_y: locked_state.height as i32 / 4,
-                width: locked_state.width as i32 / 2,
-                height: locked_state.height as i32 / 2};
+                origin_x: width as i32 / 4,
+                origin_y: height as i32 / 4,
+                width: width as i32 / 2,
+                height: height as i32 / 2};
             if detect_result.binned_image.is_some() && display_sampling {
                 let src_image = detect_result.binned_image.as_ref().unwrap();
                 let (src_width, src_height) = src_image.dimensions();
@@ -1431,8 +1444,8 @@ impl MyCedar {
             frame_result.boresight_position = Some(ImageCoord{x: bs.x, y: bs.y});
         } else {
             frame_result.boresight_position =
-                Some(ImageCoord{x: locked_state.width as f64 / 2.0,
-                                y: locked_state.height as f64 / 2.0});
+                Some(ImageCoord{x: width as f64 / 2.0,
+                                y: height as f64 / 2.0});
         }
         frame_result.calibration_data =
             Some(locked_state.calibration_data.lock().await.clone());
@@ -1449,6 +1462,7 @@ impl MyCedar {
         tetra3_database: String,
         tetra3_uds: String,
         got_signal: Arc<AtomicBool>,
+        has_camera: bool,
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
         telescope_position: Arc<Mutex<TelescopePosition>>,
         binning: u32,
@@ -1618,6 +1632,7 @@ impl MyCedar {
         });
         let locked_preferences = shared_preferences.lock().unwrap();
         let state = Arc::new(tokio::sync::Mutex::new(CedarState {
+            has_camera,
             camera: camera.clone(),
             fixed_settings,
             operation_settings: OperationSettings {
@@ -1650,8 +1665,6 @@ impl MyCedar {
             scaled_image: None,
             scaled_image_binning_factor: 1,
             scaled_image_frame_id: 0,
-            width: dimensions.0 as u32,
-            height: dimensions.1 as u32,
             calibrating: false,
             cancel_calibration: Arc::new(Mutex::new(false)),
             calibration_start: Instant::now(),
@@ -2051,6 +2064,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         }
     };
 
+    let mut has_camera = true;
     let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>> =
         if args.test_image != "" {
             let input_path = PathBuf::from(&args.test_image);
@@ -2063,7 +2077,14 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                 Ok(cam) => cam,
                 Err(e) => {
                     error!("Could not select camera: {:?}", e);
-                    std::process::exit(1);
+                    has_camera = false;
+                    // Fake up a uniform grey ImageCamera.
+                    let width = 800;
+                    let height = 600;
+                    let pixels = vec![16_u8; width * height];
+                    let img_u8 = GrayImage::from_vec(
+                        width as u32, height as u32, pixels).unwrap();
+                    Box::new(ImageCamera::new(img_u8).unwrap())
                 }
             };
             Arc::new(tokio::sync::Mutex::new(abstract_cam))
@@ -2149,7 +2170,8 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
             args.min_exposure, args.max_exposure,
             args.tetra3_script, args.tetra3_database, args.tetra3_socket,
             got_signal,
-            camera, shared_telescope_position.clone(),
+            has_camera, camera,
+            shared_telescope_position.clone(),
             binning, display_sampling,
             args.star_count_goal, args.sigma, args.min_sigma,
             // TODO: arg for this?
