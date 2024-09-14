@@ -26,6 +26,7 @@ use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntry,
                        ConstellationResponse, ObjectTypeResponse, Ordering,
                        QueryCatalogRequest, QueryCatalogResponse};
 use crate::cedar_sky_trait::{CedarSkyTrait, LocationInfo};
+use crate::wifi_trait::WifiTrait;
 
 use nix::time::{ClockId, clock_gettime, clock_settime};
 use nix::sys::time::TimeSpec;
@@ -51,7 +52,7 @@ use crate::cedar::{Accuracy, ActionRequest, CalibrationData, CameraModel,
                    Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
                    OperatingMode, OperationSettings, ProcessingStats, Rectangle,
                    StarCentroid, Preferences, ServerLogRequest, ServerLogResult,
-                   ServerInformation};
+                   ServerInformation, WiFiAccessPoint};
 use crate::calibrator::Calibrator;
 use crate::detect_engine::{DetectEngine, DetectResult};
 use crate::scale_image::scale_image;
@@ -129,6 +130,9 @@ struct CedarState {
 
     // Not all builds of Cedar-server support Cedar-sky.
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+
+    // Not all builds of Cedar-server support Wifi control.
+    wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
 
     // See "About Resolutions" below.
     // Whether (and how much, 2x2 or 4x4) the acquired image is binned prior to
@@ -645,6 +649,20 @@ impl Cedar for MyCedar {
                 return Err(tonic_status(x));
             }
         }
+        if let Some(update_ap) = req.update_wifi_access_point {
+            if locked_state.wifi.is_none() {
+                return Err(tonic::Status::unimplemented(
+                    format!("{} does not include WiFi control.", self.product_name)));
+            }
+            let mut locked_wifi = locked_state.wifi.as_ref().unwrap().lock().unwrap();
+            if let Err(x) = locked_wifi.update_access_point(
+                update_ap.channel,
+                update_ap.ssid.as_deref(),
+                update_ap.psk.as_deref())
+            {
+                return Err(tonic_status(x));
+            }
+        }
         Ok(tonic::Response::new(EmptyMessage{}))
     }  // initiate_action().
 
@@ -841,12 +859,20 @@ impl MyCedar {
         let camera_model;
         let camera_image_width;
         let camera_image_height;
+        let mut wifi_access_point: Option<WiFiAccessPoint> = None;
         {
             let locked_state = self.state.lock().await;
             let locked_camera = locked_state.camera.lock().await;
             has_camera = locked_state.has_camera;
             camera_model = locked_camera.model();
             (camera_image_width, camera_image_height) = locked_camera.dimensions();
+            if let Some(wifi) = &locked_state.wifi {
+                let locked_wifi = wifi.lock().unwrap();
+                wifi_access_point = Some(WiFiAccessPoint{
+                    ssid: Some(locked_wifi.ssid()),
+                    psk: Some(locked_wifi.psk()),
+                    channel: Some(locked_wifi.channel())});
+            }
         }
 
         let feature_level = if self.product_name.eq_ignore_ascii_case("Cedar-Box") {
@@ -883,7 +909,7 @@ impl MyCedar {
             server_time: Some(prost_types::Timestamp::try_from(
                 SystemTime::now()).unwrap()),
             camera,
-            wifi_access_point: None,  // TODO
+            wifi_access_point,
         }
     }
 
@@ -1475,7 +1501,8 @@ impl MyCedar {
         log_file: PathBuf,
         product_name: &str,
         copyright: &str,
-        cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>) -> Self
+        cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+        wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) -> Self
     {
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             min_exposure_duration, max_exposure_duration,
@@ -1659,7 +1686,7 @@ impl MyCedar {
                 Calibrator::new(camera.clone()))),
             telescope_position,
             polar_analyzer,
-            cedar_sky,
+            cedar_sky, wifi,
             binning, display_sampling,
             preferences: shared_preferences.clone(),
             scaled_image: None,
@@ -1939,16 +1966,16 @@ fn parse_duration(arg: &str)
 // Adapted from
 // https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
 // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
-
-// `get_dependencies` Is called to obtain the CedarSkyTrait implementation, if
-//     any. This function is called after logging has been set up and
-//     `server_main()`s command line arguments have been consumed. The
-//     AtomicBool is set to true if control-c occurs.
+// `get_dependencies` Is called to obtain the CedarSkyTrait and WifiTrait
+//     implementations, if any. This function is called after logging has been
+//     set up and `server_main()`s command line arguments have been consumed.
+//     The AtomicBool is set to true if control-c occurs.
 pub fn server_main(
     product_name: &str, copyright: &str,
     flutter_app_path: &str,
     get_dependencies: fn(Arguments, Arc<AtomicBool>)
-                         -> Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>) {
+                         -> (Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+                             Option<Arc<Mutex<dyn WifiTrait + Send>>>)) {
     const HELP: &str = "\
     FLAGS:
       -h, --help                     Prints help information
@@ -2036,14 +2063,17 @@ pub fn server_main(
         std::process::exit(-1);
     }).unwrap();
 
-    let cedar_sky = get_dependencies(Arguments::from_vec(remaining), got_signal.clone());
-    async_main(args, product_name, copyright, flutter_app_path, got_signal, cedar_sky);
+    let (cedar_sky, wifi) =
+        get_dependencies(Arguments::from_vec(remaining), got_signal.clone());
+    async_main(args, product_name, copyright, flutter_app_path, got_signal,
+               cedar_sky, wifi);
 }
 
 #[tokio::main]
 async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                     flutter_app_path: &str, got_signal: Arc<AtomicBool>,
-                    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>) {
+                    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+                    wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) {
     info!("{}", copyright);
     // TODO: log more information: product name, cedar version, processor model, os version,
     // serial number.
@@ -2177,7 +2207,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
             // TODO: arg for this?
             /*stats_capacity=*/100,
             PathBuf::from(args.ui_prefs),
-            path, product_name, copyright, cedar_sky,
+            path, product_name, copyright, cedar_sky, wifi,
         ).await
         )).into_service();
 

@@ -708,7 +708,7 @@ message ActionRequest {
   // Update ssid, psk, and/or channel setting for Cedar server's
   // WiFi access point. TODO: Switches to access point mode if currently
   // in client mode.
-  optional WiFiAccessPoint wifi_access_point = 7;
+  optional WiFiAccessPoint update_wifi_access_point = 7;
 }
 
 message ServerLogRequest {
