@@ -878,6 +878,9 @@ impl MyCedar {
         let feature_level = if self.product_name.eq_ignore_ascii_case("Cedar-Box") {
             FeatureLevel::Diy
         } else {
+            // TODO: make feature level passed in to server_main(); we might
+            // flip camera to image camera for demo mode, don't want to change
+            // the feature level setting.
             if camera_model == "imx296" {
                 FeatureLevel::Plus  // Hopper Plus.
             } else {
@@ -1288,8 +1291,8 @@ impl MyCedar {
         }
 
         let mut bmp_buf = Vec::<u8>::new();
-        let (width, height) = resized_disp_image.dimensions();
-        bmp_buf.reserve((width * height) as usize);
+        let (resized_width, resized_height) = resized_disp_image.dimensions();
+        bmp_buf.reserve((resized_width * resized_height) as usize);
         let scaled_image = scale_image(resized_disp_image,
                                        detect_result.display_black_level,
                                        detect_result.peak_value,

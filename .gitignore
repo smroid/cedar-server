@@ -23,5 +23,5 @@ Cargo.lock
 *.jpg
 *~
 
-src/cedar_ui_prefs.binpb
+cedar_ui_prefs.binpb
 cedar_log.txt
