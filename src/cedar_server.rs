@@ -1732,6 +1732,12 @@ impl MyCedar {
             }
         }
 
+        info!("{}", &product_name);
+        info!("{}", &copyright);
+        info!("Cedar server version {} running on {}/{}",
+              &cedar_version, &processor_model, &os_version);
+        info!("Processor serial number {}", &serial_number);
+
         let cedar = MyCedar {
             state: state.clone(),
             preferences_file,
@@ -1966,9 +1972,6 @@ fn parse_duration(arg: &str)
     Ok(std::time::Duration::from_secs_f64(seconds))
 }
 
-// Adapted from
-// https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
-// https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
 // `get_dependencies` Is called to obtain the CedarSkyTrait and WifiTrait
 //     implementations, if any. This function is called after logging has been
 //     set up and `server_main()`s command line arguments have been consumed.
@@ -2077,15 +2080,8 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                     flutter_app_path: &str, got_signal: Arc<AtomicBool>,
                     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
                     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) {
-    info!("{}", copyright);
-    // TODO: log more information: product name, cedar version, processor model, os version,
-    // serial number.
     info!("Using Tetra3 server {:?} listening at {:?}",
           args.tetra3_script, args.tetra3_socket);
-
-    // Build the static content web service.
-    let rest = Router::new().nest_service(
-        "/", ServeDir::new(flutter_app_path));
 
     let camera_interface = match args.camera_interface.as_str() {
         "" => None,
@@ -2192,6 +2188,14 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
     // the spawned task will detach and run to completion.
     // See: https://greptime.com/blogs/2023-01-12-hidden-control-flow
     //      https://github.com/hyperium/tonic/issues/981
+
+    // Adapted from
+    // https://github.com/tokio-rs/axum/tree/main/examples/rest-grpc-multiplex
+    // https://github.com/tokio-rs/axum/blob/main/examples/static-file-server
+
+    // Build the static content web service.
+    let rest = Router::new().nest_service(
+        "/", ServeDir::new(flutter_app_path));
 
     // Build the gRPC service.
     let path: PathBuf = [args.log_dir, args.log_file].iter().collect();
