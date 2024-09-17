@@ -1707,6 +1707,7 @@ impl MyCedar {
                 dwell_update_interval: None,
                 log_dwelled_positions: Some(false),
                 catalog_entry_match: locked_preferences.catalog_entry_match.clone(),
+                demo_image_filename: None,
             },
             calibration_data: Arc::new(tokio::sync::Mutex::new(
                 CalibrationData{..Default::default()})),

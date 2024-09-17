@@ -163,6 +163,11 @@ message OperationSettings {
   // determine the `catalog_entries` returned in each FrameResult.
   optional cedar_sky.CatalogEntryMatch catalog_entry_match = 11;
 
+  // Controls whether an image file is substituted for the camera. When calling
+  // UpdateOperationSettings(), set this field to empty string to cancel
+  // demo mode.
+  optional string demo_image_filename = 12;
+
   // TODO: decrowd parameter for returned catalog entries?
 }
 
@@ -709,10 +714,6 @@ message ActionRequest {
   // WiFi access point. TODO: Switches to access point mode if currently
   // in client mode.
   optional WiFiAccessPoint update_wifi_access_point = 7;
-
-  // Controls whether an image file is substituted for the camera.
-  optional string demo_image_filename = 8;
-  optional bool cancel_demo = 9;
 }
 
 message ServerLogRequest {
