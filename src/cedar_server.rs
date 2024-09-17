@@ -96,6 +96,11 @@ struct MyCedar {
     // needs access to our state.
     state: Arc<tokio::sync::Mutex<CedarState>>,
 
+    // Command line args for camera selection.
+    camera_interface: Option<CameraInterface>,
+    camera_index: i32,
+    test_image: Option<String>,
+
     preferences_file: PathBuf,
 
     // The path to our log file.
@@ -1485,6 +1490,9 @@ impl MyCedar {
     }
 
     pub async fn new(
+        camera_interface: Option<CameraInterface>,
+        camera_index: i32,
+        test_image: Option<String>,
         min_exposure_duration: Duration,
         max_exposure_duration: Duration,
         tetra3_script: String,
@@ -1740,6 +1748,7 @@ impl MyCedar {
 
         let cedar = MyCedar {
             state: state.clone(),
+            camera_interface, camera_index, test_image,
             preferences_file,
             log_file,
             product_name: product_name.to_string(),
@@ -1954,7 +1963,7 @@ struct AppArgs {
     camera_index: i32,
     binning: Option<u32>,
     display_sampling: Option<bool>,
-    test_image: String,
+    test_image: Option<String>,
     min_exposure: Duration,
     max_exposure: Duration,
     star_count_goal: i32,
@@ -2023,8 +2032,7 @@ pub fn server_main(
             unwrap_or(0),
         binning: pargs.opt_value_from_str("--binning").unwrap(),
         display_sampling: pargs.opt_value_from_str("--display_sampling").unwrap(),
-        test_image: pargs.value_from_str("--test_image").
-            unwrap_or("".to_string()),
+        test_image: pargs.opt_value_from_str("--test_image").unwrap(),
         min_exposure: pargs.value_from_fn("--min_exposure", parse_duration).
             unwrap_or(parse_duration("0.00001").unwrap()),
         max_exposure: pargs.value_from_fn("--max_exposure", parse_duration).
@@ -2075,6 +2083,37 @@ pub fn server_main(
                cedar_sky, wifi);
 }
 
+fn create_camera(camera_interface: Option<&CameraInterface>,
+                 camera_index: i32,
+                 test_image: Option<&String>) -> (Box<dyn AbstractCamera + Send>, bool) {
+    let mut has_camera = true;
+    let camera: Box<dyn AbstractCamera + Send> =
+        if test_image.is_some() {
+            let input_path = PathBuf::from(test_image.as_ref().unwrap());
+            let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
+            let img_u8 = img.to_luma8();
+            info!("Using test image {} instead of camera.",
+                  test_image.as_ref().unwrap());
+            Box::new(ImageCamera::new(img_u8).unwrap())
+        } else {
+            match select_camera(camera_interface, camera_index) {
+                Ok(cam) => cam,
+                Err(e) => {
+                    error!("Could not select camera: {:?}", e);
+                    has_camera = false;
+                    // Fake up a uniform grey ImageCamera.
+                    let width = 800;
+                    let height = 600;
+                    let pixels = vec![16_u8; width * height];
+                    let img_u8 = GrayImage::from_vec(
+                        width as u32, height as u32, pixels).unwrap();
+                    Box::new(ImageCamera::new(img_u8).unwrap())
+                }
+            }
+        };
+    (camera, has_camera)
+}
+
 #[tokio::main]
 async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                     flutter_app_path: &str, got_signal: Arc<AtomicBool>,
@@ -2093,31 +2132,10 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         }
     };
 
-    let mut has_camera = true;
-    let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>> =
-        if args.test_image != "" {
-            let input_path = PathBuf::from(&args.test_image);
-            let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
-            let img_u8 = img.to_luma8();
-            info!("Using test image {} instead of camera.", args.test_image);
-            Arc::new(tokio::sync::Mutex::new(Box::new(ImageCamera::new(img_u8).unwrap())))
-        } else {
-            let abstract_cam = match select_camera(camera_interface, args.camera_index) {
-                Ok(cam) => cam,
-                Err(e) => {
-                    error!("Could not select camera: {:?}", e);
-                    has_camera = false;
-                    // Fake up a uniform grey ImageCamera.
-                    let width = 800;
-                    let height = 600;
-                    let pixels = vec![16_u8; width * height];
-                    let img_u8 = GrayImage::from_vec(
-                        width as u32, height as u32, pixels).unwrap();
-                    Box::new(ImageCamera::new(img_u8).unwrap())
-                }
-            };
-            Arc::new(tokio::sync::Mutex::new(abstract_cam))
-        };
+    let (abstract_cam, has_camera) = create_camera(camera_interface.as_ref(),
+                                                   args.camera_index,
+                                                   args.test_image.as_ref());
+    let camera = Arc::new(tokio::sync::Mutex::new(abstract_cam));
 
     let mpix;
     {
@@ -2204,6 +2222,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
         .add_service(CedarServer::new(MyCedar::new(
+            camera_interface, args.camera_index, args.test_image,
             args.min_exposure, args.max_exposure,
             args.tetra3_script, args.tetra3_database, args.tetra3_socket,
             got_signal,
