@@ -709,6 +709,10 @@ message ActionRequest {
   // WiFi access point. TODO: Switches to access point mode if currently
   // in client mode.
   optional WiFiAccessPoint update_wifi_access_point = 7;
+
+  // Controls whether an image file is substituted for the camera.
+  optional string demo_image_filename = 8;
+  optional bool cancel_demo = 9;
 }
 
 message ServerLogRequest {
@@ -720,10 +724,19 @@ message ServerLogResult {
   string log_content = 1;
 }
 
+message DemoImagesResult {
+  // Filenames of image(s) found in run/demo_images directory.
+  repeated string demo_image_name = 1;
+}
+
 message EmptyMessage {}
 
 service Cedar {
   rpc GetServerLog(ServerLogRequest) returns (ServerLogResult);
+
+  // Returns the names of image file(s), if any, in the run/demo_images
+  // directory.
+  rpc GetDemoImages(EmptyMessage) returns (DemoImagesResult);
 
   // Changes zero or more of Cedar's "fixed" settings. If a field is omitted
   // from the supplied FixedSettings, that setting is not updated. Returns the

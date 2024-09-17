@@ -47,12 +47,12 @@ use futures::join;
 use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{Accuracy, ActionRequest, CalibrationData, CameraModel,
-                   CelestialCoordFormat, EmptyMessage, FeatureLevel,
-                   FixedSettings, FovCatalogEntry, FrameRequest, FrameResult,
-                   Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
-                   OperatingMode, OperationSettings, ProcessingStats, Rectangle,
-                   StarCentroid, Preferences, ServerLogRequest, ServerLogResult,
-                   ServerInformation, WiFiAccessPoint};
+                   CelestialCoordFormat, DemoImagesResult, EmptyMessage,
+                   FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
+                   FrameResult, Image, ImageCoord, LatLong, LocationBasedInfo,
+                   MountType, OperatingMode, OperationSettings, ProcessingStats,
+                   Rectangle, StarCentroid, Preferences, ServerLogRequest,
+                   ServerLogResult, ServerInformation, WiFiAccessPoint};
 use crate::calibrator::Calibrator;
 use crate::detect_engine::{DetectEngine, DetectResult};
 use crate::scale_image::scale_image;
@@ -185,6 +185,29 @@ impl Cedar for MyCedar {
         let mut response = ServerLogResult::default();
         response.log_content = tail.unwrap();
 
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_demo_images(&self, _request: tonic::Request<EmptyMessage>)
+                             -> Result<tonic::Response<DemoImagesResult>, tonic::Status> {
+        let dir = Path::new("./demo_images");
+        if !dir.exists() {
+            return Err(tonic::Status::failed_precondition(
+                format!("The path {:?} is not found", dir)));
+        }
+        if !dir.is_dir() {
+            return Err(tonic::Status::failed_precondition(
+                format!("The path {:?} is not a directory", dir)));
+        }
+        let mut response = DemoImagesResult::default();
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let extension = path.extension().unwrap_or_default();
+            if extension == "jpg" || extension == "bmp" {
+                let file_name = path.file_name().unwrap().to_str().unwrap();
+                response.demo_image_name.push(file_name.to_string());
+            }
+        }
         Ok(tonic::Response::new(response))
     }
 
