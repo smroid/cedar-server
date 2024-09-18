@@ -475,6 +475,48 @@ impl Cedar for MyCedar {
                 ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
         }
+        if let Some(demo_image_filename) = req.demo_image_filename {
+            let mut locked_state = self.state.lock().await;
+            if demo_image_filename.is_empty() {
+                // Go back to using our configured camera.
+                let (abstract_cam, has_camera) = create_camera(
+                    self.camera_interface.as_ref(),
+                    self.camera_index,
+                    self.test_image.as_ref());
+                locked_state.has_camera = has_camera;
+                locked_state.camera =
+                    Arc::new(tokio::sync::Mutex::new(abstract_cam));
+                locked_state.operation_settings.demo_image_filename = None;
+            } else {
+                let input_path = PathBuf::from("./demo_images").join(
+                    demo_image_filename.clone());
+                let img_file = match ImageReader::open(&input_path) {
+                    Err(x) => {
+                        return Err(tonic::Status::failed_precondition(
+                            format!("Error opening image file {:?}: {:?}.",
+                                    input_path, x)));
+                    },
+                    Ok(img_file) => img_file
+                };
+                let img = match img_file.decode() {
+                    Err(x) => {
+                        return Err(tonic::Status::failed_precondition(
+                            format!("Error decoding image file {:?}: {:?}.",
+                                    input_path, x)));
+                    },
+                    Ok(img) => img
+                };
+                let img_u8 = img.to_luma8();
+                locked_state.has_camera = false;
+                locked_state.camera =
+                    Arc::new(tokio::sync::Mutex::new(
+                        Box::new(ImageCamera::new(img_u8).unwrap())));
+                locked_state.operation_settings.demo_image_filename =
+                    Some(demo_image_filename);
+            }
+            let new_camera = locked_state.camera.clone();
+            locked_state.detect_engine.lock().await.replace_camera(new_camera);
+        }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
     }  // update_operation_settings().

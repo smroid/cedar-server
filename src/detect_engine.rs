@@ -135,6 +135,12 @@ impl DetectEngine {
         }
     }
 
+    pub fn replace_camera(
+        &self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
+    {
+        self.state.lock().unwrap().camera = camera.clone();
+    }
+
     // Utility function to get the central region (wherein the boresight is
     // required to be located) for a given image size.
     pub fn get_central_region(width: u32, height: u32) -> Rect {
