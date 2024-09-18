@@ -1110,15 +1110,8 @@ impl MyCedar {
 
         let mut frame_result = FrameResult {..Default::default()};
         let mut fixed_settings;
-        let mut image_rectangle;
-        let width;
-        let height;
         {
             let locked_state = state.lock().await;
-            (width, height) = locked_state.camera.lock().await.dimensions();
-            image_rectangle = Rectangle{
-                origin_x: 0, origin_y: 0, width, height,
-            };
 
             fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
             // Fill in our current time.
@@ -1141,8 +1134,14 @@ impl MyCedar {
                     bmp_buf.reserve((scaled_width * scaled_height) as usize);
                     img.write_to(&mut Cursor::new(&mut bmp_buf),
                                  ImageFormat::Bmp).unwrap();
+                    let binning_factor = locked_state.scaled_image_binning_factor as i32;
+                    let image_rectangle = Rectangle{
+                        origin_x: 0, origin_y: 0,
+                        width: scaled_width as i32 * binning_factor,
+                        height: scaled_height as i32 * binning_factor,
+                    };
                     frame_result.image = Some(Image{
-                        binning_factor: locked_state.scaled_image_binning_factor as i32,
+                        binning_factor,
                         // Rectangle is always in full resolution coordinates.
                         rectangle: Some(image_rectangle),
                         image_data: bmp_buf,
@@ -1180,6 +1179,10 @@ impl MyCedar {
 
         frame_result.frame_id = detect_result.frame_id;
         let captured_image = &detect_result.captured_image;
+        let (width, height) = captured_image.image.dimensions();
+        let mut image_rectangle = Rectangle{
+            origin_x: 0, origin_y: 0,
+            width: width as i32, height: height as i32};
         frame_result.exposure_time = Some(prost_types::Duration::try_from(
             captured_image.capture_params.exposure_duration).unwrap());
         frame_result.capture_time = Some(prost_types::Timestamp::try_from(

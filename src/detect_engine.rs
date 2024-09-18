@@ -37,9 +37,6 @@ pub struct DetectEngine {
     // but only a small amount to the low side.
     star_count_goal: i32,
 
-    // Note: camera settings can be adjusted behind our back.
-    camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-
     // Our state, shared between DetectEngine methods and the worker thread.
     state: Arc<Mutex<DetectState>>,
 
@@ -52,6 +49,9 @@ pub struct DetectEngine {
 
 // State shared between worker thread and the DetectEngine methods.
 struct DetectState {
+    // Note: camera settings can be adjusted behind our back.
+    camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+
     frame_id: Option<i32>,
 
     // If true, use auto exposure.
@@ -115,8 +115,8 @@ impl DetectEngine {
             detection_min_sigma,
             detection_sigma,
             star_count_goal,
-            camera: camera.clone(),
             state: Arc::new(Mutex::new(DetectState{
+                camera: camera.clone(),
                 frame_id: None,
                 auto_exposure: true,
                 update_interval: Duration::ZERO,
@@ -152,12 +152,11 @@ impl DetectEngine {
     // the entire image.
     pub async fn set_exposure_time(&mut self, exp_time: Duration)
                                    -> Result<(), CanonicalError> {
+        let camera = self.state.lock().unwrap().camera.clone();
         if !exp_time.is_zero() {
-            let mut locked_camera = self.camera.lock().await;
-            locked_camera.set_exposure_duration(exp_time)?
+            camera.lock().await.set_exposure_duration(exp_time)?
         }
-        let mut locked_state = self.state.lock().unwrap();
-        locked_state.auto_exposure = exp_time.is_zero();
+        self.state.lock().unwrap().auto_exposure = exp_time.is_zero();
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
@@ -232,7 +231,6 @@ impl DetectEngine {
             let detection_sigma = self.detection_sigma;
             let star_count_goal = self.star_count_goal;
             let cloned_state = self.state.clone();
-            let cloned_camera = self.camera.clone();
             let cloned_done = self.worker_done.clone();
 
             // The DetectEngine::worker() function is async because it uses the
@@ -253,7 +251,7 @@ impl DetectEngine {
                     DetectEngine::worker(
                         min_exposure_duration, max_exposure_duration,
                         detection_min_sigma, detection_sigma,
-                        star_count_goal, cloned_state, cloned_camera, cloned_done).await;
+                        star_count_goal, cloned_state, cloned_done).await;
                 });
             }));
         }
@@ -328,12 +326,12 @@ impl DetectEngine {
                     detection_sigma: f64,
                     star_count_goal: i32,
                     state: Arc<Mutex<DetectState>>,
-                    camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                     done: Arc<AtomicBool>) {
         debug!("Starting detect engine");
         // Keep track of when we started the detect cycle.
         let mut last_result_time: Option<Instant> = None;
         loop {
+            let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>;
             let auto_exposure: bool;
             let update_interval: Duration;
             let focus_mode_enabled: bool;
@@ -349,6 +347,7 @@ impl DetectEngine {
                     done.store(true, Ordering::Relaxed);
                     return;  // Exit thread.
                 }
+                camera = locked_state.camera.clone();
                 auto_exposure = locked_state.auto_exposure;
                 update_interval = locked_state.update_interval;
                 focus_mode_enabled = locked_state.focus_mode_enabled;
