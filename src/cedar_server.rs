@@ -2054,7 +2054,7 @@ fn parse_duration(arg: &str)
 }
 
 // `invert_camera` Determines whether camera image is inverted (rot180) during
-//     readout.
+//     readout. Does not apply to --test_image.
 // `get_dependencies` Is called to obtain the CedarSkyTrait and WifiTrait
 //     implementations, if any. This function is called after logging has been
 //     set up and `server_main()`s command line arguments have been consumed.
@@ -2163,7 +2163,7 @@ fn create_camera(camera_interface: Option<&CameraInterface>,
                  invert_camera: bool,
                  test_image: Option<&String>) -> (Box<dyn AbstractCamera + Send>, bool) {
     let mut has_camera = true;
-    let mut camera: Box<dyn AbstractCamera + Send> =
+    let camera: Box<dyn AbstractCamera + Send> =
         if test_image.is_some() {
             let input_path = PathBuf::from(test_image.as_ref().unwrap());
             let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
@@ -2173,7 +2173,10 @@ fn create_camera(camera_interface: Option<&CameraInterface>,
             Box::new(ImageCamera::new(img_u8).unwrap())
         } else {
             match select_camera(camera_interface, camera_index) {
-                Ok(cam) => cam,
+                Ok(mut cam) => {
+                    cam.set_inverted(invert_camera).unwrap();
+                    cam
+                },
                 Err(e) => {
                     error!("Could not select camera: {:?}", e);
                     has_camera = false;
@@ -2187,7 +2190,6 @@ fn create_camera(camera_interface: Option<&CameraInterface>,
                 }
             }
         };
-    camera.set_inverted(invert_camera).unwrap();
     (camera, has_camera)
 }
 
