@@ -109,6 +109,7 @@ struct MyCedar {
 
     product_name: String,
     copyright: String,
+    feature_level: FeatureLevel,
 
     cedar_version: String,
     processor_model: String,
@@ -947,19 +948,6 @@ impl MyCedar {
             }
         }
 
-        let feature_level = if self.product_name.eq_ignore_ascii_case("Cedar-Box") {
-            FeatureLevel::Diy
-        } else {
-            // TODO: make feature level passed in to server_main(); we might
-            // flip camera to image camera for demo mode, don't want to change
-            // the feature level setting.
-            if camera_model == "imx296" {
-                FeatureLevel::Plus  // Hopper Plus.
-            } else {
-                FeatureLevel::Basic  // Hopper.
-            }
-        } as i32;
-
         let temp_str =
             fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").unwrap();
         let cpu_temperature = temp_str.trim().parse::<f32>().unwrap() / 1000.0;
@@ -976,7 +964,7 @@ impl MyCedar {
             product_name: self.product_name.clone(),
             copyright: self.copyright.clone(),
             cedar_server_version: self.cedar_version.clone(),
-            feature_level,
+            feature_level: self.feature_level as i32,
             processor_model: self.processor_model.clone(),
             os_version: self.os_version.clone(),
             serial_number: self.serial_number.clone(),
@@ -1583,6 +1571,7 @@ impl MyCedar {
         log_file: PathBuf,
         product_name: &str,
         copyright: &str,
+        feature_level: FeatureLevel,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
         wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) -> Self
     {
@@ -1825,6 +1814,7 @@ impl MyCedar {
             log_file,
             product_name: product_name.to_string(),
             copyright: copyright.to_string(),
+            feature_level,
             cedar_version,
             processor_model,
             os_version,
@@ -2216,6 +2206,17 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                                                    args.camera_index,
                                                    invert_camera,
                                                    args.test_image.as_ref());
+    let feature_level = if product_name.eq_ignore_ascii_case("Cedar-Box") {
+        FeatureLevel::Diy
+    } else {
+        let camera_model = abstract_cam.model();
+        if camera_model == "imx296" {
+            FeatureLevel::Plus  // Hopper Plus.
+        } else {
+            FeatureLevel::Basic  // Hopper.
+        }
+    };
+
     let camera = Arc::new(tokio::sync::Mutex::new(abstract_cam));
     let mpix;
     {
@@ -2313,7 +2314,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
             // TODO: arg for this?
             /*stats_capacity=*/100,
             PathBuf::from(args.ui_prefs),
-            path, product_name, copyright, cedar_sky, wifi,
+            path, product_name, copyright, feature_level, cedar_sky, wifi,
         ).await
         )).into_service();
 
