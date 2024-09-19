@@ -99,6 +99,7 @@ struct MyCedar {
     // Command line args for camera selection.
     camera_interface: Option<CameraInterface>,
     camera_index: i32,
+    invert_camera: bool,
     test_image: Option<String>,
 
     preferences_file: PathBuf,
@@ -482,6 +483,7 @@ impl Cedar for MyCedar {
                 let (abstract_cam, has_camera) = create_camera(
                     self.camera_interface.as_ref(),
                     self.camera_index,
+                    self.invert_camera,
                     self.test_image.as_ref());
                 locked_state.has_camera = has_camera;
                 locked_state.camera =
@@ -1560,6 +1562,7 @@ impl MyCedar {
     pub async fn new(
         camera_interface: Option<CameraInterface>,
         camera_index: i32,
+        invert_camera: bool,
         test_image: Option<String>,
         min_exposure_duration: Duration,
         max_exposure_duration: Duration,
@@ -1817,7 +1820,7 @@ impl MyCedar {
 
         let cedar = MyCedar {
             state: state.clone(),
-            camera_interface, camera_index, test_image,
+            camera_interface, camera_index, invert_camera, test_image,
             preferences_file,
             log_file,
             product_name: product_name.to_string(),
@@ -2050,6 +2053,8 @@ fn parse_duration(arg: &str)
     Ok(std::time::Duration::from_secs_f64(seconds))
 }
 
+// `invert_camera` Determines whether camera image is inverted (rot180) during
+//     readout.
 // `get_dependencies` Is called to obtain the CedarSkyTrait and WifiTrait
 //     implementations, if any. This function is called after logging has been
 //     set up and `server_main()`s command line arguments have been consumed.
@@ -2057,6 +2062,7 @@ fn parse_duration(arg: &str)
 pub fn server_main(
     product_name: &str, copyright: &str,
     flutter_app_path: &str,
+    invert_camera: bool,
     get_dependencies: fn(Arguments, Arc<AtomicBool>)
                          -> (Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
                              Option<Arc<Mutex<dyn WifiTrait + Send>>>)) {
@@ -2148,15 +2154,16 @@ pub fn server_main(
 
     let (cedar_sky, wifi) =
         get_dependencies(Arguments::from_vec(remaining), got_signal.clone());
-    async_main(args, product_name, copyright, flutter_app_path, got_signal,
-               cedar_sky, wifi);
+    async_main(args, product_name, copyright, flutter_app_path, invert_camera,
+               got_signal, cedar_sky, wifi);
 }
 
 fn create_camera(camera_interface: Option<&CameraInterface>,
                  camera_index: i32,
+                 invert_camera: bool,
                  test_image: Option<&String>) -> (Box<dyn AbstractCamera + Send>, bool) {
     let mut has_camera = true;
-    let camera: Box<dyn AbstractCamera + Send> =
+    let mut camera: Box<dyn AbstractCamera + Send> =
         if test_image.is_some() {
             let input_path = PathBuf::from(test_image.as_ref().unwrap());
             let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
@@ -2180,12 +2187,14 @@ fn create_camera(camera_interface: Option<&CameraInterface>,
                 }
             }
         };
+    camera.set_inverted(invert_camera).unwrap();
     (camera, has_camera)
 }
 
 #[tokio::main]
 async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
-                    flutter_app_path: &str, got_signal: Arc<AtomicBool>,
+                    flutter_app_path: &str, invert_camera: bool,
+                    got_signal: Arc<AtomicBool>,
                     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
                     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) {
     info!("Using Tetra3 server {:?} listening at {:?}",
@@ -2203,9 +2212,9 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
 
     let (abstract_cam, has_camera) = create_camera(camera_interface.as_ref(),
                                                    args.camera_index,
+                                                   invert_camera,
                                                    args.test_image.as_ref());
     let camera = Arc::new(tokio::sync::Mutex::new(abstract_cam));
-
     let mpix;
     {
         let locked_camera = camera.lock().await;
@@ -2291,7 +2300,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
         .add_service(CedarServer::new(MyCedar::new(
-            camera_interface, args.camera_index, args.test_image,
+            camera_interface, args.camera_index, invert_camera, args.test_image,
             args.min_exposure, args.max_exposure,
             args.tetra3_script, args.tetra3_database, args.tetra3_socket,
             got_signal,

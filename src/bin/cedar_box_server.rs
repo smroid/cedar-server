@@ -15,6 +15,7 @@ fn main() {
          Licensed for non-commercial use.\n\
          See LICENSE.md at https://github.com/smroid/cedar-server",
         /*flutter_app_path=*/"../../cedar-aim/cedar_flutter/build/web",
+        /*invert_camera=*/false,
         /*get_dependencies=*/
         |_pargs: Arguments, _got_signal: Arc::<AtomicBool>| { (None, None) });
 }
