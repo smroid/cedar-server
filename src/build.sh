@@ -16,4 +16,4 @@ else
 fi
 
 # Set capabilities
-sudo setcap cap_sys_time,cap_dac_override,cap_chown,cap_fowner+ep "$binary_path"
+sudo setcap cap_sys_time,cap_dac_override,cap_chown,cap_fowner,cap_net_bind_service+ep "$binary_path"

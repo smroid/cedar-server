@@ -2336,19 +2336,24 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
     let service = MultiplexService::new(rest, grpc);
 
     // Listen on any address for the given port.
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 80));
     info!("Listening at {:?}", addr);
-
     let service_future =
-        hyper::Server::bind(&addr).serve(tower::make::Shared::new(service));
+        hyper::Server::bind(&addr).serve(tower::make::Shared::new(service.clone()));
+
+    let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let service_future8080 =
+        hyper::Server::bind(&addr8080).serve(tower::make::Shared::new(service));
 
     // Spin up ASCOM Alpaca server for reporting our RA/Dec solution as the
     // telescope position.
     let alpaca_server = create_alpaca_server(shared_telescope_position);
     let alpaca_server_future = alpaca_server.start();
 
-    let (service_result, alpaca_result) = join!(service_future, alpaca_server_future);
+    let (service_result, service_result8080, alpaca_result) =
+        join!(service_future, service_future8080, alpaca_server_future);
     service_result.unwrap();
+    service_result8080.unwrap();
     alpaca_result.unwrap();
 }
 
