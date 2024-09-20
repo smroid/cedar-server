@@ -543,6 +543,10 @@ impl Cedar for MyCedar {
             our_prefs.hide_app_bar = Some(hide_app_bar);
         }
         if let Some(mount_type) = req.mount_type {
+            if self.feature_level == FeatureLevel::Basic {
+                return Err(tonic::Status::invalid_argument(
+                    "Cannot set mount type at Basic feature level"));
+            }
             our_prefs.mount_type = Some(mount_type);
         }
         if let Some(observer_location) = req.observer_location {
@@ -1593,15 +1597,25 @@ impl MyCedar {
             mount_type: Some(MountType::AltAz.into()),
             observer_location: None,
             accuracy: Some(Accuracy::Balanced.into()),
-            update_interval: Some(prost_types::Duration {
-                seconds: 0, nanos: 0,
-            }),
+            update_interval: match feature_level {
+                FeatureLevel::Plus => Some(
+                    prost_types::Duration { seconds: 0, nanos: 100000000 }
+                ),
+                FeatureLevel::Basic => Some(
+                    prost_types::Duration { seconds: 0, nanos: 333000000 }
+                ),
+                _ => Some(
+                    prost_types::Duration { seconds: 0, nanos: 0 }
+                ),
+            },
             catalog_entry_match: if cedar_sky.is_some() {
                 let mut cat_match =
                     Some(CatalogEntryMatch {
-                        // TODO: make initial limiting magnitude deeper for
-                        // plus model.
-                        faintest_magnitude: Some(12),
+                        faintest_magnitude: match feature_level {
+                            FeatureLevel::Plus => Some(15),
+                            FeatureLevel::Basic => Some(10),
+                            _ => None,  // Irrelevant, no Cedar Sky.
+                        },
                         catalog_label: Vec::<String>::new(),
                         object_type_label: Vec::<String>::new(),
                     });
@@ -2211,9 +2225,9 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
     } else {
         let camera_model = abstract_cam.model();
         if camera_model == "imx296" {
-            FeatureLevel::Plus  // Hopper Plus.
+            FeatureLevel::Plus  // Hopper.
         } else {
-            FeatureLevel::Basic  // Hopper.
+            FeatureLevel::Basic  // Hopper LE.
         }
     };
 
