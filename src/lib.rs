@@ -1,6 +1,7 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
+pub mod activity_led;
 pub mod astro_util;
 pub mod calibrator;
 pub mod cedar_server;

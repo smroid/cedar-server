@@ -44,6 +44,7 @@ use tracing_appender::{non_blocking::NonBlockingBuilder};
 
 use futures::join;
 
+use crate::activity_led::ActivityLed;
 use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{Accuracy, ActionRequest, CalibrationData, CameraModel,
@@ -134,6 +135,7 @@ struct CedarState {
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<Mutex<TelescopePosition>>,
     polar_analyzer: Arc<Mutex<PolarAnalyzer>>,
+    activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
 
     // Not all builds of Cedar-server support Cedar-sky.
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
@@ -594,6 +596,7 @@ impl Cedar for MyCedar {
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let req: FrameRequest = request.into_inner();
+        self.state.lock().await.activity_led.lock().await.received_rpc().await;
         let mut frame_result = Self::get_next_frame(
             self.state.clone(), req.prev_frame_id).await;
         frame_result.server_information = Some(self.get_server_information().await);
@@ -699,6 +702,7 @@ impl Cedar for MyCedar {
         let locked_state = self.state.lock().await;
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
+            locked_state.activity_led.lock().await.stop().await;
             std::thread::sleep(Duration::from_secs(2));
             let output = Command::new("sudo")
                 .arg("shutdown")
@@ -1586,7 +1590,8 @@ impl MyCedar {
             camera.clone(),
             stats_capacity)));
         let tetra3_subprocess = Arc::new(Mutex::new(
-            Tetra3Subprocess::new(tetra3_script, tetra3_database, got_signal).unwrap()));
+            Tetra3Subprocess::new(
+                tetra3_script, tetra3_database, got_signal.clone()).unwrap()));
 
         // Set up initial Preferences to use if preferences file cannot be loaded.
         let mut preferences = Preferences{
@@ -1772,6 +1777,8 @@ impl MyCedar {
                 Calibrator::new(camera.clone()))),
             telescope_position,
             polar_analyzer,
+            activity_led: Arc::new(tokio::sync::Mutex::new(
+                ActivityLed::new(got_signal.clone()).await)),
             cedar_sky, wifi,
             binning, display_sampling,
             preferences: shared_preferences.clone(),
