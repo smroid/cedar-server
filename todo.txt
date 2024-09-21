@@ -1,18 +1,19 @@
-* enlarge display text (check on phone)
-
-Default database:
+Default pattern database:
 * update for proper density
 * go down to 5deg? Helps 10deg fields that are partially obstructed. Doc this.
-
-daylight alignment procedure
-* user points telescope at something far away such as a tree or corner
-  of building
-* cedar zooms the central alignment region to full screen
-* user taps on whatever is centered in telescope view
 
 auto-detect alt-az vs equatorial (with manual override)
 
 flutter app icons
+
+time display:
+* local time, UTC
+* time to sunset/sunrise, astro twilight
+* display all? selectable?
+
+visual feedback on camera errors
+
+button to reset to default settings
 
 add (tm) at appropriate places for Cedar
 
@@ -22,20 +23,13 @@ investigate tethered alternative to wifi
 
 alert icon if observer location not yet set.
 
-option to show calibration results
-
-Tweak layout to equalize left and right panels, centering the image left/right.
-
 Remove refresh rate control. Go full speed; when dwelling for more than N
 seconds drop to 5hz.
 
 Pacifier/busy indicator for capturing image
 
 eq vs alt/az setting
-* alt/az prompts for observer location if not known -- don't bother?
 * convey to SkySafari
-
-SkySafari can send time & location to telescope mount
 
 Support Stellarium telescope control
 
@@ -51,19 +45,13 @@ https://github.com/ThemosTsikas/PhotoPolarAlign
 https://www.considine.net/aplanatic/align.htm
 
 status LED
-* cedar server liveness
 * wifi connection status
-* setting to turn off (ephemeral)
-
-Physical button
-* power-off?
-* switch wifi mode?
 
 create Android app
 create IOS app
 * benefits (for both): control over screen rotation; access to location info; switching
   app to SkySafari?
-* control over wifi?
+* control over wifi on phone?
 
 Cedar Journal
 * capture Cedar Sky goto requests (and whether target was reached)
@@ -72,23 +60,17 @@ TBD
 
 Cedar Sky
 Remaining work:
-* tap on item in aim view
-  - get info
-  - hit push-to
-* browser
-  - check boxes and sliders to control what's selected
-  - get info
-  - hit push-to
-* solar system object ephemeris
 * add more catalogs
   - Caldwell (list, not catalog-- affects display logic re naming)
+  - Arp, Hickson (lists, not catalogs)
   - double stars
   - stars down to some limit
-  - galaxies?
   - what else?
 * way to add new solar system object, e.g. comet
   - cloud-based?
 * marathon ordering (advanced)
+* identify constellation of boresight
+* constellation lines
 
 Push-to ra/dec button: pops up text entry field
 
@@ -97,49 +79,26 @@ remote ops, proxied via phone
 * download logs
 * send bug reports
 
-"expert" mode enable
-* focus inset enable/disable (hopper is pre-focused)
-* RMSE display
-* eq/alt-az selector; auto checkbox
+"advanced" mode enable
 * polar alignment advice
-* speed-quality slider
-* option to show exposure control
-* option to show stats
-* re-align in target slew
-* ra/dec formatting option
-* refresh rate control
-* FOV control
-* capture image
-* show detected/solved stars option
-* show server log
-
-CPU temperature
 
 bug report
 
-.local dns entry -- already done for us by rpi os?
-
 interoperation with SkySafari
+* goto vs. pushto
 * switch apps?
 * split screen?
 * picture-in-picture?
-* SkySafari "align" to refine alignment?
 * support LX200 (also for Nexus DSC)
 
 help system
 * long press? (GestureDetector wrapped around a widget)
 * 'i' icons?
 
-make more settings durable
-* accuracy slider
-* update rates
-
 vignetting calibration
 
 Wifi management
-* access point, provisioning
 * switching wifi mode-- setting in web UI?
-* change channel
 * bluetooth? disable if not using?
 
 FITS support for saved images? Other formats?
@@ -147,8 +106,6 @@ FITS support for saved images? Other formats?
 logging
 * observer log is separate
 * move cedar_log.txt to sane directory (cmd line arg?)
-
-command line options for camera binning: yes, no, auto.
 
 motion classification
 * adjust update interval
@@ -163,11 +120,6 @@ Preferences:
   - sync with SkySafari?
 
 Splash screen
-
-About screen
-* show server connection status.
-* if connected, show product name, version info, etc.
-* show wifi info
 
 Help page
 * mostly redirects attention to long-press aids?
