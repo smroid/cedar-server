@@ -698,6 +698,9 @@ message ActionRequest {
   // unplugging the power!
   optional bool shutdown_server = 3;
 
+  // Reboot the computer on which the Cedar server is running.
+  optional bool restart_server = 8;
+
   // Cedar-aim is initiating a goto operation. This might be from a Cedar Sky
   // catalog selection, or it might be a user-entered RA/Dec value.
   optional tetra3_server.CelestialCoord initiate_slew = 6;

@@ -715,6 +715,21 @@ impl Cedar for MyCedar {
                         format!("sudo shutdown error: {:?}.", error_str)));
             }
         }
+        if req.restart_server.unwrap_or(false) {
+            info!("Restarting host system");
+            locked_state.activity_led.lock().await.stop().await;
+            std::thread::sleep(Duration::from_secs(2));
+            let output = Command::new("sudo")
+                .arg("reboot")
+                .arg("now")
+                .output()
+                .expect("Failed to execute 'sudo reboot now' command");
+            if !output.status.success() {
+                let error_str = String::from_utf8_lossy(&output.stderr);
+                    return Err(tonic::Status::failed_precondition(
+                        format!("sudo reboot error: {:?}.", error_str)));
+            }
+        }
         if let Some(slew_coord) = req.initiate_slew {
             let mut telescope = locked_state.telescope_position.lock().unwrap();
             telescope.slew_target_ra = slew_coord.ra;
