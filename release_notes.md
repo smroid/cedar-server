@@ -65,6 +65,7 @@ Major updates:
 * Use Raspberry Pi activity LED to convey Cedar status.
   * blinking: waiting for client to connect
   * off: client is connected
+
   When Cedar is not running, the activity LED reverts to reflecting
   SD card activity
 
