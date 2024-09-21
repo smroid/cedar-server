@@ -25,7 +25,7 @@ started!
 ## Download and burn
 
 First: download the SD card image
-[cedar_rpi_2024_sep_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_sep_07.img.gz)
+[cedar_rpi_2024_sep_21.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_sep_21.img.gz)
 to your computer.
 
 Second: burn an SD card (16GB or larger) with the image file you just downloaded
@@ -61,7 +61,7 @@ With the pre-built SD card you just burned, your Rpi is set up as follows:
 Insert the SD card and power up your Rpi4. Wait a minute or two, then on your phone,
 tablet, or laptop, join the 'cedar' Wi-Fi network (password is 'cedar123').
 
-Now, in your device's web browser, navigate to 'cedar.local:8080'. You should
+Now, in your device's web browser, navigate to 'cedar.local'. You should
 see Cedar's "setup" mode screen where the camera image is shown (assuming you
 have a camera connected!) for focusing and aligning. Under the hamburger menu,
 look for Settings, and enable Full Screen.
@@ -210,7 +210,7 @@ well over an hour on a Rpi 3.
 You can start the Cedar-server at the command line as follows:
 
 ```
-cd cedar-server/src
+cd cedar-server/run
 source ../../cedar-solve/.cedar_venv/bin/activate
 ../target/release/cedar-box-server
 ```
@@ -229,7 +229,7 @@ INFO cedar_server: Using camera imx477 4056x3040
 INFO cedar_server::tetra3_subprocess: Tetra3 subprocess started
 WARN cedar_server::tetra3_subprocess: Loading database from: /home/cedar/projects/cedar-solve/tetra3/data/default_database.npz
 WARN cedar_server: Could not read file "./cedar_ui_prefs.binpb": Os { code: 2, kind: NotFound, message: "No such file or directory" }
-INFO cedar_server: Listening at 0.0.0.0:8080
+INFO cedar_server: Listening at 0.0.0.0:80
 INFO ascom_alpaca::server: Bound Alpaca server bound_addr=[::]:11111
 ```
 
@@ -244,7 +244,7 @@ Here's what's happening:
 * Cedar's preferences file was not found. This file will be created when the Cedar-aim
   app first saves its settings.
 
-* Cedar-server is listening at port 8080 for connections from the Cedar-aim client app.
+* Cedar-server is listening at port 80 for connections from the Cedar-aim client app.
 
 * Cedar-server is serving the Ascom Alpaca protocol, allowing SkySafari to connect
   to the "telescope" emulated by Cedar-server.
@@ -252,9 +252,9 @@ Here's what's happening:
 ### Run Cedar-aim
 
 On a phone, tablet, or computer that is on the same network as the Raspberry Pi
-that is running Cedar-server, use a web browser to navigate to port 8080 of the
-IP address of your Rpi. In my case this is `cedar.local:8080`; yours might
-be something like `192.168.4.1:8080`, depending on how your Rpi is set up on
+that is running Cedar-server, use a web browser to navigate to the
+IP address of your Rpi. In my case this is `cedar.local`; yours might
+be something like `192.168.4.1`, depending on how your Rpi is set up on
 the network.
 
 If you're successful, you'll see the Cedar-aim setup screen. TODO: add screenshot.
@@ -381,7 +381,7 @@ First, create a file `/home/cedar/run_cedar.sh` containing:
 ```
 #!/bin/bash
 source /home/cedar/projects/cedar-solve/.cedar_venv/bin/activate
-cd /home/cedar/projects/cedar-server/src
+cd /home/cedar/projects/cedar-server/run
 export PATH=/home/cedar/.cargo/bin:$PATH
 /home/cedar/projects/cedar-server/target/release/cedar-box-server
 ```
