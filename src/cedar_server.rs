@@ -2097,7 +2097,7 @@ pub fn server_main(
       -h, --help                     Prints help information
 
     OPTIONS:
-      --tetra3_script <path>         ./tetra3_server.py
+      --tetra3_script <path>         ../src/tetra3_server.py
       --tetra3_database <name>       default_database
       --tetra3_socket <path>         /tmp/cedar.sock
       --camera_interface asi|rpi
@@ -2122,7 +2122,7 @@ pub fn server_main(
     }
     let args = AppArgs {
         tetra3_script: pargs.value_from_str("--tetra3_script").
-            unwrap_or("./tetra3_server.py".to_string()),
+            unwrap_or("../src/tetra3_server.py".to_string()),
         tetra3_database: pargs.value_from_str("--tetra3_database").
             unwrap_or("default_database".to_string()),
         tetra3_socket: pargs.value_from_str("--tetra3_socket").
