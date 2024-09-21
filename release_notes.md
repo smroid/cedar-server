@@ -40,3 +40,32 @@ Major updates:
   Tapping the gauge brings up performance stats.
 
 * In setup screen, added enable/disable for focus aids.
+
+# September 21 2024
+
+Cedar-server version: 0.4.0
+
+Major updates:
+
+* 'About' screen giving information about Cedar server and calibration
+  results.
+
+* Minor UI improvements such as better tap target sizes.
+
+* UI alert for lack of server connectivity or lack of detected camera.
+
+* Improved menu item styling.
+
+* Listen on port 80 (and also 8080 as before).
+
+* "Demo mode" allowing selectable image files to be used instead of camera.
+
+* Use a "run" directory instead of "src" directory.
+
+* Use Raspberry Pi activity LED to convey Cedar status.
+  * blinking: waiting for client to connect
+  * off: client is connected
+  When Cedar is not running, the activity LED reverts to reflecting
+  SD card activity
+
+* Add restart option in addition to shutdown.
