@@ -2066,7 +2066,7 @@ impl MyCedar {
 // Camera  Mpix     CedarDetect    Display
 //         <0.75
 // ASI     0.75-3   2x2 binning
-//         3-12     4x4 binning
+//         3-12     4x4 binning    +2x2 sampling
 // HQ      >12      4x4 binning    +2x2 sampling
 
 // Note that the "display" sampling value is an additional sampling (if any)
@@ -2297,6 +2297,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         binning = 2;
     } else if mpix <= 12.0 {
         binning = 4;
+        display_sampling = true;
     } else {
         binning = 4;
         display_sampling = true;
