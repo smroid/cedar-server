@@ -129,10 +129,17 @@ impl ActivityLed {
                         state.lock().await.received_rpc = false;
                         continue;
                     }
-                    if now.duration_since(last_rpc_time).unwrap() > connected_timeout {
-                        // Revert to Idle state.
-                        fs::write(brightness_path, "1").unwrap();
-                        led_state = LedState::IdleOn;
+                    let elapsed = now.duration_since(last_rpc_time);
+                    if let Err(_e) = elapsed {
+                        // This can happen when the client sends a time update
+                        // to Cedar server.
+                        last_rpc_time = now;  // Start countdown fresh.
+                    } else {
+                        if elapsed.unwrap() > connected_timeout {
+                            // Revert to Idle state.
+                            fs::write(brightness_path, "1").unwrap();
+                            led_state = LedState::IdleOn;
+                        }
                     }
                 },
             };
