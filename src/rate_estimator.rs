@@ -62,12 +62,12 @@ impl RateEstimation {
             x_sum: 0.0,
             y_sum: 0.0,
         };
-        re.add(time, value);
+        re.add(time, value, 0.0);
         re
     }
 
     // Successive calls to add() must have increasing `time` arg values.
-    pub fn add(&mut self, mut time: SystemTime, value: f64) {
+    pub fn add(&mut self, mut time: SystemTime, value: f64, noise_estimate: f64) {
         if time <= self.last {
             warn!("Time arg regressed from {:?} to {:?}", self.last, time);
             time = self.last + Duration::from_micros(1);
@@ -113,8 +113,9 @@ impl RateEstimation {
             let y_reg = self.estimate_value(sample.x);
             y_variance += (sample.y - y_reg) * (sample.y - y_reg);
         }
-        self.y_noise = (y_variance / count).sqrt();
-        self.slope_noise = ((1.0 / (count - 2.0)) * y_variance / den).sqrt();
+        let adjusted_y_variance = f64::max(y_variance, noise_estimate * noise_estimate);
+        self.y_noise = (adjusted_y_variance / count).sqrt();
+        self.slope_noise = ((1.0 / (count - 2.0)) * adjusted_y_variance / den).sqrt();
     }
 
     pub fn count(&self) -> usize {
@@ -175,14 +176,14 @@ mod tests {
         // Add a second point, one second later and 0.1 higher.
         time += Duration::from_secs(1);
         assert!(re.fits_trend(time, 1.1, /*sigma=*/5.0));
-        re.add(time, 1.1);
+        re.add(time, 1.1, 0.1);
         assert_eq!(re.count(), 2);
         assert_abs_diff_eq!(re.slope(), 0.1, epsilon = 0.001);
 
         // Add a third point, slightly displaced from the trend.
         time += Duration::from_secs(1);
         assert!(re.fits_trend(time, 1.22, /*sigma=*/5.0));
-        re.add(time, 1.22);
+        re.add(time, 1.22, 0.1);
         assert_eq!(re.count(), 3);
         assert_abs_diff_eq!(re.slope(), 0.11, epsilon = 0.001);
         assert_abs_diff_eq!(re.rate_interval_bound(), 0.0057, epsilon = 0.0001);

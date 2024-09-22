@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::time::{Duration, SystemTime};
 
 use crate::rate_estimator::RateEstimation;
@@ -147,10 +147,15 @@ impl MotionEstimator {
                     // Enter SteadyRate and initialize ra/dec RateEstimation objects with the
                     // current and previous positions/times.
                     self.set_state(State::SteadyRate);
-                    self.ra_rate = Some(RateEstimation::new(1000, prev_time, prev_pos.ra as f64));
-                    self.ra_rate.as_mut().unwrap().add(time, position.ra as f64);
-                    self.dec_rate = Some(RateEstimation::new(1000, prev_time, prev_pos.dec as f64));
-                    self.dec_rate.as_mut().unwrap().add(time, position.dec as f64);
+                    self.ra_rate = Some(RateEstimation::new(
+                        1000, prev_time, prev_pos.ra as f64));
+                    self.ra_rate.as_mut().unwrap().add(
+                        time, position.ra as f64, position_rmse);
+                    self.dec_rate =
+                        Some(RateEstimation::new(
+                            1000, prev_time, prev_pos.dec as f64));
+                    self.dec_rate.as_mut().unwrap().add(
+                        time, position.dec as f64, position_rmse);
                 } else {
                     self.set_state(State::Moving);
                 }
@@ -161,8 +166,8 @@ impl MotionEstimator {
                 if ra_rate.fits_trend(time, position.ra as f64, /*sigma=*/10.0) &&
                     dec_rate.fits_trend(time, position.dec as f64, /*sigma=*/10.0)
                 {
-                    ra_rate.add(time, position.ra as f64);
-                    dec_rate.add(time, position.dec as f64);
+                    ra_rate.add(time, position.ra as f64, position_rmse);
+                    dec_rate.add(time, position.dec as f64, position_rmse);
                 } else {
                     // Has rate trend violation persisted for too long?
                     if time.duration_since(ra_rate.last_time()).unwrap() > self.bump_tolerance {

@@ -71,7 +71,8 @@ impl PolarAnalyzer {
         // Compute the angle formed by the declination drift rate at a right angle
         // to the adjusted_sidereal_rate. Degrees.
         let mut dec_drift_angle = (dec_rate / adjusted_sidereal_rate).atan().to_degrees();
-        let mut dec_drift_angle_error = (dec_rate_error / adjusted_sidereal_rate).atan().to_degrees();
+        let mut dec_drift_angle_error =
+            (dec_rate_error / adjusted_sidereal_rate).atan().to_degrees();
         assert!(dec_drift_angle_error >= 0.0);
 
         // `hour_angle` arg is in degrees.
