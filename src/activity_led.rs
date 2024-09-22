@@ -100,6 +100,10 @@ impl ActivityLed {
             if got_signal.load(Ordering::Relaxed) {
                 break;
             }
+            let now = SystemTime::now();
+            if state.lock().await.received_rpc {
+                last_rpc_time = now;
+            }
             match led_state {
                 LedState::IdleOff => {
                     tokio::time::sleep(blink_delay).await;
@@ -121,9 +125,7 @@ impl ActivityLed {
                 },
                 LedState::ConnectedOff => {
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    let now = SystemTime::now();
                     if state.lock().await.received_rpc {
-                        last_rpc_time = now;
                         state.lock().await.received_rpc = false;
                         continue;
                     }
