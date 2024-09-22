@@ -806,7 +806,7 @@ impl Cedar for MyCedar {
                 if tsr.target_coords.len() > 0 {
                     Some(tsr.target_coords[0].clone())
                 } else {
-                    Some(tsr.image_center_coords.as_ref().unwrap().clone())
+                    tsr.image_center_coords.clone()
                 }
             } else {
                 None
