@@ -100,7 +100,6 @@ struct MyCedar {
     // Command line args for camera selection.
     camera_interface: Option<CameraInterface>,
     camera_index: i32,
-    invert_camera: bool,
     test_image: Option<String>,
 
     preferences_file: PathBuf,
@@ -486,7 +485,7 @@ impl Cedar for MyCedar {
                 let (abstract_cam, has_camera) = create_camera(
                     self.camera_interface.as_ref(),
                     self.camera_index,
-                    self.invert_camera,
+                    locked_state.operation_settings.invert_camera.unwrap(),
                     self.test_image.as_ref());
                 locked_state.has_camera = has_camera;
                 locked_state.camera =
@@ -521,6 +520,20 @@ impl Cedar for MyCedar {
             }
             let new_camera = locked_state.camera.clone();
             locked_state.detect_engine.lock().await.replace_camera(new_camera);
+        }
+        if let Some(invert_camera) = req.invert_camera {
+            {
+                let mut locked_state = self.state.lock().await;
+                locked_state.operation_settings.invert_camera =
+                    Some(invert_camera);
+                if locked_state.operation_settings.demo_image_filename.is_none() {
+                    locked_state.camera.lock().await.set_inverted(invert_camera).unwrap();
+                }
+            }
+            let preferences = Preferences{
+                invert_camera: Some(invert_camera),
+                ..Default::default()};
+            self.update_preferences(tonic::Request::new(preferences)).await?;
         }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
@@ -586,6 +599,9 @@ impl Cedar for MyCedar {
         }
         if let Some(boresight_pixel) = req.boresight_pixel {
             our_prefs.boresight_pixel = Some(boresight_pixel);
+        }
+        if let Some(invert_camera) = req.invert_camera {
+            our_prefs.invert_camera = Some(invert_camera);
         }
         // Write updated preferences to file.
         Self::write_preferences_file(&self.preferences_file, &our_prefs);
@@ -1032,6 +1048,8 @@ impl MyCedar {
         let mut locked_camera = state.camera.lock().await;
         let gain = locked_camera.optimal_gain();
         locked_camera.set_gain(gain)?;
+        let invert_camera = state.operation_settings.invert_camera.unwrap();
+        locked_camera.set_inverted(invert_camera)?;
         if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
             debug!("Could not set offset: {:?}", e);
         }
@@ -1671,6 +1689,7 @@ impl MyCedar {
             advanced: Some(false),
             text_size_index: Some(0),
             boresight_pixel: None,
+            invert_camera: Some(invert_camera),  // Initial value from command line.
         };
 
         // If there is a preferences file, read it and merge its contents into
@@ -1762,52 +1781,56 @@ impl MyCedar {
                 &mut motion_estimator.lock().unwrap(),
                 &mut closure_polar_analyzer.lock().unwrap())
         });
-        let locked_preferences = shared_preferences.lock().unwrap();
-        let state = Arc::new(tokio::sync::Mutex::new(CedarState {
-            has_camera,
-            camera: camera.clone(),
-            fixed_settings,
-            operation_settings: OperationSettings {
-                operating_mode: Some(OperatingMode::Setup as i32),
-                daylight_mode: Some(false),
-                exposure_time: Some(prost_types::Duration {
-                    seconds: 0, nanos: 0,
-                }),
-                accuracy: locked_preferences.accuracy,
-                update_interval: locked_preferences.update_interval.clone(),
-                dwell_update_interval: None,
-                log_dwelled_positions: Some(false),
-                catalog_entry_match: locked_preferences.catalog_entry_match.clone(),
-                demo_image_filename: None,
-            },
-            calibration_data: Arc::new(tokio::sync::Mutex::new(
-                CalibrationData{..Default::default()})),
-            detect_engine: detect_engine.clone(),
-            tetra3_subprocess: tetra3_subprocess.clone(),
-            solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
-                tetra3_subprocess.clone(), cedar_sky.clone(), detect_engine.clone(),
-                tetra3_uds, /*update_interval=*/Duration::ZERO,
-                stats_capacity, closure).await.unwrap())),
-            calibrator: Arc::new(tokio::sync::Mutex::new(
-                Calibrator::new(camera.clone()))),
-            telescope_position,
-            polar_analyzer,
-            activity_led: Arc::new(tokio::sync::Mutex::new(
-                ActivityLed::new(got_signal.clone()).await)),
-            cedar_sky, wifi,
-            binning, display_sampling,
-            preferences: shared_preferences.clone(),
-            scaled_image: None,
-            scaled_image_binning_factor: 1,
-            scaled_image_frame_id: 0,
-            calibrating: false,
-            cancel_calibration: Arc::new(Mutex::new(false)),
-            calibration_start: Instant::now(),
-            calibration_duration_estimate: Duration::MAX,
-            center_peak_position: Arc::new(Mutex::new(None)),
-            serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
-            overall_latency_stats: ValueStatsAccumulator::new(stats_capacity),
-        }));
+        let state;
+        {
+            let locked_preferences = shared_preferences.lock().unwrap();
+            state = Arc::new(tokio::sync::Mutex::new(CedarState {
+                has_camera,
+                camera: camera.clone(),
+                fixed_settings,
+                operation_settings: OperationSettings {
+                    operating_mode: Some(OperatingMode::Setup as i32),
+                    daylight_mode: Some(false),
+                    exposure_time: Some(prost_types::Duration {
+                        seconds: 0, nanos: 0,
+                    }),
+                    accuracy: locked_preferences.accuracy,
+                    update_interval: locked_preferences.update_interval.clone(),
+                    dwell_update_interval: None,
+                    log_dwelled_positions: Some(false),
+                    catalog_entry_match: locked_preferences.catalog_entry_match.clone(),
+                    demo_image_filename: None,
+                    invert_camera: locked_preferences.invert_camera,
+                },
+                calibration_data: Arc::new(tokio::sync::Mutex::new(
+                    CalibrationData{..Default::default()})),
+                detect_engine: detect_engine.clone(),
+                tetra3_subprocess: tetra3_subprocess.clone(),
+                solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
+                    tetra3_subprocess.clone(), cedar_sky.clone(), detect_engine.clone(),
+                    tetra3_uds, /*update_interval=*/Duration::ZERO,
+                    stats_capacity, closure).await.unwrap())),
+                calibrator: Arc::new(tokio::sync::Mutex::new(
+                    Calibrator::new(camera.clone()))),
+                telescope_position,
+                polar_analyzer,
+                activity_led: Arc::new(tokio::sync::Mutex::new(
+                    ActivityLed::new(got_signal.clone()).await)),
+                cedar_sky, wifi,
+                binning, display_sampling,
+                preferences: shared_preferences.clone(),
+                scaled_image: None,
+                scaled_image_binning_factor: 1,
+                scaled_image_frame_id: 0,
+                calibrating: false,
+                cancel_calibration: Arc::new(Mutex::new(false)),
+                calibration_start: Instant::now(),
+                calibration_duration_estimate: Duration::MAX,
+                center_peak_position: Arc::new(Mutex::new(None)),
+                serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
+                overall_latency_stats: ValueStatsAccumulator::new(stats_capacity),
+            }));
+        }
 
         let metadata = MetadataCommand::new()
             .exec()
@@ -1845,7 +1868,7 @@ impl MyCedar {
 
         let cedar = MyCedar {
             state: state.clone(),
-            camera_interface, camera_index, invert_camera, test_image,
+            camera_interface, camera_index, test_image,
             preferences_file,
             log_file,
             product_name: product_name.to_string(),
@@ -1864,8 +1887,8 @@ impl MyCedar {
         locked_state.detect_engine.lock().await.set_focus_mode(
             true, /*daylight_mode=*/false, binning);
         locked_state.solve_engine.lock().await.set_catalog_entry_match(
-            locked_preferences.catalog_entry_match.clone()).await;
-        if let Some(bsp) = &locked_preferences.boresight_pixel {
+            shared_preferences.lock().unwrap().catalog_entry_match.clone()).await;
+        if let Some(bsp) = &shared_preferences.lock().unwrap().boresight_pixel {
             locked_state.solve_engine.lock().await.set_boresight_pixel(
                 Some(tetra3_server::ImageCoord{
                     x: bsp.x, y: bsp.y})).await.unwrap();
@@ -2080,7 +2103,7 @@ fn parse_duration(arg: &str)
 }
 
 // `invert_camera` Determines whether camera image is inverted (rot180) during
-//     readout. Does not apply to --test_image.
+//     readout.
 // `get_dependencies` Is called to obtain the CedarSkyTrait and WifiTrait
 //     implementations, if any. This function is called after logging has been
 //     set up and `server_main()`s command line arguments have been consumed.
