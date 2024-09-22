@@ -429,7 +429,7 @@ impl DetectEngine {
                     // of the brightest pixel in the center region? Note that a
                     // lower brightness_goal value allows for faster exposures,
                     // which is nice in focus mode.
-                    let brightness_goal = 128.0 * accuracy_multiplier;
+                    let brightness_goal = 32.0 * accuracy_multiplier;
 
                     // Compute how much to scale the previous exposure
                     // integration time to move towards the goal. Assumes linear
