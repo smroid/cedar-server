@@ -28,6 +28,12 @@ impl Calibrator {
         Calibrator{camera}
     }
 
+    pub fn replace_camera(
+        &mut self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
+    {
+        self.camera = camera.clone();
+    }
+
     pub async fn calibrate_offset(
         &self, cancel_calibration: Arc<Mutex<bool>>)
         -> Result<Offset, CanonicalError> {

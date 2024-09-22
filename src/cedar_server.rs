@@ -514,7 +514,8 @@ impl Cedar for MyCedar {
                     Some(demo_image_filename);
             }
             let new_camera = locked_state.camera.clone();
-            locked_state.detect_engine.lock().await.replace_camera(new_camera);
+            locked_state.detect_engine.lock().await.replace_camera(new_camera.clone());
+            locked_state.calibrator.lock().await.replace_camera(new_camera);
         }
         if let Some(invert_camera) = req.invert_camera {
             {
