@@ -168,6 +168,9 @@ message OperationSettings {
   // demo mode.
   optional string demo_image_filename = 12;
 
+  // Determines whether camera image is inverted (rot180) during readout.
+  optional bool invert_camera = 13;
+
   // TODO: decrowd parameter for returned catalog entries?
 }
 
@@ -259,7 +262,8 @@ message Preferences {
   // not update this via UpdatePreferences().
   optional ImageCoord boresight_pixel = 19;
 
-  // Determines whether camera image is inverted (rot180) during readout.
+  // Determines whether camera image is inverted (rot180) during readout. Note:
+  // do not update this via UpdatePreferences().
   optional bool invert_camera = 20;
 
   reserved 4;
