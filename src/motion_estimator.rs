@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use log::{debug, info, warn};
+use log::{debug, warn};
 use std::time::{Duration, SystemTime};
 
 use crate::rate_estimator::RateEstimation;
