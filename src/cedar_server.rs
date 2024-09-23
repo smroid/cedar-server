@@ -743,6 +743,13 @@ impl Cedar for MyCedar {
             }
         }
         if let Some(slew_coord) = req.initiate_slew {
+            let mount_type = locked_state.preferences.lock().unwrap().mount_type;
+            if mount_type == Some(MountType::AltAz.into()) &&
+                locked_state.fixed_settings.lock().unwrap().observer_location.is_none()
+            {
+                return Err(tonic::Status::failed_precondition(
+                    "Need observer location for goto with alt-az mount"));
+            }
             let mut telescope = locked_state.telescope_position.lock().unwrap();
             telescope.slew_target_ra = slew_coord.ra;
             telescope.slew_target_dec = slew_coord.dec;
