@@ -90,8 +90,9 @@ impl Calibrator {
         // number of detected stars.
         //
         // Assumption: camera is focused and pointed at sky with stars. The
-        // passed `setup_exposure_duration` yields a large number of detected
-        // stars (i.e. at least a good fraction of `star_count_goal`).
+        // passed `setup_exposure_duration` yields at least one star (the
+        // brightest star in the central region) which was used for focusing
+        // and aligning.
         //
         // Approach:
         // * Using the `setup_exposure_duration`
@@ -112,10 +113,6 @@ impl Calibrator {
             /*frame_id=*/None, detection_binning, detection_sigma).await?;
 
         let mut num_stars_detected = stars.len();
-        if num_stars_detected < (star_count_goal / 5) as usize {
-            return Err(failed_precondition_error(
-                format!("Too few stars detected ({})", num_stars_detected).as_str()))
-        }
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         let mut star_goal_fraction =
             f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
