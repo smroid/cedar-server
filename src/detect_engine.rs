@@ -411,14 +411,14 @@ impl DetectEngine {
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
 
             let mut focus_aid: Option<FocusAid> = None;
-            let mut black_level = 0;
-            let mut peak_value = 0;
+            let mut black_level = 0_u8;
+            let mut peak_value = 0_u8;
             if focus_mode_enabled {
                 let roi_summary = summarize_region_of_interest(
                     &image, &center_region, noise_estimate, detection_sigma);
                 let mut roi_histogram = roi_summary.histogram;
 
-                black_level = get_level_for_fraction(&roi_histogram, 0.01);
+                black_level = get_level_for_fraction(&roi_histogram, 0.01) as u8;
                 // Compute peak_value as the average of the 5 brightest pixels.
                 peak_value = average_top_values(&roi_histogram, 5);
 
@@ -429,7 +429,11 @@ impl DetectEngine {
                     // of the brightest pixel in the center region? Note that a
                     // lower brightness_goal value allows for faster exposures,
                     // which is nice in focus mode.
-                    let brightness_goal = 32.0 * accuracy_multiplier;
+                    let brightness_goal = if daylight_mode {
+                        128.0
+                    } else {
+                        32.0 * accuracy_multiplier
+                    };
 
                     // Compute how much to scale the previous exposure
                     // integration time to move towards the goal. Assumes linear
@@ -459,7 +463,7 @@ impl DetectEngine {
                            peak_value, peak_region.left(), peak_region.top());
                     // Get a good black level for display.
                     remove_stars_from_histogram(&mut roi_histogram, /*sigma=*/8.0);
-                    let region_black_level = get_level_for_fraction(&roi_histogram, 0.9);
+                    let region_black_level = get_level_for_fraction(&roi_histogram, 0.8);
 
                     // We scale up the pixel values in the peak_image for good
                     // display visibility.
@@ -530,7 +534,19 @@ impl DetectEngine {
 
                 // Get a good black level for display.
                 remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-                black_level = get_level_for_fraction(&histogram, 0.99);
+
+                // Some cameras have annoying readout artifact, such as
+                // horizontal light streaks. By setting the black level to the
+                // top of the stars-removed histogram, we push such noise down
+                // into low pixel values and hopefully not too visible.
+                black_level = get_level_for_fraction(&histogram, 1.0) as u8;
+
+                // Because we're determining peak_value from detected stars,
+                // in pathological situations the black_level might end up
+                // higher than the peak_value. Kludge this back to sanity.
+                if black_level > peak_value {
+                    black_level = peak_value;
+                }
 
                 if !focus_mode_enabled && auto_exposure &&
                     calibrated_exposure_duration.is_some()
