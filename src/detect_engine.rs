@@ -82,6 +82,10 @@ struct DetectState {
     // operation; a value < 1 instead favors speed. Range is roughly [0.5 .. 1.5].
     accuracy_multiplier: f64,
 
+    // We update the exposure time based on the number of detected stars.
+    // Because of noise, twinking, etc., use a moving average.
+    detected_stars_moving_average: f64,
+
     detect_latency_stats: ValueStatsAccumulator,
 
     // Estimated time at which `detect_result` will next be updated.
@@ -125,6 +129,7 @@ impl DetectEngine {
                 binning: 1,
                 calibrated_exposure_duration: None,
                 accuracy_multiplier: 1.0,
+                detected_stars_moving_average: 0.0,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 detect_result: None,
@@ -187,6 +192,9 @@ impl DetectEngine {
         locked_state.focus_mode_enabled = enabled;
         locked_state.daylight_mode = daylight_mode;
         locked_state.binning = binning;
+        if !enabled {
+            locked_state.detected_stars_moving_average = 0.0;
+        }
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -212,6 +220,21 @@ impl DetectEngine {
         locked_state.accuracy_multiplier = accuracy_multiplier;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
+    }
+
+    fn update_detected_stars_moving_average(state: &mut DetectState,
+                                            num_stars_detected: usize) -> f64 {
+        // First time?
+        if state.detected_stars_moving_average == 0.0 {
+            state.detected_stars_moving_average = num_stars_detected as f64;
+        } else {
+            // Alpha near 1.0: current value dominates. Alpha near 0.0: long
+            // term average dominates.
+            let alpha = 0.5;
+            state.detected_stars_moving_average = alpha * num_stars_detected as f64 +
+                (1.0 - alpha) * state.detected_stars_moving_average;
+        }
+        state.detected_stars_moving_average
     }
 
     /// Obtains a result bundle, as configured above. The returned result is
@@ -432,7 +455,7 @@ impl DetectEngine {
                     let brightness_goal = if daylight_mode {
                         128.0
                     } else {
-                        32.0 * accuracy_multiplier
+                        24.0 * accuracy_multiplier
                     };
 
                     // Compute how much to scale the previous exposure
@@ -558,40 +581,54 @@ impl DetectEngine {
 
                     let num_stars_detected = stars.len();
                     if num_stars_detected == 0 {
-                        // Revert to safety: use adjusted calibrated exposure duration.
+                        // We're likely slewing and thus detecting no stars.
+                        // Don't update the moving average, and for safety use
+                        // the adjusted calibrated exposure duration.
                         new_exposure_duration_secs = adjusted_exposure_duration_secs;
                     } else {
-                        // >1 if we have more stars than goal; <1 if fewer stars than
-                        // goal.
-                        let star_goal_fraction =
-                            num_stars_detected as f64 / adjusted_star_count_goal;
-                        // Don't adjust exposure time too often, is a bit janky because the
-                        // camera re-initializes. Allow number of detected stars to greatly
-                        // exceed goal, but don't allow much of a shortfall.
-                        if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
-                            // What is the relationship between exposure time and number
-                            // of stars detected?
-                            // * If we increase the exposure time by 2.5x, we'll be able
-                            //   to detect stars 40% as bright. This corresponds to an
-                            //   increase of one stellar magnitude.
-                            // * Per https://www.hnsky.org/star_count, at mag=5 a one
-                            //   magnitude increase corresponds to around 3x the number
-                            //   of stars.
-                            // * 2.5x and 3x are "close enough", so we model the number
-                            //   of detectable stars as being simply proportional to the
-                            //   exposure time. This is OK because we'll only be varying
-                            //   the exposure time a modest amount relative to the
-                            //   adjusted_exposure_duration.
-                            new_exposure_duration_secs =
-                                prev_exposure_duration_secs / star_goal_fraction;
-                            // Bound exposure duration to be within two stops of
-                            // adjusted_exposure_duration.
-                            new_exposure_duration_secs = f64::max(
-                                new_exposure_duration_secs,
-                                adjusted_exposure_duration_secs / 4.0);
-                            new_exposure_duration_secs = f64::min(
-                                new_exposure_duration_secs,
-                                adjusted_exposure_duration_secs * 4.0);
+                        let moving_average = Self::update_detected_stars_moving_average(
+                            &mut state.lock().unwrap(), num_stars_detected);
+                        if moving_average < 1.0 {
+                            // This shouldn't happen because we don't update the moving
+                            // average with num_stars_detected==0. But just in case do
+                            // something sane.
+                            new_exposure_duration_secs = adjusted_exposure_duration_secs;
+                        } else {
+                            // >1 if we have more stars than goal; <1 if fewer stars than
+                            // goal.
+                            let star_goal_fraction =
+                                moving_average / adjusted_star_count_goal;
+                            // Don't adjust exposure time too often, is a bit
+                            // janky because the camera re-initializes. Allow
+                            // number of detected stars to greatly exceed goal,
+                            // but don't allow much of a shortfall.
+                            if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
+                                // What is the relationship between exposure
+                                // time and number of stars detected?
+                                // * If we increase the exposure time by 2.5x,
+                                //   we'll be able to detect stars 40% as
+                                //   bright. This corresponds to an increase of
+                                //   one stellar magnitude.
+                                // * Per https://www.hnsky.org/star_count, at
+                                //   mag=5 a one magnitude increase corresponds
+                                //   to around 3x the number of stars.
+                                // * 2.5x and 3x are "close enough", so we model
+                                // the number of detectable stars as being
+                                // simply proportional to the exposure time.
+                                // This is OK because we'll only be varying the
+                                // exposure time a modest amount relative to the
+                                // adjusted_exposure_duration.
+                                new_exposure_duration_secs =
+                                    prev_exposure_duration_secs / star_goal_fraction;
+                                // Bound exposure duration to be within two stops of
+                                // adjusted_exposure_duration.
+                                new_exposure_duration_secs = f64::max(
+                                    new_exposure_duration_secs,
+                                    adjusted_exposure_duration_secs / 4.0);
+                                new_exposure_duration_secs = f64::min(
+                                    new_exposure_duration_secs,
+                                    adjusted_exposure_duration_secs * 4.0);
+                            }
                         }
                     }
                 }
