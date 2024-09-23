@@ -1388,10 +1388,15 @@ impl MyCedar {
         let mut bmp_buf = Vec::<u8>::new();
         let (resized_width, resized_height) = resized_disp_image.dimensions();
         bmp_buf.reserve((resized_width * resized_height) as usize);
+        let gamma = if locked_state.operation_settings.daylight_mode.unwrap() {
+            1.0
+        } else {
+            0.7
+        };
         let scaled_image = scale_image(resized_disp_image,
                                        detect_result.display_black_level,
                                        detect_result.peak_value,
-                                       /*gamma=*/0.7);
+                                       gamma);
         // Save most recent display image.
         locked_state.scaled_image = Some(Arc::new(scaled_image.clone()));
         scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
