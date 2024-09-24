@@ -134,19 +134,34 @@ impl Calibrator {
             Some(frame_id), detection_binning, detection_sigma).await?;
 
         num_stars_detected = stars.len();
+        // >1 if we have more stars than goal; <1 if fewer stars than goal.
+        star_goal_fraction =
+            f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
+        scaled_exposure_duration_secs /= star_goal_fraction;
+        if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
+            // Close enough to goal, the scaled exposure time is good.
+            return Ok(Duration::from_secs_f64(scaled_exposure_duration_secs));
+        }
+
+        // Iterate one more time.
+        self.camera.lock().await.set_exposure_duration(
+            Duration::from_secs_f64(scaled_exposure_duration_secs))?;
+        (_, stars, _) = self.acquire_image_get_stars(
+            Some(frame_id), detection_binning, detection_sigma).await?;
+
+        num_stars_detected = stars.len();
         if num_stars_detected < (star_count_goal / 5) as usize {
             return Err(failed_precondition_error(
                 format!("Too few stars detected ({})", num_stars_detected).as_str()))
         }
-        // >1 if we have more stars than goal; <1 if fewer stars than goal.
         star_goal_fraction =
             f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
-        scaled_exposure_duration_secs =
-            setup_exposure_duration.as_secs_f64() / star_goal_fraction;
         if star_goal_fraction < 0.5 || star_goal_fraction > 2.0 {
             warn!("Exposure time calibration diverged, goal fraction {}",
                   star_goal_fraction);
         }
+
+        scaled_exposure_duration_secs /= star_goal_fraction;
         Ok(Duration::from_secs_f64(scaled_exposure_duration_secs))
     }
 
