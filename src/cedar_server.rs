@@ -100,8 +100,8 @@ struct MyCedar {
     // The hardware camera that was detected, if any.
     attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
 
-    // Command line args for using static image instead of attached camera.
-    test_image: Option<String>,
+    // Fake camera for using static image instead of an attached camera.
+    test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
 
     preferences_file: PathBuf,
 
@@ -485,7 +485,7 @@ impl Cedar for MyCedar {
             if demo_image_filename.is_empty() {
                 // Go back to using our configured camera.
                 locked_state.camera = get_camera(&self.attached_camera,
-                                                 self.test_image.as_ref());
+                                                 &self.test_image_camera);
                 locked_state.operation_settings.demo_image_filename = None;
             } else {
                 let input_path = PathBuf::from("./demo_images").join(
@@ -975,7 +975,14 @@ impl MyCedar {
         {
             let locked_state = self.state.lock().await;
 
-            if let Some(attached_camera) = &self.attached_camera {
+            if let Some(test_image_camera) = &self.test_image_camera {
+                let locked_camera = test_image_camera.lock().await;
+                camera = Some(CameraModel{
+                    model: locked_camera.model(),
+                    image_width: locked_camera.dimensions().0,
+                    image_height: locked_camera.dimensions().1,
+                });
+           } else if let Some(attached_camera) = &self.attached_camera {
                 let locked_camera = attached_camera.lock().await;
                 camera = Some(CameraModel{
                     model: locked_camera.model(),
@@ -1593,7 +1600,6 @@ impl MyCedar {
 
     pub async fn new(
         invert_camera: bool,
-        test_image: Option<String>,
         min_exposure_duration: Duration,
         max_exposure_duration: Duration,
         tetra3_script: String,
@@ -1601,6 +1607,7 @@ impl MyCedar {
         tetra3_uds: String,
         got_signal: Arc<AtomicBool>,
         attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
+        test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
         telescope_position: Arc<Mutex<TelescopePosition>>,
         binning: u32,
@@ -1869,7 +1876,7 @@ impl MyCedar {
         let cedar = MyCedar {
             state: state.clone(),
             attached_camera: attached_camera.clone(),
-            test_image,
+            test_image_camera: test_image_camera.clone(),
             preferences_file,
             log_file,
             product_name: product_name.to_string(),
@@ -2217,17 +2224,11 @@ fn get_attached_camera(camera_interface: Option<&CameraInterface>,
 
 fn get_camera(
     attached_camera: &Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
-    test_image: Option<&String>)
+    test_image_camera: &Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>)
     -> Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>
 {
-    if test_image.is_some() {
-        let input_path = PathBuf::from(test_image.as_ref().unwrap());
-        let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
-        let img_u8 = img.to_luma8();
-        info!("Using test image {} instead of camera.",
-              test_image.as_ref().unwrap());
-        return Arc::new(tokio::sync::Mutex::new(Box::new(
-            ImageCamera::new(img_u8).unwrap())));
+    if let Some(test_image_camera) = test_image_camera {
+        return test_image_camera.clone();
     }
     if let Some(attached_camera) = attached_camera {
         return attached_camera.clone();
@@ -2274,6 +2275,20 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         }
     };
 
+    let test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>> =
+        match &args.test_image
+    {
+        Some(test_image_path) => {
+            let input_path = PathBuf::from(test_image_path);
+            let img = ImageReader::open(&input_path).unwrap().decode().unwrap();
+            let img_u8 = img.to_luma8();
+            info!("Using test image {} instead of camera.", test_image_path);
+            Some(Arc::new(tokio::sync::Mutex::new(Box::new(
+                ImageCamera::new(img_u8).unwrap()))))
+        },
+        None => None,
+    };
+
     let feature_level = if product_name.eq_ignore_ascii_case("Cedar-Box") {
         FeatureLevel::Diy
     } else {
@@ -2289,7 +2304,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         }
     };
 
-    let camera = get_camera(&attached_camera, args.test_image.as_ref());
+    let camera = get_camera(&attached_camera, &test_image_camera);
     let mpix;
     {
         let locked_camera = camera.lock().await;
@@ -2375,11 +2390,11 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
         .add_service(CedarServer::new(MyCedar::new(
-            invert_camera, args.test_image,
+            invert_camera,
             args.min_exposure, args.max_exposure,
             args.tetra3_script, args.tetra3_database, args.tetra3_socket,
             got_signal,
-            attached_camera, camera,
+            attached_camera, test_image_camera, camera,
             shared_telescope_position.clone(),
             binning, display_sampling,
             args.star_count_goal, args.sigma, args.min_sigma,
