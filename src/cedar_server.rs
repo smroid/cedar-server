@@ -1747,6 +1747,20 @@ impl MyCedar {
                 preferences.boresight_pixel = None;
             }
         }
+        // Validate preferences against feature level. If someone switches the
+        // camera down to the basic model, some preferences need to be adjusted.
+        if feature_level == FeatureLevel::Basic {
+            let min_interval_nanos = 200000000;  // 200ms, or 5Hz.
+            let update_interval = preferences.update_interval.as_mut().unwrap();
+            if update_interval.nanos < min_interval_nanos {
+                update_interval.nanos = min_interval_nanos;
+            }
+            let limit_magnitude = 12;
+            let cat_match = preferences.catalog_entry_match.as_mut().unwrap();
+            if cat_match.faintest_magnitude.unwrap() > limit_magnitude {
+                cat_match.faintest_magnitude = Some(limit_magnitude);
+            }
+        }
 
         let shared_preferences = Arc::new(Mutex::new(preferences));
 
