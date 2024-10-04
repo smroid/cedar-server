@@ -305,10 +305,16 @@ impl Cedar for MyCedar {
                     {
                         return Err(tonic_status(x));
                     }
-                    // TODO: don't set focus mode unless requested.
-                    // locked_state.detect_engine.lock().await.set_focus_mode(
-                    //     true, /*daylight_mode=*/false, locked_state.binning);
-                    locked_state.detect_engine.lock().await.set_calibrated_exposure_duration(None);
+                    {
+                        let mut locked_detect_engine =
+                            locked_state.detect_engine.lock().await;
+                        locked_detect_engine.set_focus_mode(
+                            locked_state.operation_settings.focus_assist_mode.unwrap(),
+                            locked_state.binning);
+                        locked_detect_engine.set_daylight_mode(
+                            locked_state.operation_settings.daylight_mode.unwrap());
+                        locked_detect_engine.set_calibrated_exposure_duration(None);
+                    }
                     locked_state.operation_settings.operating_mode =
                         Some(OperatingMode::Setup as i32);
                     locked_state.telescope_position.lock().unwrap().slew_active = false;
@@ -370,7 +376,9 @@ impl Cedar for MyCedar {
                             } else {
                                 // Transition into Operate mode.
                                 locked_state.detect_engine.lock().await.set_focus_mode(
-                                    false, /*daylight_mode=*/false, locked_state.binning);
+                                    false, locked_state.binning);
+                                locked_state.detect_engine.lock().await.set_daylight_mode(
+                                    false);
                                 // Turn off daylight mode.
                                 locked_state.operation_settings.daylight_mode =
                                     Some(false);
@@ -411,9 +419,21 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::failed_precondition(
                     "Ignoring daylight_mode while in OPERATE mode."));
             }
-            locked_state.detect_engine.lock().await.set_focus_mode(
-                true, new_daylight_mode, locked_state.binning);
+            locked_state.detect_engine.lock().await.set_daylight_mode(
+                new_daylight_mode);
             locked_state.operation_settings.daylight_mode = Some(new_daylight_mode);
+        }
+        if let Some(new_focus_assist_mode) = req.focus_assist_mode {
+            let mut locked_state = self.state.lock().await;
+            if locked_state.operation_settings.operating_mode ==
+                Some(OperatingMode::Operate as i32) {
+                return Err(tonic::Status::failed_precondition(
+                    "Ignoring focus_assist_mode while in OPERATE mode."));
+            }
+            locked_state.detect_engine.lock().await.set_focus_mode(
+                new_focus_assist_mode, locked_state.binning);
+            locked_state.operation_settings.focus_assist_mode =
+                Some(new_focus_assist_mode);
         }
         if let Some(exp_time) = req.exposure_time {
             if exp_time.seconds < 0 || exp_time.nanos < 0 {
@@ -1245,23 +1265,25 @@ impl MyCedar {
             }
         }  // locked_state.
 
-        // Populated only in OperatingMode::Operate mode.
+        // Populated only in OperatingMode::Operate mode and Setup alignment
+        // mode.
         let mut tetra3_solve_result: Option<SolveResultProto> = None;
         let mut plate_solution: Option<PlateSolution> = None;
 
         let detect_result;
-        // if state.lock().await.operation_settings.operating_mode.unwrap() ==
-        //     OperatingMode::Setup as i32
-        // {
-        //     detect_result = state.lock().await.detect_engine.lock().await.
-        //         get_next_result(prev_frame_id).await;
-        // } else {
+        if state.lock().await.operation_settings.operating_mode.unwrap() ==
+            OperatingMode::Setup as i32 &&
+            state.lock().await.operation_settings.focus_assist_mode.unwrap()
+        {
+            detect_result = state.lock().await.detect_engine.lock().await.
+                get_next_result(prev_frame_id).await;
+        } else {
             plate_solution = Some(state.lock().await.solve_engine.lock().await.
                                   get_next_result(prev_frame_id).await);
             let psr = plate_solution.as_ref().unwrap();
             tetra3_solve_result = psr.tetra3_solve_result.clone();
             detect_result = psr.detect_result.clone();
-        // }
+        }
         let serve_start_time = Instant::now();
         let mut locked_state = state.lock().await;
 
@@ -1824,6 +1846,7 @@ impl MyCedar {
                 operation_settings: OperationSettings {
                     operating_mode: Some(OperatingMode::Setup as i32),
                     daylight_mode: Some(false),
+                    focus_assist_mode: Some(true),
                     exposure_time: Some(prost_types::Duration {
                         seconds: 0, nanos: 0,
                     }),
@@ -1921,10 +1944,11 @@ impl MyCedar {
         {
             warn!("Could not set default settings on camera {:?}", x);
         }
-        // TODO: don't set focus mode
-        // TODO: add operating sub-mode for focus assist.
-        // locked_state.detect_engine.lock().await.set_focus_mode(
-        //     true, /*daylight_mode=*/false, binning);
+
+        locked_state.detect_engine.lock().await.set_focus_mode(
+            locked_state.operation_settings.focus_assist_mode.unwrap(), binning);
+        locked_state.detect_engine.lock().await.set_daylight_mode(
+            locked_state.operation_settings.daylight_mode.unwrap());
         locked_state.solve_engine.lock().await.set_catalog_entry_match(
             shared_preferences.lock().unwrap().catalog_entry_match.clone()).await;
         if let Some(bsp) = &shared_preferences.lock().unwrap().boresight_pixel {

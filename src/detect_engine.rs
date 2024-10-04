@@ -34,7 +34,7 @@ pub struct DetectEngine {
     detection_min_sigma: f64,
     detection_sigma: f64,
 
-    // In align mode and operate mode (`focus_mode_enabled` is false), the
+    // In align mode and operate mode (`focus_mode` is false), the
     // auto-exposure algorithm uses this as the desired number of detected
     // stars. The algorithm allows the number of detected stars to vary around
     // the goal by a large amount to the high side (is OK to have more stars
@@ -65,10 +65,9 @@ struct DetectState {
     update_interval: Duration,
 
     // True means populate `DetectResult.focus_aid` info.
-    focus_mode_enabled: bool,
+    focus_mode: bool,
 
-    // Relevant only with `focus_mode_enabled`==true. Affects auto-exposure and
-    // turns off focus aids and star detection.
+    // Affects auto-exposure and turns off focus aids and star detection.
     daylight_mode: bool,
 
     // When running CedarDetect, this supplies the `binning` value used.
@@ -131,7 +130,7 @@ impl DetectEngine {
                 frame_id: None,
                 auto_exposure: true,
                 update_interval: Duration::ZERO,
-                focus_mode_enabled: true,  // TODO: should be false initially
+                focus_mode: false,
                 daylight_mode: false,
                 binning: 1,
                 calibrated_exposure_duration: None,
@@ -165,10 +164,10 @@ impl DetectEngine {
     }
 
     // If `exp_time` is zero, enables auto exposure. In focus assist mode, auto
-    // exposure is based on a histogram of the central region, and aims to make
-    // the brightest part of the central region bright but not saturated. In
-    // align mode and operate mode, auto exposure is based on the number of
-    // detected stars in the entire image.
+    // exposure is based on a histogram of the image region, and aims to make
+    // the brightest part of the image bright but not saturated. In align mode
+    // and operate mode, auto exposure is based on the number of detected stars
+    // in the entire image.
     pub async fn set_exposure_time(&mut self, exp_time: Duration)
                                    -> Result<(), CanonicalError> {
         let camera = self.state.lock().unwrap().camera.clone();
@@ -194,12 +193,20 @@ impl DetectEngine {
         Ok(())
     }
 
-    pub fn set_focus_mode(&mut self, enabled: bool, daylight_mode: bool,
-                          binning: u32) {
+    pub fn set_focus_mode(&mut self, enabled: bool, binning: u32) {
         let mut locked_state = self.state.lock().unwrap();
-        locked_state.focus_mode_enabled = enabled;
-        locked_state.daylight_mode = daylight_mode;
+        locked_state.focus_mode = enabled;
         locked_state.binning = binning;
+        if !enabled {
+            locked_state.detected_stars_moving_average = 0.0;
+        }
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+    }
+
+    pub fn set_daylight_mode(&mut self, enabled: bool) {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.daylight_mode = enabled;
         if !enabled {
             locked_state.detected_stars_moving_average = 0.0;
         }
@@ -374,7 +381,7 @@ impl DetectEngine {
             let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>;
             let auto_exposure: bool;
             let update_interval: Duration;
-            let focus_mode_enabled: bool;
+            let focus_mode: bool;
             let daylight_mode: bool;
             let binning: u32;
             let calibrated_exposure_duration: Option<Duration>;
@@ -390,7 +397,7 @@ impl DetectEngine {
                 camera = locked_state.camera.clone();
                 auto_exposure = locked_state.auto_exposure;
                 update_interval = locked_state.update_interval;
-                focus_mode_enabled = locked_state.focus_mode_enabled;
+                focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
                 binning = locked_state.binning;
                 calibrated_exposure_duration =
@@ -438,7 +445,10 @@ impl DetectEngine {
             let process_start_time = Instant::now();
             let image: &GrayImage = &captured_image.image;
             let (width, height) = image.dimensions();
-            let center_region = Self::get_central_region(width, height);
+
+            // To avoid edge effects when centroiding, inset a little.
+            let image_region = Rect::at(10, 10).of_size(width - 20, height - 20);
+
             let noise_estimate = estimate_noise_from_image(&image);
             let prev_exposure_duration_secs =
                 captured_image.capture_params.exposure_duration.as_secs_f64();
@@ -447,9 +457,9 @@ impl DetectEngine {
             let mut focus_aid: Option<FocusAid> = None;
             let mut black_level = 0_u8;
             let mut peak_value = 0_u8;
-            if focus_mode_enabled {
+            if focus_mode {
                 let roi_summary = summarize_region_of_interest(
-                    &image, &center_region, noise_estimate, detection_sigma);
+                    &image, &image_region, noise_estimate, detection_sigma);
                 let mut roi_histogram = roi_summary.histogram;
 
                 black_level = get_level_for_fraction(&roi_histogram, 0.01) as u8;
@@ -457,10 +467,10 @@ impl DetectEngine {
                 peak_value = average_top_values(&roi_histogram, 5);
 
                 if auto_exposure {
-                    // Adjust exposure time based on peak value of center_region.
+                    // Adjust exposure time based on peak value of image_region.
 
                     // For auto_exposure in focus mode, what is the target value
-                    // of the brightest pixel in the center region? Note that a
+                    // of the brightest pixel in the image region? Note that a
                     // lower brightness_goal value allows for faster exposures,
                     // which is nice in focus mode.
                     let brightness_goal = if daylight_mode {
@@ -506,7 +516,8 @@ impl DetectEngine {
                                                     sub_image_size as u32,
                                                     sub_image_size as u32).to_image();
                     scale_image_mut(
-                        &mut peak_image, region_black_level as u8, peak_value, /*gamma=*/0.7);
+                        &mut peak_image, region_black_level as u8, peak_value,
+                        /*gamma=*/0.7);
                     focus_aid = Some(FocusAid{
                         center_peak_position: peak_position,
                         center_peak_value: peak_value,
@@ -514,7 +525,7 @@ impl DetectEngine {
                         peak_image_region: peak_region,
                     });
                 }  // !daylight_mode.
-            }  // focus_mode_enabled
+            }  // focus_mode
 
             let mut binned_image: Option<Arc<GrayImage>> = None;
             let mut stars: Vec<StarDescription> = vec![];
@@ -582,9 +593,11 @@ impl DetectEngine {
                     black_level = peak_value;
                 }
 
-                if !focus_mode_enabled && auto_exposure {
+                if !focus_mode && auto_exposure {
                     let mut baseline_exposure_duration = initial_exposure_duration;
-                    if let Some(calibrated_exposure_duration) = calibrated_exposure_duration {
+                    if let Some(calibrated_exposure_duration) =
+                        calibrated_exposure_duration
+                    {
                         baseline_exposure_duration = calibrated_exposure_duration;
                     }
                     let adjusted_star_count_goal =
@@ -687,7 +700,7 @@ impl DetectEngine {
                 peak_value,
                 focus_aid,
                 daylight_mode,
-                center_region,
+                center_region: image_region,
                 processing_duration: elapsed,
                 detect_latency_stats:
                 locked_state.detect_latency_stats.value_stats.clone(),
@@ -729,15 +742,16 @@ pub struct DetectResult {
     // brightest part of the central regioin.
     pub peak_value: u8,
 
-    // Included if `focus_mode_enabled`.
+    // Included if `focus_mode`.
     pub focus_aid: Option<FocusAid>,
 
     // Indicates whether daylight_mode was in effect for this result.
     pub daylight_mode: bool,
 
     // See the corresponding field in FrameResult. Note that this is populated
-    // even when not in `focus_mode_enabled`.
+    // even when not in `focus_mode`.
     // This is in full resolution coordinates.
+    // TODO: drop this.
     pub center_region: Rect,
 
     // Time taken to produce this DetectResult, excluding the time taken to

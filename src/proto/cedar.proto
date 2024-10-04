@@ -116,14 +116,19 @@ message OperationSettings {
   // Defaults to SETUP mode.
   optional OperatingMode operating_mode = 4;
 
-  // Relevant only in SETUP mode. Instead of trying to detect a star in the
-  // central region (for focusing and boresight aligning), Cedar server instead
-  // exposes the image in a conventional photographic fashion and returns the
-  // central third of the image for magnified display at the client.
+  // Relevant only in SETUP mode. Instead of trying to detect and plate solve
+  // stars (for boresight aligning), Cedar server instead exposes the image in a
+  // conventional photographic fashion and returns the non-stretched image for
+  // display at the client.
   // ActionRequest.designate_boresight is then used to convey the user's
   // identification of the image coordinate corresponding to the telescope's FOV
   // center.
   optional bool daylight_mode = 1;
+
+  // Relevant only in SETUP mode. Instead of trying to detect and plate solve
+  // stars (for boresight aligning), Cedar server instead exposes the image for
+  // the brightest point in the image.
+  optional bool focus_assist_mode = 14;
 
   // The camera exposure integration time. Zero selects automatic exposure.
   // Default is zero (auto). TODO: remove this?
@@ -178,8 +183,12 @@ enum OperatingMode {
   MODE_UNSPECIFIED = 0;
 
   // Mode supporting establishment of camera focus and boresight alignment of
-  // camera and telescope:
-  // * Exposure metered based on brightest point in central region.
+  // camera and telescope. Auto-exposure behavior is refined by submodes
+  // daylight_mode and focus_assist_mode:
+  // * Neither in effect: exposure is metered for star detection and plate
+  //   solving.
+  // * daylight_mode: exposure is metered in conventional photographic fashion.
+  // * focus_assist_mode: Exposure metered based on brightest point in image.
   SETUP = 1;
 
   // Main operating mode. Continually updated RA/DEC sent to SkySafari.
@@ -325,12 +334,10 @@ message FrameResult {
   // Information returned regardless of `operating_mode`.
 
   // The image from which information in this FrameResult is derived. This image
-  // is from the entire sensor, typically with some amount of binning. However,
-  // if OperationSettings.daylight_mode is in effect, the image is only of the
-  // center region and is not binned. Note that this image has stretch/gamma
-  // applied for better visibility of dark features (unless
-  // OperationSettings.daylight_mode is in effect, in which case a more natural
-  // rendering is used).
+  // is from the entire sensor, typically with some amount of binning.
+  // Note that this image has stretch/gamma applied for better visibility of
+  // dark features (unless OperationSettings.daylight_mode is in effect, in
+  // which case a more natural rendering is used).
   Image image = 3;
 
   // The camera exposure integration time for `image`.
@@ -345,6 +352,11 @@ message FrameResult {
   // The star candidates detected by CedarDetect; ordered by brightest
   // first.
   repeated StarCentroid star_candidates = 4;
+
+  // The current plate solution. Omitted if no plate solve was attempted for
+  // this frame. Relevant in OPERATE mode and in SETUP mode when neither
+  // `focus_assist_mode` nor `daylight_mode` is present.
+  optional tetra3_server.SolveResult plate_solution = 17;
 
   // Estimate of the RMS noise of the full-resolution image. In 8 bit ADU
   // units.
@@ -372,25 +384,23 @@ message FrameResult {
 
   // Identifies the center region used for brightest-star detection for focusing
   // support, and also in `daylight_mode`. In full resolution image coordinates.
+  // TODO: drop this.
   optional Rectangle center_region = 11;
 
-  // The estimated position of the brightest point in `center_region`. In full
-  // resolution image coordinates. Not used in `daylight_mode`.
+  // This is the estimated position of the brightest point. In full resolution
+  // image coordinates. Only present in `focus_assist_mode`.
   optional ImageCoord center_peak_position = 12;
 
-  // The pixel value at the center_peak_position. Not used in `daylight_mode`.
+  // The pixel value at the center_peak_position. Only present in
+  // `focus_assist_mode`.
   optional int32 center_peak_value = 6;
 
   // A small high resolution crop of `image` centered at `center_peak_position`.
   // Note that this image has stretch/gamma applied for better visibility of
-  // dark features. Not used in `daylight_mode`.
+  // dark features. Only present in `focus_assist_mode`.
   optional Image center_peak_image = 13;
 
   // Information returned when `operating_mode` is OPERATE.
-
-  // The current plate solution. Omitted if no plate solve was attempted for
-  // this frame.
-  optional tetra3_server.SolveResult plate_solution = 17;
 
   // When the observer's geographic location is known, the `plate_solution`
   // field is augmented with additional information.
@@ -640,6 +650,7 @@ message SlewRequest {
 
   // True if the target's image position is within the center_region defined
   // in SETUP mode. False otherwise, or if there is no valid plate solution.
+  // TODO: drop this.
   bool target_within_center_region = 7;
 }
 
@@ -676,21 +687,19 @@ message FovCatalogEntry {
 }
 
 message ActionRequest {
-  // Capture boresight offset. In focus mode, this is based on current location
-  // of brightest peak in central region. Context:
-  // 1. Cedar is in focus mode.
-  // 2. User focuses on bright star.
-  // 3. User centers the same star in the telescope's field of view.
-  // 4. User adjusts aim of the Cedar camera to have the bright star near the
-  //    center of the image.
-  // 5. User invokes the capture_boresight function.
+  // Capture boresight offset. In SETUP mode, this is based on current location
+  // of brightest detected star centroid. Context:
+  // 1. Cedar is in SETUP alignment mode (neither focus_assist_mode nor
+  //    daylight_mode is active).
+  // 2. Cedar Aim identifies the brightest star (could be a planet).
+  // 3. User centers the identified object in the telescope's field of view.
+  // 4. User invokes the capture_boresight function.
   // At this point, the captured boresight position will be returned in each
   // FrameResult's `boresight_position` field, and will cause a single
   // `target_coords` entry to be included with each FrameResult
   // `plate_solution`.
   // Note that `capture_boresight` can also be used during an active slew to
-  // target, when SlewRequest's `target_within_center_region` field is true.
-  // This lets the user update/refine the boresight offset when the user
+  // target. This lets the user update/refine the boresight offset when the user
   // has centered the target in the telescope's field of view.
   optional bool capture_boresight = 1;
 
