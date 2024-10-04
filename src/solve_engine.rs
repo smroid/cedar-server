@@ -50,7 +50,8 @@ pub struct SolveEngine {
     // Executes worker().
     worker_thread: Option<tokio::task::JoinHandle<()>>,
 
-    // Called whenever worker() finishes an evaluation. Return value:
+    // Called whenever worker() finishes an evaluation when not in align mode.
+    // Return value:
     // (sky coordinate of slew target (if any),
     //  sky coordinate of sync operation (if any))
     solution_callback: Arc<dyn Fn(Option<ImageCoord>,
@@ -62,6 +63,12 @@ pub struct SolveEngine {
 
 // State shared between worker thread and the SolveEngine methods.
 struct SolveState {
+    // In align mode, plate solves are done without calibration results
+    // (fov estimate, distortion, match_max_error). The `catalog_entry_match`
+    // is ignored and instead we retrieve bright planets and IAU stars for
+    // the solved FOV.
+    align_mode: bool,
+
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     catalog_entry_match: Option<CatalogEntryMatch>,
 
@@ -161,6 +168,7 @@ impl SolveEngine {
             tetra3_subprocess,
             client: Arc::new(tokio::sync::Mutex::new(client)),
             state: Arc::new(tokio::sync::Mutex::new(SolveState{
+                align_mode: false,
                 cedar_sky,
                 catalog_entry_match: None,
                 frame_id: None,
@@ -187,6 +195,11 @@ impl SolveEngine {
             worker_thread: None,
             solution_callback,
         })
+    }
+
+    pub async fn set_align_mode(&mut self, align_mode: bool) {
+        let mut locked_state = self.state.lock().await;
+        locked_state.align_mode = align_mode;
     }
 
     // Sets the parameters used to retrieve sky catalog entries for the solved
@@ -447,7 +460,9 @@ impl SolveEngine {
                 if locked_state.stop_request {
                     debug!("Stopping solve engine");
                     locked_state.stop_request = false;
-                    solution_callback(None, None, None);
+                    if !locked_state.align_mode {
+                        solution_callback(None, None, None);
+                    }
                     return;  // Exit thread.
                 }
             }
@@ -481,7 +496,9 @@ impl SolveEngine {
                 minimum_stars = locked_state.minimum_stars;
 
                 // Set up SolveRequest.
-                solve_request.fov_estimate = locked_state.fov_estimate;
+                if !locked_state.align_mode {
+                    solve_request.fov_estimate = locked_state.fov_estimate;
+                }
                 match locked_state.fov_estimate {
                     Some(fov) => {
                         solve_request.fov_max_error = Some(fov / 10.0);
@@ -510,8 +527,13 @@ impl SolveEngine {
                 if let Some(slew_target) = &locked_state.slew_target {
                     solve_request.target_sky_coords.push(slew_target.clone());
                 }
-                solve_request.distortion = Some(locked_state.distortion);
-                solve_request.match_max_error = Some(locked_state.match_max_error);
+                if !locked_state.align_mode {
+                    solve_request.distortion = Some(locked_state.distortion);
+                    solve_request.match_max_error = Some(locked_state.match_max_error);
+                } else {
+                    solve_request.distortion = Some(0.0);
+                    solve_request.match_max_error = Some(0.005);
+                }
                 solve_request.return_matches = locked_state.return_matches;
                 solve_request.return_rotation_matrix = true;
                 frame_id = locked_state.frame_id;
@@ -571,77 +593,95 @@ impl SolveEngine {
             let mut boresight_image: Option<GrayImage> = None;
             let mut boresight_image_region: Option<Rect> = None;
             if tetra3_solve_result.is_none() {
-                locked_state.solve_attempt_stats.add_value(0.0);
-                solution_callback(locked_state.boresight_pixel.clone(),
-                                  Some(detect_result.clone()), None);
+                if !locked_state.align_mode {
+                    locked_state.solve_attempt_stats.add_value(0.0);
+                    solution_callback(locked_state.boresight_pixel.clone(),
+                                      Some(detect_result.clone()), None);
+                }
             } else {
-                locked_state.solve_attempt_stats.add_value(1.0);
+                if !locked_state.align_mode {
+                    locked_state.solve_attempt_stats.add_value(1.0);
+                }
                 let tsr = tetra3_solve_result.as_ref().unwrap();
                 if tsr.status.unwrap() == SolveStatus::MatchFound as i32 {
-                    locked_state.solve_success_stats.add_value(1.0);
-
+                    if !locked_state.align_mode {
+                        locked_state.solve_success_stats.add_value(1.0);
+                    }
                     let boresight_coords = if tsr.target_coords.len() > 0 {
                         tsr.target_coords[0].clone()
                     } else {
                         tsr.image_center_coords.as_ref().unwrap().clone()
                     };
-
-                    // Let integration layer pass solution to SkySafari telescope
-                    // interface and MotionEstimator. Integration layer returns current
-                    // slew target coords, if any.
-                    let (slew_target, sync_coord) =
-                        solution_callback(locked_state.boresight_pixel.clone(),
-                                          Some(detect_result.clone()), Some(tsr.clone()));
-                    locked_state.slew_target = slew_target;
-                    if let Some(target_coords) = &locked_state.slew_target {
-                        (slew_request, boresight_image_region, boresight_image) =
-                            Self::handle_slew(
-                                &locked_state.cedar_sky,
-                                target_coords, image, &boresight_coords,
-                                &locked_state.boresight_pixel, &detect_result, tsr,
-                                width, height).await;
-                    }
                     let mut rotation_matrix: [f64; 9] = [0.0; 9];
                     for (idx, c) in tsr.rotation_matrix.as_ref().unwrap()
                         .matrix_elements.clone().into_iter().enumerate()
                     {
                         rotation_matrix[idx] = c;
                     }
-                    if let Some(sync_coord) = sync_coord {
-                        // SkySafari user has invoked "Sync" operation on some
-                        // sky object, indicating that this object is centered at
-                        // the telescope boresight. We update the boresight pixel
-                        // accordingly.
-                        // First, translate `sync_coord` to image coordinates.
-                        let xy = transform_to_image_coord(
-                            &[sync_coord.ra, sync_coord.dec],
-                            width as usize, height as usize,
-                            tsr.fov.unwrap(),
-                            &rotation_matrix,
-                            tsr.distortion.unwrap());
-                        // Only accept the boresight if it is in central portion
-                        // of the image.
-                        let img_coord = ImageCoord{x: xy[0], y: xy[1]};
-                        if Self::point_in_region(&img_coord,
-                                                 &detect_result.center_region) {
-                            locked_state.boresight_pixel = Some(img_coord);
-                            // Note: we should update the boresight in the saved
-                            // preferences, but we don't have access to the
-                            // cedar_server logic here. Instead, we leave it to
-                            // the cedar_server logic to notice the boresight
-                            // change and update the saved prefs.
-                        } else {
-                            warn!("Rejecting non-central boresight sync at {:?}",
-                                  img_coord);
+
+                    if !locked_state.align_mode {
+                        // Let integration layer pass solution to SkySafari telescope
+                        // interface and MotionEstimator. Integration layer returns current
+                        // slew target coords, if any.
+                        let (slew_target, sync_coord) =
+                            solution_callback(locked_state.boresight_pixel.clone(),
+                                              Some(detect_result.clone()), Some(tsr.clone()));
+                        locked_state.slew_target = slew_target;
+                        if let Some(target_coords) = &locked_state.slew_target {
+                            (slew_request, boresight_image_region, boresight_image) =
+                                Self::handle_slew(
+                                    &locked_state.cedar_sky,
+                                    target_coords, image, &boresight_coords,
+                                    &locked_state.boresight_pixel, &detect_result, tsr,
+                                    width, height).await;
                         }
-                    }
+                        if let Some(sync_coord) = sync_coord {
+                            // SkySafari user has invoked "Sync" operation on some
+                            // sky object, indicating that this object is centered at
+                            // the telescope boresight. We update the boresight pixel
+                            // accordingly.
+                            // First, translate `sync_coord` to image coordinates.
+                            let xy = transform_to_image_coord(
+                                &[sync_coord.ra, sync_coord.dec],
+                                width as usize, height as usize,
+                                tsr.fov.unwrap(),
+                                &rotation_matrix,
+                                tsr.distortion.unwrap());
+                            // Only accept the boresight if it is in central portion
+                            // of the image.
+                            let img_coord = ImageCoord{x: xy[0], y: xy[1]};
+                            if Self::point_in_region(&img_coord,
+                                                     &detect_result.center_region) {
+                                locked_state.boresight_pixel = Some(img_coord);
+                                // Note: we should update the boresight in the saved
+                                // preferences, but we don't have access to the
+                                // cedar_server logic here. Instead, we leave it to
+                                // the cedar_server logic to notice the boresight
+                                // change and update the saved prefs.
+                            } else {
+                                warn!("Rejecting non-central boresight sync at {:?}",
+                                      img_coord);
+                            }
+                        }
+                    }  // !align_mode
 
                     if locked_state.cedar_sky.is_some() {
+                        let mut catalog_entry_match =
+                            locked_state.catalog_entry_match.clone().unwrap();
+                        if locked_state.align_mode {
+                            catalog_entry_match = CatalogEntryMatch {
+                                faintest_magnitude: Some(4),
+                                catalog_label: vec!["IAU".to_string(), "PL".to_string()],
+                                object_type_label: vec!["star".to_string(),
+                                                        "double star".to_string(),
+                                                        "planet".to_string()],
+                            };
+                        }
                         let result = Self::query_fov_catalog_entries(
                             &boresight_coords,
                             &locked_state.boresight_pixel,
                             locked_state.cedar_sky.as_ref().unwrap(),
-                            locked_state.catalog_entry_match.as_ref().unwrap(),
+                            &catalog_entry_match,
                             width, height,
                             tsr.fov.unwrap(),
                             tsr.distortion.unwrap(),
@@ -650,11 +690,15 @@ impl SolveEngine {
                             (Some(result.0), Some(result.1));
                     }
                 } else {
-                    locked_state.solve_success_stats.add_value(0.0);
-                    solution_callback(locked_state.boresight_pixel.clone(),
-                                      Some(detect_result.clone()), None);
+                    if !locked_state.align_mode {
+                        locked_state.solve_success_stats.add_value(0.0);
+                        solution_callback(locked_state.boresight_pixel.clone(),
+                                          Some(detect_result.clone()), None);
+                    }
                 }
-                locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
+                if !locked_state.align_mode {
+                    locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
+                }
             }
             // Post the result.
             locked_state.plate_solution = Some(PlateSolution{

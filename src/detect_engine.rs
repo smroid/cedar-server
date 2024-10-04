@@ -21,6 +21,10 @@ use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
 pub struct DetectEngine {
+    // Initial exposure duration used in Setup mode, prior to doing any
+    // calibrations. Setup mode auto-exposure uses this as its baseline.
+    initial_exposure_duration: Duration,
+
     // Bounds the range of exposure durations to be set by auto-exposure.
     // The set_exposure_time() function is not bound by these limits.
     min_exposure_duration: Duration,
@@ -30,11 +34,11 @@ pub struct DetectEngine {
     detection_min_sigma: f64,
     detection_sigma: f64,
 
-    // In operate mode (`focus_mode_enabled` is false), the auto-exposure
-    // algorithm uses this as the desired number of detected stars. The
-    // algorithm allows the number of detected stars to vary around the goal by
-    // a large amount to the high side (is OK to have more stars than needed)
-    // but only a small amount to the low side.
+    // In align mode and operate mode (`focus_mode_enabled` is false), the
+    // auto-exposure algorithm uses this as the desired number of detected
+    // stars. The algorithm allows the number of detected stars to vary around
+    // the goal by a large amount to the high side (is OK to have more stars
+    // than needed) but only a small amount to the low side.
     star_count_goal: i32,
 
     // Our state, shared between DetectEngine methods and the worker thread.
@@ -57,7 +61,7 @@ struct DetectState {
     // If true, use auto exposure.
     auto_exposure: bool,
 
-    // Zero means go fast as images are captured.
+    // Zero means go as fast as images are captured.
     update_interval: Duration,
 
     // True means populate `DetectResult.focus_aid` info.
@@ -74,7 +78,8 @@ struct DetectState {
     // When using auto exposure in operate mode, this is the exposure duration
     // determined (by calibration) to yield `star_count_goal` detected stars.
     // Auto exposure logic will only deviate from this by a bounded amount.
-    // None if calibration result is not yet available.
+    // None if calibration result is not yet available because we are not in
+    // operate mode.
     calibrated_exposure_duration: Option<Duration>,
 
     // Value used to alter operating constants. A value >1 means the detection
@@ -105,7 +110,8 @@ impl Drop for DetectEngine {
 }
 
 impl DetectEngine {
-    pub fn new(min_exposure_duration: Duration,
+    pub fn new(initial_exposure_duration: Duration,
+               min_exposure_duration: Duration,
                max_exposure_duration: Duration,
                detection_min_sigma: f64,
                detection_sigma: f64,
@@ -114,6 +120,7 @@ impl DetectEngine {
                stats_capacity: usize)
                -> Self {
         DetectEngine{
+            initial_exposure_duration,
             min_exposure_duration,
             max_exposure_duration,
             detection_min_sigma,
@@ -124,7 +131,7 @@ impl DetectEngine {
                 frame_id: None,
                 auto_exposure: true,
                 update_interval: Duration::ZERO,
-                focus_mode_enabled: true,
+                focus_mode_enabled: true,  // TODO: should be false initially
                 daylight_mode: false,
                 binning: 1,
                 calibrated_exposure_duration: None,
@@ -148,6 +155,7 @@ impl DetectEngine {
 
     // Utility function to get the central region (wherein the boresight is
     // required to be located) for a given image size.
+    // TODO: get rid of this.
     pub fn get_central_region(width: u32, height: u32) -> Rect {
         let center_width = width / 3;
         let center_height = height / 3;
@@ -156,11 +164,11 @@ impl DetectEngine {
             .of_size(center_width, center_height)
     }
 
-    // If `exp_time` is zero, enables auto exposure. In setup mode, auto
+    // If `exp_time` is zero, enables auto exposure. In focus assist mode, auto
     // exposure is based on a histogram of the central region, and aims to make
     // the brightest part of the central region bright but not saturated. In
-    // operate mode, auto exposure is based on the number of detected stars in
-    // the entire image.
+    // align mode and operate mode, auto exposure is based on the number of
+    // detected stars in the entire image.
     pub async fn set_exposure_time(&mut self, exp_time: Duration)
                                    -> Result<(), CanonicalError> {
         let camera = self.state.lock().unwrap().camera.clone();
@@ -208,9 +216,9 @@ impl DetectEngine {
     }
 
     pub fn set_calibrated_exposure_duration(
-        &mut self, calibrated_exposure_duration: Duration) {
+        &mut self, calibrated_exposure_duration: Option<Duration>) {
         let mut locked_state = self.state.lock().unwrap();
-        locked_state.calibrated_exposure_duration = Some(calibrated_exposure_duration);
+        locked_state.calibrated_exposure_duration = calibrated_exposure_duration;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -254,6 +262,7 @@ impl DetectEngine {
         }
         // Start worker thread if terminated or not yet started.
         if self.worker_thread.is_none() {
+            let initial_exposure_duration = self.initial_exposure_duration;
             let min_exposure_duration = self.min_exposure_duration;
             let max_exposure_duration = self.max_exposure_duration;
             let detection_min_sigma = self.detection_min_sigma;
@@ -278,6 +287,7 @@ impl DetectEngine {
                     .build().unwrap();
                 runtime.block_on(async move {
                     DetectEngine::worker(
+                        initial_exposure_duration,
                         min_exposure_duration, max_exposure_duration,
                         detection_min_sigma, detection_sigma,
                         star_count_goal, cloned_state, cloned_done).await;
@@ -349,7 +359,8 @@ impl DetectEngine {
         }
     }
 
-    async fn worker(min_exposure_duration: Duration,
+    async fn worker(initial_exposure_duration: Duration,
+                    min_exposure_duration: Duration,
                     max_exposure_duration: Duration,
                     detection_min_sigma: f64,
                     detection_sigma: f64,
@@ -571,19 +582,21 @@ impl DetectEngine {
                     black_level = peak_value;
                 }
 
-                if !focus_mode_enabled && auto_exposure &&
-                    calibrated_exposure_duration.is_some()
-                {
+                if !focus_mode_enabled && auto_exposure {
+                    let mut baseline_exposure_duration = initial_exposure_duration;
+                    if let Some(calibrated_exposure_duration) = calibrated_exposure_duration {
+                        baseline_exposure_duration = calibrated_exposure_duration;
+                    }
                     let adjusted_star_count_goal =
                         star_count_goal as f64 * accuracy_multiplier;
                     let adjusted_exposure_duration_secs =
-                        calibrated_exposure_duration.unwrap().as_secs_f64() * accuracy_multiplier;
+                        baseline_exposure_duration.as_secs_f64() * accuracy_multiplier;
 
                     let num_stars_detected = stars.len();
                     if num_stars_detected == 0 {
                         // We're likely slewing and thus detecting no stars.
                         // Don't update the moving average, and for safety use
-                        // the adjusted calibrated exposure duration.
+                        // the adjusted baseline exposure duration.
                         new_exposure_duration_secs = adjusted_exposure_duration_secs;
                     } else {
                         let moving_average = Self::update_detected_stars_moving_average(
