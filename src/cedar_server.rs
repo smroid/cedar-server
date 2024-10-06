@@ -18,7 +18,7 @@ use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
-use image::{GenericImageView, GrayImage, ImageFormat};
+use image::{GrayImage, ImageFormat};
 use image::ImageReader;
 
 use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntry,
@@ -171,7 +171,7 @@ struct CedarState {
     calibration_start: Instant,
     calibration_duration_estimate: Duration,
 
-    // For boresight capturing.
+    // For focus assist.
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
 
     serve_latency_stats: ValueStatsAccumulator,
@@ -651,7 +651,8 @@ impl Cedar for MyCedar {
             let save_boresight_pos;
             if operating_mode == OperatingMode::Setup as i32 {
                 let locked_state = self.state.lock().await;
-                // Get most recent star detection result.
+                // Get most recent star detection result, and take the brightest
+                // star's centroid as the telescope boresight.
                 let detect_result = locked_state.detect_engine.lock().await.
                     get_next_result(None).await;
                 let detected_stars = &detect_result.star_candidates;
@@ -679,20 +680,15 @@ impl Cedar for MyCedar {
                 let plate_solution = locked_state.solve_engine.lock().await.
                     get_next_result(None).await;
                 if let Some(slew_request) = plate_solution.slew_request {
-                    if slew_request.target_within_center_region {
-                        let bsp = slew_request.image_pos.unwrap();
-                        if let Err(x) = locked_state.solve_engine.lock().await.
-                            set_boresight_pixel(Some(tetra3_server::ImageCoord{
-                                x: bsp.x,
-                                y: bsp.y})).await
-                        {
-                            return Err(tonic_status(x));
-                        }
-                        save_boresight_pos = Some(bsp);
-                    } else {
-                        return Err(tonic::Status::failed_precondition(
-                            "Target not in center region."));
+                    let bsp = slew_request.image_pos.unwrap();
+                    if let Err(x) = locked_state.solve_engine.lock().await.
+                        set_boresight_pixel(Some(tetra3_server::ImageCoord{
+                            x: bsp.x,
+                            y: bsp.y})).await
+                    {
+                        return Err(tonic_status(x));
                     }
+                    save_boresight_pos = Some(bsp);
                 } else {
                     return Err(tonic::Status::failed_precondition(
                         format!("Not in Setup mode: {:?}.", operating_mode)));
@@ -705,34 +701,20 @@ impl Cedar for MyCedar {
                 self.update_preferences(tonic::Request::new(preferences)).await?;
             }
         }  // capture_boresight.
-        if let Some(mut bsp) = req.designate_boresight {
+        if let Some(bsp) = req.designate_boresight {
             {
                 let locked_state = self.state.lock().await;
                 if !locked_state.operation_settings.daylight_mode.unwrap() {
                     return Err(tonic::Status::failed_precondition(
                         "Ignoring designate_boresight when not in daylight_mode."));
                 }
-                // Correct to full image coordinates. We're zoomed in to the
-                // center by 2x.
-                let (width, height) = locked_state.camera.lock().await.dimensions();
-                bsp.x += (width / 4) as f64;
-                bsp.y += (height / 4) as f64;
-                // Is the point within the central region? If not, quietly ignore.
-                let central_region = DetectEngine::get_central_region(
-                    width as u32, height as u32);
-                if bsp.x >= central_region.left() as f64 &&
-                    bsp.x <= central_region.right() as f64 &&
-                    bsp.y >= central_region.top() as f64 &&
-                    bsp.y <= central_region.bottom() as f64
+                if let Err(x) = locked_state.solve_engine.lock().await.
+                    set_boresight_pixel(Some(tetra3_server::ImageCoord{
+                        x: bsp.x,
+                        y: bsp.y})).await
                 {
-                    if let Err(x) = locked_state.solve_engine.lock().await.
-                        set_boresight_pixel(Some(tetra3_server::ImageCoord{
-                            x: bsp.x,
-                            y: bsp.y})).await
-                    {
-                        return Err(tonic_status(x));
-                    }
-                }
+                    return Err(tonic_status(x));
+                };
             }
             let preferences = Preferences{
                 boresight_pixel: Some(bsp),
@@ -1292,7 +1274,7 @@ impl MyCedar {
         frame_result.frame_id = detect_result.frame_id;
         let captured_image = &detect_result.captured_image;
         let (width, height) = captured_image.image.dimensions();
-        let mut image_rectangle = Rectangle{
+        let image_rectangle = Rectangle{
             origin_x: 0, origin_y: 0,
             width: width as i32, height: height as i32};
         frame_result.exposure_time = Some(prost_types::Duration::try_from(
@@ -1320,11 +1302,6 @@ impl MyCedar {
         }
         frame_result.star_candidates = centroids;
         frame_result.noise_estimate = detect_result.noise_estimate;
-        frame_result.center_region = Some(Rectangle {
-            origin_x: detect_result.center_region.left(),
-            origin_y: detect_result.center_region.top(),
-            width: detect_result.center_region.width() as i32,
-            height: detect_result.center_region.height() as i32});
 
         let display_sampling = locked_state.display_sampling;
 
@@ -1379,59 +1356,25 @@ impl MyCedar {
         let mut disp_image = &captured_image.image;
         let mut resized_disp_image = disp_image;
         let mut resize_result: Arc<GrayImage>;
-        let mut binning_factor;
-        if detect_result.daylight_mode {
-            // Crop in to the central region by 2x.
-            image_rectangle = Rectangle {
-                origin_x: width as i32 / 4,
-                origin_y: height as i32 / 4,
-                width: width as i32 / 2,
-                height: height as i32 / 2};
-            if detect_result.binned_image.is_some() && display_sampling {
-                let src_image = detect_result.binned_image.as_ref().unwrap();
-                let (src_width, src_height) = src_image.dimensions();
-                resize_result = Arc::new(src_image.deref().view(
-                    src_width / 4,
-                    src_height / 4,
-                    src_width / 2,
-                    src_height / 2).to_image());
-                resized_disp_image = &resize_result;
-                binning_factor = locked_state.binning;
-            } else {
-                resize_result = Arc::new(disp_image.deref().view(
-                    image_rectangle.origin_x as u32,
-                    image_rectangle.origin_y as u32,
-                    image_rectangle.width as u32,
-                    image_rectangle.height as u32).to_image());
-                resized_disp_image = &resize_result;
-                binning_factor = 1;
-                if locked_state.binning == 4 {
-                    resize_result = Arc::new(sample_2x2(resized_disp_image.deref().clone()));
-                    resized_disp_image = &resize_result;
-                    binning_factor = 2;
-                }
-            }
-        } else {
-            if detect_result.binned_image.is_some() {
-                disp_image = detect_result.binned_image.as_ref().unwrap();
-                resized_disp_image = disp_image;
-            } else if locked_state.binning > 1 {
-                // This can happen when we're transitioning away from daylight
-                // mode, wherein detect engine is skipping Cedar detect and
-                // thus not creating a binned image.
-                resize_result = Arc::new(sample_2x2(disp_image.deref().clone()));
-                resized_disp_image = &resize_result;
-                if locked_state.binning == 4 {
-                    resize_result = Arc::new(sample_2x2(resize_result.deref().clone()));
-                    resized_disp_image = &resize_result;
-                }
-            }
-            if display_sampling {
-                resize_result = Arc::new(sample_2x2(resized_disp_image.deref().clone()));
+        if detect_result.binned_image.is_some() {
+            disp_image = detect_result.binned_image.as_ref().unwrap();
+            resized_disp_image = disp_image;
+        } else if locked_state.binning > 1 {
+            // This can happen when we're transitioning away from daylight
+            // mode, wherein detect engine is skipping Cedar detect and
+            // thus not creating a binned image.
+            resize_result = Arc::new(sample_2x2(disp_image.deref().clone()));
+            resized_disp_image = &resize_result;
+            if locked_state.binning == 4 {
+                resize_result = Arc::new(sample_2x2(resize_result.deref().clone()));
                 resized_disp_image = &resize_result;
             }
-            binning_factor = locked_state.binning * if display_sampling { 2 } else { 1 }
         }
+        if display_sampling {
+            resize_result = Arc::new(sample_2x2(resized_disp_image.deref().clone()));
+            resized_disp_image = &resize_result;
+        }
+        let binning_factor = locked_state.binning * if display_sampling { 2 } else { 1 };
 
         let mut bmp_buf = Vec::<u8>::new();
         let (resized_width, resized_height) = resized_disp_image.dimensions();
