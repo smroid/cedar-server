@@ -632,7 +632,7 @@ impl SolveEngine {
                                 Self::handle_slew(
                                     &locked_state.cedar_sky,
                                     target_coords, image, &boresight_coords,
-                                    &locked_state.boresight_pixel, &detect_result, tsr,
+                                    &locked_state.boresight_pixel, tsr,
                                     width, height).await;
                         }
                         if let Some(sync_coord) = sync_coord {
@@ -647,21 +647,13 @@ impl SolveEngine {
                                 tsr.fov.unwrap(),
                                 &rotation_matrix,
                                 tsr.distortion.unwrap());
-                            // Only accept the boresight if it is in central portion
-                            // of the image.
                             let img_coord = ImageCoord{x: xy[0], y: xy[1]};
-                            if Self::point_in_region(&img_coord,
-                                                     &detect_result.center_region) {
-                                locked_state.boresight_pixel = Some(img_coord);
-                                // Note: we should update the boresight in the saved
-                                // preferences, but we don't have access to the
-                                // cedar_server logic here. Instead, we leave it to
-                                // the cedar_server logic to notice the boresight
-                                // change and update the saved prefs.
-                            } else {
-                                warn!("Rejecting non-central boresight sync at {:?}",
-                                      img_coord);
-                            }
+                            locked_state.boresight_pixel = Some(img_coord);
+                            // Note: we should update the boresight in the saved
+                            // preferences, but we don't have access to the
+                            // cedar_server logic here. Instead, we leave it to
+                            // the cedar_server logic to notice the boresight
+                            // change and update the saved prefs.
                         }
                     }  // !align_mode
 
@@ -763,7 +755,6 @@ impl SolveEngine {
         image: &GrayImage,
         boresight_coords: &CelestialCoord,
         boresight_pixel: &Option<ImageCoord>,
-        detect_result: &DetectResult,
         tetra3_solve_result: &SolveResultProto,
         width: u32, height: u32)
         -> (Option<cedar::SlewRequest>, Option<Rect>, Option<GrayImage>)
@@ -806,11 +797,7 @@ impl SolveEngine {
         let target_image_coord =
             cedar::ImageCoord{x: img_coord.x, y: img_coord.y};
         slew_request.image_pos = Some(target_image_coord.clone());
-        if Self::point_in_region(&img_coord, &detect_result.center_region) {
-            slew_request.target_within_center_region = true;
-        }
-        // Is the target's image_pos close to the boresight's
-        // image position?
+        // Is the target's image_pos close to the boresight's image position?
         let boresight_pos;
         if let Some(bp) = boresight_pixel {
             boresight_pos = bp.clone();
@@ -863,13 +850,6 @@ impl SolveEngine {
 
         (Some(slew_request), boresight_image_region, boresight_image)
     }  // handle_slew
-
-    fn point_in_region(img_coord: &ImageCoord, region: &Rect) -> bool {
-        img_coord.x > region.left() as f64 &&
-            img_coord.x < region.right() as f64 &&
-            img_coord.y > region.top() as f64 &&
-            img_coord.y < region.bottom() as f64
-    }
 
     fn make_fov_catalog_entry(entry: &CatalogEntry, width: usize, height: usize,
                               fov: f64, distortion: f64,
