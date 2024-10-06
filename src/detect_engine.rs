@@ -446,8 +446,11 @@ impl DetectEngine {
             let image: &GrayImage = &captured_image.image;
             let (width, height) = image.dimensions();
 
-            // To avoid edge effects when centroiding, inset a little.
-            let image_region = Rect::at(10, 10).of_size(width - 20, height - 20);
+            // To avoid edge when centroiding and creating central peak image,
+            // inset a little.
+            let inset = 16;
+            let image_region = Rect::at(inset, inset)
+                .of_size(width - 2 * inset as u32, height - 2 * inset as u32);
 
             let noise_estimate = estimate_noise_from_image(&image);
             let prev_exposure_duration_secs =
@@ -457,7 +460,7 @@ impl DetectEngine {
             let mut focus_aid: Option<FocusAid> = None;
             let mut black_level = 0_u8;
             let mut peak_value = 0_u8;
-            if focus_mode {
+            if focus_mode || daylight_mode {
                 let roi_summary = summarize_region_of_interest(
                     &image, &image_region, noise_estimate, detection_sigma);
                 let mut roi_histogram = roi_summary.histogram;
@@ -498,6 +501,7 @@ impl DetectEngine {
                     // Get a small sub-image centered on the peak coordinates.
                     let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
                     let sub_image_size = 30;
+                    assert!(sub_image_size < 2 * inset);
                     let peak_region =
                         Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
                                  (peak_position.1 as i32 - sub_image_size/2) as i32)
@@ -700,7 +704,6 @@ impl DetectEngine {
                 peak_value,
                 focus_aid,
                 daylight_mode,
-                center_region: image_region,
                 processing_duration: elapsed,
                 detect_latency_stats:
                 locked_state.detect_latency_stats.value_stats.clone(),
@@ -747,12 +750,6 @@ pub struct DetectResult {
 
     // Indicates whether daylight_mode was in effect for this result.
     pub daylight_mode: bool,
-
-    // See the corresponding field in FrameResult. Note that this is populated
-    // even when not in `focus_mode`.
-    // This is in full resolution coordinates.
-    // TODO: drop this.
-    pub center_region: Rect,
 
     // Time taken to produce this DetectResult, excluding the time taken to
     // acquire the image.
