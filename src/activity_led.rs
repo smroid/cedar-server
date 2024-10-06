@@ -93,6 +93,17 @@ impl ActivityLed {
         let mut led_state = LedState::IdleOff;
         fs::write(brightness_path, "0").unwrap();
 
+        async fn process_received_rpc(state: &Arc<tokio::sync::Mutex<SharedState>>,
+                                      last_rpc_time: &mut SystemTime) -> bool {
+            let mut locked_state = state.lock().await;
+            let received_rpc = locked_state.received_rpc;
+            if received_rpc {
+                *last_rpc_time = SystemTime::now();
+                locked_state.received_rpc = false;
+            }
+            received_rpc
+        }
+
         loop {
             if state.lock().await.stop_request {
                 break;
@@ -100,14 +111,10 @@ impl ActivityLed {
             if got_signal.load(Ordering::Relaxed) {
                 break;
             }
-            let now = SystemTime::now();
-            if state.lock().await.received_rpc {
-                last_rpc_time = now;
-            }
             match led_state {
                 LedState::IdleOff => {
                     tokio::time::sleep(blink_delay).await;
-                    if state.lock().await.received_rpc {
+                    if process_received_rpc(&state, &mut last_rpc_time).await {
                         led_state = LedState::ConnectedOff;
                         continue;
                     }
@@ -117,7 +124,7 @@ impl ActivityLed {
                 LedState::IdleOn => {
                     tokio::time::sleep(blink_delay).await;
                     fs::write(brightness_path, "0").unwrap();
-                    if state.lock().await.received_rpc {
+                    if process_received_rpc(&state, &mut last_rpc_time).await {
                         led_state = LedState::ConnectedOff;
                         continue;
                     }
@@ -125,17 +132,16 @@ impl ActivityLed {
                 },
                 LedState::ConnectedOff => {
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    if state.lock().await.received_rpc {
-                        state.lock().await.received_rpc = false;
+                    if process_received_rpc(&state, &mut last_rpc_time).await {
                         continue;
                     }
-                    let elapsed = now.duration_since(last_rpc_time);
+                    let elapsed = SystemTime::now().duration_since(last_rpc_time);
                     if let Err(_e) = elapsed {
                         // This can happen when the client sends a time update
                         // to Cedar server.
-                        last_rpc_time = now;  // Start countdown fresh.
+                        last_rpc_time = SystemTime::now();  // Start countdown fresh.
                     } else {
-                        if elapsed.unwrap() > connected_timeout {
+                        if *elapsed.as_ref().unwrap() > connected_timeout {
                             // Revert to Idle state.
                             fs::write(brightness_path, "1").unwrap();
                             led_state = LedState::IdleOn;
