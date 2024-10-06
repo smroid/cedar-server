@@ -648,29 +648,31 @@ impl Cedar for MyCedar {
             let operating_mode =
                 self.state.lock().await.operation_settings.operating_mode.or(
                     Some(OperatingMode::Setup as i32)).unwrap();
-            let mut save_boresight_pos: Option<ImageCoord> = None;
+            let save_boresight_pos;
             if operating_mode == OperatingMode::Setup as i32 {
                 let locked_state = self.state.lock().await;
-                let bsp =
-                    match locked_state.center_peak_position.lock().unwrap().as_ref()
-                {
-                    Some(pos) => Some(tetra3_server::ImageCoord{
-                        x: pos.x,
-                        y: pos.y,
-                    }),
-                    None => None,
-                };
+                // Get most recent star detection result.
+                let detect_result = locked_state.detect_engine.lock().await.
+                    get_next_result(None).await;
+                let detected_stars = &detect_result.star_candidates;
+                if detected_stars.is_empty() {
+                    return Err(tonic::Status::failed_precondition(
+                        "No detected stars."));
+                }
+                let brightest_star = detected_stars[0];
+                let bsp = Some(tetra3_server::ImageCoord{
+                    x: brightest_star.centroid_x,
+                    y: brightest_star.centroid_y,
+                });
                 if let Err(x) =
                     locked_state.solve_engine.lock().await.set_boresight_pixel(
                         bsp.clone()).await
                 {
                     return Err(tonic_status(x));
                 }
-                if bsp.is_some() {
-                    save_boresight_pos = Some(ImageCoord{
-                        x: bsp.as_ref().unwrap().x,
-                        y: bsp.as_ref().unwrap().y});
-                }
+                save_boresight_pos = Some(ImageCoord{
+                    x: bsp.as_ref().unwrap().x,
+                    y: bsp.as_ref().unwrap().y});
             } else {
                 // Operate mode.
                 let locked_state = self.state.lock().await;
@@ -1951,6 +1953,7 @@ impl MyCedar {
             locked_state.operation_settings.daylight_mode.unwrap());
         locked_state.solve_engine.lock().await.set_catalog_entry_match(
             shared_preferences.lock().unwrap().catalog_entry_match.clone()).await;
+        locked_state.solve_engine.lock().await.set_align_mode(true).await;
         if let Some(bsp) = &shared_preferences.lock().unwrap().boresight_pixel {
             locked_state.solve_engine.lock().await.set_boresight_pixel(
                 Some(tetra3_server::ImageCoord{
