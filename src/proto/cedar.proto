@@ -382,11 +382,6 @@ message FrameResult {
 
   // Information returned when `operating_mode` is SETUP.
 
-  // Identifies the center region used for brightest-star detection for focusing
-  // support, and also in `daylight_mode`. In full resolution image coordinates.
-  // TODO: drop this.
-  optional Rectangle center_region = 11;
-
   // This is the estimated position of the brightest point. In full resolution
   // image coordinates. Only present in `focus_assist_mode`.
   optional ImageCoord center_peak_position = 12;
@@ -436,6 +431,7 @@ message FrameResult {
 
   // alerts
   // * prolonged loss of stars; need setup mode?
+  reserved 11;
 }
 
 message Image {
@@ -648,10 +644,7 @@ message SlewRequest {
   // plate solution.
   optional ImageCoord image_pos = 4;
 
-  // True if the target's image position is within the center_region defined
-  // in SETUP mode. False otherwise, or if there is no valid plate solution.
-  // TODO: drop this.
-  bool target_within_center_region = 7;
+  reserved 7;
 }
 
 // Estimate of alt/az offset of mount's polar axis from celestial pole. Not
@@ -705,7 +698,7 @@ message ActionRequest {
 
   // In SETUP mode with OperationSettings.daylight_mode in effect, this conveys
   // which part of the image the user tapped to designate the telescope's FOV
-  // center. The image coordinates are within FrameResult.image.
+  // center. The image coordinates are full resolution within FrameResult.image.
   optional ImageCoord designate_boresight = 2;
 
   // Shut down the computer on which the Cedar server is running. Do this before
