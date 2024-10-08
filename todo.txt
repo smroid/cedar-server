@@ -11,6 +11,62 @@ time display:
 * time to sunset/sunrise, astro twilight
 * display all? selectable?
 
+Push-to instructions (with large font) are poorly positioned when
+moved to avoid the object.
+
+torture case: cap on
+* don't time out UI
+* don't cause led to blink
+* put up screen suggesting to check lens cap
+
+Rethink when we do the calibration-- when exiting focus assist, or
+for Hopper (where focus assist is off by default), upon initial
+entry to align or operate mode?
+
+Activity LED blinks: ensure front end continues to query server
+even when drawer is open (don't update state with received
+frames).
+
+Investigate WiFi dropout
+* Initially connected WiFi no longer appears on Anroid phone status
+  bar, and Cedar Aim displays connection screen. Disconnect/connect
+  rectifies problem.
+
+Investigate web browser white chrome
+
+Investigate phone navigation bar at bottom
+
+When "camera not detected" is displayed, allow access to menu so
+user can go to demo mode or shut down.
+
+Catalog
+* show (no results) when there are no results
+* text search bypasses filters
+* for object type and catalog filters, show number of disabled items
+* text search: preprocess input, e.g. the following should all locate
+  NGC0426 (and maybe others):
+  NGC0426
+  NGC426
+  NGC 426
+  NGC 0426
+  N426
+
+client send time when setup->operate (triggers planet processing
+if not already done)
+
+think about hang when operate->setup (was pointed at saturn); had
+to reboot.
+
+changing wifi doesn't take effect, need to restart server.
+
+imx296mono-- explore gain settings to eliminate horiz streaking.
+
+resolutions not dealt with properly in demo mode?
+
+why so frequently need to clear browser cache? Especially when
+reconnecting after e.g. restart in server. Is there
+a flutter thing happening?
+
 visual feedback on camera errors
 
 button to reset to default settings
