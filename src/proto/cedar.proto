@@ -131,7 +131,7 @@ message OperationSettings {
   optional bool focus_assist_mode = 14;
 
   // The camera exposure integration time. Zero selects automatic exposure.
-  // Default is zero (auto). TODO: remove this?
+  // Default is zero (auto). TODO: remove this.
   optional google.protobuf.Duration exposure_time = 5;
 
   // Controls the speed vs accuracy. Default is BALANCED. Only relevant in
@@ -144,6 +144,7 @@ message OperationSettings {
   //   lower detection sigma threshold to find more stars despite shorter
   //   exposures. Benefit: faster cycle time. Drawback: risk of failed plate
   //   solves from too few stars and more spurious detections.
+  // TODO: remove this.
   optional Accuracy accuracy = 3;
 
   // The desired time interval at which Cedar should replace its current frame
@@ -680,6 +681,7 @@ message FovCatalogEntry {
 }
 
 message ActionRequest {
+  // TODO: revise this, it is now only relevant in active slew.
   // Capture boresight offset. In SETUP mode, this is based on current location
   // of brightest detected star centroid. Context:
   // 1. Cedar is in SETUP alignment mode (neither focus_assist_mode nor
@@ -696,9 +698,9 @@ message ActionRequest {
   // has centered the target in the telescope's field of view.
   optional bool capture_boresight = 1;
 
-  // In SETUP mode with OperationSettings.daylight_mode in effect, this conveys
-  // which part of the image the user tapped to designate the telescope's FOV
-  // center. The image coordinates are full resolution within FrameResult.image.
+  // In SETUP alignment mode, this conveys which part of the image the user
+  // tapped to designate the telescope's FOV center. The image coordinates are
+  // full resolution within FrameResult.image.
   optional ImageCoord designate_boresight = 2;
 
   // Shut down the computer on which the Cedar server is running. Do this before
@@ -715,8 +717,9 @@ message ActionRequest {
   // Tells SkySafari that the slew is finished (or discontinued).
   optional bool stop_slew = 4;
 
-  // Save the current image for debugging. The image is saved in TBD directory
-  // on the server with the current date/time incorporated into the filename.
+  // Save the current image for debugging. The image is saved in the run
+  // directory on the server with the current date/time incorporated into the
+  // filename.
   // TODO: return filename? Provide rename action?
   optional bool save_image = 5;
 
