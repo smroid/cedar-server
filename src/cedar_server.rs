@@ -414,22 +414,12 @@ impl Cedar for MyCedar {
         }  // Update operating_mode.
         if let Some(new_daylight_mode) = req.daylight_mode {
             let mut locked_state = self.state.lock().await;
-            if locked_state.operation_settings.operating_mode ==
-                Some(OperatingMode::Operate as i32) {
-                return Err(tonic::Status::failed_precondition(
-                    "Ignoring daylight_mode while in OPERATE mode."));
-            }
             locked_state.detect_engine.lock().await.set_daylight_mode(
                 new_daylight_mode);
             locked_state.operation_settings.daylight_mode = Some(new_daylight_mode);
         }
         if let Some(new_focus_assist_mode) = req.focus_assist_mode {
             let mut locked_state = self.state.lock().await;
-            if locked_state.operation_settings.operating_mode ==
-                Some(OperatingMode::Operate as i32) {
-                return Err(tonic::Status::failed_precondition(
-                    "Ignoring focus_assist_mode while in OPERATE mode."));
-            }
             locked_state.detect_engine.lock().await.set_focus_mode(
                 new_focus_assist_mode, locked_state.binning);
             locked_state.operation_settings.focus_assist_mode =
@@ -704,10 +694,6 @@ impl Cedar for MyCedar {
         if let Some(bsp) = req.designate_boresight {
             {
                 let locked_state = self.state.lock().await;
-                if !locked_state.operation_settings.daylight_mode.unwrap() {
-                    return Err(tonic::Status::failed_precondition(
-                        "Ignoring designate_boresight when not in daylight_mode."));
-                }
                 if let Err(x) = locked_state.solve_engine.lock().await.
                     set_boresight_pixel(Some(tetra3_server::ImageCoord{
                         x: bsp.x,
