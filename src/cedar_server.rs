@@ -1697,17 +1697,14 @@ impl MyCedar {
                 },
             }
         }
-        let dimensions = camera.lock().await.dimensions();
+        let (width, height) = camera.lock().await.dimensions();
+        let inset = 16;
         if let Some(ref bsp) = preferences.boresight_pixel {
             // Validate boresight_pixel loaded from preferences, to make sure it
-            // is within the central region. This could be violated if e.g. we
+            // is within the image area. This could be violated if e.g. we
             // changed camera since the preferences were saved.
-            let central_region = DetectEngine::get_central_region(
-                dimensions.0 as u32, dimensions.1 as u32);
-            if bsp.x < central_region.left() as f64 ||
-                bsp.x > central_region.right() as f64 ||
-                bsp.y < central_region.top() as f64 ||
-                bsp.y > central_region.bottom() as f64
+            if bsp.x < inset as f64 || bsp.x > (width - inset) as f64 ||
+                bsp.y < inset as f64 || bsp.y > (height - inset) as f64
             {
                 preferences.boresight_pixel = None;
             }

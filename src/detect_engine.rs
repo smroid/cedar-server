@@ -152,17 +152,6 @@ impl DetectEngine {
         self.state.lock().unwrap().camera = camera.clone();
     }
 
-    // Utility function to get the central region (wherein the boresight is
-    // required to be located) for a given image size.
-    // TODO: get rid of this.
-    pub fn get_central_region(width: u32, height: u32) -> Rect {
-        let center_width = width / 3;
-        let center_height = height / 3;
-        Rect::at(((width - center_width) / 2) as i32,
-                 ((height - center_height) / 2) as i32)
-            .of_size(center_width, center_height)
-    }
-
     // If `exp_time` is zero, enables auto exposure. In focus assist mode, auto
     // exposure is based on a histogram of the image region, and aims to make
     // the brightest part of the image bright but not saturated. In align mode
