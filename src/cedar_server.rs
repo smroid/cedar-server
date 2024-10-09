@@ -279,133 +279,88 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<OperationSettings>, tonic::Status> {
         let req: OperationSettings = request.into_inner();
         if let Some(new_operating_mode) = req.operating_mode {
+            let mut locked_state = self.state.lock().await;
+            let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
+            let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
             if new_operating_mode == OperatingMode::Setup as i32 {
-                let mut locked_state = self.state.lock().await;
-                if locked_state.calibrating {
-                    // Cancel calibration.
-                    *locked_state.cancel_calibration.lock().unwrap() = true;
-                    locked_state.tetra3_subprocess.lock().unwrap()
-                        .send_interrupt_signal();
-                }
                 if locked_state.operation_settings.operating_mode ==
                     Some(OperatingMode::Operate as i32)
                 {
                     // Transition: OPERATE -> SETUP mode.
-
-                    // In SETUP mode we run at full speed.
-                    if let Err(x) = Self::set_update_interval(
-                        &*locked_state, Duration::ZERO).await
-                    {
-                        return Err(tonic_status(x));
+                    // In SETUP focus assist mode we run at full speed with pre-calibrate
+                    // settings.
+                    if focus_mode {
+                        if locked_state.calibrating {
+                            // Cancel calibration.
+                            *locked_state.cancel_calibration.lock().unwrap() = true;
+                            locked_state.tetra3_subprocess.lock().unwrap()
+                                .send_interrupt_signal();
+                        }
+                        if let Err(x) = Self::set_update_interval(
+                            &*locked_state, Duration::ZERO).await
+                        {
+                            return Err(tonic_status(x));
+                        }
+                        if let Err(x) = Self::set_pre_calibration_defaults(
+                            &*locked_state, self.initial_exposure_duration).await
+                        {
+                            return Err(tonic_status(x));
+                        }
                     }
                     locked_state.solve_engine.lock().await.set_align_mode(true).await;
                     Self::reset_session_stats(locked_state.deref_mut()).await;
-                    if let Err(x) = Self::set_pre_calibration_defaults(
-                        &*locked_state, self.initial_exposure_duration).await
-                    {
-                        return Err(tonic_status(x));
-                    }
                     {
                         let mut locked_detect_engine =
                             locked_state.detect_engine.lock().await;
-                        locked_detect_engine.set_focus_mode(
-                            locked_state.operation_settings.focus_assist_mode.unwrap(),
-                            locked_state.binning);
-                        locked_detect_engine.set_daylight_mode(
-                            locked_state.operation_settings.daylight_mode.unwrap());
-                        locked_detect_engine.set_calibrated_exposure_duration(None);
+                        locked_detect_engine.set_focus_mode(focus_mode, locked_state.binning);
+                        locked_detect_engine.set_daylight_mode(daylight_mode);
+                        if focus_mode {
+                            locked_detect_engine.set_calibrated_exposure_duration(None);
+                        }
                     }
                     locked_state.operation_settings.operating_mode =
                         Some(OperatingMode::Setup as i32);
                     locked_state.telescope_position.lock().unwrap().slew_active = false;
                 }
             } else if new_operating_mode == OperatingMode::Operate as i32 {
-                let locked_state = self.state.lock().await;
                 if locked_state.operation_settings.operating_mode ==
                     Some(OperatingMode::Setup as i32)
                 {
                     // Transition: SETUP -> OPERATE mode.
-                    //
-                    // The SETUP -> OPERATE mode change invovles a call to
-                    // calibrate() which can take several seconds. If the gRPC
-                    // client aborts the RPC (e.g. due to timeout), we want the
-                    // calibration and state updates (i.e. detect engine's
-                    // focus_mode, our operating_mode) to be completed properly.
-                    //
-                    // The spawned task runs to completion even if the RPC
-                    // handler task aborts.
-                    //
-                    // Note that below we return immediately rather than joining
-                    // the task_handle. We arrange for get_frame() to return a
-                    // FrameResult with a information about the ongoing
-                    // calibration.
-                    let state = self.state.clone();
-                    let calibration_solve_timeout = Duration::from_secs(5);
-                    let _task_handle: tokio::task::JoinHandle<
-                            Result<tonic::Response<OperationSettings>,
-                                   tonic::Status>> =
-                        tokio::task::spawn(async move {
-                            {
-                                let mut locked_state = state.lock().await;
-                                locked_state.calibrating = true;
-                                locked_state.calibration_start = Instant::now();
-                                locked_state.calibration_duration_estimate =
-                                    Duration::from_secs(5) + calibration_solve_timeout;
-                                locked_state.solve_engine.lock().await.set_align_mode(false).await;
-                                locked_state.solve_engine.lock().await.stop().await;
-                                locked_state.detect_engine.lock().await.stop().await;
-                                locked_state.calibration_data.lock().await
-                                    .calibration_time =
-                                    Some(prost_types::Timestamp::try_from(
-                                        SystemTime::now()).unwrap());
-                            }
-                            // No locks held.
-                            let cal_result = Self::calibrate(
-                                state.clone(), calibration_solve_timeout).await;
-                            if let Err(x) = cal_result {
-                                // The only error we expect is Aborted.
-                                assert!(x.code == CanonicalErrorCode::Aborted);
-                            }
-
-                            let mut locked_state = state.lock().await;
-                            locked_state.calibrating = false;
-                            if *locked_state.cancel_calibration.lock().unwrap() {
-                                // Calibration was cancelled. Stay in Setup mode.
-                                *locked_state.cancel_calibration.lock().unwrap() =
-                                    false;
-                            } else {
-                                // Transition into Operate mode.
-                                locked_state.detect_engine.lock().await.set_focus_mode(
-                                    false, locked_state.binning);
-                                locked_state.detect_engine.lock().await.set_daylight_mode(
-                                    false);
-                                // Turn off daylight mode.
-                                locked_state.operation_settings.daylight_mode =
-                                    Some(false);
-                                locked_state.solve_engine.lock().await.start().await;
-                                // Restore OPERATE mode update interval.
-                                let std_duration;
-                                {
-                                    let update_interval = locked_state.operation_settings.
-                                        update_interval.clone().unwrap();
-                                    std_duration = std::time::Duration::try_from(
-                                        update_interval).unwrap();
-                                    locked_state.operation_settings.operating_mode =
-                                        Some(OperatingMode::Operate as i32);
-                                }
-                                if let Err(x) = Self::set_update_interval(
-                                    &*locked_state, std_duration).await
-                                {
-                                    return Err(tonic_status(x));
-                                }
-                            }
-                            let result = tonic::Response::new(
-                                locked_state.operation_settings.clone());
-                            Ok(result)
-                        });
-                    // Let _task_handle go out of scope, detaching the spawned
-                    // calibration task to complete regardless of a possible RPC
-                    // timeout.
+                    if focus_mode || daylight_mode {
+                        // The SETUP (with focus mode or daytime align) ->
+                        // OPERATE mode change involves a call to calibrate(),
+                        // which can take several seconds. If the gRPC client
+                        // aborts the RPC (e.g. due to timeout), we want the
+                        // calibration and state updates (i.e. detect engine's
+                        // focus_mode, our operating_mode) to be completed
+                        // properly.
+                        Self::spawn_calibration(self.state.clone(),
+                                                /*enter_operate_mode=*/true);
+                        // The update of state.operation_settings.operation_mode
+                        // happens when the calibration finishes.
+                    } else {
+                        // Transition into Operate mode from SETUP align mode. Already
+                        // calibrated.
+                        locked_state.detect_engine.lock().await.set_daylight_mode(false);
+                        locked_state.solve_engine.lock().await.set_align_mode(false).await;
+                        locked_state.solve_engine.lock().await.start().await;
+                        // Restore OPERATE mode update interval.
+                        let std_duration;
+                        {
+                            let update_interval = locked_state.operation_settings.
+                                update_interval.clone().unwrap();
+                            std_duration = std::time::Duration::try_from(
+                                update_interval).unwrap();
+                            locked_state.operation_settings.operating_mode =
+                                Some(OperatingMode::Operate as i32);
+                        }
+                        if let Err(x) = Self::set_update_interval(
+                            &*locked_state, std_duration).await
+                        {
+                            return Err(tonic_status(x));
+                        }
+                    }
                 }
             } else {
                 return Err(tonic::Status::invalid_argument(
@@ -414,14 +369,74 @@ impl Cedar for MyCedar {
         }  // Update operating_mode.
         if let Some(new_daylight_mode) = req.daylight_mode {
             let mut locked_state = self.state.lock().await;
-            locked_state.detect_engine.lock().await.set_daylight_mode(
-                new_daylight_mode);
+            if locked_state.operation_settings.daylight_mode.unwrap()
+                != new_daylight_mode
+            {
+                locked_state.detect_engine.lock().await.set_daylight_mode(
+                    new_daylight_mode);
+                if locked_state.operation_settings.operating_mode ==
+                    Some(OperatingMode::Setup as i32) &&
+                    !locked_state.operation_settings.focus_assist_mode.unwrap()
+                {
+                    // In SETUP align mode.
+                    if !new_daylight_mode {
+                        // Turning off daylight_mode in SETUP align mode; need
+                        // calibration, which can take several seconds. If the gRPC
+                        // client aborts the RPC (e.g. due to timeout), we want the
+                        // calibration and state updates (i.e. detect engine's
+                        // focus_mode, our operating_mode) to be completed properly.
+                        Self::spawn_calibration(self.state.clone(),
+                                                /*enter_operate_mode=*/false);
+                    } else if locked_state.calibrating {
+                        // Turning on daylight mode in SETUP align mode; cancel
+                        // calibration if any.
+                        *locked_state.cancel_calibration.lock().unwrap() = true;
+                        locked_state.tetra3_subprocess.lock().unwrap()
+                            .send_interrupt_signal();
+                    }
+                }
+            }
             locked_state.operation_settings.daylight_mode = Some(new_daylight_mode);
         }
         if let Some(new_focus_assist_mode) = req.focus_assist_mode {
             let mut locked_state = self.state.lock().await;
-            locked_state.detect_engine.lock().await.set_focus_mode(
-                new_focus_assist_mode, locked_state.binning);
+            if locked_state.operation_settings.operating_mode ==
+                Some(OperatingMode::Setup as i32) &&
+                locked_state.operation_settings.focus_assist_mode.unwrap()
+                != new_focus_assist_mode
+            {
+                locked_state.detect_engine.lock().await.set_focus_mode(
+                    new_focus_assist_mode, locked_state.binning);
+                if new_focus_assist_mode {
+                    // Entering focus assist mode.
+                    if locked_state.calibrating {
+                        // Cancel calibration.
+                        *locked_state.cancel_calibration.lock().unwrap() = true;
+                        locked_state.tetra3_subprocess.lock().unwrap()
+                            .send_interrupt_signal();
+                    }
+                    // Run at full speed for focus assist.
+                    if let Err(x) = Self::set_update_interval(
+                        &*locked_state, Duration::ZERO).await
+                    {
+                        return Err(tonic_status(x));
+                    }
+                    if let Err(x) = Self::set_pre_calibration_defaults(
+                        &*locked_state, self.initial_exposure_duration).await
+                    {
+                        return Err(tonic_status(x));
+                    }
+                } else if !locked_state.operation_settings.daylight_mode.unwrap() {
+                    // Exiting focus assist mode, without daylight mode active.
+                    // Trigger a calibration, which can take several seconds. If
+                    // the gRPC client aborts the RPC (e.g. due to timeout), we
+                    // want the calibration and state updates (i.e. detect
+                    // engine's focus_mode, our operating_mode) to be completed
+                    // properly.
+                    Self::spawn_calibration(self.state.clone(),
+                                            /*enter_operate_mode=*/false);
+                }
+            }
             locked_state.operation_settings.focus_assist_mode =
                 Some(new_focus_assist_mode);
         }
@@ -945,6 +960,88 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
+    // When we leave SETUP (with focus mode), either because focus mode is
+    // turned off (transitioning to SETUP align mode), or because of
+    // transitioning to OPERATE, we need to calibrate.
+    fn spawn_calibration(state: Arc<tokio::sync::Mutex<CedarState>>,
+                         enter_operate_mode: bool) {
+        // The calibrate() call can take several seconds. If the gRPC client
+        // aborts the RPC (e.g. due to timeout), we want the calibration and
+        // state updates (i.e. detect engine's focus_mode, our operating_mode)
+        // to be completed properly.
+        //
+        // The spawned task runs to completion even if the RPC handler task
+        // aborts.
+        //
+        // Note that below we return immediately rather than joining the
+        // task_handle. We arrange for get_frame() to return a FrameResult with
+        // a information about the ongoing calibration.
+
+        let calibration_solve_timeout = Duration::from_secs(5);
+        let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+            tokio::task::spawn(async move {
+                {
+                    let mut locked_state = state.lock().await;
+                    locked_state.calibrating = true;
+                    locked_state.calibration_start = Instant::now();
+                    locked_state.calibration_duration_estimate =
+                        Duration::from_secs(5) + calibration_solve_timeout;
+                    locked_state.solve_engine.lock().await.stop().await;
+                    locked_state.detect_engine.lock().await.stop().await;
+                    locked_state.calibration_data.lock().await
+                        .calibration_time =
+                        Some(prost_types::Timestamp::try_from(
+                            SystemTime::now()).unwrap());
+                }
+                // No locks held.
+                let cal_result = Self::calibrate(
+                    state.clone(), calibration_solve_timeout).await;
+                if let Err(x) = cal_result {
+                    // The only error we expect is Aborted.
+                    assert!(x.code == CanonicalErrorCode::Aborted);
+                }
+
+                let mut locked_state = state.lock().await;
+                locked_state.calibrating = false;
+                if *locked_state.cancel_calibration.lock().unwrap() {
+                    // Calibration was cancelled. Stay in Setup mode.
+                    *locked_state.cancel_calibration.lock().unwrap() = false;
+                    let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
+                    let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
+                    let mut locked_detect_engine =
+                        locked_state.detect_engine.lock().await;
+                    locked_detect_engine.set_focus_mode(focus_mode, locked_state.binning);
+                    locked_detect_engine.set_daylight_mode(daylight_mode);
+                } else if enter_operate_mode {
+                    // Transition into Operate mode.
+                    locked_state.detect_engine.lock().await.set_focus_mode(
+                        false, locked_state.binning);
+                    locked_state.detect_engine.lock().await.set_daylight_mode(false);
+                    locked_state.solve_engine.lock().await.set_align_mode(false).await;
+                    locked_state.solve_engine.lock().await.start().await;
+                    // Restore OPERATE mode update interval.
+                    let std_duration;
+                    {
+                        let update_interval = locked_state.operation_settings.
+                            update_interval.clone().unwrap();
+                        std_duration = std::time::Duration::try_from(
+                            update_interval).unwrap();
+                        locked_state.operation_settings.operating_mode =
+                            Some(OperatingMode::Operate as i32);
+                    }
+                    if let Err(x) = Self::set_update_interval(
+                        &*locked_state, std_duration).await
+                    {
+                        return Err(tonic_status(x));
+                    }
+                }
+                Ok(())
+            });
+        // Let _task_handle go out of scope, detaching the spawned
+        // calibration task to complete regardless of a possible RPC
+        // timeout.
+    }
+
     fn write_preferences_file(preferences_file: &PathBuf, preferences: &Preferences) {
         // Write updated preferences to file.
         let prefs_path = Path::new(preferences_file);
