@@ -130,23 +130,6 @@ message OperationSettings {
   // the brightest point in the image.
   optional bool focus_assist_mode = 14;
 
-  // The camera exposure integration time. Zero selects automatic exposure.
-  // Default is zero (auto). TODO: remove this.
-  optional google.protobuf.Duration exposure_time = 5;
-
-  // Controls the speed vs accuracy. Default is BALANCED. Only relevant in
-  // OPERATE mode.
-  // ACCURATE: uses longer exposures to obtain more detected stars. Also
-  //   uses higher detection sigma threshold to reduce false star detections.
-  //   Benefit: more robust plate solves, smaller RMS errors. Drawback: slower
-  //   cycle time.
-  // FASTER: shorter exposures to obtain fewer detected stars. Also uses
-  //   lower detection sigma threshold to find more stars despite shorter
-  //   exposures. Benefit: faster cycle time. Drawback: risk of failed plate
-  //   solves from too few stars and more spurious detections.
-  // TODO: remove this.
-  optional Accuracy accuracy = 3;
-
   // The desired time interval at which Cedar should replace its current frame
   // result. Default is zero, meaning go as fast as possible. Ignored in SETUP
   // mode.
@@ -178,6 +161,8 @@ message OperationSettings {
   optional bool invert_camera = 13;
 
   // TODO: decrowd parameter for returned catalog entries?
+
+  reserved 3, 5;
 }
 
 enum OperatingMode {
@@ -199,15 +184,6 @@ enum OperatingMode {
   // * Plate solves done using FOV and distortion estimate obtained when
   //   leaving SETUP mode.
   OPERATE = 2;
-}
-
-// Reflects speed vs accuracy tradeoff in OPERATE mode.
-enum Accuracy {
-  ACCURACY_UNSPECIFIED = 0;
-
-  FASTER = 1;
-  BALANCED = 2;
-  ACCURATE = 3;
 }
 
 // User interface preferences and operation settings that are stored durably on
@@ -235,11 +211,6 @@ message Preferences {
   // corresponding FixedSettings field. Note: do not update this via
   // UpdatePreferences().
   optional LatLong observer_location = 7;
-
-  // Saved accuracy setting. On server startup we use this to initialize the
-  // corresponding OperationSettings field. Note: do not update this via
-  // UpdatePreferences().
-  optional Accuracy accuracy = 8;
 
   // Saved dwell interval. On server startup we use this to initialize the
   // corresponding OperationSettings field. Note: do not update this via
@@ -276,7 +247,7 @@ message Preferences {
   // do not update this via UpdatePreferences().
   optional bool invert_camera = 20;
 
-  reserved 4;
+  reserved 4, 8;
 }
 
 enum CelestialCoordFormat {
@@ -681,21 +652,9 @@ message FovCatalogEntry {
 }
 
 message ActionRequest {
-  // TODO: revise this, it is now only relevant in active slew.
-  // Capture boresight offset. In SETUP mode, this is based on current location
-  // of brightest detected star centroid. Context:
-  // 1. Cedar is in SETUP alignment mode (neither focus_assist_mode nor
-  //    daylight_mode is active).
-  // 2. Cedar Aim identifies the brightest star (could be a planet).
-  // 3. User centers the identified object in the telescope's field of view.
-  // 4. User invokes the capture_boresight function.
-  // At this point, the captured boresight position will be returned in each
-  // FrameResult's `boresight_position` field, and will cause a single
-  // `target_coords` entry to be included with each FrameResult
-  // `plate_solution`.
-  // Note that `capture_boresight` can also be used during an active slew to
-  // target. This lets the user update/refine the boresight offset when the user
-  // has centered the target in the telescope's field of view.
+  // The `capture_boresight` function is used during an active slew to target.
+  // This lets the user update/refine the boresight offset when the user has
+  // centered the target in the telescope's field of view.
   optional bool capture_boresight = 1;
 
   // In SETUP alignment mode, this conveys which part of the image the user

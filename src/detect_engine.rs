@@ -21,12 +21,11 @@ use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
 pub struct DetectEngine {
-    // Initial exposure duration used in Setup mode, prior to doing any
-    // calibrations. Setup mode auto-exposure uses this as its baseline.
+    // Initial exposure duration, prior to doing any calibrations. Setup mode
+    // auto-exposure uses this as its baseline.
     initial_exposure_duration: Duration,
 
     // Bounds the range of exposure durations to be set by auto-exposure.
-    // The set_exposure_time() function is not bound by these limits.
     min_exposure_duration: Duration,
     max_exposure_duration: Duration,
 
@@ -58,9 +57,6 @@ struct DetectState {
 
     frame_id: Option<i32>,
 
-    // If true, use auto exposure.
-    auto_exposure: bool,
-
     // Zero means go as fast as images are captured.
     update_interval: Duration,
 
@@ -74,17 +70,12 @@ struct DetectState {
     // See "About Resolutions" in cedar_server.rs.
     binning: u32,
 
-    // When using auto exposure in operate mode, this is the exposure duration
-    // determined (by calibration) to yield `star_count_goal` detected stars.
-    // Auto exposure logic will only deviate from this by a bounded amount.
-    // None if calibration result is not yet available because we are not in
-    // operate mode.
+    // When using auto exposure in operate mode or setup align mode, this is the
+    // exposure duration determined (by calibration) to yield `star_count_goal`
+    // detected stars. Auto exposure logic will only deviate from this by a
+    // bounded amount. None if calibration result is not yet available because
+    // we are still focusing.
     calibrated_exposure_duration: Option<Duration>,
-
-    // Value used to alter operating constants. A value >1 means the detection
-    // logic and/or auto exposure system should be biased towards more accurate
-    // operation; a value < 1 instead favors speed. Range is roughly [0.5 .. 1.5].
-    accuracy_multiplier: f64,
 
     // We update the exposure time based on the number of detected stars.
     // Because of noise, twinking, etc., use a moving average.
@@ -128,13 +119,11 @@ impl DetectEngine {
             state: Arc::new(Mutex::new(DetectState{
                 camera: camera.clone(),
                 frame_id: None,
-                auto_exposure: true,
                 update_interval: Duration::ZERO,
                 focus_mode: false,
                 daylight_mode: false,
                 binning: 1,
                 calibrated_exposure_duration: None,
-                accuracy_multiplier: 1.0,
                 detected_stars_moving_average: 0.0,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
@@ -150,23 +139,6 @@ impl DetectEngine {
         &self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
     {
         self.state.lock().unwrap().camera = camera.clone();
-    }
-
-    // If `exp_time` is zero, enables auto exposure. In focus assist mode, auto
-    // exposure is based on a histogram of the image region, and aims to make
-    // the brightest part of the image bright but not saturated. In align mode
-    // and operate mode, auto exposure is based on the number of detected stars
-    // in the entire image.
-    pub async fn set_exposure_time(&mut self, exp_time: Duration)
-                                   -> Result<(), CanonicalError> {
-        let camera = self.state.lock().unwrap().camera.clone();
-        if !exp_time.is_zero() {
-            camera.lock().await.set_exposure_duration(exp_time)?
-        }
-        self.state.lock().unwrap().auto_exposure = exp_time.is_zero();
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-        Ok(())
     }
 
     // Determines how often the detect engine operates (obtains an image, produces
@@ -215,13 +187,6 @@ impl DetectEngine {
         &mut self, calibrated_exposure_duration: Option<Duration>) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.calibrated_exposure_duration = calibrated_exposure_duration;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-    }
-
-    pub fn set_accuracy_multiplier(&mut self, accuracy_multiplier: f64) {
-        let mut locked_state = self.state.lock().unwrap();
-        locked_state.accuracy_multiplier = accuracy_multiplier;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -368,13 +333,11 @@ impl DetectEngine {
         let mut last_result_time: Option<Instant> = None;
         loop {
             let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>;
-            let auto_exposure: bool;
             let update_interval: Duration;
             let focus_mode: bool;
             let daylight_mode: bool;
             let binning: u32;
             let calibrated_exposure_duration: Option<Duration>;
-            let accuracy_multiplier: f64;
             {
                 let mut locked_state = state.lock().unwrap();
                 if locked_state.stop_request {
@@ -384,14 +347,12 @@ impl DetectEngine {
                     return;  // Exit thread.
                 }
                 camera = locked_state.camera.clone();
-                auto_exposure = locked_state.auto_exposure;
                 update_interval = locked_state.update_interval;
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
                 binning = locked_state.binning;
                 calibrated_exposure_duration =
                     locked_state.calibrated_exposure_duration;
-                accuracy_multiplier = locked_state.accuracy_multiplier;
             }
             // Is it time to generate the next DetectResult?
             let now = Instant::now();
@@ -458,32 +419,31 @@ impl DetectEngine {
                 // Compute peak_value as the average of the 5 brightest pixels.
                 peak_value = average_top_values(&roi_histogram, 5);
 
-                if auto_exposure {
-                    // Adjust exposure time based on peak value of image_region.
+                // Auto exposure. Adjust exposure time based on peak value of
+                // image_region.
 
-                    // For auto_exposure in focus mode, what is the target value
-                    // of the brightest pixel in the image region? Note that a
-                    // lower brightness_goal value allows for faster exposures,
-                    // which is nice in focus mode.
-                    let brightness_goal = if daylight_mode {
-                        128.0
-                    } else {
-                        24.0 * accuracy_multiplier
-                    };
+                // For auto exposure in focus mode, what is the target value
+                // of the brightest pixel in the image region? Note that a
+                // lower brightness_goal value allows for faster exposures,
+                // which is nice in focus mode.
+                let brightness_goal = if daylight_mode {
+                    128.0
+                } else {
+                    24.0
+                };
 
-                    // Compute how much to scale the previous exposure
-                    // integration time to move towards the goal. Assumes linear
-                    // detector response.
+                // Compute how much to scale the previous exposure
+                // integration time to move towards the goal. Assumes linear
+                // detector response.
 
-                    // Move proportionally towards the goal.
-                    let correction_factor = brightness_goal / peak_value as f64;
-                    // Don't adjust exposure time too often, is a bit janky
-                    // because the camera re-initializes.
-                    if correction_factor < 0.7 || correction_factor > 1.3 {
-                        new_exposure_duration_secs =
-                            prev_exposure_duration_secs * correction_factor;
-                    }
-                }  // auto_exposure
+                // Move proportionally towards the goal.
+                let correction_factor = brightness_goal / peak_value as f64;
+                // Don't adjust exposure time too often, is a bit janky
+                // because the camera re-initializes.
+                if correction_factor < 0.7 || correction_factor > 1.3 {
+                    new_exposure_duration_secs =
+                        prev_exposure_duration_secs * correction_factor;
+                }
 
                 if !daylight_mode {
                     let image_rect = Rect::at(0, 0).of_size(width, height);
@@ -535,8 +495,7 @@ impl DetectEngine {
                         locked_state.eta = Some(Instant::now() + detect_duration);
                     }
                 }
-                let adjusted_sigma = f64::max(detection_sigma * accuracy_multiplier,
-                                              detection_min_sigma);
+                let adjusted_sigma = f64::max(detection_sigma, detection_min_sigma);
                 let detect_binned_image;
                 let mut histogram;
                 (stars, hot_pixel_count, detect_binned_image, histogram) =
@@ -586,17 +545,17 @@ impl DetectEngine {
                     black_level = peak_value;
                 }
 
-                if !focus_mode && auto_exposure {
+                if !focus_mode {
+                    // Auto exposure.
                     let mut baseline_exposure_duration = initial_exposure_duration;
                     if let Some(calibrated_exposure_duration) =
                         calibrated_exposure_duration
                     {
                         baseline_exposure_duration = calibrated_exposure_duration;
                     }
-                    let adjusted_star_count_goal =
-                        star_count_goal as f64 * accuracy_multiplier;
+                    let adjusted_star_count_goal = star_count_goal as f64;
                     let adjusted_exposure_duration_secs =
-                        baseline_exposure_duration.as_secs_f64() * accuracy_multiplier;
+                        baseline_exposure_duration.as_secs_f64();
 
                     let num_stars_detected = stars.len();
                     if num_stars_detected == 0 {
@@ -639,14 +598,15 @@ impl DetectEngine {
                                 // adjusted_exposure_duration.
                                 new_exposure_duration_secs =
                                     prev_exposure_duration_secs / star_goal_fraction;
-                                // Bound exposure duration to be within two stops of
-                                // adjusted_exposure_duration.
+                                // Bound exposure duration to be within three
+                                // stops of adjusted_exposure_duration. Further
+                                // bounds are applied below.
                                 new_exposure_duration_secs = f64::max(
                                     new_exposure_duration_secs,
-                                    adjusted_exposure_duration_secs / 4.0);
+                                    adjusted_exposure_duration_secs / 8.0);
                                 new_exposure_duration_secs = f64::min(
                                     new_exposure_duration_secs,
-                                    adjusted_exposure_duration_secs * 4.0);
+                                    adjusted_exposure_duration_secs * 8.0);
                             }
                         }
                     }
@@ -657,25 +617,23 @@ impl DetectEngine {
 
             // Update camera exposure time if auto-exposure calls for an
             // adjustment.
-            if auto_exposure {
-                // Bound auto-exposure duration to given limits.
-                new_exposure_duration_secs = f64::max(new_exposure_duration_secs,
-                                                      min_exposure_duration.as_secs_f64());
-                new_exposure_duration_secs = f64::min(new_exposure_duration_secs,
-                                                      max_exposure_duration.as_secs_f64());
-                if prev_exposure_duration_secs != new_exposure_duration_secs {
-                    debug!("Setting new exposure duration {}s",
-                           new_exposure_duration_secs);
-                    let mut locked_camera = camera.lock().await;
-                    match locked_camera.set_exposure_duration(
-                        Duration::from_secs_f64(new_exposure_duration_secs)) {
-                        Ok(()) => (),
-                        Err(e) => {
-                            error!("Error updating exposure duration: {}",
-                                   &e.to_string());
-                            done.store(true, Ordering::Relaxed);
-                            return;  // Abandon thread execution!
-                        }
+            // Bound auto-exposure duration to given limits.
+            new_exposure_duration_secs = f64::max(new_exposure_duration_secs,
+                                                  min_exposure_duration.as_secs_f64());
+            new_exposure_duration_secs = f64::min(new_exposure_duration_secs,
+                                                  max_exposure_duration.as_secs_f64());
+            if prev_exposure_duration_secs != new_exposure_duration_secs {
+                debug!("Setting new exposure duration {}s",
+                       new_exposure_duration_secs);
+                let mut locked_camera = camera.lock().await;
+                match locked_camera.set_exposure_duration(
+                    Duration::from_secs_f64(new_exposure_duration_secs)) {
+                    Ok(()) => (),
+                    Err(e) => {
+                        error!("Error updating exposure duration: {}",
+                               &e.to_string());
+                        done.store(true, Ordering::Relaxed);
+                        return;  // Abandon thread execution!
                     }
                 }
             }

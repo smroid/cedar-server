@@ -47,7 +47,7 @@ use futures::join;
 use crate::activity_led::ActivityLed;
 use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
-use crate::cedar::{Accuracy, ActionRequest, CalibrationData, CameraModel,
+use crate::cedar::{ActionRequest, CalibrationData, CameraModel,
                    CelestialCoordFormat, DemoImagesResult, EmptyMessage,
                    FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
                    FrameResult, Image, ImageCoord, LatLong, LocationBasedInfo,
@@ -440,28 +440,6 @@ impl Cedar for MyCedar {
             locked_state.operation_settings.focus_assist_mode =
                 Some(new_focus_assist_mode);
         }
-        if let Some(exp_time) = req.exposure_time {
-            if exp_time.seconds < 0 || exp_time.nanos < 0 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got negative exposure_time: {}.", exp_time)));
-            }
-            let std_duration = std::time::Duration::try_from(exp_time.clone()).unwrap();
-            let mut locked_state = self.state.lock().await;
-            if let Err(x) = Self::set_exposure_time(&*locked_state, std_duration).await {
-                return Err(tonic_status(x));
-            }
-            locked_state.operation_settings.exposure_time = Some(exp_time);
-        }
-        if let Some(accuracy) = req.accuracy {
-            {
-                let mut locked_state = self.state.lock().await;
-                locked_state.operation_settings.accuracy = Some(accuracy);
-                Self::update_accuracy_adjusted_params(&*locked_state).await;
-            }
-            let preferences = Preferences{accuracy: Some(accuracy),
-                                          ..Default::default()};
-            self.update_preferences(tonic::Request::new(preferences)).await?;
-        }
         if let Some(update_interval) = req.update_interval {
             if update_interval.seconds < 0 || update_interval.nanos < 0 {
                 return Err(tonic::Status::invalid_argument(
@@ -593,9 +571,6 @@ impl Cedar for MyCedar {
         }
         if let Some(observer_location) = req.observer_location {
             our_prefs.observer_location = Some(observer_location);
-        }
-        if let Some(accuracy) = req.accuracy {
-            our_prefs.accuracy = Some(accuracy);
         }
         if let Some(update_interval) = req.update_interval {
             our_prefs.update_interval = Some(update_interval);
@@ -982,6 +957,9 @@ impl MyCedar {
             tokio::task::spawn(async move {
                 {
                     let mut locked_state = state.lock().await;
+                    if locked_state.calibrating {
+                        return Ok(());  // Already in flight.
+                    }
                     locked_state.calibrating = true;
                     locked_state.calibration_start = Instant::now();
                     locked_state.calibration_duration_estimate =
@@ -1124,11 +1102,6 @@ impl MyCedar {
         }
     }
 
-    async fn set_exposure_time(state: &CedarState, exposure_time: std::time::Duration)
-                               -> Result<(), CanonicalError> {
-        state.detect_engine.lock().await.set_exposure_time(exposure_time).await
-    }
-
     async fn set_update_interval(state: &CedarState, update_interval: std::time::Duration)
                                  -> Result<(), CanonicalError> {
         state.camera.lock().await.set_update_interval(update_interval)?;
@@ -1185,8 +1158,7 @@ impl MyCedar {
 
             // What was the final exposure duration coming out of SETUP mode?
             setup_exposure_duration = camera.lock().await.get_exposure_duration();
-            // For calibrations, use statically configured sigma value, not adjusted
-            // by accuracy setting.
+            // For calibrations, use statically configured sigma value.
             let locked_detect_engine = detect_engine.lock().await;
             binning = locked_state.binning;
             detection_sigma = locked_detect_engine.get_detection_sigma();
@@ -1704,7 +1676,6 @@ impl MyCedar {
             hide_app_bar: Some(true),
             mount_type: Some(MountType::AltAz.into()),
             observer_location: None,
-            accuracy: Some(Accuracy::Balanced.into()),
             update_interval: match feature_level {
                 FeatureLevel::Plus => Some(
                     prost_types::Duration { seconds: 0, nanos: 100000000 }
@@ -1872,10 +1843,6 @@ impl MyCedar {
                     operating_mode: Some(OperatingMode::Setup as i32),
                     daylight_mode: Some(false),
                     focus_assist_mode: Some(true),
-                    exposure_time: Some(prost_types::Duration {
-                        seconds: 0, nanos: 0,
-                    }),
-                    accuracy: locked_preferences.accuracy,
                     update_interval: locked_preferences.update_interval.clone(),
                     dwell_update_interval: None,
                     log_dwelled_positions: Some(false),
@@ -1982,22 +1949,8 @@ impl MyCedar {
                 Some(tetra3_server::ImageCoord{
                     x: bsp.x, y: bsp.y})).await.unwrap();
         }
-        Self::update_accuracy_adjusted_params(&*locked_state).await;
 
         cedar
-    }
-
-    async fn update_accuracy_adjusted_params(state: &CedarState) {
-        let accuracy = state.operation_settings.accuracy.unwrap();
-        let acc_enum = Accuracy::try_from(accuracy).unwrap();
-        let multiplier = match acc_enum {
-            Accuracy::Faster => 0.7,
-            Accuracy::Balanced => 1.0,
-            Accuracy::Accurate => 1.4,
-            _ => 1.0,
-        };
-        let mut locked_detect_engine = state.detect_engine.lock().await;
-        locked_detect_engine.set_accuracy_multiplier(multiplier);
     }
 
     fn read_file_tail(log_file: &PathBuf, bytes_to_read: i32) -> io::Result<String> {
