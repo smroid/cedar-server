@@ -48,7 +48,7 @@ use crate::activity_led::ActivityLed;
 use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{ActionRequest, CalibrationData, CameraModel,
-                   CelestialCoordFormat, DemoImagesResult, EmptyMessage,
+                   CelestialCoordFormat, EmptyMessage,
                    FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
                    FrameResult, Image, ImageCoord, LatLong, LocationBasedInfo,
                    MountType, OperatingMode, OperationSettings, ProcessingStats,
@@ -106,6 +106,9 @@ struct MyCedar {
     // Fake camera for using static image instead of an attached camera.
     test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
 
+    // Demo images, if any, that were found in ./demo_images directory.
+    demo_images: Vec<String>,
+
     preferences_file: PathBuf,
 
     // The path to our log file.
@@ -119,6 +122,10 @@ struct MyCedar {
     processor_model: String,
     os_version: String,
     serial_number: String,
+
+    // Some command line args.
+    args_binning: Option<u32>,
+    args_display_sampling: Option<bool>,
 }
 
 struct CedarState {
@@ -193,29 +200,6 @@ impl Cedar for MyCedar {
         let mut response = ServerLogResult::default();
         response.log_content = tail.unwrap();
 
-        Ok(tonic::Response::new(response))
-    }
-
-    async fn get_demo_images(&self, _request: tonic::Request<EmptyMessage>)
-                             -> Result<tonic::Response<DemoImagesResult>, tonic::Status> {
-        let dir = Path::new("./demo_images");
-        if !dir.exists() {
-            return Err(tonic::Status::failed_precondition(
-                format!("The path {:?} is not found", dir)));
-        }
-        if !dir.is_dir() {
-            return Err(tonic::Status::failed_precondition(
-                format!("The path {:?} is not a directory", dir)));
-        }
-        let mut response = DemoImagesResult::default();
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            let extension = path.extension().unwrap_or_default();
-            if extension == "jpg" || extension == "bmp" {
-                let file_name = path.file_name().unwrap().to_str().unwrap();
-                response.demo_image_name.push(file_name.to_string());
-            }
-        }
         Ok(tonic::Response::new(response))
     }
 
@@ -524,7 +508,30 @@ impl Cedar for MyCedar {
             }
             let new_camera = locked_state.camera.clone();
             locked_state.detect_engine.lock().await.replace_camera(new_camera.clone());
-            locked_state.calibrator.lock().await.replace_camera(new_camera);
+            locked_state.calibrator.lock().await.replace_camera(new_camera.clone());
+
+            let (binning, display_sampling) = compute_binning(
+                new_camera.clone(), self.args_binning, self.args_display_sampling).await;
+            locked_state.binning = binning;
+            locked_state.display_sampling = display_sampling;
+
+            // Validate boresight_pixel, to make sure it is still within the
+            // image area.
+            let (width, height) = new_camera.lock().await.dimensions();
+            let bsp;
+            {
+                bsp = locked_state.preferences.lock().unwrap().boresight_pixel.clone();
+            }
+            if let Some(bsp) = bsp {
+                let inset = 16;
+                if bsp.x < inset as f64 || bsp.x > (width - inset) as f64 ||
+                    bsp.y < inset as f64 || bsp.y > (height - inset) as f64
+                {
+                    locked_state.preferences.lock().unwrap().boresight_pixel = None;
+                    locked_state.solve_engine.lock().await.set_boresight_pixel(None).
+                        await.unwrap();
+                }
+            };
         }
         if let Some(invert_camera) = req.invert_camera {
             {
@@ -935,6 +942,28 @@ impl Cedar for MyCedar {
 }
 
 impl MyCedar {
+    fn get_demo_images() -> Result<Vec<String>, tonic::Status> {
+        let dir = Path::new("./demo_images");
+        if !dir.exists() {
+            return Err(tonic::Status::failed_precondition(
+                format!("The path {:?} is not found", dir)));
+        }
+        if !dir.is_dir() {
+            return Err(tonic::Status::failed_precondition(
+                format!("The path {:?} is not a directory", dir)));
+        }
+        let mut response = Vec::<String>::new();
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let extension = path.extension().unwrap_or_default();
+            if extension == "jpg" || extension == "bmp" {
+                let file_name = path.file_name().unwrap().to_str().unwrap();
+                response.push(file_name.to_string());
+            }
+        }
+        Ok(response)
+    }
+
     // When we leave SETUP (with focus mode), either because focus mode is
     // turned off (transitioning to SETUP align mode), or because of
     // transitioning to OPERATE, we need to calibrate.
@@ -1090,6 +1119,7 @@ impl MyCedar {
                 SystemTime::now()).unwrap()),
             camera,
             wifi_access_point,
+            demo_image_names: self.demo_images.clone(),
         }
     }
 
@@ -1631,6 +1661,8 @@ impl MyCedar {
     }
 
     pub async fn new(
+        args_binning: Option<u32>,
+        args_display_sampling: Option<bool>,
         invert_camera: bool,
         initial_exposure_duration: Duration,
         min_exposure_duration: Duration,
@@ -1914,11 +1946,22 @@ impl MyCedar {
               &cedar_version, &processor_model, &os_version);
         info!("Processor serial number {}", &serial_number);
 
+        let mut demo_images: Vec<String> = vec![];
+        match Self::get_demo_images() {
+            Ok(d) => {
+                demo_images = d;
+            },
+            Err(x) => {
+                warn!("Could not enumerate demo images {:?}", x);
+            }
+        }
+
         let cedar = MyCedar {
             state: state.clone(),
             attached_camera: attached_camera.clone(),
             initial_exposure_duration,
             test_image_camera: test_image_camera.clone(),
+            demo_images,
             preferences_file,
             log_file,
             product_name: product_name.to_string(),
@@ -1928,6 +1971,7 @@ impl MyCedar {
             processor_model,
             os_version,
             serial_number,
+            args_binning, args_display_sampling,
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;
@@ -2277,6 +2321,43 @@ fn get_camera(
         ImageCamera::new(img_u8).unwrap())));
 }
 
+// Computes (binning, display_sampling) for camera, taking optional command line
+// overrides into account.
+async fn compute_binning(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+                         args_binning: Option<u32>,
+                         args_display_sampling: Option<bool>) -> (u32, bool)
+{
+    let mpix;
+    {
+        let locked_camera = camera.lock().await;
+        mpix = (locked_camera.dimensions().0 * locked_camera.dimensions().1)
+            as f64 / 1000000.0;
+    }
+    // Initialize binning/sampling parameters based on sensor resolution.
+    let mut binning = 1_u32;
+    let mut display_sampling = false;
+    if mpix <= 0.75 {
+        // Use initial values.
+    } else if mpix <= 3.0 {
+        binning = 2;
+    } else if mpix <= 12.0 {
+        binning = 4;
+    } else {
+        binning = 4;
+        display_sampling = true;
+    }
+    // Allow command-line overrides of sampling/binning parameters.
+    if let Some(ba) = args_binning {
+        binning = ba;
+    }
+    if let Some(dsa) = args_display_sampling {
+        display_sampling = dsa;
+    }
+    debug!("For {:.1}mpix, binning {}, display_sampling {}",
+           mpix, binning, display_sampling);
+    (binning, display_sampling)
+}
+
 #[tokio::main]
 async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                     flutter_app_path: &str, invert_camera: bool,
@@ -2341,32 +2422,6 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         }
     };
 
-    let camera = get_camera(&attached_camera, &test_image_camera);
-    let mpix;
-    {
-        let locked_camera = camera.lock().await;
-        info!("Using camera {} {}x{}",
-              locked_camera.model(),
-              locked_camera.dimensions().0,
-              locked_camera.dimensions().1);
-        mpix = (locked_camera.dimensions().0 * locked_camera.dimensions().1)
-            as f64 / 1000000.0;
-    }
-
-    // Initialize binning/sampling parameters based on sensor resolution.
-    let mut binning = 1_u32;
-    let mut display_sampling = false;
-    if mpix <= 0.75 {
-        // Use initial values.
-    } else if mpix <= 3.0 {
-        binning = 2;
-    } else if mpix <= 12.0 {
-        binning = 4;
-    } else {
-        binning = 4;
-        display_sampling = true;
-    }
-    // Allow command-line overrides of sampling/binning parameters.
     if let Some(binning_arg) = args.binning {
         match binning_arg {
             1 | 2 | 4 => (),
@@ -2376,13 +2431,18 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                 std::process::exit(1);
             }
         }
-        binning = binning_arg;
     }
-    if let Some(display_sampling_arg) = args.display_sampling {
-        display_sampling = display_sampling_arg;
+
+    let camera = get_camera(&attached_camera, &test_image_camera);
+    {
+        let locked_camera = camera.lock().await;
+        info!("Using camera {} {}x{}",
+              locked_camera.model(),
+              locked_camera.dimensions().0,
+              locked_camera.dimensions().1);
     }
-    debug!("For {:.1}mpix, binning {}, display_sampling {}",
-           mpix, binning, display_sampling);
+    let (binning, display_sampling) = compute_binning(
+        camera.clone(), args.binning, args.display_sampling).await;
 
     let shared_telescope_position = Arc::new(Mutex::new(TelescopePosition::new()));
 
@@ -2427,6 +2487,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
         .add_service(CedarServer::new(MyCedar::new(
+            args.binning, args.display_sampling,
             invert_camera,
             initial_exposure_duration, args.min_exposure, args.max_exposure,
             args.tetra3_script, args.tetra3_database, args.tetra3_socket,

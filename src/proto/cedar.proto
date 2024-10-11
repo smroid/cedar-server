@@ -67,6 +67,9 @@ message ServerInformation {
   // TODO: optional info for wifi client mode, mutually exclusive with
   // access point.
 
+  // Filenames of image(s) found in run/demo_images directory.
+  repeated string demo_image_names = 11;
+
   // Status of SkySafari integration; SkySafari version.
 }
 
@@ -697,19 +700,10 @@ message ServerLogResult {
   string log_content = 1;
 }
 
-message DemoImagesResult {
-  // Filenames of image(s) found in run/demo_images directory.
-  repeated string demo_image_name = 1;
-}
-
 message EmptyMessage {}
 
 service Cedar {
   rpc GetServerLog(ServerLogRequest) returns (ServerLogResult);
-
-  // Returns the names of image file(s), if any, in the run/demo_images
-  // directory.
-  rpc GetDemoImages(EmptyMessage) returns (DemoImagesResult);
 
   // Changes zero or more of Cedar's "fixed" settings. If a field is omitted
   // from the supplied FixedSettings, that setting is not updated. Returns the
