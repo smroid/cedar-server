@@ -70,3 +70,22 @@ Major updates:
   SD card activity
 
 * Add restart option in addition to shutdown.
+
+# October 12 2024
+
+Cedar-server version: 0.5.0
+
+* Add preference for inverting camera image (rotate 180degrees).
+
+* Fix exposure calibration logic bug.
+
+* Telescope boresight no longer restricted to central third of image.
+
+* Redesign setup mode: focus, then align. Focus and align have
+  on-screen prompts; align highlights 3 brightest detections.
+
+* Daylight mode is now applicable to focus as well as align.
+
+* Remove speed/accuracy slider.
+
+* Fix push-to directions layout problems.
