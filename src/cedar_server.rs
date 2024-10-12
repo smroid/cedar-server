@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime};
 
-use cargo_metadata::MetadataCommand;
 use cedar_camera::abstract_camera::{AbstractCamera, Offset, bin_2x2, sample_2x2};
 use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
@@ -1912,16 +1911,24 @@ impl MyCedar {
             }));
         }
 
-        let metadata = MetadataCommand::new()
-            .exec()
-            .expect("Failed to get cargo metadata");
-        let mut cedar_version: String = "".to_string();
-        for package in metadata.packages {
-            if package.name == "cedar-server" {
-                cedar_version = package.version.to_string();
-                break;
+        let mut cedar_version = "unknown".to_string();
+        // We might be in hopper-server/run dir, navigate accordingly. Also
+        // works if we're in cedar-server/run dir.
+        let cargo_path = "../../cedar-server/Cargo.toml";
+        match fs::File::open(cargo_path) {
+            Err(x) => {
+                warn!("Could not open {} {:?}", cargo_path, x);
+            },
+            Ok(mut file) => {
+                let mut contents = String::new();
+                file.read_to_string(&mut contents)
+                    .expect(format!("Failed to read {}", cargo_path).as_str());
+                let line = contents.lines().find(|line| line.starts_with("version")).unwrap();
+                info!("line: {}", line);
+                cedar_version = line.split('=').nth(1).unwrap().trim().to_string();
             }
         }
+
         let processor_model =
             fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap()
             .trim_end_matches('\0').to_string();
