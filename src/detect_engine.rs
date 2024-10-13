@@ -154,10 +154,16 @@ impl DetectEngine {
         Ok(())
     }
 
-    pub fn set_focus_mode(&mut self, enabled: bool, binning: u32) {
+    pub fn set_binning(&mut self, binning: u32) {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.binning = binning;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+    }
+
+    pub fn set_focus_mode(&mut self, enabled: bool) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.focus_mode = enabled;
-        locked_state.binning = binning;
         if !enabled {
             locked_state.detected_stars_moving_average = 0.0;
         }
@@ -446,18 +452,17 @@ impl DetectEngine {
                 }
 
                 if !daylight_mode {
-                    let image_rect = Rect::at(0, 0).of_size(width, height);
                     // Get a small sub-image centered on the peak coordinates.
                     let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
+                    debug!("peak {} at x/y {}/{}",
+                           peak_value, peak_position.0, peak_position.1);
                     let sub_image_size = 30;
                     assert!(sub_image_size < 2 * inset);
                     let peak_region =
                         Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
                                  (peak_position.1 as i32 - sub_image_size/2) as i32)
                         .of_size(sub_image_size as u32, sub_image_size as u32);
-                    let peak_region = peak_region.intersect(image_rect).unwrap();
-                    debug!("peak {} at x/y {}/{}",
-                           peak_value, peak_region.left(), peak_region.top());
+                    let peak_region = peak_region.intersect(image_region).unwrap();
                     // Get a good black level for display.
                     remove_stars_from_histogram(&mut roi_histogram, /*sigma=*/8.0);
                     let region_black_level = get_level_for_fraction(&roi_histogram, 0.8);
