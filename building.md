@@ -25,7 +25,7 @@ started!
 ## Download and burn
 
 First: download the SD card image
-[cedar_rpi_2024_sep_21.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_sep_21.img.gz)
+[cedar_rpi_2024_oct_12.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_oct_12.img.gz)
 to your computer.
 
 Second: burn an SD card (16GB or larger) with the image file you just downloaded
@@ -61,7 +61,7 @@ With the pre-built SD card you just burned, your Rpi is set up as follows:
 Insert the SD card and power up your Rpi4. Wait a minute or two, then on your phone,
 tablet, or laptop, join the 'cedar' Wi-Fi network (password is 'cedar123').
 
-Now, in your device's web browser, navigate to 'cedar.local'. You should
+Now, in your device's web browser, navigate to '192.168.4.1'. You should
 see Cedar's "setup" mode screen where the camera image is shown (assuming you
 have a camera connected!) for focusing and aligning. Under the hamburger menu,
 look for Settings, and enable Full Screen.
