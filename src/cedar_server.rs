@@ -121,10 +121,6 @@ struct MyCedar {
     processor_model: String,
     os_version: String,
     serial_number: String,
-
-    // Some command line args.
-    args_binning: Option<u32>,
-    args_display_sampling: Option<bool>,
 }
 
 struct CedarState {
@@ -153,14 +149,6 @@ struct CedarState {
     // Not all builds of Cedar-server support Wifi control.
     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
 
-    // See "About Resolutions" below.
-    // Whether (and how much, 2x2 or 4x4) the acquired image is binned prior to
-    // CedarDetect and sending to the UI.
-    binning: u32,
-    // Whether (possibly binned) image is to be 2x sampled when sending to the
-    // UI.
-    display_sampling: bool,
-
     // We host the user interface preferences and some operation settings here.
     // On startup we apply some of these to `operation_settings`; we reflect
     // them out to all clients and persist them to a server-side file.
@@ -182,6 +170,10 @@ struct CedarState {
 
     serve_latency_stats: ValueStatsAccumulator,
     overall_latency_stats: ValueStatsAccumulator,
+
+    // Some command line args.
+    args_binning: Option<u32>,
+    args_display_sampling: Option<bool>,
 }
 
 #[tonic::async_trait]
@@ -295,7 +287,7 @@ impl Cedar for MyCedar {
                     {
                         let mut locked_detect_engine =
                             locked_state.detect_engine.lock().await;
-                        locked_detect_engine.set_focus_mode(focus_mode, locked_state.binning);
+                        locked_detect_engine.set_focus_mode(focus_mode);
                         locked_detect_engine.set_daylight_mode(daylight_mode);
                         if focus_mode {
                             locked_detect_engine.set_calibrated_exposure_duration(None);
@@ -388,8 +380,7 @@ impl Cedar for MyCedar {
                 locked_state.operation_settings.focus_assist_mode.unwrap()
                 != new_focus_assist_mode
             {
-                locked_state.detect_engine.lock().await.set_focus_mode(
-                    new_focus_assist_mode, locked_state.binning);
+                locked_state.detect_engine.lock().await.set_focus_mode(new_focus_assist_mode);
                 if new_focus_assist_mode {
                     // Entering focus assist mode.
                     if locked_state.calibrating {
@@ -506,17 +497,15 @@ impl Cedar for MyCedar {
                     Some(demo_image_filename);
             }
             let new_camera = locked_state.camera.clone();
+            let (width, height) = new_camera.lock().await.dimensions();
+            let (binning, _display_sampling) =
+                Self::compute_binning(&locked_state, width as u32, height as u32);
+            locked_state.detect_engine.lock().await.set_binning(binning);
             locked_state.detect_engine.lock().await.replace_camera(new_camera.clone());
             locked_state.calibrator.lock().await.replace_camera(new_camera.clone());
 
-            let (binning, display_sampling) = compute_binning(
-                new_camera.clone(), self.args_binning, self.args_display_sampling).await;
-            locked_state.binning = binning;
-            locked_state.display_sampling = display_sampling;
-
             // Validate boresight_pixel, to make sure it is still within the
             // image area.
-            let (width, height) = new_camera.lock().await.dimensions();
             let bsp;
             {
                 bsp = locked_state.preferences.lock().unwrap().boresight_pixel.clone();
@@ -963,6 +952,44 @@ impl MyCedar {
         Ok(response)
     }
 
+    // See "About Resolutions" below.
+    // Computes (binning, display_sampling) for camera, taking optional command line
+    // overrides into account.
+    // Returns:
+    // binning: u32; whether (and how much, 2x2 or 4x4) the acquired image
+    //     is binned prior to CedarDetect and sending to the UI.
+    // display_sampling: bool; whether (possibly binned) image is to be 2x
+    //     sampled when sending to the
+    fn compute_binning(state: &CedarState, width: u32, height: u32) -> (u32, bool)
+    {
+        let args_binning = state.args_binning;
+        let args_display_sampling = state.args_display_sampling;
+        let mpix = (width * height) as f64 / 1000000.0;
+        // Initialize binning/sampling parameters based on sensor resolution.
+        let mut binning = 1_u32;
+        let mut display_sampling = false;
+        if mpix <= 0.75 {
+            // Use initial values.
+        } else if mpix <= 3.0 {
+            binning = 2;
+        } else if mpix <= 12.0 {
+            binning = 4;
+        } else {
+            binning = 4;
+            display_sampling = true;
+        }
+        // Allow command-line overrides of sampling/binning parameters.
+        if let Some(ba) = args_binning {
+            binning = ba;
+        }
+        if let Some(dsa) = args_display_sampling {
+            display_sampling = dsa;
+        }
+        debug!("For {:.1}mpix, binning {}, display_sampling {}",
+               mpix, binning, display_sampling);
+        (binning, display_sampling)
+    }
+
     // When we leave SETUP (with focus mode), either because focus mode is
     // turned off (transitioning to SETUP align mode), or because of
     // transitioning to OPERATE, we need to calibrate.
@@ -1016,12 +1043,11 @@ impl MyCedar {
                     let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
                     let mut locked_detect_engine =
                         locked_state.detect_engine.lock().await;
-                    locked_detect_engine.set_focus_mode(focus_mode, locked_state.binning);
+                    locked_detect_engine.set_focus_mode(focus_mode);
                     locked_detect_engine.set_daylight_mode(daylight_mode);
                 } else if enter_operate_mode {
                     // Transition into Operate mode.
-                    locked_state.detect_engine.lock().await.set_focus_mode(
-                        false, locked_state.binning);
+                    locked_state.detect_engine.lock().await.set_focus_mode(false);
                     locked_state.detect_engine.lock().await.set_daylight_mode(false);
                     locked_state.solve_engine.lock().await.set_align_mode(false).await;
                     locked_state.solve_engine.lock().await.start().await;
@@ -1186,10 +1212,16 @@ impl MyCedar {
             solve_engine = locked_state.solve_engine.clone();
 
             // What was the final exposure duration coming out of SETUP mode?
-            setup_exposure_duration = camera.lock().await.get_exposure_duration();
+            {
+                let locked_camera = camera.lock().await;
+                setup_exposure_duration = locked_camera.get_exposure_duration();
+                let (width, height) = locked_camera.dimensions();
+                let _display_sampling;
+                (binning, _display_sampling) =
+                    Self::compute_binning(&locked_state, width as u32, height as u32);
+            }
             // For calibrations, use statically configured sigma value.
             let locked_detect_engine = detect_engine.lock().await;
-            binning = locked_state.binning;
             detection_sigma = locked_detect_engine.get_detection_sigma();
             star_count_goal = locked_detect_engine.get_star_count_goal();
         }
@@ -1387,7 +1419,8 @@ impl MyCedar {
         frame_result.star_candidates = centroids;
         frame_result.noise_estimate = detect_result.noise_estimate;
 
-        let display_sampling = locked_state.display_sampling;
+        let (binning, display_sampling) =
+            Self::compute_binning(&locked_state, width, height);
 
         if let Some(fa) = &detect_result.focus_aid {
             let ic = ImageCoord {
@@ -1443,13 +1476,13 @@ impl MyCedar {
         if detect_result.binned_image.is_some() {
             disp_image = detect_result.binned_image.as_ref().unwrap();
             resized_disp_image = disp_image;
-        } else if locked_state.binning > 1 {
+        } else if binning > 1 {
             // This can happen when we're transitioning away from daylight
             // mode, wherein detect engine is skipping Cedar detect and
             // thus not creating a binned image.
             resize_result = Arc::new(sample_2x2(disp_image.deref().clone()));
             resized_disp_image = &resize_result;
-            if locked_state.binning == 4 {
+            if binning == 4 {
                 resize_result = Arc::new(sample_2x2(resize_result.deref().clone()));
                 resized_disp_image = &resize_result;
             }
@@ -1458,7 +1491,7 @@ impl MyCedar {
             resize_result = Arc::new(sample_2x2(resized_disp_image.deref().clone()));
             resized_disp_image = &resize_result;
         }
-        let binning_factor = locked_state.binning * if display_sampling { 2 } else { 1 };
+        let binning_factor = binning * if display_sampling { 2 } else { 1 };
 
         let mut bmp_buf = Vec::<u8>::new();
         let (resized_width, resized_height) = resized_disp_image.dimensions();
@@ -1674,8 +1707,6 @@ impl MyCedar {
         test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
         telescope_position: Arc<Mutex<TelescopePosition>>,
-        binning: u32,
-        display_sampling: bool,
         base_star_count_goal: i32,
         base_detection_sigma: f64,
         min_detection_sigma: f64,
@@ -1896,7 +1927,6 @@ impl MyCedar {
                 activity_led: Arc::new(tokio::sync::Mutex::new(
                     ActivityLed::new(got_signal.clone()).await)),
                 cedar_sky, wifi,
-                binning, display_sampling,
                 preferences: shared_preferences.clone(),
                 scaled_image: None,
                 scaled_image_binning_factor: 1,
@@ -1908,6 +1938,7 @@ impl MyCedar {
                 center_peak_position: Arc::new(Mutex::new(None)),
                 serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 overall_latency_stats: ValueStatsAccumulator::new(stats_capacity),
+                args_binning, args_display_sampling,
             }));
         }
 
@@ -1924,7 +1955,6 @@ impl MyCedar {
                 file.read_to_string(&mut contents)
                     .expect(format!("Failed to read {}", cargo_path).as_str());
                 let line = contents.lines().find(|line| line.starts_with("version")).unwrap();
-                info!("line: {}", line);
                 cedar_version = line.split('=').nth(1).unwrap().trim().to_string();
             }
         }
@@ -1978,18 +2008,22 @@ impl MyCedar {
             processor_model,
             os_version,
             serial_number,
-            args_binning, args_display_sampling,
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;
+        let (width, height) = locked_state.camera.lock().await.dimensions();
+        let (binning, _display_sampling) =
+            Self::compute_binning(&locked_state, width as u32, height as u32);
+
         if let Err(x) = Self::set_pre_calibration_defaults(
             &*locked_state, initial_exposure_duration).await
         {
             warn!("Could not set default settings on camera {:?}", x);
         }
 
+        locked_state.detect_engine.lock().await.set_binning(binning);
         locked_state.detect_engine.lock().await.set_focus_mode(
-            locked_state.operation_settings.focus_assist_mode.unwrap(), binning);
+            locked_state.operation_settings.focus_assist_mode.unwrap());
         locked_state.detect_engine.lock().await.set_daylight_mode(
             locked_state.operation_settings.daylight_mode.unwrap());
         locked_state.solve_engine.lock().await.set_catalog_entry_match(
@@ -2328,43 +2362,6 @@ fn get_camera(
         ImageCamera::new(img_u8).unwrap())));
 }
 
-// Computes (binning, display_sampling) for camera, taking optional command line
-// overrides into account.
-async fn compute_binning(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-                         args_binning: Option<u32>,
-                         args_display_sampling: Option<bool>) -> (u32, bool)
-{
-    let mpix;
-    {
-        let locked_camera = camera.lock().await;
-        mpix = (locked_camera.dimensions().0 * locked_camera.dimensions().1)
-            as f64 / 1000000.0;
-    }
-    // Initialize binning/sampling parameters based on sensor resolution.
-    let mut binning = 1_u32;
-    let mut display_sampling = false;
-    if mpix <= 0.75 {
-        // Use initial values.
-    } else if mpix <= 3.0 {
-        binning = 2;
-    } else if mpix <= 12.0 {
-        binning = 4;
-    } else {
-        binning = 4;
-        display_sampling = true;
-    }
-    // Allow command-line overrides of sampling/binning parameters.
-    if let Some(ba) = args_binning {
-        binning = ba;
-    }
-    if let Some(dsa) = args_display_sampling {
-        display_sampling = dsa;
-    }
-    debug!("For {:.1}mpix, binning {}, display_sampling {}",
-           mpix, binning, display_sampling);
-    (binning, display_sampling)
-}
-
 #[tokio::main]
 async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                     flutter_app_path: &str, invert_camera: bool,
@@ -2448,8 +2445,6 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
               locked_camera.dimensions().0,
               locked_camera.dimensions().1);
     }
-    let (binning, display_sampling) = compute_binning(
-        camera.clone(), args.binning, args.display_sampling).await;
 
     let shared_telescope_position = Arc::new(Mutex::new(TelescopePosition::new()));
 
@@ -2501,7 +2496,6 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
             got_signal,
             attached_camera, test_image_camera, camera,
             shared_telescope_position.clone(),
-            binning, display_sampling,
             args.star_count_goal, args.sigma, args.min_sigma,
             // TODO: arg for this?
             /*stats_capacity=*/100,
