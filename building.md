@@ -64,7 +64,7 @@ tablet, or laptop, join the 'cedar' Wi-Fi network (password is 'cedar123').
 Now, in your device's web browser, navigate to '192.168.4.1'. You should
 see Cedar's "setup" mode screen where the camera image is shown (assuming you
 have a camera connected!) for focusing and aligning. Under the hamburger menu,
-look for Settings, and enable Full Screen.
+look for Preferences, and enable Full Screen.
 
 See below for how to set up SkySafari to work with Cedar.
 
