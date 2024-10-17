@@ -483,7 +483,7 @@ impl DetectEngine {
                         peak_image_region: peak_region,
                     });
                 }  // !daylight_mode.
-            }  // focus_mode
+            }  // focus_mode || daylight_mode
 
             let mut binned_image: Option<Arc<GrayImage>> = None;
             let mut stars: Vec<StarDescription> = vec![];
@@ -529,19 +529,18 @@ impl DetectEngine {
                 }
                 peak_value =
                     if num_peak == 0 {
-                        255
+                        // No stars detected; set peak_value according to histogram.
+                        let top_value = average_top_values(&histogram, 5);
+                        // Choose value a quarter of the way from top_value to 255.
+                        let span = 255 - top_value;
+                        top_value + span / 4
                     } else {
                         (sum_peak / num_peak) as u8
                     };
 
                 // Get a good black level for display.
                 remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-
-                // Some cameras have annoying readout artifact, such as
-                // horizontal light streaks. By setting the black level to the
-                // top of the stars-removed histogram, we push such noise down
-                // into low pixel values and hopefully not too visible.
-                black_level = get_level_for_fraction(&histogram, 1.0) as u8;
+                black_level = get_level_for_fraction(&histogram, 0.9) as u8;
 
                 // Because we're determining peak_value from detected stars,
                 // in pathological situations the black_level might end up
