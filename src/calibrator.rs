@@ -20,12 +20,16 @@ use crate::tetra3_server::{ImageCoord, SolveRequest, SolveStatus};
 
 pub struct Calibrator {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+
+    // Determines whether rows are normalized to have the same dark level.
+    normalize_rows: bool,
 }
 
 // By convention, all methods restore any camera settings that they alter.
 impl Calibrator {
-    pub fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>) -> Self{
-        Calibrator{camera}
+    pub fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+               normalize_rows: bool) -> Self{
+        Calibrator{camera, normalize_rows}
     }
 
     pub fn replace_camera(
@@ -263,7 +267,7 @@ impl Calibrator {
         let (stars, _, _, _) =
             get_stars_from_image(&image, noise_estimate,
                                  detection_sigma, /*deprecated_max_size=*/1,
-                                 detection_binning,
+                                 self.normalize_rows, detection_binning,
                                  /*detect_hot_pixels*/true,
                                  /*return_binned_image=*/false);
         Ok((image.clone(), stars, frame_id))
