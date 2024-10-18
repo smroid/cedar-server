@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime};
 
-use cedar_camera::abstract_camera::{AbstractCamera, Offset, bin_2x2, sample_2x2};
+use cedar_camera::abstract_camera::{AbstractCamera, Gain, Offset, bin_2x2, sample_2x2};
 use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
@@ -277,7 +277,7 @@ impl Cedar for MyCedar {
                             return Err(tonic_status(x));
                         }
                         if let Err(x) = Self::set_pre_calibration_defaults(
-                            &*locked_state, self.initial_exposure_duration).await
+                            &mut locked_state, self.initial_exposure_duration).await
                         {
                             return Err(tonic_status(x));
                         }
@@ -396,7 +396,7 @@ impl Cedar for MyCedar {
                         return Err(tonic_status(x));
                     }
                     if let Err(x) = Self::set_pre_calibration_defaults(
-                        &*locked_state, self.initial_exposure_duration).await
+                        &mut locked_state, self.initial_exposure_duration).await
                     {
                         return Err(tonic_status(x));
                     }
@@ -534,6 +534,12 @@ impl Cedar for MyCedar {
                 invert_camera: Some(invert_camera),
                 ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
+        }
+        if let Some(gain) = req.gain {
+            if let Some(attached_camera) = &self.attached_camera {
+                attached_camera.lock().await.set_gain(Gain::new(gain)).unwrap();
+            }
+            self.state.lock().await.operation_settings.gain = Some(gain);
         }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
@@ -1173,12 +1179,13 @@ impl MyCedar {
 
     // Called when entering SETUP mode.
     async fn set_pre_calibration_defaults(
-        state: &CedarState,
+        state: &mut CedarState,
         initial_exposure_duration: Duration) -> Result<(), CanonicalError>
     {
         let mut locked_camera = state.camera.lock().await;
         let gain = locked_camera.optimal_gain();
         locked_camera.set_gain(gain)?;
+        state.operation_settings.gain = Some(gain.value());
         locked_camera.set_exposure_duration(initial_exposure_duration)?;
         if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
             debug!("Could not set offset: {:?}", e);
@@ -1719,12 +1726,59 @@ impl MyCedar {
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
         wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) -> Self
     {
+        let mut cedar_version = "unknown".to_string();
+        // We might be in hopper-server/run dir, navigate accordingly. Also
+        // works if we're in cedar-server/run dir.
+        let cargo_path = "../../cedar-server/Cargo.toml";
+        match fs::File::open(cargo_path) {
+            Err(x) => {
+                warn!("Could not open {} {:?}", cargo_path, x);
+            },
+            Ok(mut file) => {
+                let mut contents = String::new();
+                file.read_to_string(&mut contents)
+                    .expect(format!("Failed to read {}", cargo_path).as_str());
+                let line = contents.lines().find(|line| line.starts_with("version")).unwrap();
+                cedar_version = line.split('=').nth(1).unwrap().trim().to_string();
+            }
+        }
+        let processor_model =
+            fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap()
+            .trim_end_matches('\0').to_string();
+        let serial_number =
+            fs::read_to_string("/sys/firmware/devicetree/base/serial-number").unwrap()
+            .trim_end_matches('\0').to_string();
+        let reader = BufReader::new(fs::File::open("/etc/os-release").unwrap());
+        let mut os_version: String = "".to_string();
+        for line in reader.lines() {
+            let line = line.unwrap();
+            if line.starts_with("PRETTY_NAME=") {
+                let parts: Vec<&str> = line.split('=').collect();
+                os_version = parts[1].trim_matches('"').to_string();
+                break;
+            }
+        }
+        info!("{}", &product_name);
+        info!("{}", &copyright);
+        info!("Cedar server version {} running on {}/{}",
+              &cedar_version, &processor_model, &os_version);
+        info!("Processor serial number {}", &serial_number);
+
+        let mut normalize_rows = false;
+        if let Some(attached_camera) = &attached_camera {
+            let camera_model = attached_camera.lock().await.model();
+            if camera_model == "imx296" && processor_model.contains("Raspberry Pi Zero 2 W") {
+                normalize_rows = true;
+            }
+        }
+
         let detect_engine = Arc::new(tokio::sync::Mutex::new(DetectEngine::new(
             initial_exposure_duration,
             min_exposure_duration, max_exposure_duration,
             min_detection_sigma, base_detection_sigma,
             base_star_count_goal,
             camera.clone(),
+            normalize_rows,
             stats_capacity)));
         let tetra3_subprocess = Arc::new(Mutex::new(
             Tetra3Subprocess::new(
@@ -1911,6 +1965,7 @@ impl MyCedar {
                     catalog_entry_match: locked_preferences.catalog_entry_match.clone(),
                     demo_image_filename: None,
                     invert_camera: locked_preferences.invert_camera,
+                    gain: None,
                 },
                 calibration_data: Arc::new(tokio::sync::Mutex::new(
                     CalibrationData{..Default::default()})),
@@ -1921,7 +1976,7 @@ impl MyCedar {
                     tetra3_uds, /*update_interval=*/Duration::ZERO,
                     stats_capacity, closure).await.unwrap())),
                 calibrator: Arc::new(tokio::sync::Mutex::new(
-                    Calibrator::new(camera.clone()))),
+                    Calibrator::new(camera.clone(), normalize_rows))),
                 telescope_position,
                 polar_analyzer,
                 activity_led: Arc::new(tokio::sync::Mutex::new(
@@ -1941,47 +1996,6 @@ impl MyCedar {
                 args_binning, args_display_sampling,
             }));
         }
-
-        let mut cedar_version = "unknown".to_string();
-        // We might be in hopper-server/run dir, navigate accordingly. Also
-        // works if we're in cedar-server/run dir.
-        let cargo_path = "../../cedar-server/Cargo.toml";
-        match fs::File::open(cargo_path) {
-            Err(x) => {
-                warn!("Could not open {} {:?}", cargo_path, x);
-            },
-            Ok(mut file) => {
-                let mut contents = String::new();
-                file.read_to_string(&mut contents)
-                    .expect(format!("Failed to read {}", cargo_path).as_str());
-                let line = contents.lines().find(|line| line.starts_with("version")).unwrap();
-                cedar_version = line.split('=').nth(1).unwrap().trim().to_string();
-            }
-        }
-
-        let processor_model =
-            fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap()
-            .trim_end_matches('\0').to_string();
-        let serial_number =
-            fs::read_to_string("/sys/firmware/devicetree/base/serial-number").unwrap()
-            .trim_end_matches('\0').to_string();
-
-        let reader = BufReader::new(fs::File::open("/etc/os-release").unwrap());
-        let mut os_version: String = "".to_string();
-        for line in reader.lines() {
-            let line = line.unwrap();
-            if line.starts_with("PRETTY_NAME=") {
-                let parts: Vec<&str> = line.split('=').collect();
-                os_version = parts[1].trim_matches('"').to_string();
-                break;
-            }
-        }
-
-        info!("{}", &product_name);
-        info!("{}", &copyright);
-        info!("Cedar server version {} running on {}/{}",
-              &cedar_version, &processor_model, &os_version);
-        info!("Processor serial number {}", &serial_number);
 
         let mut demo_images: Vec<String> = vec![];
         match Self::get_demo_images() {
@@ -2010,13 +2024,13 @@ impl MyCedar {
             serial_number,
         };
         // Set pre-calibration defaults on camera.
-        let locked_state = state.lock().await;
+        let mut locked_state = state.lock().await;
         let (width, height) = locked_state.camera.lock().await.dimensions();
         let (binning, _display_sampling) =
             Self::compute_binning(&locked_state, width as u32, height as u32);
 
         if let Err(x) = Self::set_pre_calibration_defaults(
-            &*locked_state, initial_exposure_duration).await
+            &mut locked_state, initial_exposure_duration).await
         {
             warn!("Could not set default settings on camera {:?}", x);
         }
