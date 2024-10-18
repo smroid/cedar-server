@@ -55,6 +55,9 @@ struct DetectState {
     // Note: camera settings can be adjusted behind our back.
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
 
+    // Determines whether rows are normalized to have the same dark level.
+    normalize_rows: bool,
+
     frame_id: Option<i32>,
 
     // Zero means go as fast as images are captured.
@@ -107,6 +110,7 @@ impl DetectEngine {
                detection_sigma: f64,
                star_count_goal: i32,
                camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+               normalize_rows: bool,
                stats_capacity: usize)
                -> Self {
         DetectEngine{
@@ -118,6 +122,7 @@ impl DetectEngine {
             star_count_goal,
             state: Arc::new(Mutex::new(DetectState{
                 camera: camera.clone(),
+                normalize_rows,
                 frame_id: None,
                 update_interval: Duration::ZERO,
                 focus_mode: false,
@@ -339,6 +344,7 @@ impl DetectEngine {
         let mut last_result_time: Option<Instant> = None;
         loop {
             let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>;
+            let normalize_rows;
             let update_interval: Duration;
             let focus_mode: bool;
             let daylight_mode: bool;
@@ -353,6 +359,7 @@ impl DetectEngine {
                     return;  // Exit thread.
                 }
                 camera = locked_state.camera.clone();
+                normalize_rows = locked_state.normalize_rows;
                 update_interval = locked_state.update_interval;
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
@@ -402,10 +409,11 @@ impl DetectEngine {
             let image: &GrayImage = &captured_image.image;
             let (width, height) = image.dimensions();
 
+            let image_region = Rect::at(0, 0).of_size(width, height);
             // To avoid edge when centroiding and creating central peak image,
             // inset a little.
             let inset = 16;
-            let image_region = Rect::at(inset, inset)
+            let inset_region = Rect::at(inset, inset)
                 .of_size(width - 2 * inset as u32, height - 2 * inset as u32);
 
             let noise_estimate = estimate_noise_from_image(&image);
@@ -418,15 +426,15 @@ impl DetectEngine {
             let mut peak_value = 0_u8;
             if focus_mode || daylight_mode {
                 let roi_summary = summarize_region_of_interest(
-                    &image, &image_region, noise_estimate, detection_sigma);
-                let mut roi_histogram = roi_summary.histogram;
+                    &image, &inset_region, noise_estimate, detection_sigma);
+                let roi_histogram = roi_summary.histogram;
 
                 black_level = get_level_for_fraction(&roi_histogram, 0.01) as u8;
                 // Compute peak_value as the average of the 5 brightest pixels.
                 peak_value = average_top_values(&roi_histogram, 5);
 
                 // Auto exposure. Adjust exposure time based on peak value of
-                // image_region.
+                // inset_region.
 
                 // For auto exposure in focus mode, what is the target value
                 // of the brightest pixel in the image region? Note that a
@@ -454,8 +462,7 @@ impl DetectEngine {
                 if !daylight_mode {
                     // Get a small sub-image centered on the peak coordinates.
                     let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
-                    debug!("peak {} at x/y {}/{}",
-                           peak_value, peak_position.0, peak_position.1);
+                    debug!("peak at x/y {}/{}", peak_position.0, peak_position.1);
                     let sub_image_size = 30;
                     assert!(sub_image_size < 2 * inset);
                     let peak_region =
@@ -463,19 +470,37 @@ impl DetectEngine {
                                  (peak_position.1 as i32 - sub_image_size/2) as i32)
                         .of_size(sub_image_size as u32, sub_image_size as u32);
                     let peak_region = peak_region.intersect(image_region).unwrap();
-                    // Get a good black level for display.
-                    remove_stars_from_histogram(&mut roi_histogram, /*sigma=*/8.0);
-                    let region_black_level = get_level_for_fraction(&roi_histogram, 0.8);
-
-                    // We scale up the pixel values in the peak_image for good
-                    // display visibility.
                     let mut peak_image = image.view(peak_region.left() as u32,
                                                     peak_region.top() as u32,
-                                                    sub_image_size as u32,
-                                                    sub_image_size as u32).to_image();
-                    scale_image_mut(
-                        &mut peak_image, region_black_level as u8, peak_value,
-                        /*gamma=*/0.7);
+                                                    peak_region.width() as u32,
+                                                    peak_region.height() as u32).to_image();
+                    if normalize_rows {
+                        for y in 0..peak_region.height() {
+                            let mut min_value = 255_u8;
+                            for x in 0..peak_region.width() {
+                                let value = peak_image.get_pixel(x as u32, y as u32).0[0];
+                                if value < min_value {
+                                    min_value = value;
+                                }
+                            }
+                            for x in 0..peak_region.width() {
+                                let value = peak_image.get_pixel_mut(x as u32, y as u32);
+                                value[0] -= min_value;
+                            }
+                        }
+                    }
+                    // Find min/max for display stretching.
+                    let mut min_value = peak_image.get_pixel(0, 0).0[0];
+                    let mut max_value = min_value;
+                    for pixel_luma in peak_image.pixels() {
+                        let value = pixel_luma.0[0];
+                        if value < min_value {
+                            min_value = value;
+                        } else if value > max_value {
+                            max_value = value;
+                        }
+                    }
+                    scale_image_mut(&mut peak_image, min_value, max_value, /*gamma=*/0.7);
                     focus_aid = Some(FocusAid{
                         center_peak_position: peak_position,
                         center_peak_value: peak_value,
@@ -507,7 +532,7 @@ impl DetectEngine {
                     get_stars_from_image(
                         &image, noise_estimate,
                         adjusted_sigma, /*deprecated_max_size=*/1,
-                        binning,
+                        normalize_rows, binning,
                         /*detect_hot_pixels=*/true,
                         /*return_binned_image=*/binning != 1);
                 binned_image = if let Some(bi) = detect_binned_image {
