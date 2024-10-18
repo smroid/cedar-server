@@ -25,7 +25,7 @@ medians = "3.0.5"
 prost = "0.12.3"
 prost-types = "0.12.3"
 rolling-stats = "0.7.0"
-cedar_detect = { version = "0.6.0", path = "../cedar-detect" }
+cedar_detect = { version = "0.7.0", path = "../cedar-detect" }
 statistical = "1.0.0"
 tokio = { version = "1.35.1", features = ["macros", "rt-multi-thread"] }
 tokio-stream = "0.1.14"
