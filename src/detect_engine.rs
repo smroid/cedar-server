@@ -565,7 +565,9 @@ impl DetectEngine {
 
                 // Get a good black level for display.
                 remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-                black_level = get_level_for_fraction(&histogram, 0.9) as u8;
+                // Put the black level near the top of the non-star background,
+                // so we don't display too much of the noisy floor.
+                black_level = get_level_for_fraction(&histogram, 0.95) as u8;
 
                 // Because we're determining peak_value from detected stars,
                 // in pathological situations the black_level might end up
