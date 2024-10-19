@@ -163,9 +163,6 @@ message OperationSettings {
   // Determines whether camera image is inverted (rot180) during readout.
   optional bool invert_camera = 13;
 
-  // Camera gain setting, 0..100 inclusive.
-  optional int32 gain = 15;  // Experimental
-
   // TODO: decrowd parameter for returned catalog entries?
 
   reserved 3, 5;

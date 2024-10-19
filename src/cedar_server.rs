@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime};
 
-use cedar_camera::abstract_camera::{AbstractCamera, Gain, Offset, bin_2x2, sample_2x2};
+use cedar_camera::abstract_camera::{AbstractCamera, Offset, bin_2x2, sample_2x2};
 use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
@@ -534,12 +534,6 @@ impl Cedar for MyCedar {
                 invert_camera: Some(invert_camera),
                 ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
-        }
-        if let Some(gain) = req.gain {
-            if let Some(attached_camera) = &self.attached_camera {
-                attached_camera.lock().await.set_gain(Gain::new(gain)).unwrap();
-            }
-            self.state.lock().await.operation_settings.gain = Some(gain);
         }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
@@ -1185,7 +1179,6 @@ impl MyCedar {
         let mut locked_camera = state.camera.lock().await;
         let gain = locked_camera.optimal_gain();
         locked_camera.set_gain(gain)?;
-        state.operation_settings.gain = Some(gain.value());
         locked_camera.set_exposure_duration(initial_exposure_duration)?;
         if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
             debug!("Could not set offset: {:?}", e);
@@ -1965,7 +1958,6 @@ impl MyCedar {
                     catalog_entry_match: locked_preferences.catalog_entry_match.clone(),
                     demo_image_filename: None,
                     invert_camera: locked_preferences.invert_camera,
-                    gain: None,
                 },
                 calibration_data: Arc::new(tokio::sync::Mutex::new(
                     CalibrationData{..Default::default()})),
