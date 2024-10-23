@@ -613,6 +613,7 @@ impl Cedar for MyCedar {
         let mut frame_result = Self::get_next_frame(
             self.state.clone(), req.prev_frame_id).await;
         frame_result.server_information = Some(self.get_server_information().await);
+
         Ok(tonic::Response::new(frame_result))
     }
 
@@ -1338,10 +1339,10 @@ impl MyCedar {
 
                 if let Some(img) = &locked_state.scaled_image {
                     let (scaled_width, scaled_height) = img.dimensions();
-                    let mut bmp_buf = Vec::<u8>::new();
-                    bmp_buf.reserve((scaled_width * scaled_height) as usize);
-                    img.write_to(&mut Cursor::new(&mut bmp_buf),
-                                 ImageFormat::Bmp).unwrap();
+                    let mut jpg_buf = Vec::<u8>::new();
+                    jpg_buf.reserve((scaled_width * scaled_height) as usize);
+                    img.write_to(&mut Cursor::new(&mut jpg_buf),
+                                 ImageFormat::Jpeg).unwrap();
                     let binning_factor = locked_state.scaled_image_binning_factor as i32;
                     let image_rectangle = Rectangle{
                         origin_x: 0, origin_y: 0,
@@ -1352,7 +1353,7 @@ impl MyCedar {
                         binning_factor,
                         // Rectangle is always in full resolution coordinates.
                         rectangle: Some(image_rectangle),
-                        image_data: bmp_buf,
+                        image_data: jpg_buf,
                     });
                     frame_result.frame_id = locked_state.scaled_image_frame_id;
                     frame_result.fixed_settings = Some(fixed_settings.clone());
@@ -1436,7 +1437,7 @@ impl MyCedar {
             let peak_image_region = &fa.peak_image_region;
             let (center_peak_width, center_peak_height) =
                 center_peak_image.dimensions();
-            let mut center_peak_bmp_buf = Vec::<u8>::new();
+            let mut center_peak_jpg_buf = Vec::<u8>::new();
             // center_peak_image_image is taken from the camera's full
             // resolution acquired image. If it is a color camera, we 2x2 bin it
             // to avoid displaying the Bayer grid.
@@ -1444,16 +1445,16 @@ impl MyCedar {
             if locked_state.camera.lock().await.is_color() {
                 let binned_center_peak_image = bin_2x2(center_peak_image.clone());
                 binning_factor = 2;
-                center_peak_bmp_buf.reserve(
+                center_peak_jpg_buf.reserve(
                     (center_peak_width / 2 * center_peak_height / 2) as usize);
-                binned_center_peak_image.write_to(&mut Cursor::new(&mut center_peak_bmp_buf),
-                                                  ImageFormat::Bmp).unwrap();
+                binned_center_peak_image.write_to(&mut Cursor::new(&mut center_peak_jpg_buf),
+                                                  ImageFormat::Jpeg).unwrap();
             } else {
                 binning_factor = 1;
-                center_peak_bmp_buf.reserve(
+                center_peak_jpg_buf.reserve(
                     (center_peak_width * center_peak_height) as usize);
-                center_peak_image.write_to(&mut Cursor::new(&mut center_peak_bmp_buf),
-                                           ImageFormat::Bmp).unwrap();
+                center_peak_image.write_to(&mut Cursor::new(&mut center_peak_jpg_buf),
+                                           ImageFormat::Jpeg).unwrap();
             }
             frame_result.center_peak_image = Some(Image{
                 binning_factor,
@@ -1463,7 +1464,7 @@ impl MyCedar {
                     width: peak_image_region.width() as i32,
                     height: peak_image_region.height() as i32,
                 }),
-                image_data: center_peak_bmp_buf,
+                image_data: center_peak_jpg_buf,
             });
         } else {
             *locked_state.center_peak_position.lock().unwrap() = None;
@@ -1493,9 +1494,9 @@ impl MyCedar {
         }
         let binning_factor = binning * if display_sampling { 2 } else { 1 };
 
-        let mut bmp_buf = Vec::<u8>::new();
+        let mut jpg_buf = Vec::<u8>::new();
         let (resized_width, resized_height) = resized_disp_image.dimensions();
-        bmp_buf.reserve((resized_width * resized_height) as usize);
+        jpg_buf.reserve((resized_width * resized_height) as usize);
         let gamma = if locked_state.operation_settings.daylight_mode.unwrap() {
             1.0
         } else {
@@ -1507,8 +1508,8 @@ impl MyCedar {
                                        gamma);
         // Save most recent display image.
         locked_state.scaled_image = Some(Arc::new(scaled_image.clone()));
-        scaled_image.write_to(&mut Cursor::new(&mut bmp_buf),
-                              ImageFormat::Bmp).unwrap();
+        scaled_image.write_to(&mut Cursor::new(&mut jpg_buf),
+                              ImageFormat::Jpeg).unwrap();
 
         locked_state.scaled_image_binning_factor = binning_factor;
         locked_state.scaled_image_frame_id = frame_result.frame_id;
@@ -1516,7 +1517,7 @@ impl MyCedar {
             binning_factor: binning_factor as i32,
             // Rectangle is always in full resolution coordinates.
             rectangle: Some(image_rectangle),
-            image_data: bmp_buf,
+            image_data: jpg_buf,
         });
 
         locked_state.serve_latency_stats.add_value(
@@ -1542,7 +1543,7 @@ impl MyCedar {
                 Some(psr.solve_success_stats.clone());
             frame_result.slew_request = psr.slew_request.clone();
             if let Some(boresight_image) = &psr.boresight_image {
-                let mut bmp_buf = Vec::<u8>::new();
+                let mut jpg_buf = Vec::<u8>::new();
                 let bsi_rect = psr.boresight_image_region.unwrap();
                 // boresight_image is taken from the camera's acquired image. In
                 // OPERATE mode the camera capture is always full resolution. If
@@ -1552,14 +1553,14 @@ impl MyCedar {
                 if locked_state.camera.lock().await.is_color() {
                     let binned_boresight_image = bin_2x2(boresight_image.clone());
                     binning_factor = 2;
-                    bmp_buf.reserve((bsi_rect.width() / 2 * bsi_rect.height() / 2) as usize);
-                    binned_boresight_image.write_to(&mut Cursor::new(&mut bmp_buf),
-                                                    ImageFormat::Bmp).unwrap();
+                    jpg_buf.reserve((bsi_rect.width() / 2 * bsi_rect.height() / 2) as usize);
+                    binned_boresight_image.write_to(&mut Cursor::new(&mut jpg_buf),
+                                                    ImageFormat::Jpeg).unwrap();
                 } else {
                     binning_factor = 1;
-                    bmp_buf.reserve((bsi_rect.width() * bsi_rect.height()) as usize);
-                    boresight_image.write_to(&mut Cursor::new(&mut bmp_buf),
-                                             ImageFormat::Bmp).unwrap();
+                    jpg_buf.reserve((bsi_rect.width() * bsi_rect.height()) as usize);
+                    boresight_image.write_to(&mut Cursor::new(&mut jpg_buf),
+                                             ImageFormat::Jpeg).unwrap();
                 }
                 frame_result.boresight_image = Some(Image{
                     binning_factor,
@@ -1568,7 +1569,7 @@ impl MyCedar {
                                               origin_y: bsi_rect.top(),
                                               width: bsi_rect.width() as i32,
                                               height: bsi_rect.height() as i32}),
-                    image_data: bmp_buf,
+                    image_data: jpg_buf,
                 });
             }
             // Return catalog objects that are in the field of view.

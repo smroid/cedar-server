@@ -345,9 +345,9 @@ message FrameResult {
   // ActionRequest.capture_boresight and designate_boresight.
   ImageCoord boresight_position = 21;
 
-  // When transitioning from SETUP mode to OPERATE mode, Cedar does a brief
-  // sky/camera calibration. During calibration most FrameResult fields are
-  // omitted. Fields present are: fixed_settings, preferences,
+  // When transitioning from SETUP focus mode to another mode, Cedar does a
+  // brief sky/camera calibration. During calibration most FrameResult fields
+  // are omitted. Fields present are: fixed_settings, preferences,
   // operation_settings, image, calibrating, and calibration_progress.
   bool calibrating = 22;
 
@@ -422,7 +422,7 @@ message Image {
   // rectangle.width/B, rectangle.height/B (floored).
   Rectangle rectangle = 2;
 
-  // Must be a recognized file format, e.g. BMP grayscale 8 bits per pixel.
+  // Must be a recognized file format, e.g. BMP or JPEG grayscale 8 bits per pixel.
   bytes image_data = 3;
 }
 
