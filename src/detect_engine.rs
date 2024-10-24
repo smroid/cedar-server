@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use canonical_error::CanonicalError;
 use image::{GenericImageView, GrayImage};
 use imageproc::rect::Rect;
 use log::{debug, error};
@@ -59,9 +58,6 @@ struct DetectState {
     normalize_rows: bool,
 
     frame_id: Option<i32>,
-
-    // Zero means go as fast as images are captured.
-    update_interval: Duration,
 
     // True means populate `DetectResult.focus_aid` info.
     focus_mode: bool,
@@ -124,7 +120,6 @@ impl DetectEngine {
                 camera: camera.clone(),
                 normalize_rows,
                 frame_id: None,
-                update_interval: Duration::ZERO,
                 focus_mode: false,
                 daylight_mode: false,
                 binning: 1,
@@ -144,19 +139,6 @@ impl DetectEngine {
         &self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
     {
         self.state.lock().unwrap().camera = camera.clone();
-    }
-
-    // Determines how often the detect engine operates (obtains an image, produces
-    // a DetectResult).
-    // An interval of zero means run continuously-- as soon as a DetectResult is
-    // produced, the next one is started.
-    pub fn set_update_interval(&mut self, update_interval: Duration)
-                               -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().unwrap();
-        locked_state.update_interval = update_interval;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-        Ok(())
     }
 
     pub fn set_binning(&mut self, binning: u32) {
@@ -340,12 +322,9 @@ impl DetectEngine {
                     state: Arc<Mutex<DetectState>>,
                     done: Arc<AtomicBool>) {
         debug!("Starting detect engine");
-        // Keep track of when we started the detect cycle.
-        let mut last_result_time: Option<Instant> = None;
         loop {
             let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>;
             let normalize_rows;
-            let update_interval: Duration;
             let focus_mode: bool;
             let daylight_mode: bool;
             let binning: u32;
@@ -360,37 +339,20 @@ impl DetectEngine {
                 }
                 camera = locked_state.camera.clone();
                 normalize_rows = locked_state.normalize_rows;
-                update_interval = locked_state.update_interval;
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
                 binning = locked_state.binning;
                 calibrated_exposure_duration =
                     locked_state.calibrated_exposure_duration;
+                locked_state.eta = None;
             }
-            // Is it time to generate the next DetectResult?
-            let now = Instant::now();
-            if last_result_time.is_some() {
-                let next_update_time = last_result_time.unwrap() + update_interval;
-                if next_update_time > now {
-                    let delay = next_update_time - now;
-                    state.lock().unwrap().eta = Some(Instant::now() + delay);
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-                state.lock().unwrap().eta = None;
-            }
-
-            // Time to do a detect processing cycle.
-            last_result_time = Some(now);
 
             let frame_id = state.lock().unwrap().frame_id;
             let captured_image;
             {
                 let mut locked_camera = camera.lock().await;
-                let delay_est = locked_camera.estimate_delay(frame_id);
-                if delay_est.is_some() {
-                    state.lock().unwrap().eta =
-                        Some(Instant::now() + delay_est.unwrap());
+                if let Some(delay_est) = locked_camera.estimate_delay(frame_id) {
+                    state.lock().unwrap().eta = Some(Instant::now() + delay_est);
                 }
                 match locked_camera.capture_image(frame_id).await {
                     Ok((img, id)) => {

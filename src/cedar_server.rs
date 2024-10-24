@@ -321,20 +321,17 @@ impl Cedar for MyCedar {
                         locked_state.solve_engine.lock().await.set_align_mode(false).await;
                         locked_state.solve_engine.lock().await.start().await;
                         // Restore OPERATE mode update interval.
-                        let std_duration;
-                        {
-                            let update_interval = locked_state.operation_settings.
-                                update_interval.clone().unwrap();
-                            std_duration = std::time::Duration::try_from(
-                                update_interval).unwrap();
-                            locked_state.operation_settings.operating_mode =
-                                Some(OperatingMode::Operate as i32);
-                        }
+                        let update_interval = locked_state.operation_settings.
+                            update_interval.clone().unwrap();
+                        let std_duration = std::time::Duration::try_from(
+                            update_interval).unwrap();
                         if let Err(x) = Self::set_update_interval(
                             &*locked_state, std_duration).await
                         {
                             return Err(tonic_status(x));
                         }
+                        locked_state.operation_settings.operating_mode =
+                            Some(OperatingMode::Operate as i32);
                     }
                 }
             } else {
@@ -424,7 +421,8 @@ impl Cedar for MyCedar {
             {
                 let mut locked_state = self.state.lock().await;
                 if locked_state.operation_settings.operating_mode ==
-                    Some(OperatingMode::Operate as i32)
+                    Some(OperatingMode::Operate as i32) ||
+                    !locked_state.operation_settings.focus_assist_mode.unwrap()
                 {
                     if let Err(x) = Self::set_update_interval(&*locked_state,
                                                               std_duration).await {
@@ -498,6 +496,21 @@ impl Cedar for MyCedar {
             }
             let new_camera = locked_state.camera.clone();
             let (width, height) = new_camera.lock().await.dimensions();
+
+            let update_interval = locked_state.operation_settings.
+                update_interval.clone().unwrap();
+            let mut std_duration = std::time::Duration::try_from(
+                update_interval).unwrap();
+            if locked_state.operation_settings.operating_mode ==
+                Some(OperatingMode::Setup as i32) &&
+                locked_state.operation_settings.focus_assist_mode.unwrap()
+            {
+                std_duration = Duration::ZERO;  // Fast update mode for focusing.
+            }
+            if let Err(x) = Self::set_update_interval(&*locked_state,
+                                                      std_duration).await {
+                return Err(tonic_status(x));
+            }
             let (binning, _display_sampling) =
                 Self::compute_binning(&locked_state, width as u32, height as u32);
             locked_state.detect_engine.lock().await.set_binning(binning);
@@ -1053,20 +1066,17 @@ impl MyCedar {
                     locked_state.solve_engine.lock().await.set_align_mode(false).await;
                     locked_state.solve_engine.lock().await.start().await;
                     // Restore OPERATE mode update interval.
-                    let std_duration;
-                    {
-                        let update_interval = locked_state.operation_settings.
-                            update_interval.clone().unwrap();
-                        std_duration = std::time::Duration::try_from(
-                            update_interval).unwrap();
-                        locked_state.operation_settings.operating_mode =
-                            Some(OperatingMode::Operate as i32);
-                    }
+                    let update_interval = locked_state.operation_settings.
+                        update_interval.clone().unwrap();
+                    let std_duration = std::time::Duration::try_from(
+                        update_interval).unwrap();
                     if let Err(x) = Self::set_update_interval(
                         &*locked_state, std_duration).await
                     {
                         return Err(tonic_status(x));
                     }
+                    locked_state.operation_settings.operating_mode =
+                        Some(OperatingMode::Operate as i32);
                 }
                 Ok(())
             });
@@ -1160,9 +1170,7 @@ impl MyCedar {
 
     async fn set_update_interval(state: &CedarState, update_interval: std::time::Duration)
                                  -> Result<(), CanonicalError> {
-        state.camera.lock().await.set_update_interval(update_interval)?;
-        state.detect_engine.lock().await.set_update_interval(update_interval)?;
-        state.solve_engine.lock().await.set_update_interval(update_interval).await
+        state.camera.lock().await.set_update_interval(update_interval)
     }
 
     async fn reset_session_stats(state: &mut CedarState) {
@@ -1535,7 +1543,6 @@ impl MyCedar {
             Some(locked_state.overall_latency_stats.value_stats.clone());
         if plate_solution.is_some() {
             let psr = &plate_solution.as_ref().unwrap();
-            stats.solve_interval = Some(psr.solve_interval_stats.clone());
             stats.solve_latency = Some(psr.solve_latency_stats.clone());
             stats.solve_attempt_fraction =
                 Some(psr.solve_attempt_stats.clone());
@@ -1966,8 +1973,7 @@ impl MyCedar {
                 tetra3_subprocess: tetra3_subprocess.clone(),
                 solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
                     tetra3_subprocess.clone(), cedar_sky.clone(), detect_engine.clone(),
-                    tetra3_uds, /*update_interval=*/Duration::ZERO,
-                    stats_capacity, closure).await.unwrap())),
+                    tetra3_uds, stats_capacity, closure).await.unwrap())),
                 calibrator: Arc::new(tokio::sync::Mutex::new(
                     Calibrator::new(camera.clone(), normalize_rows))),
                 telescope_position,

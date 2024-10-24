@@ -74,9 +74,6 @@ struct SolveState {
 
     frame_id: Option<i32>,
 
-    // Zero means go fast as star detections are computed.
-    update_interval: Duration,
-
     // Required number of detected stars, below which we don't attempt a plate
     // solution.
     minimum_stars: i32,
@@ -95,7 +92,6 @@ struct SolveState {
     // Set if currently slewing to a target.
     slew_target: Option<CelestialCoord>,
 
-    solve_interval_stats: ValueStatsAccumulator,
     solve_latency_stats: ValueStatsAccumulator,
     solve_attempt_stats: ValueStatsAccumulator,
     solve_success_stats: ValueStatsAccumulator,
@@ -153,7 +149,6 @@ impl SolveEngine {
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         tetra3_server_address: String,
-        update_interval: Duration,
         stats_capacity: usize,
         solution_callback: Arc<dyn Fn(Option<ImageCoord>,
                                       Option<DetectResult>,
@@ -172,7 +167,6 @@ impl SolveEngine {
                 cedar_sky,
                 catalog_entry_match: None,
                 frame_id: None,
-                update_interval,
                 minimum_stars: 4,
                 fov_estimate: None,
                 match_radius: 0.01,
@@ -183,7 +177,6 @@ impl SolveEngine {
                 match_max_error: 0.005,
                 return_matches: true,
                 slew_target: None,
-                solve_interval_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_attempt_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
@@ -208,19 +201,6 @@ impl SolveEngine {
         &mut self, catalog_entry_match: Option<CatalogEntryMatch>) {
         let mut locked_state = self.state.lock().await;
         locked_state.catalog_entry_match = catalog_entry_match;
-    }
-
-    // Determines how often the detect engine operates (obtains a DetectResult,
-    // produces a PlateSolution).
-    // An interval of zero means run continuously-- as soon as a PlateSolution
-    // is produced, the next one is started.
-    pub async fn set_update_interval(&mut self, update_interval: Duration)
-                                     -> Result<(), CanonicalError> {
-        let mut locked_state = self.state.lock().await;
-        locked_state.update_interval = update_interval;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-        Ok(())
     }
 
     pub async fn set_fov_estimate(&mut self, fov_estimate: Option<f64>)
@@ -351,7 +331,6 @@ impl SolveEngine {
 
     pub async fn reset_session_stats(&mut self) {
         let mut state = self.state.lock().await;
-        state.solve_interval_stats.reset_session();
         state.solve_latency_stats.reset_session();
         state.solve_attempt_stats.reset_session();
         state.solve_success_stats.reset_session();
@@ -450,13 +429,9 @@ impl SolveEngine {
                                           Option<CelestialCoord>)
                                + Send + Sync>) {
         debug!("Starting solve engine");
-        // Keep track of when we started the solve cycle.
-        let mut last_result_time: Option<Instant> = None;
         loop {
-            let update_interval: Duration;
             {
                 let mut locked_state = state.lock().await;
-                update_interval = locked_state.update_interval;
                 if locked_state.stop_request {
                     debug!("Stopping solve engine");
                     locked_state.stop_request = false;
@@ -465,35 +440,16 @@ impl SolveEngine {
                     }
                     return;  // Exit thread.
                 }
-            }
-            // Is it time to generate the next PlateSolution?
-            let now = Instant::now();
-            if let Some(lrt) = last_result_time {
-                let next_update_time = lrt + update_interval;
-                if next_update_time > now {
-                    let delay = next_update_time - now;
-                    state.lock().await.eta = Some(Instant::now() + delay);
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-                state.lock().await.eta = None;
+                locked_state.eta = None;
             }
 
-            // Time to do a solve processing cycle.
-            if let Some(lrt) = last_result_time {
-                let elapsed = lrt.elapsed();
-                let mut locked_state = state.lock().await;
-                locked_state.solve_interval_stats.add_value(elapsed.as_secs_f64());
-            }
-            last_result_time = Some(now);
-
-            let detect_result: DetectResult;
-            let mut solve_request = SolveRequest::default();
             let minimum_stars;
             let frame_id;
+            let mut solve_request = SolveRequest::default();
             {
                 let locked_state = state.lock().await;
                 minimum_stars = locked_state.minimum_stars;
+                frame_id = locked_state.frame_id;
 
                 // Set up SolveRequest.
                 if !locked_state.align_mode {
@@ -536,7 +492,6 @@ impl SolveEngine {
                 }
                 solve_request.return_matches = locked_state.return_matches;
                 solve_request.return_rotation_matrix = true;
-                frame_id = locked_state.frame_id;
             }
             // Get the most recent star detection result.
             if let Some(delay_est) =
@@ -544,7 +499,7 @@ impl SolveEngine {
             {
                 state.lock().await.eta = Some(Instant::now() + delay_est);
             }
-            detect_result =
+            let detect_result =
                 detect_engine.lock().await.get_next_result(frame_id).await;
             state.lock().await.deref_mut().frame_id = Some(detect_result.frame_id);
 
@@ -703,7 +658,6 @@ impl SolveEngine {
                 boresight_image_region,
                 solve_finish_time,
                 processing_duration: elapsed,
-                solve_interval_stats: locked_state.solve_interval_stats.value_stats.clone(),
                 solve_latency_stats: locked_state.solve_latency_stats.value_stats.clone(),
                 solve_attempt_stats: locked_state.solve_attempt_stats.value_stats.clone(),
                 solve_success_stats: locked_state.solve_success_stats.value_stats.clone(),
@@ -981,9 +935,6 @@ pub struct PlateSolution {
     // Time taken to produce this PlateSolution, excluding the time taken to
     // detect stars.
     pub processing_duration: std::time::Duration,
-
-    // Seconds per plate solve cycle.
-    pub solve_interval_stats: cedar::ValueStats,
 
     // Distribution of `processing_duration` values.
     pub solve_latency_stats: cedar::ValueStats,
