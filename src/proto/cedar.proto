@@ -467,10 +467,6 @@ message ProcessingStats {
   // not attempted) do not contribute to this.
   ValueStats overall_latency = 2;
 
-  // The interval at which new plate solutions (or lack thereof) are
-  // available. Seconds per solution cycle.
-  ValueStats solve_interval = 1;
-
   // How much time (in seconds) is spent plate solving (when attempted).
   ValueStats solve_latency = 4;
 
@@ -486,6 +482,8 @@ message ProcessingStats {
   // returned. This includes time spent e.g. applying gamma to the display
   // image.
   ValueStats serve_latency = 7;
+
+  reserved 1;
 }
 
 message ValueStats {
