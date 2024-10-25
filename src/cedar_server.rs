@@ -1795,12 +1795,15 @@ impl MyCedar {
             observer_location: None,
             update_interval: match feature_level {
                 FeatureLevel::Plus => Some(
+                    // 10Hz, max.
                     prost_types::Duration { seconds: 0, nanos: 100000000 }
                 ),
                 FeatureLevel::Basic => Some(
+                    // 3Hz (max 5Hz).
                     prost_types::Duration { seconds: 0, nanos: 333000000 }
                 ),
                 _ => Some(
+                    // DIY: Unlimited.
                     prost_types::Duration { seconds: 0, nanos: 0 }
                 ),
             },
@@ -1808,8 +1811,8 @@ impl MyCedar {
                 let mut cat_match =
                     Some(CatalogEntryMatch {
                         faintest_magnitude: match feature_level {
-                            FeatureLevel::Plus => Some(15),
-                            FeatureLevel::Basic => Some(10),
+                            FeatureLevel::Plus => Some(15),  // Max 20.
+                            FeatureLevel::Basic => Some(10),  // Max 12.
                             _ => None,  // Irrelevant, no Cedar Sky.
                         },
                         catalog_label: Vec::<String>::new(),
@@ -1896,17 +1899,18 @@ impl MyCedar {
         }
         // Validate preferences against feature level. If someone switches the
         // camera down to the basic model, some preferences need to be adjusted.
-        if feature_level == FeatureLevel::Basic {
-            let min_interval_nanos = 200000000;  // 200ms, or 5Hz.
-            let update_interval = preferences.update_interval.as_mut().unwrap();
-            if update_interval.nanos < min_interval_nanos {
-                update_interval.nanos = min_interval_nanos;
-            }
-            let limit_magnitude = 12;
-            let cat_match = preferences.catalog_entry_match.as_mut().unwrap();
-            if cat_match.faintest_magnitude.unwrap() > limit_magnitude {
-                cat_match.faintest_magnitude = Some(limit_magnitude);
-            }
+        let (limit_magnitude, min_interval_nanos) = match feature_level {
+            FeatureLevel::Plus => (20, 100000000),  // 100ms, or 10Hz.
+            FeatureLevel::Basic => (12, 200000000),  // 200ms, or 5Hz.
+            _ => (20, 0),  // DIY.
+        };
+        let update_interval = &mut preferences.update_interval.as_mut().unwrap();
+        if update_interval.seconds == 0 && update_interval.nanos < min_interval_nanos {
+            update_interval.nanos = min_interval_nanos;
+        }
+        let cat_match = &mut preferences.catalog_entry_match.as_mut().unwrap();
+        if cat_match.faintest_magnitude.unwrap() > limit_magnitude {
+            cat_match.faintest_magnitude = Some(limit_magnitude);
         }
 
         let shared_preferences = Arc::new(Mutex::new(preferences));
