@@ -347,9 +347,9 @@ impl DetectEngine {
                 locked_state.eta = None;
             }
 
-            let frame_id = state.lock().unwrap().frame_id;
             let captured_image;
             {
+                let frame_id = state.lock().unwrap().frame_id;
                 let mut locked_camera = camera.lock().await;
                 if let Some(delay_est) = locked_camera.estimate_delay(frame_id) {
                     state.lock().unwrap().eta = Some(Instant::now() + delay_est);
