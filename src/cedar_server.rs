@@ -1374,6 +1374,8 @@ impl MyCedar {
             }
         }  // locked_state.
 
+        // TODO: move most of this into a (new) ServeEngine, another pipeline phase.
+
         // Populated only in OperatingMode::Operate mode and Setup alignment
         // mode.
         let mut tetra3_solve_result: Option<SolveResultProto> = None;
@@ -1877,6 +1879,9 @@ impl MyCedar {
                         // repeated fields of the destination; we don't want
                         // this.
                         preferences.catalog_entry_match = None;
+                    }
+                    if file_prefs.update_interval.is_some() {
+                        preferences.update_interval = None;
                     }
                     preferences.merge(&*file_prefs_bytes.unwrap()).unwrap();
                 }
