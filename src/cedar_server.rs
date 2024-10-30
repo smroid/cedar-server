@@ -36,6 +36,7 @@ use log::{debug, error, info, warn};
 use prost::Message;
 use tower_http::{services::ServeDir, cors::CorsLayer, cors::Any};
 use tonic_web::GrpcWebLayer;
+use tokio_stream::wrappers::ReceiverStream;
 
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, registry, EnvFilter};
@@ -630,6 +631,35 @@ impl Cedar for MyCedar {
         Ok(tonic::Response::new(frame_result))
     }
 
+    type GetFramesStream = ReceiverStream<Result<FrameResult, tonic::Status>>;
+
+    async fn get_frames(&self, _request: tonic::Request<EmptyMessage>)
+                        -> Result<tonic::Response<Self::GetFramesStream>, tonic::Status> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+
+        let mut server_info = self.get_server_information().await;
+        let cloned_state = self.state.clone();
+
+        tokio::spawn(async move {
+            let mut prev_frame_id: Option<i32> = None;
+            loop {
+                // TODO: look for shutdown/reboot request.
+                cloned_state.lock().await.activity_led.lock().await.received_rpc().await;
+                let mut frame_result = Self::get_next_frame(
+                    cloned_state.clone(), prev_frame_id).await;
+                Self::update_server_information(cloned_state.clone(), &mut server_info).await;
+                frame_result.server_information = Some(server_info.clone());
+                prev_frame_id = Some(frame_result.frame_id);
+                if let Err(e) = tx.send(Ok(frame_result.clone())).await {
+                    warn!("Error queuing frame for streaming: {:?}", e);
+                    break;
+                }
+            }
+        });
+
+        Ok(tonic::Response::new(ReceiverStream::new(rx)))
+    }
+
     async fn initiate_action(&self, request: tonic::Request<ActionRequest>)
                              -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req: ActionRequest = request.into_inner();
@@ -1106,43 +1136,26 @@ impl MyCedar {
     }
 
     async fn get_server_information(&self) -> ServerInformation {
-        let mut wifi_access_point: Option<WiFiAccessPoint> = None;
         let camera;
-        {
-            let locked_state = self.state.lock().await;
-
-            if let Some(test_image_camera) = &self.test_image_camera {
-                let locked_camera = test_image_camera.lock().await;
-                camera = Some(CameraModel{
-                    model: locked_camera.model(),
-                    image_width: locked_camera.dimensions().0,
-                    image_height: locked_camera.dimensions().1,
-                });
-           } else if let Some(attached_camera) = &self.attached_camera {
-                let locked_camera = attached_camera.lock().await;
-                camera = Some(CameraModel{
-                    model: locked_camera.model(),
-                    image_width: locked_camera.dimensions().0,
-                    image_height: locked_camera.dimensions().1,
-                });
-            } else {
-                camera = None;
-            }
-
-            if let Some(wifi) = &locked_state.wifi {
-                let locked_wifi = wifi.lock().unwrap();
-                wifi_access_point = Some(WiFiAccessPoint{
-                    ssid: Some(locked_wifi.ssid()),
-                    psk: Some(locked_wifi.psk()),
-                    channel: Some(locked_wifi.channel())});
-            }
+        if let Some(test_image_camera) = &self.test_image_camera {
+            let locked_camera = test_image_camera.lock().await;
+            camera = Some(CameraModel{
+                model: locked_camera.model(),
+                image_width: locked_camera.dimensions().0,
+                image_height: locked_camera.dimensions().1,
+            });
+        } else if let Some(attached_camera) = &self.attached_camera {
+            let locked_camera = attached_camera.lock().await;
+            camera = Some(CameraModel{
+                model: locked_camera.model(),
+                image_width: locked_camera.dimensions().0,
+                image_height: locked_camera.dimensions().1,
+            });
+        } else {
+            camera = None;
         }
 
-        let temp_str =
-            fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").unwrap();
-        let cpu_temperature = temp_str.trim().parse::<f32>().unwrap() / 1000.0;
-
-        ServerInformation {
+        let mut server_info = ServerInformation {
             product_name: self.product_name.clone(),
             copyright: self.copyright.clone(),
             cedar_server_version: self.cedar_version.clone(),
@@ -1150,13 +1163,30 @@ impl MyCedar {
             processor_model: self.processor_model.clone(),
             os_version: self.os_version.clone(),
             serial_number: self.serial_number.clone(),
-            cpu_temperature,
-            server_time: Some(prost_types::Timestamp::try_from(
-                SystemTime::now()).unwrap()),
+            cpu_temperature: 0.0,
+            server_time: None,
             camera,
-            wifi_access_point,
+            wifi_access_point: None,
             demo_image_names: self.demo_images.clone(),
+        };
+        Self::update_server_information(self.state.clone(), &mut server_info).await;
+        server_info
+    }
+
+    async fn update_server_information(state: Arc<tokio::sync::Mutex<CedarState>>,
+                                       server_info: &mut ServerInformation) {
+        if let Some(wifi) = &state.lock().await.wifi {
+            let locked_wifi = wifi.lock().unwrap();
+            server_info.wifi_access_point = Some(WiFiAccessPoint{
+                ssid: Some(locked_wifi.ssid()),
+                psk: Some(locked_wifi.psk()),
+                channel: Some(locked_wifi.channel())});
         }
+        let temp_str =
+            fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").unwrap();
+        server_info.cpu_temperature = temp_str.trim().parse::<f32>().unwrap() / 1000.0;
+        server_info.server_time = Some(prost_types::Timestamp::try_from(
+            SystemTime::now()).unwrap());
     }
 
     fn fill_in_time(fixed_settings: &mut FixedSettings) {
