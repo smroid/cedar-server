@@ -627,7 +627,6 @@ impl Cedar for MyCedar {
         let mut frame_result = Self::get_next_frame(
             self.state.clone(), req.prev_frame_id).await;
         frame_result.server_information = Some(self.get_server_information().await);
-
         Ok(tonic::Response::new(frame_result))
     }
 
@@ -640,7 +639,7 @@ impl Cedar for MyCedar {
         let mut server_info = self.get_server_information().await;
         let cloned_state = self.state.clone();
 
-        tokio::spawn(async move {
+        tokio::task::spawn(async move {
             let mut prev_frame_id: Option<i32> = None;
             loop {
                 // TODO: look for shutdown/reboot request.
@@ -2536,25 +2535,27 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
 
     // Build the gRPC service.
     let path: PathBuf = [args.log_dir, args.log_file].iter().collect();
+    let cedar_server = CedarServer::new(MyCedar::new(
+        args.binning, args.display_sampling,
+        invert_camera,
+        initial_exposure_duration, args.min_exposure, args.max_exposure,
+        args.tetra3_script, args.tetra3_database, args.tetra3_socket,
+        got_signal,
+        attached_camera, test_image_camera, camera,
+        shared_telescope_position.clone(),
+        args.star_count_goal, args.sigma, args.min_sigma,
+        // TODO: arg for this?
+        /*stats_capacity=*/100,
+        PathBuf::from(args.ui_prefs),
+        path, product_name, copyright, feature_level, cedar_sky, wifi,
+    ).await);
+
     let grpc = tonic::transport::Server::builder()
-        .accept_http1(true)
+        .accept_http1(true)  // TODO: don't need this?
         .layer(GrpcWebLayer::new())
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any))
-        .add_service(CedarServer::new(MyCedar::new(
-            args.binning, args.display_sampling,
-            invert_camera,
-            initial_exposure_duration, args.min_exposure, args.max_exposure,
-            args.tetra3_script, args.tetra3_database, args.tetra3_socket,
-            got_signal,
-            attached_camera, test_image_camera, camera,
-            shared_telescope_position.clone(),
-            args.star_count_goal, args.sigma, args.min_sigma,
-            // TODO: arg for this?
-            /*stats_capacity=*/100,
-            PathBuf::from(args.ui_prefs),
-            path, product_name, copyright, feature_level, cedar_sky, wifi,
-        ).await
-        )).into_service();
+        .add_service(cedar_server)
+        .into_service();
 
     // Combine static content (flutter app) server and gRPC server into one service.
     let service = MultiplexService::new(rest, grpc);
@@ -2563,11 +2564,13 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
     let addr = SocketAddr::from(([0, 0, 0, 0], 80));
     info!("Listening at {:?}", addr);
     let service_future =
-        hyper::Server::bind(&addr).serve(tower::make::Shared::new(service.clone()));
+        hyper::Server::bind(&addr)
+        .serve(tower::make::Shared::new(service.clone()));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
     let service_future8080 =
-        hyper::Server::bind(&addr8080).serve(tower::make::Shared::new(service));
+        hyper::Server::bind(&addr8080)
+        .serve(tower::make::Shared::new(service));
 
     // Spin up ASCOM Alpaca server for reporting our RA/Dec solution as the
     // telescope position.
