@@ -113,8 +113,7 @@ impl Drop for SolveEngine {
 }
 
 impl SolveEngine {
-    async fn connect(
-        tetra3_server_address: String)
+    async fn connect(tetra3_server_address: String)
         -> Result<Tetra3Client<tonic::transport::Channel>, CanonicalError>
     {
         // Set up gRPC client, connect to a UDS socket. URL is ignored.
@@ -123,6 +122,7 @@ impl SolveEngine {
             let addr = tetra3_server_address.clone();
             let channel = Endpoint::try_from("http://[::]:50051").unwrap()
                 .connect_with_connector(service_fn(move |_: Uri| {
+                    // Connect to a Uds socket
                     UnixStream::connect(addr.clone())
                 })).await;
             match channel {
