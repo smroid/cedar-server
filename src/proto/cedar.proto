@@ -283,10 +283,23 @@ message FrameRequest {
   // server's current FrameResult. If omitted, GetFrame() will return the
   // server's current FrameResult.
   optional int32 prev_frame_id = 1;
+
+  // If true, GetFrame() returns immediately. If the requested frame (a new frame
+  // different from 'prev_frame_id' or the current frame if 'prev_frame_id' is
+  // omitted) is available, the returned FrameResult.has_result field will be
+  // true.
+  optional bool non_blocking = 2;
 }
 
-// Next tag: 34.
+// Next tag: 35.
 message FrameResult {
+  // If FrameRequest.non_blocking is omitted or false, this field will be
+  // absent. If FrameRequest.non_blocking is true, this field will be true
+  // if a suitable result is ready, otherwise this field will be false in
+  // which case all other FrameResult fields should be ignored (aside from
+  // 'server_information', which is always populated).
+  optional bool has_result = 34;
+
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
   int32 frame_id = 1;
@@ -347,8 +360,9 @@ message FrameResult {
 
   // When transitioning from SETUP focus mode to another mode, Cedar does a
   // brief sky/camera calibration. During calibration most FrameResult fields
-  // are omitted. Fields present are: fixed_settings, preferences,
-  // operation_settings, image, calibrating, and calibration_progress.
+  // are omitted. Fields present are: server_information, fixed_settings,
+  // preferences, operation_settings, image, calibrating, and
+  // calibration_progress.
   bool calibrating = 22;
 
   // When `calibrating` is true, this field is an estimate of the progress of

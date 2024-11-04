@@ -207,8 +207,10 @@ impl DetectEngine {
     /// if there is not yet a current result) if `prev_frame_id` is omitted. If
     /// `prev_frame_id` is supplied, the call blocks while the current result
     /// has the same id value.
-    /// Returns: the processed result along with its frame_id value.
-    pub async fn get_next_result(&mut self, prev_frame_id: Option<i32>) -> DetectResult {
+    /// Returns: the processed result along with its frame_id value. Returns
+    ///     None if non_blocking and a suitable result is not yet available.
+    pub async fn get_next_result(&mut self, prev_frame_id: Option<i32>,
+                                 non_blocking: bool) -> Option<DetectResult> {
         // Has the worker terminated for some reason?
         if self.worker_done.load(Ordering::Relaxed) {
             self.worker_done.store(false, Ordering::Relaxed);
@@ -261,7 +263,10 @@ impl DetectEngine {
                      locked_state.detect_result.as_ref().unwrap().frame_id)
                 {
                     // Don't consume it, other clients may want it.
-                    return locked_state.detect_result.clone().unwrap();
+                    return Some(locked_state.detect_result.clone().unwrap());
+                }
+                if non_blocking {
+                    return None;
                 }
                 if locked_state.eta.is_some() {
                     let time_to_eta =

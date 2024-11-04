@@ -621,10 +621,20 @@ impl Cedar for MyCedar {
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
-        let req: FrameRequest = request.into_inner();
         self.state.lock().await.activity_led.lock().await.received_rpc().await;
-        let mut frame_result = Self::get_next_frame(
-            self.state.clone(), req.prev_frame_id).await;
+        let req: FrameRequest = request.into_inner();
+        let non_blocking = req.non_blocking.is_some() && req.non_blocking.unwrap();
+        let fr = Self::get_next_frame(
+            self.state.clone(), req.prev_frame_id, non_blocking).await;
+        let mut frame_result = FrameResult {..Default::default()};
+        if non_blocking && fr.is_none() {
+            frame_result.has_result = Some(false);
+        } else {
+            frame_result = fr.unwrap();
+            if non_blocking {
+                frame_result.has_result = Some(true);
+            }
+        }
         frame_result.server_information = Some(self.get_server_information().await);
         Ok(tonic::Response::new(frame_result))
     }
@@ -642,7 +652,7 @@ impl Cedar for MyCedar {
                 // Get most recent star detection result, and take the brightest
                 // star's centroid as the telescope boresight.
                 let detect_result = locked_state.detect_engine.lock().await.
-                    get_next_result(None).await;
+                    get_next_result(None, /*non_blocking=*/false).await.unwrap();
                 let detected_stars = &detect_result.star_candidates;
                 if detected_stars.is_empty() {
                     return Err(tonic::Status::failed_precondition(
@@ -666,7 +676,7 @@ impl Cedar for MyCedar {
                 // Operate mode.
                 let locked_state = self.state.lock().await;
                 let plate_solution = locked_state.solve_engine.lock().await.
-                    get_next_result(None).await;
+                    get_next_result(None, /*non_blocking=*/false).await.unwrap();
                 if let Some(slew_request) = plate_solution.slew_request {
                     let bsp = slew_request.image_pos.unwrap();
                     if let Err(x) = locked_state.solve_engine.lock().await.
@@ -797,7 +807,7 @@ impl Cedar for MyCedar {
         let catalog_entry_match = req.catalog_entry_match.as_ref().unwrap();
 
         let plate_solution = locked_state.solve_engine.lock().await.
-            get_next_result(None).await;
+            get_next_result(None, /*non_blocking=*/false).await.unwrap();
         let sky_location =
             if let Some(tsr) = plate_solution.tetra3_solve_result.as_ref() {
                 if tsr.target_coords.len() > 0 {
@@ -1320,8 +1330,8 @@ impl MyCedar {
     }
 
     async fn get_next_frame(state: Arc<tokio::sync::Mutex<CedarState>>,
-                            prev_frame_id: Option<i32>)
-                            -> FrameResult {
+                            prev_frame_id: Option<i32>, non_blocking: bool)
+                            -> Option<FrameResult> {
         let overall_start_time = Instant::now();
 
         let mut frame_result = FrameResult {..Default::default()};
@@ -1369,8 +1379,11 @@ impl MyCedar {
                     frame_result.operation_settings =
                         Some(locked_state.operation_settings.clone());
                 }
-                return frame_result;
-            }
+                if non_blocking {
+                    frame_result.has_result = Some(true);
+                }
+                return Some(frame_result);
+            }  // Calibrating.
         }  // locked_state.
 
         // TODO: move most of this into a (new) ServeEngine, another pipeline phase.
@@ -1385,11 +1398,18 @@ impl MyCedar {
             OperatingMode::Setup as i32 &&
             state.lock().await.operation_settings.focus_assist_mode.unwrap()
         {
-            detect_result = state.lock().await.detect_engine.lock().await.
-                get_next_result(prev_frame_id).await;
+            let dr = state.lock().await.detect_engine.lock().await.
+                get_next_result(prev_frame_id, non_blocking).await;
+            if dr.is_none() {
+                return None;
+            }
+            detect_result = dr.unwrap();
         } else {
-            plate_solution = Some(state.lock().await.solve_engine.lock().await.
-                                  get_next_result(prev_frame_id).await);
+            plate_solution = state.lock().await.solve_engine.lock().await.
+                get_next_result(prev_frame_id, non_blocking).await;
+            if plate_solution.is_none() {
+                return None;
+            }
             let psr = plate_solution.as_ref().unwrap();
             tetra3_solve_result = psr.tetra3_solve_result.clone();
             detect_result = psr.detect_result.clone();
@@ -1698,7 +1718,7 @@ impl MyCedar {
         frame_result.polar_align_advice = Some(
             locked_state.polar_analyzer.lock().unwrap().get_polar_align_advice());
 
-        frame_result
+        Some(frame_result)
     }
 
     pub async fn new(

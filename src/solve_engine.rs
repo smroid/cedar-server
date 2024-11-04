@@ -296,9 +296,11 @@ impl SolveEngine {
     /// omitted.
     /// If `prev_frame_id` is supplied, the call blocks while the current result
     /// has the same id value.
-    /// Returns: the processed result along with its frame_id value.
+    /// Returns: the processed result along with its frame_id value. Returns
+    ///     None if non_blocking and a suitable result is not yet available.
     pub async fn get_next_result(
-        &mut self, prev_frame_id: Option<i32>) -> PlateSolution
+        &mut self, prev_frame_id: Option<i32>,
+        non_blocking: bool) -> Option<PlateSolution>
     {
         // Start worker thread if terminated or not yet started.
         self.start().await;
@@ -316,7 +318,10 @@ impl SolveEngine {
                      locked_state.plate_solution.as_ref().unwrap().detect_result.frame_id)
                 {
                     // Don't consume it, other clients may want it.
-                    return locked_state.plate_solution.clone().unwrap();
+                    return Some(locked_state.plate_solution.clone().unwrap());
+                }
+                if non_blocking {
+                    return None;
                 }
                 if let Some(eta) = locked_state.eta {
                     let time_to_eta = eta.saturating_duration_since(Instant::now());
@@ -341,7 +346,7 @@ impl SolveEngine {
         // Grab most recent image.
         let mut locked_detect_engine = self.detect_engine.lock().await;
         let captured_image = &locked_detect_engine.get_next_result(
-            /*frame_id=*/None).await.captured_image;
+            /*frame_id=*/None, /*non_blocking=*/false).await.unwrap().captured_image;
         let image: &GrayImage = &captured_image.image;
         let readout_time: &SystemTime = &captured_image.readout_time;
         let exposure_duration_ms =
@@ -500,7 +505,8 @@ impl SolveEngine {
                 state.lock().await.eta = Some(Instant::now() + delay_est);
             }
             let detect_result =
-                detect_engine.lock().await.get_next_result(frame_id).await;
+                detect_engine.lock().await.get_next_result(
+                    frame_id, /*non_blocking=*/false).await.unwrap();
             state.lock().await.deref_mut().frame_id = Some(detect_result.frame_id);
 
             let image: &GrayImage = &detect_result.captured_image.image;
