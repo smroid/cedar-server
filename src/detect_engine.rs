@@ -355,19 +355,32 @@ impl DetectEngine {
             let captured_image;
             {
                 let frame_id = state.lock().unwrap().frame_id;
-                let mut locked_camera = camera.lock().await;
-                if let Some(delay_est) = locked_camera.estimate_delay(frame_id) {
+                if let Some(delay_est) = camera.lock().await.estimate_delay(frame_id) {
                     state.lock().unwrap().eta = Some(Instant::now() + delay_est);
                 }
-                match locked_camera.capture_image(frame_id).await {
-                    Ok((img, id)) => {
-                        captured_image = img;
-                        state.lock().unwrap().frame_id = Some(id);
+                // Don't hold camera lock for the entirety of the time waiting for
+                // the next image.
+                loop {
+                    let capture =
+                        match camera.lock().await.try_capture_image(frame_id).await
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("Error capturing image: {}", &e.to_string());
+                            // TODO: instead of abandoning, advertise camera
+                            // status and try again.
+                            return;  // Abandon thread execution!
+                        }
+                    };
+                    if capture.is_none() {
+                        // TODO: tune sleep duration according to delay_est.
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        continue;
                     }
-                    Err(e) => {
-                        error!("Error capturing image: {}", &e.to_string());
-                        break;  // Abandon thread execution!
-                    }
+                    let (image, id) = capture.unwrap();
+                    captured_image = image;
+                    state.lock().unwrap().frame_id = Some(id);
+                    break;
                 }
             }
 
@@ -623,8 +636,7 @@ impl DetectEngine {
             if prev_exposure_duration_secs != new_exposure_duration_secs {
                 debug!("Setting new exposure duration {}s",
                        new_exposure_duration_secs);
-                let mut locked_camera = camera.lock().await;
-                match locked_camera.set_exposure_duration(
+                match camera.lock().await.set_exposure_duration(
                     Duration::from_secs_f64(new_exposure_duration_secs)) {
                     Ok(()) => (),
                     Err(e) => {
