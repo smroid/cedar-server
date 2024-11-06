@@ -335,17 +335,16 @@ impl SolveEngine {
     }
 
     pub async fn reset_session_stats(&mut self) {
-        let mut state = self.state.lock().await;
-        state.solve_latency_stats.reset_session();
-        state.solve_attempt_stats.reset_session();
-        state.solve_success_stats.reset_session();
+        let mut locked_state = self.state.lock().await;
+        locked_state.solve_latency_stats.reset_session();
+        locked_state.solve_attempt_stats.reset_session();
+        locked_state.solve_success_stats.reset_session();
     }
 
     // TODO: arg specifying directory to save to.
     pub async fn save_image(&self) -> Result<(), CanonicalError> {
         // Grab most recent image.
-        let mut locked_detect_engine = self.detect_engine.lock().await;
-        let captured_image = &locked_detect_engine.get_next_result(
+        let captured_image = &self.detect_engine.lock().await.get_next_result(
             /*frame_id=*/None, /*non_blocking=*/false).await.unwrap().captured_image;
         let image: &GrayImage = &captured_image.image;
         let readout_time: &SystemTime = &captured_image.readout_time;
@@ -404,6 +403,10 @@ impl SolveEngine {
             let cloned_state = self.state.clone();
             let cloned_detect_engine = self.detect_engine.clone();
             let cloned_callback = self.solution_callback.clone();
+            // Currently plate solving is not CPU bound in its tokio task,
+            // because it is running in another process. However in the future
+            // if we bring plate solving into Rust, it will be compute bound.
+            // See detect_engine.rs for notes on how to deal with this here.
             self.worker_thread = Some(tokio::task::spawn(async move {
                 SolveEngine::worker(cloned_client, cloned_state,
                                     cloned_detect_engine, cloned_callback).await;
@@ -504,9 +507,21 @@ impl SolveEngine {
             {
                 state.lock().await.eta = Some(Instant::now() + delay_est);
             }
-            let detect_result =
-                detect_engine.lock().await.get_next_result(
-                    frame_id, /*non_blocking=*/false).await.unwrap();
+
+            // Don't hold detect engine lock for the entirety of the time waiting for
+            // the next result.
+            let detect_result;
+            loop {
+                let dr = detect_engine.lock().await.get_next_result(
+                    frame_id, /*non_blocking=*/true).await;
+                if dr.is_none() {
+                    // TODO: tune sleep duration according to delay_est.
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    continue;
+                }
+                detect_result = dr.unwrap();
+                break;
+            }
             state.lock().await.deref_mut().frame_id = Some(detect_result.frame_id);
 
             let image: &GrayImage = &detect_result.captured_image.image;
@@ -547,26 +562,34 @@ impl SolveEngine {
             }
 
             let elapsed = process_start_time.elapsed();
-            let mut locked_state = state.lock().await;
             let mut fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
             let mut decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
             let mut slew_request = None;
             let mut boresight_image: Option<GrayImage> = None;
             let mut boresight_image_region: Option<Rect> = None;
+            let align_mode;
+            let boresight_pixel;
+            let cedar_sky;
+            {
+                let locked_state = state.lock().await;
+                align_mode = locked_state.align_mode;
+                boresight_pixel = locked_state.boresight_pixel.clone();
+                cedar_sky = locked_state.cedar_sky.clone();
+            }
             if tetra3_solve_result.is_none() {
-                if !locked_state.align_mode {
-                    locked_state.solve_attempt_stats.add_value(0.0);
-                    solution_callback(locked_state.boresight_pixel.clone(),
+                if !align_mode {
+                    state.lock().await.solve_attempt_stats.add_value(0.0);
+                    solution_callback(boresight_pixel,
                                       Some(detect_result.clone()), None);
                 }
             } else {
-                if !locked_state.align_mode {
-                    locked_state.solve_attempt_stats.add_value(1.0);
+                if !align_mode {
+                    state.lock().await.solve_attempt_stats.add_value(1.0);
                 }
                 let tsr = tetra3_solve_result.as_ref().unwrap();
                 if tsr.status.unwrap() == SolveStatus::MatchFound as i32 {
-                    if !locked_state.align_mode {
-                        locked_state.solve_success_stats.add_value(1.0);
+                    if !align_mode {
+                        state.lock().await.solve_success_stats.add_value(1.0);
                     }
                     let boresight_coords = if tsr.target_coords.len() > 0 {
                         tsr.target_coords[0].clone()
@@ -580,20 +603,20 @@ impl SolveEngine {
                         rotation_matrix[idx] = c;
                     }
 
-                    if !locked_state.align_mode {
+                    if !align_mode {
                         // Let integration layer pass solution to SkySafari telescope
                         // interface and MotionEstimator. Integration layer returns current
                         // slew target coords, if any.
                         let (slew_target, sync_coord) =
-                            solution_callback(locked_state.boresight_pixel.clone(),
+                            solution_callback(boresight_pixel.clone(),
                                               Some(detect_result.clone()), Some(tsr.clone()));
-                        locked_state.slew_target = slew_target;
-                        if let Some(target_coords) = &locked_state.slew_target {
+                        state.lock().await.slew_target = slew_target;
+                        if let Some(target_coords) = &state.lock().await.slew_target {
                             (slew_request, boresight_image_region, boresight_image) =
                                 Self::handle_slew(
-                                    &locked_state.cedar_sky,
+                                    &cedar_sky,
                                     target_coords, image, &boresight_coords,
-                                    &locked_state.boresight_pixel, tsr,
+                                    &boresight_pixel, tsr,
                                     width, height).await;
                         }
                         if let Some(sync_coord) = sync_coord {
@@ -609,7 +632,7 @@ impl SolveEngine {
                                 &rotation_matrix,
                                 tsr.distortion.unwrap());
                             let img_coord = ImageCoord{x: xy[0], y: xy[1]};
-                            locked_state.boresight_pixel = Some(img_coord);
+                            state.lock().await.boresight_pixel = Some(img_coord);
                             // Note: we should update the boresight in the saved
                             // preferences, but we don't have access to the
                             // cedar_server logic here. Instead, we leave it to
@@ -618,10 +641,10 @@ impl SolveEngine {
                         }
                     }  // !align_mode
 
-                    if locked_state.cedar_sky.is_some() {
+                    if cedar_sky.is_some() {
                         let mut catalog_entry_match =
-                            locked_state.catalog_entry_match.clone().unwrap();
-                        if locked_state.align_mode {
+                            state.lock().await.catalog_entry_match.clone().unwrap();
+                        if align_mode {
                             catalog_entry_match = CatalogEntryMatch {
                                 faintest_magnitude: Some(4),
                                 catalog_label: vec!["IAU".to_string(), "PL".to_string()],
@@ -632,8 +655,8 @@ impl SolveEngine {
                         }
                         let result = Self::query_fov_catalog_entries(
                             &boresight_coords,
-                            &locked_state.boresight_pixel,
-                            locked_state.cedar_sky.as_ref().unwrap(),
+                            &boresight_pixel,
+                            cedar_sky.as_ref().unwrap(),
                             &catalog_entry_match,
                             width, height,
                             tsr.fov.unwrap(),
@@ -643,18 +666,30 @@ impl SolveEngine {
                             (Some(result.0), Some(result.1));
                     }
                 } else {
-                    if !locked_state.align_mode {
-                        locked_state.solve_success_stats.add_value(0.0);
-                        solution_callback(locked_state.boresight_pixel.clone(),
+                    if !align_mode {
+                        state.lock().await.solve_success_stats.add_value(0.0);
+                        solution_callback(boresight_pixel.clone(),
                                           Some(detect_result.clone()), None);
                     }
                 }
-                if !locked_state.align_mode {
-                    locked_state.solve_latency_stats.add_value(elapsed.as_secs_f64());
+                if !align_mode {
+                    state.lock().await.solve_latency_stats.add_value(elapsed.as_secs_f64());
                 }
             }
             // Post the result.
-            locked_state.plate_solution = Some(PlateSolution{
+            let solve_latency_stats;
+            let solve_attempt_stats;
+            let solve_success_stats;
+            {
+                let locked_state = state.lock().await;
+                solve_latency_stats =
+                    locked_state.solve_latency_stats.value_stats.clone();
+                solve_attempt_stats =
+                    locked_state.solve_attempt_stats.value_stats.clone();
+                solve_success_stats =
+                    locked_state.solve_success_stats.value_stats.clone();
+            }
+            state.lock().await.plate_solution = Some(PlateSolution{
                 detect_result,
                 tetra3_solve_result,
                 fov_catalog_entries,
@@ -664,9 +699,9 @@ impl SolveEngine {
                 boresight_image_region,
                 solve_finish_time,
                 processing_duration: elapsed,
-                solve_latency_stats: locked_state.solve_latency_stats.value_stats.clone(),
-                solve_attempt_stats: locked_state.solve_attempt_stats.value_stats.clone(),
-                solve_success_stats: locked_state.solve_success_stats.value_stats.clone(),
+                solve_latency_stats,
+                solve_attempt_stats,
+                solve_success_stats,
             });
         }  // loop.
     }  // worker
