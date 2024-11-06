@@ -207,7 +207,6 @@ impl Cedar for MyCedar {
             self.update_preferences(tonic::Request::new(preferences)).await?;
             info!("Updated observer location to {:?}", observer_location);
         }
-        let locked_state = self.state.lock().await;
         if let Some(current_time) = req.current_time {
             let current_time =
                 TimeSpec::new(current_time.seconds, current_time.nanos as i64);
@@ -230,6 +229,7 @@ impl Cedar for MyCedar {
             info!("Updated server time to {:?}", Local::now());
             // Don't store the client time in our fixed_settings state, but
             // arrange to return our current time.
+            let locked_state = self.state.lock().await;
             if locked_state.cedar_sky.is_some() {
                 locked_state.cedar_sky.as_ref().unwrap().lock().await
                     .initiate_solar_system_processing(SystemTime::now()).await;
@@ -243,7 +243,8 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings cannot update max_exposure_time."));
         }
-        let mut fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
+        let mut fixed_settings =
+            self.state.lock().await.fixed_settings.lock().unwrap().clone();
         // Fill in our current time.
         Self::fill_in_time(&mut fixed_settings);
         Ok(tonic::Response::new(fixed_settings))
@@ -555,9 +556,8 @@ impl Cedar for MyCedar {
     async fn update_preferences(
         &self, request: tonic::Request<Preferences>)
         -> Result<tonic::Response<Preferences>, tonic::Status> {
-        let locked_state = self.state.lock().await;
         let req: Preferences = request.into_inner();
-        let mut our_prefs = locked_state.preferences.lock().unwrap();
+        let mut our_prefs = self.state.lock().await.preferences.lock().unwrap().clone();
         if let Some(coord_format) = req.celestial_coord_format {
             our_prefs.celestial_coord_format = Some(coord_format);
         }
@@ -612,7 +612,9 @@ impl Cedar for MyCedar {
         }
         if let Some(invert_camera) = req.invert_camera {
             our_prefs.invert_camera = Some(invert_camera);
+
         }
+        *self.state.lock().await.preferences.lock().unwrap() = our_prefs.clone();
         // Write updated preferences to file.
         Self::write_preferences_file(&self.preferences_file, &our_prefs);
 
@@ -715,10 +717,9 @@ impl Cedar for MyCedar {
                 ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
         }
-        let locked_state = self.state.lock().await;
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
-            locked_state.activity_led.lock().await.stop().await;
+            self.state.lock().await.activity_led.lock().await.stop().await;
             std::thread::sleep(Duration::from_secs(2));
             let output = Command::new("sudo")
                 .arg("shutdown")
@@ -733,7 +734,7 @@ impl Cedar for MyCedar {
         }
         if req.restart_server.unwrap_or(false) {
             info!("Restarting host system");
-            locked_state.activity_led.lock().await.stop().await;
+            self.state.lock().await.activity_led.lock().await.stop().await;
             std::thread::sleep(Duration::from_secs(2));
             let output = Command::new("sudo")
                 .arg("reboot")
@@ -746,6 +747,7 @@ impl Cedar for MyCedar {
                         format!("sudo reboot error: {:?}.", error_str)));
             }
         }
+        let locked_state = self.state.lock().await;
         if let Some(slew_coord) = req.initiate_slew {
             let mount_type = locked_state.preferences.lock().unwrap().mount_type;
             if mount_type == Some(MountType::AltAz.into()) &&
@@ -764,6 +766,7 @@ impl Cedar for MyCedar {
         }
         if req.save_image.unwrap_or(false) {
             let solve_engine = &mut locked_state.solve_engine.lock().await;
+            // TODO: don't hold our state.lock() for this.
             if let Err(x) = solve_engine.save_image().await {
                 return Err(tonic_status(x));
             }
@@ -774,6 +777,7 @@ impl Cedar for MyCedar {
                     format!("{} does not include WiFi control.", self.product_name)));
             }
             let mut locked_wifi = locked_state.wifi.as_ref().unwrap().lock().unwrap();
+            // TODO: don't hold our state.lock() for this.
             if let Err(x) = locked_wifi.update_access_point(
                 update_ap.channel,
                 update_ap.ssid.as_deref(),
@@ -831,6 +835,7 @@ impl Cedar for MyCedar {
 
         locked_state.cedar_sky.as_ref().unwrap().lock().await
             .check_solar_system_completion().await;
+        // TODO: don't hold our state.lock() during this.
         let result =
             locked_state.cedar_sky.as_ref().unwrap().lock().await.query_catalog_entries(
             req.max_distance,
@@ -1398,6 +1403,8 @@ impl MyCedar {
             OperatingMode::Setup as i32 &&
             state.lock().await.operation_settings.focus_assist_mode.unwrap()
         {
+            // TODO: don't hold state.lock() across a blocking call to get_next_result().
+            // Poll it non-blocking. Not urgent, as our calls are currently non-blocking.
             let dr = state.lock().await.detect_engine.lock().await.
                 get_next_result(prev_frame_id, non_blocking).await;
             if dr.is_none() {
@@ -1405,6 +1412,8 @@ impl MyCedar {
             }
             detect_result = dr.unwrap();
         } else {
+            // TODO: don't hold state.lock() across a blocking call to get_next_result().
+            // Poll it non-blocking. Not urgent, as our calls are currently non-blocking.
             plate_solution = state.lock().await.solve_engine.lock().await.
                 get_next_result(prev_frame_id, non_blocking).await;
             if plate_solution.is_none() {
