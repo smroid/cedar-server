@@ -79,6 +79,10 @@ impl ActivityLed {
         let trigger_path = "/sys/class/leds/ACT/trigger";
 
         let blink_delay = Duration::from_millis(500);
+
+        // How often we look for received_rpc() when we're in the ConnectedOff state.
+        let connected_poll = Duration::from_millis(500);
+
         // How long we can go without received_rpc() before we revert to Idle
         // state.
         let connected_timeout = Duration::from_secs(5);
@@ -131,7 +135,7 @@ impl ActivityLed {
                     led_state = LedState::IdleOff;
                 },
                 LedState::ConnectedOff => {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(connected_poll).await;
                     if process_received_rpc(&state, &mut last_rpc_time).await {
                         continue;
                     }
