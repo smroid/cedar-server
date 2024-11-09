@@ -111,7 +111,9 @@ impl MotionEstimator {
         let prev_time = prev_time.unwrap();
         if time <= prev_time {
             // This can happen when the client updates the server's system time.
-            warn!("Time arg regressed from {:?} to {:?}", prev_time, time);
+            if time <= prev_time - Duration::from_secs(10) {
+                warn!("Time arg regressed from {:?} to {:?}", prev_time, time);
+            }
             return;
         }
 
