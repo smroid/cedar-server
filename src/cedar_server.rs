@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime};
 
-use cedar_camera::abstract_camera::{AbstractCamera, Offset, bin_2x2, sample_2x2};
+use cedar_camera::abstract_camera::{AbstractCamera, Gain, Offset,
+                                    bin_2x2, sample_2x2};
 use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
@@ -265,6 +266,7 @@ impl Cedar for MyCedar {
                     // Transition: OPERATE -> SETUP mode.
                     // In SETUP focus assist mode we run at full speed with pre-calibrate
                     // settings.
+                    Self::set_gain(&mut locked_state, daylight_mode).await;
                     if focus_mode {
                         if locked_state.calibrating {
                             // Cancel calibration.
@@ -303,6 +305,7 @@ impl Cedar for MyCedar {
                     Some(OperatingMode::Setup as i32)
                 {
                     // Transition: SETUP -> OPERATE mode.
+                    Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
                     if focus_mode || daylight_mode {
                         // The SETUP (with focus mode or daytime align) ->
                         // OPERATE mode change involves a call to calibrate(),
@@ -348,24 +351,28 @@ impl Cedar for MyCedar {
                 locked_state.detect_engine.lock().await.set_daylight_mode(
                     new_daylight_mode);
                 if locked_state.operation_settings.operating_mode ==
-                    Some(OperatingMode::Setup as i32) &&
-                    !locked_state.operation_settings.focus_assist_mode.unwrap()
+                    Some(OperatingMode::Setup as i32)
                 {
-                    // In SETUP align mode.
-                    if !new_daylight_mode {
-                        // Turning off daylight_mode in SETUP align mode; need
-                        // calibration, which can take several seconds. If the gRPC
-                        // client aborts the RPC (e.g. due to timeout), we want the
-                        // calibration and state updates (i.e. detect engine's
-                        // focus_mode, our operating_mode) to be completed properly.
-                        Self::spawn_calibration(self.state.clone(),
-                                                /*enter_operate_mode=*/false);
-                    } else if locked_state.calibrating {
-                        // Turning on daylight mode in SETUP align mode; cancel
-                        // calibration if any.
-                        *locked_state.cancel_calibration.lock().unwrap() = true;
-                        locked_state.tetra3_subprocess.lock().unwrap()
-                            .send_interrupt_signal();
+                    Self::set_gain(&mut locked_state, new_daylight_mode).await;
+                    if !locked_state.operation_settings.focus_assist_mode.unwrap()
+                    {
+                        // In SETUP align mode.
+                        if !new_daylight_mode {
+                            // Turning off daylight_mode in SETUP align mode;
+                            // need calibration, which can take several seconds.
+                            // If the gRPC client aborts the RPC (e.g. due to
+                            // timeout), we want the calibration and state
+                            // updates (i.e. detect engine's focus_mode, our
+                            // operating_mode) to be completed properly.
+                            Self::spawn_calibration(self.state.clone(),
+                                                    /*enter_operate_mode=*/false);
+                        } else if locked_state.calibrating {
+                            // Turning on daylight mode in SETUP align mode; cancel
+                            // calibration if any.
+                            *locked_state.cancel_calibration.lock().unwrap() = true;
+                            locked_state.tetra3_subprocess.lock().unwrap()
+                                .send_interrupt_signal();
+                        }
                     }
                 }
             }
@@ -379,6 +386,7 @@ impl Cedar for MyCedar {
                 != new_focus_assist_mode
             {
                 locked_state.detect_engine.lock().await.set_focus_mode(new_focus_assist_mode);
+                let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
                 if new_focus_assist_mode {
                     // Entering focus assist mode.
                     if locked_state.calibrating {
@@ -398,13 +406,15 @@ impl Cedar for MyCedar {
                     {
                         return Err(tonic_status(x));
                     }
-                } else if !locked_state.operation_settings.daylight_mode.unwrap() {
+                    Self::set_gain(&mut locked_state, daylight_mode).await;
+                } else if !daylight_mode {
                     // Exiting focus assist mode, without daylight mode active.
                     // Trigger a calibration, which can take several seconds. If
                     // the gRPC client aborts the RPC (e.g. due to timeout), we
                     // want the calibration and state updates (i.e. detect
                     // engine's focus_mode, our operating_mode) to be completed
                     // properly.
+                    Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
                     Self::spawn_calibration(self.state.clone(),
                                             /*enter_operate_mode=*/false);
                 }
@@ -1069,12 +1079,14 @@ impl MyCedar {
                     *locked_state.cancel_calibration.lock().unwrap() = false;
                     let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
                     let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
+                    Self::set_gain(&mut locked_state, daylight_mode).await;
                     let mut locked_detect_engine =
                         locked_state.detect_engine.lock().await;
                     locked_detect_engine.set_focus_mode(focus_mode);
                     locked_detect_engine.set_daylight_mode(daylight_mode);
                 } else if enter_operate_mode {
                     // Transition into Operate mode.
+                    Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
                     locked_state.detect_engine.lock().await.set_focus_mode(false);
                     locked_state.detect_engine.lock().await.set_daylight_mode(false);
                     locked_state.solve_engine.lock().await.set_align_mode(false).await;
@@ -1200,13 +1212,21 @@ impl MyCedar {
         initial_exposure_duration: Duration) -> Result<(), CanonicalError>
     {
         let mut locked_camera = state.camera.lock().await;
-        let gain = locked_camera.optimal_gain();
-        locked_camera.set_gain(gain)?;
         locked_camera.set_exposure_duration(initial_exposure_duration)?;
         if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
             debug!("Could not set offset: {:?}", e);
         }
         Ok(())
+    }
+
+    async fn set_gain(state: &mut CedarState, daylight_mode: bool) {
+        let mut locked_camera = state.camera.lock().await;
+        let gain = if daylight_mode {
+            Gain::new(0)
+        } else {
+            locked_camera.optimal_gain()
+        };
+        locked_camera.set_gain(gain).unwrap();
     }
 
     // Called when entering OPERATE mode. This always succeeds (even if
