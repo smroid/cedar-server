@@ -18,8 +18,9 @@ use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
-use image::{GrayImage, ImageFormat};
+use image::{GrayImage};
 use image::ImageReader;
+use image::codecs::jpeg::JpegEncoder;
 
 use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntry,
                        CatalogEntryKey, CatalogEntryMatch,
@@ -1354,6 +1355,20 @@ impl MyCedar {
         Ok(())
     }
 
+    fn jpeg_encode(img: &Arc<GrayImage>) -> Vec::<u8> {
+        let (width, height) = img.dimensions();
+        let mut jpg_buf = Vec::<u8>::new();
+        jpg_buf.reserve((width * height) as usize);
+        let mut buffer = Cursor::new(&mut jpg_buf);
+        // 75: 40x compression, bad artifacts.
+        // 90: 20x compression, mild artifacts.
+        // 95: 13x compression, almost no artifacts.
+        let mut jpeg_encoder = JpegEncoder::new_with_quality(
+            &mut buffer, /*jpeg_quality=*/95);
+        jpeg_encoder.encode_image(img.deref()).unwrap();
+        jpg_buf
+    }
+
     async fn get_next_frame(state: Arc<tokio::sync::Mutex<CedarState>>,
                             prev_frame_id: Option<i32>, non_blocking: bool)
                             -> Option<FrameResult> {
@@ -1381,10 +1396,7 @@ impl MyCedar {
 
                 if let Some(img) = &locked_state.scaled_image {
                     let (scaled_width, scaled_height) = img.dimensions();
-                    let mut jpg_buf = Vec::<u8>::new();
-                    jpg_buf.reserve((scaled_width * scaled_height) as usize);
-                    img.write_to(&mut Cursor::new(&mut jpg_buf),
-                                 ImageFormat::Jpeg).unwrap();
+                    let jpg_buf = Self::jpeg_encode(&img);
                     let binning_factor = locked_state.scaled_image_binning_factor as i32;
                     let image_rectangle = Rectangle{
                         origin_x: 0, origin_y: 0,
@@ -1493,26 +1505,18 @@ impl MyCedar {
             // Populate `center_peak_image`.
             let center_peak_image = &fa.peak_image;
             let peak_image_region = &fa.peak_image_region;
-            let (center_peak_width, center_peak_height) =
-                center_peak_image.dimensions();
-            let mut center_peak_jpg_buf = Vec::<u8>::new();
             // center_peak_image_image is taken from the camera's full
             // resolution acquired image. If it is a color camera, we 2x2 bin it
             // to avoid displaying the Bayer grid.
             let binning_factor;
+            let center_peak_jpg_buf;
             if locked_state.camera.lock().await.is_color() {
                 let binned_center_peak_image = bin_2x2(center_peak_image.clone());
                 binning_factor = 2;
-                center_peak_jpg_buf.reserve(
-                    (center_peak_width / 2 * center_peak_height / 2) as usize);
-                binned_center_peak_image.write_to(&mut Cursor::new(&mut center_peak_jpg_buf),
-                                                  ImageFormat::Jpeg).unwrap();
+                center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(binned_center_peak_image));
             } else {
                 binning_factor = 1;
-                center_peak_jpg_buf.reserve(
-                    (center_peak_width * center_peak_height) as usize);
-                center_peak_image.write_to(&mut Cursor::new(&mut center_peak_jpg_buf),
-                                           ImageFormat::Jpeg).unwrap();
+                center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(center_peak_image.clone()));
             }
             frame_result.center_peak_image = Some(Image{
                 binning_factor,
@@ -1552,9 +1556,6 @@ impl MyCedar {
         }
         let binning_factor = binning * if display_sampling { 2 } else { 1 };
 
-        let mut jpg_buf = Vec::<u8>::new();
-        let (resized_width, resized_height) = resized_disp_image.dimensions();
-        jpg_buf.reserve((resized_width * resized_height) as usize);
         let gamma = if locked_state.operation_settings.daylight_mode.unwrap() {
             1.0
         } else {
@@ -1566,8 +1567,7 @@ impl MyCedar {
                                        gamma);
         // Save most recent display image.
         locked_state.scaled_image = Some(Arc::new(scaled_image.clone()));
-        scaled_image.write_to(&mut Cursor::new(&mut jpg_buf),
-                              ImageFormat::Jpeg).unwrap();
+        let jpg_buf = Self::jpeg_encode(&Arc::new(scaled_image.clone()));
 
         locked_state.scaled_image_binning_factor = binning_factor;
         locked_state.scaled_image_frame_id = frame_result.frame_id;
@@ -1600,24 +1600,20 @@ impl MyCedar {
                 Some(psr.solve_success_stats.clone());
             frame_result.slew_request = psr.slew_request.clone();
             if let Some(boresight_image) = &psr.boresight_image {
-                let mut jpg_buf = Vec::<u8>::new();
                 let bsi_rect = psr.boresight_image_region.unwrap();
                 // boresight_image is taken from the camera's acquired image. In
                 // OPERATE mode the camera capture is always full resolution. If
                 // it is a color camera, we 2x2 bin it to avoid displaying the
                 // Bayer grid.
                 let binning_factor;
+                let jpg_buf;
                 if locked_state.camera.lock().await.is_color() {
                     let binned_boresight_image = bin_2x2(boresight_image.clone());
                     binning_factor = 2;
-                    jpg_buf.reserve((bsi_rect.width() / 2 * bsi_rect.height() / 2) as usize);
-                    binned_boresight_image.write_to(&mut Cursor::new(&mut jpg_buf),
-                                                    ImageFormat::Jpeg).unwrap();
+                    jpg_buf = Self::jpeg_encode(&Arc::new(binned_boresight_image));
                 } else {
                     binning_factor = 1;
-                    jpg_buf.reserve((bsi_rect.width() * bsi_rect.height()) as usize);
-                    boresight_image.write_to(&mut Cursor::new(&mut jpg_buf),
-                                             ImageFormat::Jpeg).unwrap();
+                    jpg_buf = Self::jpeg_encode(&Arc::new(boresight_image.clone()));
                 }
                 frame_result.boresight_image = Some(Image{
                     binning_factor,
