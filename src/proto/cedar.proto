@@ -409,7 +409,8 @@ message FrameResult {
 
   // Lists the sky catalog entries that are present in the `plate_solution`
   // field of view. The `catalog_entry_match` field in `operation_settings`
-  // determines what entries are included.
+  // determines what entries are included, except in SETUP alignment mode where
+  // fixed criteria are used (bright named stars and planets).
   // Empty if `plate_solution` is absent or failed or if Cedar Sky is not
   // present.
   // The FOV catalog entries that dominate their crowd and should be labelled.
