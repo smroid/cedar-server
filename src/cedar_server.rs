@@ -1460,6 +1460,7 @@ impl MyCedar {
         }
         let serve_start_time = Instant::now();
         let mut locked_state = state.lock().await;
+        let is_color = locked_state.camera.lock().await.is_color();
 
         frame_result.frame_id = detect_result.frame_id;
         let captured_image = &detect_result.captured_image;
@@ -1513,7 +1514,7 @@ impl MyCedar {
             // to avoid displaying the Bayer grid.
             let binning_factor;
             let center_peak_jpg_buf;
-            if locked_state.camera.lock().await.is_color() {
+            if is_color {
                 let binned_center_peak_image = bin_2x2(center_peak_image.clone());
                 binning_factor = 2;
                 center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(binned_center_peak_image));
@@ -1610,7 +1611,7 @@ impl MyCedar {
                 // Bayer grid.
                 let binning_factor;
                 let jpg_buf;
-                if locked_state.camera.lock().await.is_color() {
+                if is_color {
                     let binned_boresight_image = bin_2x2(boresight_image.clone());
                     binning_factor = 2;
                     jpg_buf = Self::jpeg_encode(&Arc::new(binned_boresight_image));
