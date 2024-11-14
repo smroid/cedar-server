@@ -42,6 +42,7 @@ use tonic_web::GrpcWebLayer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, registry, EnvFilter};
 use tracing_appender::{non_blocking::NonBlockingBuilder};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
 use futures::join;
 
@@ -2373,7 +2374,12 @@ pub fn server_main(
     };
 
     // Set up logging.
-    let file_appender = tracing_appender::rolling::never(&args.log_dir, &args.log_file);
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix(&args.log_file)
+        .max_log_files(10)
+        .build(&args.log_dir).unwrap();
+
     // Create non-blocking writers for both the file and stdout
     let (non_blocking_file, _guard1) = NonBlockingBuilder::default()
         .lossy(false)
