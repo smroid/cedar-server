@@ -1237,6 +1237,7 @@ impl MyCedar {
                        solve_timeout: Duration)
                        -> Result<(), CanonicalError> {
         let setup_exposure_duration;
+        let max_exposure_duration;
         let binning;
         let detection_sigma;
         let star_count_goal;
@@ -1254,7 +1255,9 @@ impl MyCedar {
             calibration_data = locked_state.calibration_data.clone();
             detect_engine = locked_state.detect_engine.clone();
             solve_engine = locked_state.solve_engine.clone();
-
+            max_exposure_duration = std::time::Duration::try_from(
+                locked_state.fixed_settings.lock().unwrap()
+                    .max_exposure_time.clone().unwrap()).unwrap();
             // What was the final exposure duration coming out of SETUP mode?
             {
                 let locked_camera = camera.lock().await;
@@ -1287,7 +1290,7 @@ impl MyCedar {
         calibration_data.lock().await.camera_offset = Some(offset.value());
 
         let exp_duration = match calibrator.lock().await.calibrate_exposure_duration(
-            setup_exposure_duration, star_count_goal,
+            setup_exposure_duration, max_exposure_duration, star_count_goal,
             binning, detection_sigma,
             cancel_calibration.clone()).await {
             Ok(ed) => ed,

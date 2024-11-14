@@ -9,7 +9,7 @@ use image::GrayImage;
 use imageproc::stats::histogram;
 use log::warn;
 
-use cedar_camera::abstract_camera::{AbstractCamera, Gain, Offset};
+use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage, Gain, Offset};
 use canonical_error::{CanonicalError,
                       aborted_error, failed_precondition_error, internal_error,
                       deadline_exceeded_error, unknown_error};
@@ -54,10 +54,9 @@ impl Calibrator {
             return Err(aborted_error("Cancelled during calibrate_offset()."));
         }
         let _restore_settings = RestoreSettings::new(self.camera.clone());
-        let mut locked_camera = self.camera.lock().await;
 
-        locked_camera.set_exposure_duration(Duration::from_millis(1))?;
-        let (width, height) = locked_camera.dimensions();
+        self.camera.lock().await.set_exposure_duration(Duration::from_millis(1))?;
+        let (width, height) = self.camera.lock().await.dimensions();
         let total_pixels = width * height;
 
         let max_offset = 20;
@@ -67,9 +66,9 @@ impl Calibrator {
             if *cancel_calibration.lock().unwrap() {
                 return Err(aborted_error("Cancelled during calibrate_offset()."));
             }
-            locked_camera.set_offset(Offset::new(offset))?;
+            self.camera.lock().await.set_offset(Offset::new(offset))?;
             let (captured_image, frame_id) =
-                locked_camera.capture_image(prev_frame_id).await?;
+                Self::capture_image(self.camera.clone(), prev_frame_id).await?;
             prev_frame_id = Some(frame_id);
             let channel_histogram = histogram(captured_image.image.deref());
             let histo = channel_histogram.channels[0];
@@ -85,8 +84,33 @@ impl Calibrator {
                                               num_zero_pixels, max_offset).as_str()))
     }
 
+    async fn capture_image(
+        camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+        frame_id: Option<i32>) -> Result<(CapturedImage, i32), CanonicalError>
+    {
+        // Don't hold camera lock for the entirety of the time waiting for
+        // the next image.
+        loop {
+            let capture =
+                match camera.lock().await.try_capture_image(frame_id).await
+            {
+                Ok(c) => c,
+                Err(e) => { return Err(e); }
+            };
+            if capture.is_none() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                continue;
+            }
+            let (image, id) = capture.unwrap();
+            return Ok((image, id));
+        }
+    }
+
     pub async fn calibrate_exposure_duration(
-        &self, setup_exposure_duration: Duration, star_count_goal: i32,
+        &self,
+        setup_exposure_duration: Duration,
+        max_exposure_duration: Duration,
+        star_count_goal: i32,
         detection_binning: u32, detection_sigma: f64,
         cancel_calibration: Arc<Mutex<bool>>)
         -> Result<Duration, CanonicalError> {
@@ -132,6 +156,9 @@ impl Calibrator {
         }
 
         // Iterate with the refined exposure duration.
+        if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
+            scaled_exposure_duration_secs = max_exposure_duration.as_secs_f64();
+        }
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
         (_, stars, _) = self.acquire_image_get_stars(
@@ -148,6 +175,9 @@ impl Calibrator {
         }
 
         // Iterate one more time.
+        if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
+            scaled_exposure_duration_secs = max_exposure_duration.as_secs_f64();
+        }
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
         (_, stars, _) = self.acquire_image_get_stars(
@@ -260,7 +290,7 @@ impl Calibrator {
         -> Result<(Arc<GrayImage>, Vec<StarDescription>, i32), CanonicalError>
     {
         let (captured_image, frame_id) =
-            self.camera.lock().await.capture_image(frame_id).await?;
+            Self::capture_image(self.camera.clone(), frame_id).await?;
         // Run CedarDetect on the image.
         let image = &captured_image.image;
         let noise_estimate = estimate_noise_from_image(&image);
