@@ -1917,11 +1917,13 @@ impl MyCedar {
         } else {
             match Preferences::decode(file_prefs_bytes.as_ref().unwrap().as_slice()) {
                 Ok(mut file_prefs) => {
-                    if file_prefs.eyepiece_fov.unwrap() < 0.1 {
-                        file_prefs.eyepiece_fov = Some(0.1);
-                    }
-                    if file_prefs.eyepiece_fov.unwrap() > 2.0 {
-                        file_prefs.eyepiece_fov = Some(2.0);
+                    if let Some(fov) = file_prefs.eyepiece_fov {
+                        if fov < 0.1 {
+                            file_prefs.eyepiece_fov = Some(0.1);
+                        }
+                        if fov > 2.0 {
+                            file_prefs.eyepiece_fov = Some(2.0);
+                        }
                     }
                     if file_prefs.catalog_entry_match.is_some() {
                         // The protobuf merge() function accumulates into
@@ -1958,13 +1960,16 @@ impl MyCedar {
             FeatureLevel::Basic => (12, 200000000),  // 200ms, or 5Hz.
             _ => (20, 0),  // DIY.
         };
-        let update_interval = &mut preferences.update_interval.as_mut().unwrap();
-        if update_interval.seconds == 0 && update_interval.nanos < min_interval_nanos {
-            update_interval.nanos = min_interval_nanos;
+        if let Some(ref ui) = preferences.update_interval {
+            if ui.seconds == 0 && ui.nanos < min_interval_nanos {
+                preferences.update_interval.as_mut().unwrap().nanos = min_interval_nanos;
+            }
         }
-        let cat_match = &mut preferences.catalog_entry_match.as_mut().unwrap();
-        if cat_match.faintest_magnitude.unwrap() > limit_magnitude {
-            cat_match.faintest_magnitude = Some(limit_magnitude);
+        if let Some(ref cm) = preferences.catalog_entry_match {
+            if cm.faintest_magnitude.unwrap() > limit_magnitude {
+                preferences.catalog_entry_match.as_mut().unwrap().faintest_magnitude =
+                    Some(limit_magnitude);
+            }
         }
 
         let shared_preferences = Arc::new(Mutex::new(preferences));
