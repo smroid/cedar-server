@@ -89,3 +89,15 @@ Cedar-server version: 0.5.0
 * Remove speed/accuracy slider.
 
 * Fix push-to directions layout problems.
+
+# November 15 2024
+
+Cedar-server version: 0.6.0
+
+* Improve server and network reliability.
+
+* Adjust camera gain in daytime focus and align modes.
+
+* Fix bug leading to very long calibration delays.
+
+* Change to rolling logs.
