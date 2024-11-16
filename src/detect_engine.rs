@@ -421,7 +421,7 @@ impl DetectEngine {
                 // lower brightness_goal value allows for faster exposures,
                 // which is nice in focus mode.
                 let brightness_goal = if daylight_mode {
-                    128.0
+                    224.0
                 } else {
                     24.0
                 };
