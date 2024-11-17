@@ -32,7 +32,7 @@ use crate::cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering};
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram};
-use crate::scale_image::scale_image_mut;
+use crate::image_utils::scale_image_mut;
 use crate::astro_util::{angular_separation, position_angle};
 
 pub struct SolveEngine {

@@ -58,7 +58,7 @@ use crate::cedar::{ActionRequest, CalibrationData, CameraModel,
                    ServerLogResult, ServerInformation, WiFiAccessPoint};
 use crate::calibrator::Calibrator;
 use crate::detect_engine::{DetectEngine, DetectResult};
-use crate::scale_image::scale_image;
+use crate::image_utils::scale_image;
 use crate::solve_engine::{PlateSolution, SolveEngine};
 use crate::position_reporter::{TelescopePosition, create_alpaca_server};
 use crate::motion_estimator::MotionEstimator;

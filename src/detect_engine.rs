@@ -16,7 +16,7 @@ use cedar_detect::algorithm::{StarDescription, estimate_noise_from_image,
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram};
-use crate::scale_image::scale_image_mut;
+use crate::image_utils::scale_image_mut;
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
