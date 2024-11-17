@@ -2005,6 +2005,7 @@ impl MyCedar {
                 detect_engine: detect_engine.clone(),
                 tetra3_subprocess: tetra3_subprocess.clone(),
                 solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
+                    normalize_rows,
                     tetra3_subprocess.clone(), cedar_sky.clone(), detect_engine.clone(),
                     tetra3_uds, stats_capacity, closure).await.unwrap())),
                 calibrator: Arc::new(tokio::sync::Mutex::new(

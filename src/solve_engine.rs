@@ -32,7 +32,7 @@ use crate::cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering};
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram};
-use crate::image_utils::scale_image_mut;
+use crate::image_utils::{normalize_rows_mut, scale_image_mut};
 use crate::astro_util::{angular_separation, position_angle};
 
 pub struct SolveEngine {
@@ -68,6 +68,9 @@ struct SolveState {
     // is ignored and instead we retrieve bright planets and IAU stars for
     // the solved FOV.
     align_mode: bool,
+
+    // Determines whether rows are normalized to have the same dark level.
+    normalize_rows: bool,
 
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     catalog_entry_match: Option<CatalogEntryMatch>,
@@ -145,6 +148,7 @@ impl SolveEngine {
     }
 
     pub async fn new(
+        normalize_rows: bool,
         tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
@@ -164,6 +168,7 @@ impl SolveEngine {
             client: Arc::new(tokio::sync::Mutex::new(client)),
             state: Arc::new(tokio::sync::Mutex::new(SolveState{
                 align_mode: false,
+                normalize_rows,
                 cedar_sky,
                 catalog_entry_match: None,
                 frame_id: None,
@@ -453,11 +458,13 @@ impl SolveEngine {
 
             let minimum_stars;
             let frame_id;
+            let normalize_rows;
             let mut solve_request = SolveRequest::default();
             {
                 let locked_state = state.lock().await;
                 minimum_stars = locked_state.minimum_stars;
                 frame_id = locked_state.frame_id;
+                normalize_rows = locked_state.normalize_rows;
 
                 // Set up SolveRequest.
                 if !locked_state.align_mode {
@@ -617,7 +624,7 @@ impl SolveEngine {
                                     &cedar_sky,
                                     target_coords, image, &boresight_coords,
                                     &boresight_pixel, tsr,
-                                    width, height).await;
+                                    normalize_rows, width, height).await;
                         }
                         if let Some(sync_coord) = sync_coord {
                             // SkySafari user has invoked "Sync" operation on some
@@ -751,6 +758,7 @@ impl SolveEngine {
         boresight_coords: &CelestialCoord,
         boresight_pixel: &Option<ImageCoord>,
         tetra3_solve_result: &SolveResultProto,
+        normalize_rows: bool,
         width: u32, height: u32)
         -> (Option<cedar::SlewRequest>, Option<Rect>, Option<GrayImage>)
     {
@@ -830,6 +838,9 @@ impl SolveEngine {
                        boresight_image_region.unwrap().top() as u32,
                        bs_image_size as u32,
                        bs_image_size as u32).to_image());
+        if normalize_rows {
+            normalize_rows_mut(boresight_image.as_mut().unwrap());
+        }
         let mut histogram: [u32; 256] = [0_u32; 256];
         for pixel_value in boresight_image.as_ref().unwrap().pixels() {
             histogram[pixel_value.0[0] as usize] += 1;
