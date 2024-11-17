@@ -3,6 +3,7 @@
 
 use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage};
 
+use std::cmp::max;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -410,28 +411,31 @@ impl DetectEngine {
                 let roi_histogram = roi_summary.histogram;
 
                 black_level = get_level_for_fraction(&roi_histogram, 0.01) as u8;
-                // Compute peak_value as the average of the 5 brightest pixels.
-                peak_value = average_top_values(&roi_histogram, 5);
+                peak_value = max(get_level_for_fraction(&roi_histogram, 0.99) as u8, 1);
 
-                // Auto exposure. Adjust exposure time based on peak value of
+                // Auto exposure. Adjust exposure time based on value of
                 // inset_region.
 
-                // For auto exposure in focus mode, what is the target value
-                // of the brightest pixel in the image region? Note that a
-                // lower brightness_goal value allows for faster exposures,
-                // which is nice in focus mode.
-                let brightness_goal = if daylight_mode {
-                    224.0
+                let correction_factor: f64;
+                if daylight_mode {
+                    let median_value =
+                        max(get_level_for_fraction(&roi_histogram, 0.5) as u8, 1);
+                    // Push median of image towards mid-level.
+                    correction_factor = 128.0 / median_value as f64;
                 } else {
-                    24.0
-                };
+                    // For auto exposure in focus mode, what is the target value
+                    // of the brightest pixel in the image region? Note that a
+                    // lower brightness_goal value allows for faster exposures,
+                    // which is nice in focus mode.
+                    let brightness_goal = 24.0;
 
-                // Compute how much to scale the previous exposure
-                // integration time to move towards the goal. Assumes linear
-                // detector response.
+                    // Compute how much to scale the previous exposure
+                    // integration time to move towards the goal. Assumes linear
+                    // detector response.
+                    // Move proportionally towards the goal.
+                    correction_factor = brightness_goal / peak_value as f64;
+                }
 
-                // Move proportionally towards the goal.
-                let correction_factor = brightness_goal / peak_value as f64;
                 // Don't adjust exposure time too often, is a bit janky
                 // because the camera re-initializes.
                 if correction_factor < 0.7 || correction_factor > 1.3 {
