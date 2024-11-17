@@ -63,10 +63,8 @@ pub struct SolveEngine {
 
 // State shared between worker thread and the SolveEngine methods.
 struct SolveState {
-    // In align mode, plate solves are done without calibration results
-    // (fov estimate, distortion, match_max_error). The `catalog_entry_match`
-    // is ignored and instead we retrieve bright planets and IAU stars for
-    // the solved FOV.
+    // In align mode, the `catalog_entry_match` is ignored and instead we
+    // retrieve bright planets and IAU stars for the solved FOV.
     align_mode: bool,
 
     // Determines whether rows are normalized to have the same dark level.
@@ -467,19 +465,10 @@ impl SolveEngine {
                 normalize_rows = locked_state.normalize_rows;
 
                 // Set up SolveRequest.
-                if !locked_state.align_mode {
-                    solve_request.fov_estimate = locked_state.fov_estimate;
+                solve_request.fov_estimate = locked_state.fov_estimate;
+                if let Some(fov) = locked_state.fov_estimate {
+                    solve_request.fov_max_error = Some(fov / 10.0);
                 }
-                match locked_state.fov_estimate {
-                    Some(fov) => {
-                        solve_request.fov_max_error = Some(fov / 10.0);
-                        solve_request.match_max_error = None;
-                    }
-                    None => {
-                        solve_request.fov_max_error = None;
-                        solve_request.match_max_error = Some(0.005);
-                    }
-                };
 
                 solve_request.match_radius = Some(locked_state.match_radius);
                 solve_request.match_threshold = Some(locked_state.match_threshold);
@@ -498,13 +487,8 @@ impl SolveEngine {
                 if let Some(slew_target) = &locked_state.slew_target {
                     solve_request.target_sky_coords.push(slew_target.clone());
                 }
-                if !locked_state.align_mode {
-                    solve_request.distortion = Some(locked_state.distortion);
-                    solve_request.match_max_error = Some(locked_state.match_max_error);
-                } else {
-                    solve_request.distortion = Some(0.0);
-                    solve_request.match_max_error = Some(0.005);
-                }
+                solve_request.distortion = Some(locked_state.distortion);
+                solve_request.match_max_error = Some(locked_state.match_max_error);
                 solve_request.return_matches = locked_state.return_matches;
                 solve_request.return_rotation_matrix = true;
             }
