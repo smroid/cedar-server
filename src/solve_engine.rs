@@ -602,6 +602,9 @@ impl SolveEngine {
                             solution_callback(boresight_pixel.clone(),
                                               Some(detect_result.clone()), Some(tsr.clone()));
                         state.lock().await.slew_target = slew_target;
+                        // If we're slewing, see if the boresight is close enough to
+                        // the slew target that Cedar Aim should display an inset image
+                        // of the region around the boresight.
                         if let Some(target_coords) = &state.lock().await.slew_target {
                             (slew_request, boresight_image_region, boresight_image) =
                                 Self::handle_slew(
@@ -820,8 +823,8 @@ impl SolveEngine {
         let mut boresight_image = Some(
             image.view(boresight_image_region.unwrap().left() as u32,
                        boresight_image_region.unwrap().top() as u32,
-                       bs_image_size as u32,
-                       bs_image_size as u32).to_image());
+                       boresight_image_region.unwrap().width() as u32,
+                       boresight_image_region.unwrap().height() as u32).to_image());
         if normalize_rows {
             normalize_rows_mut(boresight_image.as_mut().unwrap());
         }
