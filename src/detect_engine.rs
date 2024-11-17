@@ -16,7 +16,7 @@ use cedar_detect::algorithm::{StarDescription, estimate_noise_from_image,
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram};
-use crate::image_utils::scale_image_mut;
+use crate::image_utils::{normalize_rows_mut, scale_image_mut};
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
 
@@ -459,19 +459,7 @@ impl DetectEngine {
                                                     peak_region.width() as u32,
                                                     peak_region.height() as u32).to_image();
                     if normalize_rows {
-                        for y in 0..peak_region.height() {
-                            let mut min_value = 255_u8;
-                            for x in 0..peak_region.width() {
-                                let value = peak_image.get_pixel(x as u32, y as u32).0[0];
-                                if value < min_value {
-                                    min_value = value;
-                                }
-                            }
-                            for x in 0..peak_region.width() {
-                                let value = peak_image.get_pixel_mut(x as u32, y as u32);
-                                value[0] -= min_value;
-                            }
-                        }
+                        normalize_rows_mut(&mut peak_image);
                     }
                     // Find min/max for display stretching.
                     let mut min_value = peak_image.get_pixel(0, 0).0[0];

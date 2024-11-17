@@ -45,3 +45,22 @@ pub fn scale_image_mut(
         pixel[0] = lut[pixel[0] as usize];
     }
 }
+
+// Some cameras have a problem where some rows have a noise-induced level
+// offset. This function heuristically normalizes each row to have similar
+// black level.
+pub fn normalize_rows_mut(image: &mut GrayImage) {
+    for y in 0..image.height() {
+        let mut min_value = 255_u8;
+        for x in 0..image.width() {
+            let value = image.get_pixel(x as u32, y as u32).0[0];
+            if value < min_value {
+                min_value = value;
+            }
+        }
+        for x in 0..image.width() {
+            let value = image.get_pixel_mut(x as u32, y as u32);
+            value[0] -= min_value;
+        }
+    }
+}
