@@ -674,8 +674,10 @@ message ActionRequest {
   optional bool capture_boresight = 1;
 
   // In SETUP alignment mode, this conveys which part of the image the user
-  // tapped to designate the telescope's FOV center. The image coordinates are
-  // full resolution within FrameResult.image.
+  // tapped to designate the telescope's FOV center (in daylight mode) or the
+  // x/y image position of the highlighted star/planet the user selected (not in
+  // daylight mode). The image coordinates are full resolution within
+  // FrameResult.image.
   optional ImageCoord designate_boresight = 2;
 
   // Shut down the computer on which the Cedar server is running. Do this before
