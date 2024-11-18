@@ -101,3 +101,9 @@ Cedar-server version: 0.6.0
 * Fix bug leading to very long calibration delays.
 
 * Change to rolling logs.
+
+November 17 2024
+
+Cedar-server version: 0.6.1
+
+* Bug fixes.
