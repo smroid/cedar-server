@@ -67,10 +67,14 @@ impl RateEstimation {
     }
 
     // Successive calls to add() must have increasing `time` arg values.
-    pub fn add(&mut self, mut time: SystemTime, value: f64, noise_estimate: f64) {
+    pub fn add(&mut self, time: SystemTime, value: f64, noise_estimate: f64) {
         if time <= self.last {
-            warn!("Time arg regressed from {:?} to {:?}", self.last, time);
-            time = self.last + Duration::from_micros(1);
+            // This can happen when the client updates the server's system time.
+            if time <= self.last - Duration::from_secs(10) {
+                warn!("Time arg regressed from {:?} to {:?}", self.last, time);
+            }
+            self.last = time;
+            return;
         }
         self.last = time;
         let (added, removed) = self.reservoir.add(DataPoint{x: time, y: value});
