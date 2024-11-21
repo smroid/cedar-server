@@ -624,7 +624,9 @@ impl Cedar for MyCedar {
         }
         if let Some(invert_camera) = req.invert_camera {
             our_prefs.invert_camera = Some(invert_camera);
-
+        }
+        if let Some(right_handed) = req.right_handed {
+            our_prefs.right_handed = Some(right_handed);
         }
         *self.state.lock().await.preferences.lock().unwrap() = our_prefs.clone();
         // Write updated preferences to file.
@@ -1872,6 +1874,7 @@ impl MyCedar {
             text_size_index: Some(0),
             boresight_pixel: None,
             invert_camera: Some(invert_camera),  // Initial value from command line.
+            right_handed: Some(true),
         };
 
         // If there is a preferences file, read it and merge its contents into

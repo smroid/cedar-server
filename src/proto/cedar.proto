@@ -250,6 +250,9 @@ message Preferences {
   // do not update this via UpdatePreferences().
   optional bool invert_camera = 20;
 
+  // Whether UI buttons and such are positioned on right side of screen.
+  optional bool right_handed = 21;
+
   reserved 4, 8;
 }
 
