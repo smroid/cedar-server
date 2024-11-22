@@ -2,8 +2,9 @@
 // See LICENSE file in root directory for license terms.
 
 use std::fs;
+use std::fs::metadata;
 use std::io;
-use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Cursor, ErrorKind, Read, Seek, SeekFrom};
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -16,8 +17,10 @@ use cedar_camera::abstract_camera::{AbstractCamera, Gain, Offset,
                                     bin_2x2, sample_2x2};
 use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
+
 use canonical_error::{CanonicalError, CanonicalErrorCode};
 use chrono::offset::Local;
+use glob::glob;
 use image::{GrayImage};
 use image::ImageReader;
 use image::codecs::jpeg::JpegEncoder;
@@ -113,7 +116,7 @@ struct MyCedar {
 
     preferences_file: PathBuf,
 
-    // The path to our log file.
+    // The full path to our log file.
     log_file: PathBuf,
 
     product_name: String,
@@ -186,7 +189,7 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<ServerLogResult>, tonic::Status>
     {
         let req: ServerLogRequest = request.into_inner();
-        let tail = Self::read_file_tail(&self.log_file, req.log_request);
+        let tail = Self::read_log_tail(&self.log_file, req.log_request);
         if let Err(e) = tail {
             return Err(tonic::Status::failed_precondition(
                 format!("Error reading log file {:?}: {:?}.", self.log_file, e)));
@@ -2095,8 +2098,44 @@ impl MyCedar {
         cedar
     }
 
-    fn read_file_tail(log_file: &PathBuf, bytes_to_read: i32) -> io::Result<String> {
-        let mut f = fs::File::open(log_file)?;
+    // From Gemini.
+    fn find_most_recent_file(pattern: &str) -> Option<PathBuf> {
+        let mut latest_file: Option<(PathBuf, u64)> = None;
+
+        for entry in glob(pattern).expect("Failed to read glob pattern") {
+            match entry {
+                Ok(path) => {
+                    let metadata = metadata(&path).expect("Failed to read metadata");
+                    let modified_time = metadata.modified()
+                        .expect("Failed to get modified time")
+                        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                    if latest_file.is_none() ||
+                        modified_time > latest_file.as_ref().unwrap().1
+                    {
+                        latest_file = Some((path, modified_time));
+                    }
+                }
+                Err(e) => {
+                    warn!("Error globbing pattern {:?}: {:?}", pattern, e);
+                }
+            }
+        }
+
+        if let Some(result) = latest_file {
+            Some(result.0)
+        } else {
+            None
+        }
+    }
+
+    fn read_log_tail(log_file: &PathBuf, bytes_to_read: i32) -> io::Result<String> {
+        let pat = log_file.to_str().unwrap().to_owned() + ".*";
+        let latest_file = Self::find_most_recent_file(&pat);
+        if latest_file.is_none() {
+            return Err(io::Error::new(ErrorKind::NotFound,
+                                      format!("No match for {:?}", pat)));
+        }
+        let mut f = fs::File::open(latest_file.unwrap())?;
         let len = f.metadata()?.len();
         let to_read = std::cmp::min(len, bytes_to_read as u64) as i64;
         f.seek(SeekFrom::End(-to_read))?;
