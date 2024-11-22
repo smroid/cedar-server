@@ -569,7 +569,11 @@ impl Cedar for MyCedar {
         &self, request: tonic::Request<Preferences>)
         -> Result<tonic::Response<Preferences>, tonic::Status> {
         let req: Preferences = request.into_inner();
-        let mut our_prefs = self.state.lock().await.preferences.lock().unwrap().clone();
+        // Hold our lock across this entire operation to ensure that the file
+        // update is done one at a time.
+        let locked_state = self.state.lock().await;
+
+        let mut our_prefs = locked_state.preferences.lock().unwrap().clone();
         if let Some(coord_format) = req.celestial_coord_format {
             our_prefs.celestial_coord_format = Some(coord_format);
         }
@@ -628,8 +632,10 @@ impl Cedar for MyCedar {
         if let Some(right_handed) = req.right_handed {
             our_prefs.right_handed = Some(right_handed);
         }
-        *self.state.lock().await.preferences.lock().unwrap() = our_prefs.clone();
-        // Write updated preferences to file.
+        *locked_state.preferences.lock().unwrap() = our_prefs.clone();
+
+        // Write updated preferences to file. Note that this operation is
+        // guarded by our holding locked_state.
         Self::write_preferences_file(&self.preferences_file, &our_prefs);
 
         Ok(tonic::Response::new(our_prefs.clone()))
@@ -1096,11 +1102,12 @@ impl MyCedar {
             return;
         }
         if let Err(e) = fs::write(&scratch_path, buf) {
-            warn!("Could not write file: {:?}", e);
+            warn!("Could not write file {:?}: {:?}", &scratch_path, e);
             return;
         }
-        if let Err(e) = fs::rename(scratch_path, prefs_path) {
-            warn!("Could not rename file: {:?}", e);
+        if let Err(e) = fs::rename(&scratch_path, &prefs_path) {
+            warn!("Could not rename file {:?} to {:?}: {:?}",
+                  &scratch_path, &prefs_path, e);
             return;
         }
     }
