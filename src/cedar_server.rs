@@ -53,7 +53,7 @@ use crate::activity_led::ActivityLed;
 use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 use crate::cedar::{ActionRequest, CalibrationData, CameraModel,
-                   CelestialCoordFormat, EmptyMessage,
+                   CelestialCoordChoice, CelestialCoordFormat, EmptyMessage,
                    FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
                    FrameResult, Image, ImageCoord, LatLong, LocationBasedInfo,
                    MountType, OperatingMode, OperationSettings, ProcessingStats,
@@ -634,6 +634,9 @@ impl Cedar for MyCedar {
         }
         if let Some(right_handed) = req.right_handed {
             our_prefs.right_handed = Some(right_handed);
+        }
+        if let Some(celestial_coord_choice) = req.celestial_coord_choice {
+            our_prefs.celestial_coord_choice = Some(celestial_coord_choice);
         }
         *locked_state.preferences.lock().unwrap() = our_prefs.clone();
 
@@ -1885,6 +1888,7 @@ impl MyCedar {
             boresight_pixel: None,
             invert_camera: Some(invert_camera),  // Initial value from command line.
             right_handed: Some(true),
+            celestial_coord_choice: Some(CelestialCoordChoice::RaDec.into()),
         };
 
         // If there is a preferences file, read it and merge its contents into

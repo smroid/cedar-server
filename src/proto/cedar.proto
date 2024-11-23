@@ -253,6 +253,9 @@ message Preferences {
   // Whether UI buttons and such are positioned on right side of screen.
   optional bool right_handed = 21;
 
+  // Whether main display shows RA/Dec or Az/Alt.
+  optional CelestialCoordChoice celestial_coord_choice = 22;
+
   reserved 4, 8;
 }
 
@@ -272,6 +275,16 @@ enum CelestialCoordFormat {
   // RA  = 12h 9m 20.28s
   // DEC = 34d 14m 6.36s
   HMS_DMS = 2;
+}
+
+enum CelestialCoordChoice {
+  CHOICE_UNSPECIFIED = 0;
+
+  // RA/Dec.
+  RA_DEC = 1;
+
+  // Alt/Az and also hour angle.
+  ALT_AZ_HA = 2;
 }
 
 enum MountType {
