@@ -638,6 +638,9 @@ impl Cedar for MyCedar {
         if let Some(celestial_coord_choice) = req.celestial_coord_choice {
             our_prefs.celestial_coord_choice = Some(celestial_coord_choice);
         }
+        if let Some(screen_always_on) = req.screen_always_on {
+            our_prefs.screen_always_on = Some(screen_always_on);
+        }
         *locked_state.preferences.lock().unwrap() = our_prefs.clone();
 
         // Write updated preferences to file. Note that this operation is
@@ -1889,6 +1892,7 @@ impl MyCedar {
             invert_camera: Some(invert_camera),  // Initial value from command line.
             right_handed: Some(true),
             celestial_coord_choice: Some(CelestialCoordChoice::RaDec.into()),
+            screen_always_on: Some(true),
         };
 
         // If there is a preferences file, read it and merge its contents into

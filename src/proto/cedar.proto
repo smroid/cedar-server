@@ -256,6 +256,9 @@ message Preferences {
   // Whether main display shows RA/Dec or Az/Alt.
   optional CelestialCoordChoice celestial_coord_choice = 22;
 
+  // Whether mobile screen is kept on while in Cedar Aim.
+  optional bool screen_always_on = 23;
+
   reserved 4, 8;
 }
 
