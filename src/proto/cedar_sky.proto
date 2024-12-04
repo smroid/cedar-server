@@ -36,6 +36,7 @@ message QueryCatalogRequest {
   // it, etc. Each token is treated as a prefix search term, and multiple
   // token terms are combined with implicit AND; order is not significant.
   // Thus, |andr gal| and |gal andr| both match "Andromeda Galaxy".
+  // TODO: doc that `text_search` causes other criteria to be ignored.
   optional string text_search = 8;
 }
 
