@@ -31,12 +31,13 @@ message QueryCatalogRequest {
   // If given, caps the number of `entries` in QueryCatalogResponse.
   optional int32 limit_result = 7;
 
-  // If given, applies a text match as an additional constraint. The server
-  // canonicalizes the given string, removing dangerous characters, tokenizing
-  // it, etc. Each token is treated as a prefix search term, and multiple
-  // token terms are combined with implicit AND; order is not significant.
-  // Thus, |andr gal| and |gal andr| both match "Andromeda Galaxy".
-  // TODO: doc that `text_search` causes other criteria to be ignored.
+  // If given, applies a text match constraint. The server canonicalizes the
+  // given string, removing dangerous characters, tokenizing it, etc. Each token
+  // is treated as a prefix search term, and multiple token terms are combined
+  // with implicit AND; order is not significant. Thus, |andr gal| and
+  // |gal andr| both match "Andromeda Galaxy".
+  // Note that when `text_search` is given, the `catalog_entry_match`,
+  // `max_distance`, and `min_elevation` constraints are ignored.
   optional string text_search = 8;
 }
 
@@ -46,10 +47,13 @@ message CatalogEntryMatch {
   // excluded.
   optional int32 faintest_magnitude = 1;
 
-  // What catalog(s) to search. Note: if empty, no filtering on catalog is
-  // done.
+  // If true, `catalog_label` is used to match catalog(s).
+  bool match_catalog_label = 4;
+  // What catalog(s) to search.
   repeated string catalog_label = 2;
 
+  // If true, `object_type_label` is used to match object type(s).
+  bool match_object_type_label = 5;
   // What object type(s) to search. Note: if empty, no filtering on object
   // type is done.
   repeated string object_type_label = 3;

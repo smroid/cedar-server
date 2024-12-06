@@ -837,17 +837,19 @@ impl Cedar for MyCedar {
         // TODO: don't hold our state.lock() during this.
         let result =
             locked_state.cedar_sky.as_ref().unwrap().lock().await.query_catalog_entries(
-            req.max_distance,
-            req.min_elevation,
-            catalog_entry_match.faintest_magnitude,
-            &catalog_entry_match.catalog_label,
-            &catalog_entry_match.object_type_label,
-            req.text_search,
-            ordering,
-            req.decrowd_distance,
-            limit_result,
-            sky_location,
-            location_info);
+                req.max_distance,
+                req.min_elevation,
+                catalog_entry_match.faintest_magnitude,
+                catalog_entry_match.match_catalog_label,
+                &catalog_entry_match.catalog_label,
+                catalog_entry_match.match_object_type_label,
+                &catalog_entry_match.object_type_label,
+                req.text_search,
+                ordering,
+                req.decrowd_distance,
+                limit_result,
+                sky_location,
+                location_info);
         if let Err(e) = result {
             return Err(tonic_status(e));
         }
@@ -1854,8 +1856,10 @@ impl MyCedar {
                             FeatureLevel::Basic => Some(10),  // Max 12.
                             _ => None,  // Irrelevant, no Cedar Sky.
                         },
-                        catalog_label: Vec::<String>::new(),
-                        object_type_label: Vec::<String>::new(),
+                        match_catalog_label: true,
+                        catalog_label: Vec::<String>::new(),  // Filled below.
+                        match_object_type_label: true,
+                        object_type_label: Vec::<String>::new(),  // Filled below.
                     });
                 let cm_ref = cat_match.as_mut().unwrap();
                 // All catalog labels.

@@ -638,12 +638,18 @@ impl SolveEngine {
                     if cedar_sky.is_some() {
                         let mut catalog_entry_match =
                             state.lock().await.catalog_entry_match.clone().unwrap();
+                        catalog_entry_match.match_catalog_label = false;
+                        catalog_entry_match.match_object_type_label = false;
                         if align_mode {
+                            // Replace catalog_entry_match.
                             catalog_entry_match = CatalogEntryMatch {
                                 faintest_magnitude: Some(4),
-                                catalog_label: vec!["IAU".to_string(), "PL".to_string()],
+                                match_catalog_label: false,
+                                catalog_label: vec![],
+                                match_object_type_label: true,
                                 object_type_label: vec!["star".to_string(),
                                                         "double star".to_string(),
+                                                        "nova star".to_string(),
                                                         "planet".to_string()],
                             };
                         }
@@ -711,7 +717,9 @@ impl SolveEngine {
             /*max_distance=*/Some(1.0 / 60.0),  // 1 arcmin.
             /*min_elevation=*/None,
             /*faintest_magnitude=*/None,
+            /*match_catalog_label=*/false,
             /*catalog_label=*/&vec![],
+            /*match_object_type_label=*/false,
             /*object_type_label=*/&vec![],
             /*text_search*/None,
             /*ordering=*/Some(Ordering::SkyLocation),
@@ -900,7 +908,9 @@ impl SolveEngine {
             /*max_distance=*/Some(radius_deg),
             /*min_elevation=*/None,
             catalog_entry_match.faintest_magnitude,
+            catalog_entry_match.match_catalog_label,
             &catalog_entry_match.catalog_label,
+            catalog_entry_match.match_object_type_label,
             &catalog_entry_match.object_type_label,
             /*text_search*/None,
             /*ordering=*/None,
