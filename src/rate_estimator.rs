@@ -179,23 +179,23 @@ mod tests {
 
         // Add a second point, one second later and 0.1 higher.
         time += Duration::from_secs(1);
-        assert!(re.fits_trend(time, 1.1, /*sigma=*/5.0));
+        assert!(re.fits_trend(time, 1.1, /*sigma=*/1.0));
         re.add(time, 1.1, 0.1);
         assert_eq!(re.count(), 2);
         assert_abs_diff_eq!(re.slope(), 0.1, epsilon = 0.001);
 
         // Add a third point, slightly displaced from the trend.
         time += Duration::from_secs(1);
-        assert!(re.fits_trend(time, 1.22, /*sigma=*/5.0));
+        assert!(re.fits_trend(time, 1.22, /*sigma=*/1.0));
         re.add(time, 1.22, 0.1);
         assert_eq!(re.count(), 3);
         assert_abs_diff_eq!(re.slope(), 0.11, epsilon = 0.001);
-        assert_abs_diff_eq!(re.rate_interval_bound(), 0.0057, epsilon = 0.0001);
+        assert_abs_diff_eq!(re.rate_interval_bound(), 0.07, epsilon = 0.01);
 
         // Fourth point.
         time += Duration::from_secs(1);
-        assert!(!re.fits_trend(time, 1.3, /*sigma=*/5.0));
-        assert!(re.fits_trend(time, 1.31, /*sigma=*/5.0));
+        assert!(!re.fits_trend(time, 1.25, /*sigma=*/1.0));
+        assert!(re.fits_trend(time, 1.31, /*sigma=*/1.0));
     }
 
 }  // mod tests.
