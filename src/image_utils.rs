@@ -77,47 +77,12 @@ pub fn normalize_rows_mut(image: &mut GrayImage) {
 // dimensions.
 // The `fill` value is used to fill in pixels outside of the shrunk/rotated
 // image.
-pub fn rotate_image(image: &GrayImage, angle: f64, fill: u8) -> GrayImage {
-    assert!(angle >= -180.0);
-    assert!(angle <= 180.0);
-
+pub fn rotate_image(image: &GrayImage, angle: f64, fill: u8)
+                    -> (GrayImage, RotatedImageCoordTransform)
+{
     let (w, h) = image.dimensions();
-
-    // Take the origin to be at the center of the image rectangle, and
-    // express the coordinates of each rectangle vertex.
-    let p1 = ( 0.5 * w as f64,  0.5 * h as f64);
-    let p2 = (-0.5 * w as f64,  0.5 * h as f64);
-    let p3 = (-0.5 * w as f64, -0.5 * h as f64);
-    let p4 = ( 0.5 * w as f64, -0.5 * h as f64);
-
-    // Find the rotated rectangle's vertices.
-    let p1_rot = rotate_vector(p1.0, p1.1, angle);
-    let p2_rot = rotate_vector(p2.0, p2.1, angle);
-    let p3_rot = rotate_vector(p3.0, p3.1, angle);
-    let p4_rot = rotate_vector(p4.0, p4.1, angle);
-
-    // Compute the horizontal and vertical extent of the rotated rectangle.
-    let mut x_min = 0.0_f64;
-    let mut x_max = 0.0_f64;
-    let mut y_min = 0.0_f64;
-    let mut y_max = 0.0_f64;
-    for p in [p1_rot, p2_rot, p3_rot, p4_rot] {
-        let (x, y) = p;
-        x_min = x_min.min(x);
-        x_max = x_max.max(x);
-        y_min = y_min.min(y);
-        y_max = y_max.max(y);
-    }
-    let w_rot = x_max - x_min;
-    let h_rot = y_max - y_min;
-
-    // One or both of the rotated width or height will be larger than the
-    // original width/height. Find out how much we need to scale down the
-    // rotated rectangle to fit within the original dimensions.
-    let w_ratio = w_rot / w as f64;
-    let h_ratio = h_rot / h as f64;
-    let ratio = w_ratio.max(h_ratio);
-    assert!(ratio >= 1.0);
+    let coord_rotate = RotatedImageCoordTransform::new(w, h, angle);
+    let ratio = coord_rotate.size_ratio();
 
     // Pad the image before shrinking.
     let padded_w = w as f64 * ratio;
@@ -146,16 +111,125 @@ pub fn rotate_image(image: &GrayImage, angle: f64, fill: u8) -> GrayImage {
             FilterType::Bilinear))).unwrap();
 
     let resized_img = GrayImage::from_raw(w, h, dst_img.into_vec()).unwrap();
-    rotate_about_center(&resized_img,
-                        -1.0 * angle.to_radians() as f32,
-                        // Almost as fast as Nearest, with much higher visual quality.
-                        Interpolation::Bilinear,
-                        Luma::<u8>([fill]))
+    (rotate_about_center(&resized_img,
+                         -1.0 * angle.to_radians() as f32,
+                         // Almost as fast as Nearest, with much higher visual quality.
+                         Interpolation::Bilinear,
+                         Luma::<u8>([fill])),
+     coord_rotate)
 }
 
-fn rotate_vector(x: f64, y: f64, angle: f64) -> (f64, f64) {
-    let angle_rad = angle.to_radians();
-    let x_new = x * angle_rad.cos() - y * angle_rad.sin();
-    let y_new = x * angle_rad.sin() + y * angle_rad.cos();
-    (x_new, y_new)
+pub struct RotatedImageCoordTransform {
+    width: u32,
+    height: u32,
+    sin_term: f64,
+    cos_term: f64,
+    size_ratio: f64,
+}
+
+// Provides methods to deal with the coordinate transform that results
+// from rotate_image().
+impl RotatedImageCoordTransform {
+    // `angle` degrees, positive is counter-clockwise. Must be on [-180..180].
+    pub fn new(width: u32, height: u32, angle: f64) -> Self {
+        assert!(angle >= -180.0);
+        assert!(angle <= 180.0);
+        let angle_rad = angle.to_radians();
+        let sin_term = angle_rad.sin();
+        let cos_term = angle_rad.cos();
+
+        // Take the origin to be at the center of the image rectangle, and
+        // express the coordinates of each rectangle vertex.
+        let w = width;
+        let h = height;
+        let p1 = ( 0.5 * w as f64,  0.5 * h as f64);
+        let p2 = (-0.5 * w as f64,  0.5 * h as f64);
+        let p3 = (-0.5 * w as f64, -0.5 * h as f64);
+        let p4 = ( 0.5 * w as f64, -0.5 * h as f64);
+
+        // Find the rotated rectangle's vertices.
+        let p1_rot = Self::rotate_vector(p1.0, p1.1, sin_term, cos_term);
+        let p2_rot = Self::rotate_vector(p2.0, p2.1, sin_term, cos_term);
+        let p3_rot = Self::rotate_vector(p3.0, p3.1, sin_term, cos_term);
+        let p4_rot = Self::rotate_vector(p4.0, p4.1, sin_term, cos_term);
+
+        // Compute the horizontal and vertical extent of the rotated rectangle.
+        let mut x_min = 0.0_f64;
+        let mut x_max = 0.0_f64;
+        let mut y_min = 0.0_f64;
+        let mut y_max = 0.0_f64;
+        for p in [p1_rot, p2_rot, p3_rot, p4_rot] {
+            let (x, y) = p;
+            x_min = x_min.min(x);
+            x_max = x_max.max(x);
+            y_min = y_min.min(y);
+            y_max = y_max.max(y);
+        }
+        let w_rot = x_max - x_min;
+        let h_rot = y_max - y_min;
+
+        // One or both of the rotated width or height will be larger than the
+        // original width/height. Find out how much we need to scale down the
+        // rotated rectangle to fit within the original dimensions.
+        let w_ratio = w_rot / w as f64;
+        let h_ratio = h_rot / h as f64;
+        let ratio = w_ratio.max(h_ratio);
+        assert!(ratio >= 1.0);
+
+        RotatedImageCoordTransform{
+            width, height, sin_term, cos_term, size_ratio: ratio}
+    }
+
+    // Returns the ratio of the original image size and size to which it
+    // was reduced to fit, rotated, within the original dimensions. This
+    // value is always >= 1.0.
+    pub fn size_ratio(&self) -> f64 { self.size_ratio }
+
+    // Given (x, y), the image coordinates in the original image, returns the
+    // coordinates of the downscaled/rotated image within the output image.
+    pub fn transform_to_rotated(&self, x: f64, y: f64) -> (f64, f64) {
+        // The x, y origin is upper-left corner. Change to center-based
+        // coordinates.
+        let x_cen = x - (self.width as f64 / 2.0);
+        let y_cen = (self.height as f64 / 2.0) - y;
+
+        // Rotate according to the transform.
+        let (x_cen_rot, y_cen_rot) =
+            Self::rotate_vector(x_cen, y_cen, self.sin_term, self.cos_term);
+
+        // Scale down.
+        let x_cen_rot_scaled = x_cen_rot / self.size_ratio;
+        let y_cen_rot_scaled = y_cen_rot / self.size_ratio;
+
+        // Move back to corner-based origin.
+        (x_cen_rot_scaled + (self.width as f64 / 2.0),
+         (self.height as f64 / 2.0) - y_cen_rot_scaled)
+    }
+
+    // Given (x, y), the image coordinates in the output image after
+    // downscaling/rotating, returns the coordinates within the original
+    // image (prior to downscaling/rotating).
+    pub fn transform_from_rotated(&self, x: f64, y: f64) -> (f64, f64) {
+        // The x, y origin is upper-left corner. Change to center-based
+        // coordinates.
+        let x_cen = x - (self.width as f64 / 2.0);
+        let y_cen = (self.height as f64 / 2.0) - y;
+
+        // De-rotate according to the transform.
+        let (x_cen_rot, y_cen_rot) =
+            Self::rotate_vector(x_cen, y_cen, -1.0 * self.sin_term, self.cos_term);
+
+        // Scale up.
+        let x_cen_rot_scaled = x_cen_rot * self.size_ratio;
+        let y_cen_rot_scaled = y_cen_rot * self.size_ratio;
+
+        // Move back to corner-based origin.
+        (x_cen_rot_scaled + (self.width as f64 / 2.0),
+         (self.height as f64 / 2.0) - y_cen_rot_scaled)
+    }
+
+    fn rotate_vector(x: f64, y: f64, sin_term: f64, cos_term: f64) -> (f64, f64) {
+        (x * cos_term - y * sin_term,
+         x * sin_term + y * cos_term)
+    }
 }
