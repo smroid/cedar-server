@@ -71,64 +71,18 @@ pub fn normalize_rows_mut(image: &mut GrayImage) {
     }
 }
 
-// `angle` degrees, positive is counter-clockwise.
-// The returned image has the same dimensions as the argument; the input image
-// is shrunk as needed such that the rotated image fits within the original
-// dimensions.
-// The `fill` value is used to fill in pixels outside of the shrunk/rotated
-// image.
-pub fn rotate_image(image: &GrayImage, angle: f64, fill: u8)
-                    -> (GrayImage, RotatedImageCoordTransform)
-{
-    let (w, h) = image.dimensions();
-    let coord_rotate = RotatedImageCoordTransform::new(w, h, angle);
-    let ratio = coord_rotate.size_ratio();
-
-    // Pad the image before shrinking.
-    let padded_w = w as f64 * ratio;
-    let padded_h = h as f64 * ratio;
-    let mut new_img = ImageBuffer::from_pixel(padded_w as u32, padded_h as u32,
-                                              Luma::<u8>([fill]));
-    let border_w = (padded_w - w as f64) / 2.0;
-    let border_h = (padded_h - h as f64) / 2.0;
-    let x_offset = border_w as i64;
-    let y_offset = border_h as i64;
-    imageops::replace(&mut new_img, image, x_offset, y_offset);
-
-    // Shrink the padded image before rotating.
-
-    // Convert GrayImage to FastImage for fast_image_resize.
-    let src_img = FastImage::from_vec_u8(padded_w as u32, padded_h as u32,
-                                         new_img.into_raw(),
-                                         fast_image_resize::PixelType::U8).unwrap();
-    // Resize the image.
-    let mut resizer = Resizer::new();
-    let mut dst_img = FastImage::new(w, h, src_img.pixel_type());
-    resizer.resize(
-        &src_img, &mut dst_img,
-        &ResizeOptions::new().resize_alg(FastInterp(
-            // Almost as fast as Box, with higher visual quality.
-            FilterType::Bilinear))).unwrap();
-
-    let resized_img = GrayImage::from_raw(w, h, dst_img.into_vec()).unwrap();
-    (rotate_about_center(&resized_img,
-                         -1.0 * angle.to_radians() as f32,
-                         // Almost as fast as Nearest, with much higher visual quality.
-                         Interpolation::Bilinear,
-                         Luma::<u8>([fill])),
-     coord_rotate)
-}
-
-pub struct RotatedImageCoordTransform {
+// Tool for rotating an image and performing related coordinate transforms.
+pub struct ImageRotator {
+    angle_rad: f64,
     sin_term: f64,
     cos_term: f64,
     size_ratio: f64,
 }
-
-// Provides methods to deal with the coordinate transform that results
-// from rotate_image().
-impl RotatedImageCoordTransform {
+impl ImageRotator {
     // `angle` degrees, positive is counter-clockwise.
+    // The supplied `width` and `height` must match the values passed to
+    // rotate_image() and transform_xxx(), allowing for scaling up and down (but
+    // not changing the aspect ratio).
     pub fn new(width: u32, height: u32, angle: f64) -> Self {
         let angle_rad = angle.to_radians();
         let sin_term = angle_rad.sin();
@@ -172,17 +126,56 @@ impl RotatedImageCoordTransform {
         let ratio = w_ratio.max(h_ratio);
         assert!(ratio >= 1.0);
 
-        // Note that we don't store the width and height. The caller passes
-        // the run-time width/height into the transform_xxx methods, because
-        // the run-time coordinate transform requests might be for a different
-        // scaling of the image size.
-        RotatedImageCoordTransform{sin_term, cos_term, size_ratio: ratio}
+        // Note that we don't store the width and height. The caller passes the
+        // run-time width/height into the rotate_image() and transform_xxx
+        // methods, because the run-time coordinate transform requests might be
+        // for a different scaling of the image size.
+        ImageRotator{angle_rad, sin_term, cos_term, size_ratio: ratio}
     }
 
-    // Returns the ratio of the original image size and size to which it
-    // was reduced to fit, rotated, within the original dimensions. This
-    // value is always >= 1.0.
-    pub fn size_ratio(&self) -> f64 { self.size_ratio }
+    // The returned image has the same dimensions as the argument; the input image
+    // is shrunk as needed such that the rotated image fits within the original
+    // dimensions.
+    // The `fill` value is used to fill in pixels outside of the shrunk/rotated
+    // image.
+    pub fn rotate_image(&self, image: &GrayImage, fill: u8) -> GrayImage
+    {
+        let (w, h) = image.dimensions();
+        let ratio = self.size_ratio;
+
+        // Pad the image before shrinking.
+        let padded_w = w as f64 * ratio;
+        let padded_h = h as f64 * ratio;
+        let mut new_img = ImageBuffer::from_pixel(padded_w as u32, padded_h as u32,
+                                                  Luma::<u8>([fill]));
+        let border_w = (padded_w - w as f64) / 2.0;
+        let border_h = (padded_h - h as f64) / 2.0;
+        let x_offset = border_w as i64;
+        let y_offset = border_h as i64;
+        imageops::replace(&mut new_img, image, x_offset, y_offset);
+
+        // Shrink the padded image before rotating.
+
+        // Convert GrayImage to FastImage for fast_image_resize.
+        let src_img = FastImage::from_vec_u8(padded_w as u32, padded_h as u32,
+                                             new_img.into_raw(),
+                                             fast_image_resize::PixelType::U8).unwrap();
+        // Resize the image.
+        let mut resizer = Resizer::new();
+        let mut dst_img = FastImage::new(w, h, src_img.pixel_type());
+        resizer.resize(
+            &src_img, &mut dst_img,
+            &ResizeOptions::new().resize_alg(FastInterp(
+                // Almost as fast as Box, with higher visual quality.
+                FilterType::Bilinear))).unwrap();
+
+        let resized_img = GrayImage::from_raw(w, h, dst_img.into_vec()).unwrap();
+        rotate_about_center(&resized_img,
+                            -1.0 * self.angle_rad as f32,
+                            // Almost as fast as Nearest, with much higher visual quality.
+                            Interpolation::Bilinear,
+                            Luma::<u8>([fill]))
+    }
 
     // Given (x, y), the image coordinates in the original image, returns the
     // coordinates of the downscaled/rotated image within the output image.

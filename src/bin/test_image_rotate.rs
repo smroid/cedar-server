@@ -9,7 +9,7 @@ use env_logger;
 use image::ImageReader;
 use log::{info, warn};
 
-use cedar_server::image_utils::rotate_image;
+use cedar_server::image_utils::ImageRotator;
 
 /// Test program for rotating an image.
 #[derive(Parser, Debug)]
@@ -49,15 +49,16 @@ fn main() {
     };
     let input_img = img.to_luma8();
     let (width, height) = input_img.dimensions();
+    let image_rotator = ImageRotator::new(width, height, args.angle);
     let rotate_start = Instant::now();
-    let (output_img, coord_rotate) = rotate_image(&input_img, args.angle, args.fill);
+    let output_img = image_rotator.rotate_image(&input_img, args.fill);
     let elapsed = rotate_start.elapsed();
     info!("Rotated in {:?}", elapsed);
 
-    let (rot_x, rot_y) = coord_rotate.transform_to_rotated(0.0, 0.0, width, height);
+    let (rot_x, rot_y) = image_rotator.transform_to_rotated(0.0, 0.0, width, height);
     info!("Original 0,0 transforms to {:.2},{:.2}", rot_x, rot_y);
 
-    let (x, y) = coord_rotate.transform_from_rotated(rot_x, rot_y, width, height);
+    let (x, y) = image_rotator.transform_from_rotated(rot_x, rot_y, width, height);
     info!("Transforms back to {:.2},{:.2}", x, y);
 
     output_img.save(output_path).unwrap();
