@@ -8,6 +8,66 @@ auto-detect alt-az vs equatorial (with manual override)
 
 flutter app icons
 
+Mic button on keyboard for voice input. Can work offline? Good for
+"en gee cee oh five six" utterances?
+
+After 'set align' or 're-align', have an on-screen indication of
+alignment having been set/updated. Maybe some kind of highlighting
+of the boresight reticle having moved. Or nice haptic feedback.
+
+Catalog button available while in go-to mode.
+
+Make polar advice data block tappable, zooms to larger dialog.
+* polar advice can just be an "idea" icon.
+
+Performance box should include number of detected stars. Also noise
+estimate (advanced only).
+
+Mobile app: support split screen; support picture-in-picture.
+
+Mobile app: internal control to prevent fallback to cell networking, prefer
+wifi even if no internet.
+
+Different on-screen prompt on connection loss vs. never having connection.
+Loss reasons: check server power (battery drained?), check phone's wifi
+connection (sometimes phone reverts to cell connection).
+
+Investigate catalog object listing bug (Saturn was not displayed when
+"distance" slider was turned off.
+
+Investigate high RMSE.
+
+Mobile app: display available Cedar* wifi access points, offer to join.
+
+Make sure centroiding is not done on bayer image. Currently centroiding
+is always done on the original full-res image; when this is color that
+could lead to inaccurate centroid positions. Better way, only needed
+for color original image:
+if binning==2: do star detection on the 2x binned image, and centroid on
+  the binned image
+if binning==4: compute a 2x binned (and hot-pixel-repaired) image.
+  Do star detection on the 2x further binned image, and centroid on the
+  first 2x-binned image.
+
+remove cancel button from calibration progress. Or make it work properly.
+
+per-camera maximum exposure setting.
+
+"serve engine" pipeline stage. Moves some logic out of cedar_server.rs.
+
+Look into networking over bluetooth as alternative to wifi.
+* saves power
+
+Update "connection lost" message for app (instead of web app).
+
+Ability to access (and download) saved images in Cedar Aim.
+Maybe save them to web side in the first place?
+
+Tetra3
+* use brightness ratio (broadly quantized) of most separated stars in
+  pattern as additional discriminant (post hash lookup? or incorporate
+  into hash?)
+
 time display:
 * local time, UTC
 * time to sunset/sunrise, astro twilight
@@ -18,14 +78,13 @@ torture case: cap on
 * don't cause led to blink
 * put up screen suggesting to check lens cap
 
-Investigate WiFi dropout
-* Initially connected WiFi no longer appears on Anroid phone status
-  bar, and Cedar Aim displays connection screen. Disconnect/connect
-  rectifies problem.
+Why need to disconnect/reconnect wifi? Symptom is that wifi
+icon in phone status bar disappears even though wifi still
+connected (but not providing internet)
+* Android app: control fallback to cell data.
+* User workaround: airplane mode, then enable wifi
 
-Investigate web browser white chrome
-
-Investigate phone navigation bar at bottom
+Option to unset observer location (long press?)
 
 Catalog
 * text search: preprocess input, e.g. the following should all locate
@@ -36,27 +95,17 @@ Catalog
   NGC 0426
   N426
 
-client send time when exiting setup focus (triggers planet processing
-if not already done, part of calibration)
-
-think about hang when operate->setup (was pointed at saturn); had
-to reboot.
+cedar aim and hopper aim should share map tiles
+* or cedar aim should drop the highest resolution tier
+* hopper aim apps can drop the map altogether
 
 changing wifi doesn't take effect, need to restart server.
 
-imx296mono-- explore gain settings to eliminate horiz streaking.
-
-why so frequently need to clear browser cache? Especially when
-reconnecting after e.g. restart in server. Is there
-a flutter thing happening?
-
 visual feedback on camera errors
-
-button to reset to default settings
+visual feedback on connectivity errors
+visual feedback on SkySafari connection
 
 add (tm) at appropriate places for Cedar
-
-investigate tethered alternative to wifi
 
 "happy" sound on "align" button press.
 
@@ -65,7 +114,7 @@ alert icon if observer location not yet set.
 Remove refresh rate control. Go full speed; when dwelling for more than N
 seconds drop to 5hz.
 
-Pacifier/busy indicator for capturing image
+Pacifier/busy indicator for capturing/downloading image
 
 eq vs alt/az setting
 * convey to SkySafari
@@ -83,13 +132,11 @@ https://www.sharpcap.co.uk/sharpcap/features/polar-alignment
 https://github.com/ThemosTsikas/PhotoPolarAlign
 https://www.considine.net/aplanatic/align.htm
 
-status LED
-* wifi connection status
-
-create Android app
 create IOS app
-* benefits (for both): control over screen rotation; access to location info; switching
-  app to SkySafari?
+create Android app
+* option to download APK file from Cedar server for sideloading.
+* benefits (for both): access to location info; switching
+  app to SkySafari? Screen wake lock.
 * control over wifi on phone?
 
 Cedar Journal
