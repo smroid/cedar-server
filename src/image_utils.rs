@@ -71,7 +71,7 @@ pub fn normalize_rows_mut(image: &mut GrayImage) {
     }
 }
 
-// `angle` degrees, positive is counter-clockwise. Must be on [-180..180].
+// `angle` degrees, positive is counter-clockwise.
 // The returned image has the same dimensions as the argument; the input image
 // is shrunk as needed such that the rotated image fits within the original
 // dimensions.
@@ -132,8 +132,6 @@ pub struct RotatedImageCoordTransform {
 impl RotatedImageCoordTransform {
     // `angle` degrees, positive is counter-clockwise. Must be on [-180..180].
     pub fn new(width: u32, height: u32, angle: f64) -> Self {
-        assert!(angle >= -180.0);
-        assert!(angle <= 180.0);
         let angle_rad = angle.to_radians();
         let sin_term = angle_rad.sin();
         let cos_term = angle_rad.cos();
