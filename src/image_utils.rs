@@ -72,6 +72,7 @@ pub fn normalize_rows_mut(image: &mut GrayImage) {
 }
 
 // Tool for rotating an image and performing related coordinate transforms.
+#[derive(Clone)]
 pub struct ImageRotator {
     angle_rad: f64,
     sin_term: f64,
