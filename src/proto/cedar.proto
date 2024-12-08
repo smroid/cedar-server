@@ -301,6 +301,13 @@ enum MountType {
   ALT_AZ = 2;
 }
 
+// The orientation of the client's display.
+enum DisplayOrientation {
+  ORIENTATION_UNSPECIFIED = 0;
+  LANDSCAPE = 1;
+  PORTRAIT = 2;
+}
+
 message FrameRequest {
   // This is the frame_id of the previous FrameResult obtained by the requesting
   // client. If provided, GetFrame() will block until this is no longer the
@@ -313,6 +320,12 @@ message FrameRequest {
   // omitted) is available, the returned FrameResult.has_result field will be
   // true.
   optional bool non_blocking = 2;
+
+  // In SETUP align mode, Cedar adjusts the returned image rotation so that the
+  // zenith is towards the top of the image. When doing so, the server needs to
+  // know the client's orientation for the displayed image.
+  // If omitted, LANDSCAPE is assumed.
+  optional DisplayOrientation display_orientation = 3;
 }
 
 // Next tag: 35.
@@ -412,7 +425,8 @@ message FrameResult {
   // Information returned when `operating_mode` is OPERATE.
 
   // When the observer's geographic location is known, the `plate_solution`
-  // field is augmented with additional information.
+  // field is augmented with additional information. Also returned in SETUP
+  // alignment mode.
   // Omitted if:
   // - no plate solution was obtained, or
   // - FixedSettings.observer_location is absent.
@@ -722,7 +736,8 @@ message ActionRequest {
   // Save the current image for debugging. The image is saved in the run
   // directory on the server with the current date/time incorporated into the
   // filename.
-  // TODO: return filename? Provide rename action?
+  // TODO: return filename? Provide rename action? Return image to be saved
+  // on client device?
   optional bool save_image = 5;
 
   // Update ssid, psk, and/or channel setting for Cedar server's
