@@ -120,8 +120,6 @@ pub fn rotate_image(image: &GrayImage, angle: f64, fill: u8)
 }
 
 pub struct RotatedImageCoordTransform {
-    width: u32,
-    height: u32,
     sin_term: f64,
     cos_term: f64,
     size_ratio: f64,
@@ -130,7 +128,7 @@ pub struct RotatedImageCoordTransform {
 // Provides methods to deal with the coordinate transform that results
 // from rotate_image().
 impl RotatedImageCoordTransform {
-    // `angle` degrees, positive is counter-clockwise. Must be on [-180..180].
+    // `angle` degrees, positive is counter-clockwise.
     pub fn new(width: u32, height: u32, angle: f64) -> Self {
         let angle_rad = angle.to_radians();
         let sin_term = angle_rad.sin();
@@ -174,8 +172,11 @@ impl RotatedImageCoordTransform {
         let ratio = w_ratio.max(h_ratio);
         assert!(ratio >= 1.0);
 
-        RotatedImageCoordTransform{
-            width, height, sin_term, cos_term, size_ratio: ratio}
+        // Note that we don't store the width and height. The caller passes
+        // the run-time width/height into the transform_xxx methods, because
+        // the run-time coordinate transform requests might be for a different
+        // scaling of the image size.
+        RotatedImageCoordTransform{sin_term, cos_term, size_ratio: ratio}
     }
 
     // Returns the ratio of the original image size and size to which it
@@ -185,11 +186,12 @@ impl RotatedImageCoordTransform {
 
     // Given (x, y), the image coordinates in the original image, returns the
     // coordinates of the downscaled/rotated image within the output image.
-    pub fn transform_to_rotated(&self, x: f64, y: f64) -> (f64, f64) {
+    pub fn transform_to_rotated(&self, x: f64, y: f64,
+                                width: u32, height: u32) -> (f64, f64) {
         // The x, y origin is upper-left corner. Change to center-based
         // coordinates.
-        let x_cen = x - (self.width as f64 / 2.0);
-        let y_cen = (self.height as f64 / 2.0) - y;
+        let x_cen = x - (width as f64 / 2.0);
+        let y_cen = (height as f64 / 2.0) - y;
 
         // Rotate according to the transform.
         let (x_cen_rot, y_cen_rot) =
@@ -200,18 +202,19 @@ impl RotatedImageCoordTransform {
         let y_cen_rot_scaled = y_cen_rot / self.size_ratio;
 
         // Move back to corner-based origin.
-        (x_cen_rot_scaled + (self.width as f64 / 2.0),
-         (self.height as f64 / 2.0) - y_cen_rot_scaled)
+        (x_cen_rot_scaled + (width as f64 / 2.0),
+         (height as f64 / 2.0) - y_cen_rot_scaled)
     }
 
     // Given (x, y), the image coordinates in the output image after
     // downscaling/rotating, returns the coordinates within the original
     // image (prior to downscaling/rotating).
-    pub fn transform_from_rotated(&self, x: f64, y: f64) -> (f64, f64) {
+    pub fn transform_from_rotated(&self, x: f64, y: f64,
+                                  width: u32, height: u32) -> (f64, f64) {
         // The x, y origin is upper-left corner. Change to center-based
         // coordinates.
-        let x_cen = x - (self.width as f64 / 2.0);
-        let y_cen = (self.height as f64 / 2.0) - y;
+        let x_cen = x - (width as f64 / 2.0);
+        let y_cen = (height as f64 / 2.0) - y;
 
         // De-rotate according to the transform.
         let (x_cen_rot, y_cen_rot) =
@@ -222,8 +225,8 @@ impl RotatedImageCoordTransform {
         let y_cen_rot_scaled = y_cen_rot * self.size_ratio;
 
         // Move back to corner-based origin.
-        (x_cen_rot_scaled + (self.width as f64 / 2.0),
-         (self.height as f64 / 2.0) - y_cen_rot_scaled)
+        (x_cen_rot_scaled + (width as f64 / 2.0),
+         (height as f64 / 2.0) - y_cen_rot_scaled)
     }
 
     fn rotate_vector(x: f64, y: f64, sin_term: f64, cos_term: f64) -> (f64, f64) {

@@ -48,15 +48,16 @@ fn main() {
         },
     };
     let input_img = img.to_luma8();
+    let (width, height) = input_img.dimensions();
     let rotate_start = Instant::now();
     let (output_img, coord_rotate) = rotate_image(&input_img, args.angle, args.fill);
     let elapsed = rotate_start.elapsed();
     info!("Rotated in {:?}", elapsed);
 
-    let (rot_x, rot_y) = coord_rotate.transform_to_rotated(0.0, 0.0);
+    let (rot_x, rot_y) = coord_rotate.transform_to_rotated(0.0, 0.0, width, height);
     info!("Original 0,0 transforms to {:.2},{:.2}", rot_x, rot_y);
 
-    let (x, y) = coord_rotate.transform_from_rotated(rot_x, rot_y);
+    let (x, y) = coord_rotate.transform_from_rotated(rot_x, rot_y, width, height);
     info!("Transforms back to {:.2},{:.2}", x, y);
 
     output_img.save(output_path).unwrap();
