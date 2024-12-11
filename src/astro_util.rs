@@ -9,6 +9,8 @@ use chrono::{Datelike, DateTime, Timelike, Utc};
 use std::f64::consts::PI;
 use std::time::SystemTime;
 
+use crate::cedar::{FovCatalogEntry, ImageCoord, StarCentroid};
+
 extern crate nalgebra as na;
 
 /// Convert ra/dec (radians) to x/y/z on unit sphere.
@@ -271,6 +273,112 @@ fn compute_centroid(vector: &[f64; 3], width: usize, height: usize, fov_rad: f64
     [x + width / 2.0, y + height / 2.0]
 }
 
+/// Give the intensity ratio for second / first corresponding to the
+/// passed stellar magnitudes.
+fn intensity_ratio(m1: f64, m2: f64) -> f64 {
+    2.512f64.powf(m1 - m2)
+}
+
+/// When exposing for plate solving, we increase exposure until a desired
+/// number of stars (typically 20) are detected. In so doing, a very bright
+/// star (or planet) in the FOV might be overexposed and due to blooming
+/// might not be detected as a star.
+///
+/// For plate solving, a missing star is tolerable and a solution will be found
+/// from the other stars. However, in Cedar's SETUP alignment mode, Cedar Aim
+/// draws a selection target on the brightest stars in the list of detected
+/// stars. Thus, the absence of the brightest star (or planet) in the list of
+/// detected stars is quite unfortunate in SETUP alignment mode, where the user
+/// has been prompted to point the telescope at the brightest star in its part
+/// of the sky. That star will not have a selection target, oops.
+///
+/// We solve this by taking advantage of the fact that the plate solution will
+/// have the bright star (or planet) in its list of catalog entries in the FOV.
+/// This function returns the original `detections` list augmented by item(s)
+/// from `catalog_entries`.
+///
+/// Args must be in order of descending brightness. Caution: complexity is the
+/// product of the vector sizes.
+pub fn fill_in_detections(detections: &Vec<StarCentroid>,
+                          catalog_entries: &Vec<FovCatalogEntry>)
+                          -> Vec<StarCentroid>
+{
+    const IMAGE_DISTANCE_THRESHOLD_SQ: f64 = 4.0;
+
+    // Find the brightest `catalog_entries` item that also exists in
+    // `detections`. We do this so we can relate catalog magnitudes to
+    // StarCentroid.brightness values.
+    let mut found_match = false;
+    let mut match_magnitude = 0.0;
+    let mut match_brightness = 0.0;
+    for catalog_entry in catalog_entries {
+        let cat_coord = catalog_entry.image_pos.as_ref().unwrap();
+        for detection in detections {
+            let det_coord = detection.centroid_position.as_ref().unwrap();
+            if image_distance_sq(det_coord, cat_coord) < IMAGE_DISTANCE_THRESHOLD_SQ {
+                // Found a same-location item between catalog_entries and detections.
+                match_magnitude = catalog_entry.entry.as_ref().unwrap().magnitude;
+                match_brightness = detection.brightness;
+                found_match = true;
+                break;
+            }
+        }
+        if found_match {
+            break;
+        }
+    }
+    if !found_match {
+        return detections.clone();  // Bail out.
+    }
+
+    // Gather `catalog_entries` that do not have corresponding `detections` entries
+    let mut detections_for_catalog_entries = Vec::<StarCentroid>::new();
+    for catalog_entry in catalog_entries {
+        let cat_coord = catalog_entry.image_pos.as_ref().unwrap();
+        let mut found_detection = false;
+        for detection in detections {
+            let det_coord = detection.centroid_position.as_ref().unwrap();
+            if image_distance_sq(det_coord, cat_coord) < IMAGE_DISTANCE_THRESHOLD_SQ {
+                found_detection = true;
+                break;
+            }
+        }
+        if !found_detection {
+            // Synthesize a StarCentroid corresponding to `catalog_entry`.
+            let brightness = match_brightness * intensity_ratio(
+                match_magnitude, catalog_entry.entry.as_ref().unwrap().magnitude);
+            detections_for_catalog_entries.push(
+                StarCentroid{centroid_position: Some(cat_coord.clone()),
+                             brightness,
+                             num_saturated: 0});
+        }
+    }
+
+    let mut merged = Vec::<StarCentroid>::with_capacity(
+        detections.len() + detections_for_catalog_entries.len());
+    let mut i = 0;
+    let mut j = 0;
+    while i < detections.len() && j < detections_for_catalog_entries.len() {
+        if detections[i].brightness > detections_for_catalog_entries[j].brightness {
+            merged.push(detections[i].clone());
+            i += 1;
+        } else {
+            merged.push(detections_for_catalog_entries[j].clone());
+            j += 1;
+        }
+    }
+    merged.extend_from_slice(&detections[i..]);
+    merged.extend_from_slice(&detections_for_catalog_entries[j..]);
+
+    merged
+}
+
+// Return the square of the Euclidean distance between the given image
+// coordinates.
+fn image_distance_sq(c1: &ImageCoord, c2: &ImageCoord) -> f64 {
+    (c1.x - c2.x) * (c1.x - c2.x) + (c1.y - c2.y) * (c1.y - c2.y)
+}
+
 #[cfg(test)]
 mod tests {
     extern crate approx;
@@ -278,6 +386,8 @@ mod tests {
     use approx::assert_abs_diff_eq;
     use chrono::{FixedOffset, TimeZone};
     use std::time::{Duration};
+    use crate::cedar_sky::{CatalogEntry, ObjectType};
+    use crate::tetra3_server::CelestialCoord;
     use super::*;
 
     #[test]
@@ -414,6 +524,82 @@ mod tests {
             &img_coords, 1024, 800, 10.0, &rotation_matrix, 0.01);
         assert_abs_diff_eq!(out_celestial_coords[0], 38.0, epsilon = 0.001);
         assert_abs_diff_eq!(out_celestial_coords[1], 45.0, epsilon = 0.001);
+    }
+
+    #[test]
+    fn test_intensity_ratio() {
+        let ratio = intensity_ratio(2.0, 1.0);
+        assert_abs_diff_eq!(ratio, 2.51, epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_fill_in_detections() {
+        let detections = vec![
+            // d1.
+            StarCentroid{centroid_position: Some(ImageCoord{x: 12.0, y: 15.0}),
+                         brightness: 1200.0,
+                         num_saturated: 0},
+            // d2.
+            StarCentroid{centroid_position: Some(ImageCoord{x: 22.0, y: 35.0}),
+                         brightness: 900.0,
+                         num_saturated: 0},
+            // d3.
+            StarCentroid{centroid_position: Some(ImageCoord{x: 42.0, y: 350.0}),
+                         brightness: 700.0,
+                         num_saturated: 0},
+        ];
+        let catalog_entries = vec![
+            FovCatalogEntry{
+                entry: Some(CatalogEntry{
+                    catalog_label: "PL".to_string(),
+                    catalog_entry: "jupiter".to_string(),
+                    coord: Some(CelestialCoord{ra: 0.0, dec: 0.0}),
+                    constellation: None,
+                    object_type: Some(ObjectType{label: "xx".to_string(),
+                                                 broad_category: "yy".to_string()}),
+                    magnitude: -1.5,
+                    angular_size: None,
+                    common_name: None,
+                    notes: None,
+                }),
+                image_pos: Some(ImageCoord{x: 50.0, y: 60.0}),
+            },
+            FovCatalogEntry{
+                entry: Some(CatalogEntry{
+                    catalog_label: "IAU".to_string(),
+                    catalog_entry: "some_star".to_string(),
+                    coord: Some(CelestialCoord{ra: 0.0, dec: 0.0}),
+                    constellation: None,
+                    object_type: Some(ObjectType{label: "xx".to_string(),
+                                                 broad_category: "yy".to_string()}),
+                    magnitude: 2.5,
+                    angular_size: None,
+                    common_name: None,
+                    notes: None,
+                }),
+                image_pos: Some(ImageCoord{x: 21.5, y: 35.2}),  // Match d2.
+            },
+        ];
+
+        let filled_in = fill_in_detections(&detections, &catalog_entries);
+        assert_eq!(filled_in.len(), 4);
+
+        let jupiter = &filled_in[0];
+        assert_eq!(jupiter.centroid_position.as_ref().unwrap().x, 50.0);
+        assert_eq!(jupiter.centroid_position.as_ref().unwrap().y, 60.0);
+        assert_abs_diff_eq!(jupiter.brightness, 35836.0, epsilon=1.0);
+        let d1 = &filled_in[1];
+        assert_eq!(d1.centroid_position.as_ref().unwrap().x, 12.0);
+        assert_eq!(d1.centroid_position.as_ref().unwrap().y, 15.0);
+        assert_eq!(d1.brightness, 1200.0);
+        let d2 = &filled_in[2];
+        assert_eq!(d2.centroid_position.as_ref().unwrap().x, 22.0);
+        assert_eq!(d2.centroid_position.as_ref().unwrap().y, 35.0);
+        assert_eq!(d2.brightness, 900.0);
+        let d3 = &filled_in[3];
+        assert_eq!(d3.centroid_position.as_ref().unwrap().x, 42.0);
+        assert_eq!(d3.centroid_position.as_ref().unwrap().y, 350.0);
+        assert_eq!(d3.brightness, 700.0);
     }
 
 }  // mod tests.
