@@ -12,14 +12,16 @@ use std::time::SystemTime;
 extern crate nalgebra as na;
 
 /// Convert ra/dec (radians) to x/y/z on unit sphere.
-pub fn to_unit_vector(ra: f64, dec: f64) -> [f64; 3] {
+#[allow(dead_code)]
+fn to_unit_vector(ra: f64, dec: f64) -> [f64; 3] {
     [(ra.cos() * dec.cos()),  // x
      (ra.sin() * dec.cos()),  // y
      dec.sin()]               // z
 }
 
 /// Convert x/y/z on unitsphere to ra/dec (radians).
-pub fn from_unit_vector(v: &[f64; 3]) -> (f64, f64) {
+#[allow(dead_code)]
+fn from_unit_vector(v: &[f64; 3]) -> (f64, f64) {
     let x = v[0];
     let y = v[1];
     let z = v[2];
@@ -32,12 +34,14 @@ pub fn from_unit_vector(v: &[f64; 3]) -> (f64, f64) {
 }
 
 /// Return the Euclidean distance between the given vectors.
-pub fn distance(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
+#[allow(dead_code)]
+fn distance(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
     distance_sq(v1, v2).sqrt()
 }
 
 /// Return the square of the Euclidean distance between the given vectors.
-pub fn distance_sq(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
+#[allow(dead_code)]
+fn distance_sq(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
     (v1[0] - v2[0]) * (v1[0] - v2[0]) +
     (v1[1] - v2[1]) * (v1[1] - v2[1]) +
     (v1[2] - v2[2]) * (v1[2] - v2[2])
@@ -45,12 +49,14 @@ pub fn distance_sq(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
 
 /// Converts angle (radians) to distance between two unit vectors with that
 /// angle between them.
-pub fn distance_from_angle(angle: f64) -> f64 {
+#[allow(dead_code)]
+fn distance_from_angle(angle: f64) -> f64 {
     2.0 * (angle / 2.0).sin()
 }
 
 /// Converts distance between two unit vectors the the angle between them.
-pub fn angle_from_distance(distance: f64) -> f64 {
+#[allow(dead_code)]
+fn angle_from_distance(distance: f64) -> f64 {
     2.0 * (0.5 * distance).asin()
 }
 
@@ -137,8 +143,8 @@ fn greenwich_mean_sidereal_time_from_system_time(time: SystemTime) -> f64 {
 
 /// Port of Tetra3's _distort_centroids() function. Note that argument is
 /// (x, y), in contrast to Tetra3 which reverses this.
-pub fn distort_centroid(centroid: &[f64; 2], width: usize, height: usize,
-                        distortion: f64) -> [f64; 2] {
+fn distort_centroid(centroid: &[f64; 2], width: usize, height: usize,
+                    distortion: f64) -> [f64; 2] {
     let tol = 1e-6;
     let maxiter = 30;
     let k = distortion;
@@ -146,17 +152,18 @@ pub fn distort_centroid(centroid: &[f64; 2], width: usize, height: usize,
     let (mut x, mut y) = (centroid[0], centroid[1]);
     let width = width as f64;
     let height = height as f64;
+    let kp = k * (2.0 / width) * (2.0 / width);  // k prime.
 
     // Center.
     x -= width / 2.0;
     y -= height / 2.0;
-    let r_undist = 2.0 * (x * x + y * y).sqrt() / width;
+    let r_undist = (x * x + y * y).sqrt();
 
-    // Initial guess, distorted at same position.
+    // Initial distorted guess, undistorted are the same position.
     let mut r_dist = r_undist;
     for _i in 0..maxiter {
-        let r_undist_est = r_dist * (1.0 - k * (r_dist * r_dist)) / (1.0 - k);
-        let dru_drd = (1.0 - 3.0 * k * (r_dist * r_dist))/(1.0 - k);
+        let r_undist_est = r_dist * (1.0 - kp * r_dist * r_dist) / (1.0 - k);
+        let dru_drd = (1.0 - 2.0 * kp * r_dist) / (1.0 - k);
         let error = r_undist - r_undist_est;
         r_dist += error / dru_drd;
         if error.abs() < tol {
@@ -171,19 +178,21 @@ pub fn distort_centroid(centroid: &[f64; 2], width: usize, height: usize,
 
 /// Port of Tetra3's _undistort_centroids() function. Note that the arguments is
 /// (x, y), in contrast to Tetra3 which reverses this.
-pub fn undistort_centroid(centroid: &[f64; 2], width: usize, height: usize,
-                          distortion: f64) -> [f64; 2] {
+fn undistort_centroid(centroid: &[f64; 2], width: usize, height: usize,
+                      distortion: f64) -> [f64; 2] {
     let k = distortion;
 
     let (mut x, mut y) = (centroid[0], centroid[1]);
     let width = width as f64;
     let height = height as f64;
+    let kp = k * (2.0 / width) * (2.0 / width);  // k prime.
+
     // Center.
     x -= width / 2.0;
     y -= height / 2.0;
-    let r_dist = 2.0 * (x * x + y * y).sqrt() / width;
+    let r_dist = (x * x + y * y).sqrt();
     // Scale.
-    let scale = (1.0 - k * (r_dist * r_dist)) / (1.0 - k);
+    let scale = (1.0 - kp * r_dist * r_dist) / (1.0 - k);
     x *= scale;
     y *= scale;
     // Decenter.
