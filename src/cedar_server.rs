@@ -50,7 +50,8 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use futures::join;
 
 use crate::activity_led::ActivityLed;
-use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az, position_angle};
+use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az,
+                        fill_in_detections, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 
 use crate::cedar::{ActionRequest, CalibrationData, CameraModel,
@@ -243,8 +244,8 @@ impl Cedar for MyCedar {
             // Don't store the client time in our fixed_settings state, but
             // arrange to return our current time.
             let locked_state = self.state.lock().await;
-            if locked_state.cedar_sky.is_some() {
-                locked_state.cedar_sky.as_ref().unwrap().lock().await
+            if let Some(cedar_sky) = &locked_state.cedar_sky {
+                cedar_sky.lock().await
                     .initiate_solar_system_processing(SystemTime::now()).await;
             }
         }
@@ -1406,6 +1407,9 @@ impl MyCedar {
         let focus_assist_mode;
         {
             let locked_state = state.lock().await;
+            if let Some(cedar_sky) = &locked_state.cedar_sky {
+                cedar_sky.lock().await.check_solar_system_completion().await;
+            }
             fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
             operating_mode = locked_state.operation_settings.operating_mode.unwrap();
             focus_assist_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
@@ -1825,12 +1829,20 @@ impl MyCedar {
             // Transform the boresight coords.
             let bp = frame_result.boresight_position.as_mut().unwrap();
             (bp.x, bp.y) = irr.transform_to_rotated(bp.x, bp.y, width, height);
+
             // Transform the detected star image coordinates.
             for star_centroid in &mut frame_result.star_candidates {
                 let cp = star_centroid.centroid_position.as_mut().unwrap();
                 (cp.x, cp.y) = irr.transform_to_rotated(
                     cp.x, cp.y, width, height);
             }
+
+            // Augment the detected stars with catalog items from the plate solution.
+            // info!("star_candidates: {:?}", frame_result.star_candidates);
+            // info!("labeled catalog entries: {:?}", frame_result.labeled_catalog_entries);
+            frame_result.star_candidates = fill_in_detections(
+                &frame_result.star_candidates, &frame_result.labeled_catalog_entries);
+
         }
 
         frame_result.calibration_data =
@@ -2537,7 +2549,7 @@ pub fn server_main(
     ctrlc::set_handler(move || {
         info!("Got control-c");
         got_signal2.store(true, AtomicOrdering::Relaxed);
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(Duration::from_secs(1));
         info!("Exiting");
         std::process::exit(-1);
     }).unwrap();
