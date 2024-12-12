@@ -299,6 +299,7 @@ impl Cedar for MyCedar {
                         }
                     }
                     locked_state.solve_engine.lock().await.set_align_mode(true).await;
+                    locked_state.image_rotator = None;
                     Self::reset_session_stats(locked_state.deref_mut()).await;
                     {
                         let mut locked_detect_engine =
