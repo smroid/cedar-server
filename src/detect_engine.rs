@@ -461,18 +461,20 @@ impl DetectEngine {
                     if normalize_rows {
                         normalize_rows_mut(&mut peak_image);
                     }
+
                     // Find min/max for display stretching.
-                    let mut min_value = peak_image.get_pixel(0, 0).0[0];
-                    let mut max_value = min_value;
-                    for pixel_luma in peak_image.pixels() {
-                        let value = pixel_luma.0[0];
-                        if value < min_value {
-                            min_value = value;
-                        } else if value > max_value {
-                            max_value = value;
-                        }
+                    let mut histogram: [u32; 256] = [0_u32; 256];
+                    for pixel_value in peak_image.pixels() {
+                        histogram[pixel_value.0[0] as usize] += 1;
                     }
-                    scale_image_mut(&mut peak_image, min_value, max_value, /*gamma=*/0.7);
+                    // Compute peak_value as the average of the 5 brightest pixels.
+                    let max_value = max(average_top_values(&histogram, 5), 64);
+
+                    remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
+                    let min_value = get_level_for_fraction(&histogram, 0.8);
+
+                    scale_image_mut(
+                        &mut peak_image, min_value as u8, max_value as u8, /*gamma=*/0.7);
                     focus_aid = Some(FocusAid{
                         center_peak_position: peak_position,
                         center_peak_value: peak_value,
