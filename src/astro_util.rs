@@ -14,16 +14,14 @@ use crate::cedar::{FovCatalogEntry, ImageCoord, StarCentroid};
 extern crate nalgebra as na;
 
 /// Convert ra/dec (radians) to x/y/z on unit sphere.
-#[allow(dead_code)]
-fn to_unit_vector(ra: f64, dec: f64) -> [f64; 3] {
+pub fn to_unit_vector(ra: f64, dec: f64) -> [f64; 3] {
     [(ra.cos() * dec.cos()),  // x
      (ra.sin() * dec.cos()),  // y
      dec.sin()]               // z
 }
 
 /// Convert x/y/z on unitsphere to ra/dec (radians).
-#[allow(dead_code)]
-fn from_unit_vector(v: &[f64; 3]) -> (f64, f64) {
+pub fn from_unit_vector(v: &[f64; 3]) -> (f64, f64) {
     let x = v[0];
     let y = v[1];
     let z = v[2];
@@ -36,8 +34,7 @@ fn from_unit_vector(v: &[f64; 3]) -> (f64, f64) {
 }
 
 /// Return the Euclidean distance between the given vectors.
-#[allow(dead_code)]
-fn distance(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
+pub fn distance(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
     distance_sq(v1, v2).sqrt()
 }
 
@@ -51,8 +48,7 @@ fn distance_sq(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
 
 /// Converts angle (radians) to distance between two unit vectors with that
 /// angle between them.
-#[allow(dead_code)]
-fn distance_from_angle(angle: f64) -> f64 {
+pub fn distance_from_angle(angle: f64) -> f64 {
     2.0 * (angle / 2.0).sin()
 }
 
