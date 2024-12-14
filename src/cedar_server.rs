@@ -753,7 +753,6 @@ impl Cedar for MyCedar {
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
             self.state.lock().await.activity_led.lock().await.stop().await;
-            std::thread::sleep(Duration::from_secs(2));
             let output = Command::new("sudo")
                 .arg("shutdown")
                 .arg("now")
@@ -768,7 +767,6 @@ impl Cedar for MyCedar {
         if req.restart_server.unwrap_or(false) {
             info!("Restarting host system");
             self.state.lock().await.activity_led.lock().await.stop().await;
-            std::thread::sleep(Duration::from_secs(2));
             let output = Command::new("sudo")
                 .arg("reboot")
                 .arg("now")
