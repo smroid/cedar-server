@@ -107,3 +107,25 @@ November 17 2024
 Cedar-server version: 0.6.1
 
 * Bug fixes.
+
+December 15 2024
+
+Cedar-server version: 0.7.0
+
+* Preference for left vs right handed control placement.
+
+* Compact layout for sky location display.
+  * Can tap to bring up comprehensive information.
+  * Can designate preferred display: ra/dec vs alt/az
+
+* Add preference for screen always on (app only).
+
+* In Setup alignment mode, rotate displayed image to orient zenith up.
+
+* Pinch zoom to change text size.
+
+* Eliminate network-releated hangs (hopefully) trying to fetch fonts.
+
+* Add star count and image noise to performance popup.
+
+* Fix missing alt/az vs. equatorial mount in preferences.

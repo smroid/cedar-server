@@ -25,7 +25,7 @@ started!
 ## Download and burn
 
 First: download the SD card image
-[cedar_rpi_2024_nov_17.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_nov_17.img.gz)
+[cedar_rpi_2024_dec_15.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_dec_15.img.gz)
 to your computer.
 
 Second: burn an SD card (16GB or larger) with the image file you just downloaded
@@ -160,17 +160,8 @@ flutter build web --web-renderer canvaskit --no-web-resources-cdn
 
 Cedar-solve is implemented in Python and requires some initial setup.
 
-In the root directory of cedar-solve (e.g. `/home/cedar/projects/cedar-solve`), do
-the following:
-
-```
-python -m venv .cedar_venv
-source .cedar_venv/bin/activate
-pip install -e ".[dev,docs,cedar-detect]"
-```
-
-You might want to add the `source .cedar_venv/bin/activate` command
-to your .bashrc file.
+In the root directory of cedar-solve (e.g. `/home/cedar/projects/cedar-solve`), run
+the `setup.sh` script.
 
 ### Set up tetra3_server component
 
