@@ -282,10 +282,7 @@ impl Cedar for MyCedar {
                     Self::set_gain(&mut locked_state, daylight_mode).await;
                     if focus_mode {
                         if locked_state.calibrating {
-                            // Cancel calibration.
-                            *locked_state.cancel_calibration.lock().unwrap() = true;
-                            locked_state.tetra3_subprocess.lock().unwrap()
-                                .send_interrupt_signal();
+                            Self::cancel_calibration(&locked_state);
                         }
                         if let Err(x) = Self::set_update_interval(
                             &*locked_state, Duration::ZERO).await
@@ -383,9 +380,7 @@ impl Cedar for MyCedar {
                         } else if locked_state.calibrating {
                             // Turning on daylight mode in SETUP align mode; cancel
                             // calibration if any.
-                            *locked_state.cancel_calibration.lock().unwrap() = true;
-                            locked_state.tetra3_subprocess.lock().unwrap()
-                                .send_interrupt_signal();
+                            Self::cancel_calibration(&locked_state);
                         }
                     }
                 }
@@ -404,10 +399,7 @@ impl Cedar for MyCedar {
                 if new_focus_assist_mode {
                     // Entering focus assist mode.
                     if locked_state.calibrating {
-                        // Cancel calibration.
-                        *locked_state.cancel_calibration.lock().unwrap() = true;
-                        locked_state.tetra3_subprocess.lock().unwrap()
-                            .send_interrupt_signal();
+                        Self::cancel_calibration(&locked_state);
                     }
                     // Run at full speed for focus assist.
                     if let Err(x) = Self::set_update_interval(
@@ -988,7 +980,7 @@ impl Cedar for MyCedar {
 
         Ok(tonic::Response::new(response))
     }
-}
+}  // impl Cedar for MyCedar.
 
 impl MyCedar {
     fn get_demo_images() -> Result<Vec<String>, tonic::Status> {
@@ -1132,6 +1124,11 @@ impl MyCedar {
         // Let _task_handle go out of scope, detaching the spawned
         // calibration task to complete regardless of a possible RPC
         // timeout.
+    }
+
+    fn cancel_calibration(state: &CedarState) {
+        *state.cancel_calibration.lock().unwrap() = true;
+        state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
     }
 
     fn write_preferences_file(preferences_file: &PathBuf, preferences: &Preferences) {
