@@ -707,6 +707,9 @@ message FovCatalogEntry {
 }
 
 message ActionRequest {
+  // Cancels a calibration; no effect if no calibration is underway.
+  optional bool cancel_calibration = 9;
+
   // The `capture_boresight` function is used during an active slew to target.
   // This lets the user update/refine the boresight offset when the user has
   // centered the target in the telescope's field of view.
@@ -769,8 +772,8 @@ service Cedar {
   // Changes zero or more of Cedar's operation settings. If a field is omitted
   // from the supplied OperationSettings, that setting is not updated. Returns
   // the OperationSettings after any updates have been applied (in most cases;
-  // when changing from SETUP to OPERATION mode, the change is not immediately
-  // reflected due to the intervening calibration step).
+  // when the change triggers a calilbration, the change is not reflected until
+  // the calibration is complete).
   // To get the current settings without making any changes, pass an empty
   // OperationSettings request.
   rpc UpdateOperationSettings(OperationSettings) returns (OperationSettings);

@@ -267,23 +267,37 @@ impl Cedar for MyCedar {
     async fn update_operation_settings(
         &self, request: tonic::Request<OperationSettings>)
         -> Result<tonic::Response<OperationSettings>, tonic::Status> {
-        let req: OperationSettings = request.into_inner();
+        let mut req: OperationSettings = request.into_inner();
         if let Some(new_operating_mode) = req.operating_mode {
             let mut locked_state = self.state.lock().await;
-            let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
-            let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
-            if new_operating_mode == OperatingMode::Setup as i32 {
-                if locked_state.operation_settings.operating_mode ==
-                    Some(OperatingMode::Operate as i32)
-                {
-                    // Transition: OPERATE -> SETUP mode.
-                    // In SETUP focus assist mode we run at full speed with pre-calibrate
-                    // settings.
-                    Self::set_gain(&mut locked_state, daylight_mode).await;
-                    if focus_mode {
-                        if locked_state.calibrating {
-                            Self::cancel_calibration(&locked_state);
-                        }
+            // Only do something if operating mode is changing.
+            if new_operating_mode != locked_state.operation_settings.operating_mode.unwrap() {
+                if locked_state.calibrating {
+                    return Err(tonic::Status::failed_precondition(
+                        "Cannot change operating mode while calibrating"));
+                }
+                let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
+                let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
+                let mut final_focus_mode = focus_mode;
+                if let Some(req_focus_assist_mode) = req.focus_assist_mode {
+                    final_focus_mode = req_focus_assist_mode;
+                    // We're handling this here, so don't also handle it below.
+                    req.focus_assist_mode = None;
+                }
+                let mut final_daylight_mode = daylight_mode;
+                if let Some(req_daylight_mode) = req.daylight_mode {
+                    final_daylight_mode = req_daylight_mode;
+                    // We're handling this here, so don't also handle it below.
+                    req.daylight_mode = None;
+                }
+
+                let mut calibrating = false;
+                if new_operating_mode == OperatingMode::Setup as i32 {
+                    // Transition: OPERATE -> SETUP mode. We are already calibrated.
+                    Self::set_gain(&mut locked_state, final_daylight_mode).await;
+                    if final_focus_mode {
+                        // In SETUP focus assist mode we run at full speed with
+                        // pre-calibrate settings.
                         if let Err(x) = Self::set_update_interval(
                             &*locked_state, Duration::ZERO).await
                         {
@@ -301,22 +315,15 @@ impl Cedar for MyCedar {
                     {
                         let mut locked_detect_engine =
                             locked_state.detect_engine.lock().await;
-                        locked_detect_engine.set_focus_mode(focus_mode);
-                        locked_detect_engine.set_daylight_mode(daylight_mode);
-                        if focus_mode {
+                        locked_detect_engine.set_focus_mode(final_focus_mode);
+                        locked_detect_engine.set_daylight_mode(final_daylight_mode);
+                        if final_focus_mode {
                             locked_detect_engine.set_calibrated_exposure_duration(None);
                         }
                     }
-                    locked_state.operation_settings.operating_mode =
-                        Some(OperatingMode::Setup as i32);
                     locked_state.telescope_position.lock().unwrap().slew_active = false;
-                }
-            } else if new_operating_mode == OperatingMode::Operate as i32 {
-                if locked_state.operation_settings.operating_mode ==
-                    Some(OperatingMode::Setup as i32)
-                {
+                } else if new_operating_mode == OperatingMode::Operate as i32 {
                     // Transition: SETUP -> OPERATE mode.
-                    Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
                     if focus_mode || daylight_mode {
                         // The SETUP (with focus mode or daytime align) ->
                         // OPERATE mode change involves a call to calibrate(),
@@ -326,12 +333,17 @@ impl Cedar for MyCedar {
                         // focus_mode, our operating_mode) to be completed
                         // properly.
                         Self::spawn_calibration(self.state.clone(),
-                                                /*enter_operate_mode=*/true);
+                                                /*new_operate_mode=*/true,
+                                                final_focus_mode,
+                                                final_daylight_mode);
+                        calibrating = true;
                         // The update of state.operation_settings.operation_mode
-                        // happens when the calibration finishes.
+                        // happens when the calibration finishes. TODO: also focus
+                        // and daylight sub-modes.
                     } else {
                         // Transition into Operate mode from SETUP align mode. Already
                         // calibrated.
+                        Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
                         locked_state.detect_engine.lock().await.set_daylight_mode(false);
                         locked_state.solve_engine.lock().await.set_align_mode(false).await;
                         locked_state.solve_engine.lock().await.start().await;
@@ -345,26 +357,41 @@ impl Cedar for MyCedar {
                         {
                             return Err(tonic_status(x));
                         }
-                        locked_state.operation_settings.operating_mode =
-                            Some(OperatingMode::Operate as i32);
                     }
+                } else {
+                    return Err(tonic::Status::invalid_argument(
+                        format!("Got invalid operating_mode: {}.", new_operating_mode)));
                 }
-            } else {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got invalid operating_mode: {}.", new_operating_mode)));
-            }
+                if !calibrating {
+                    locked_state.operation_settings.operating_mode =
+                        Some(new_operating_mode);
+                    locked_state.operation_settings.daylight_mode =
+                        Some(final_daylight_mode);
+                    locked_state.operation_settings.focus_assist_mode =
+                        Some(final_focus_mode);
+                }
+            }  // Operating mode is changing.
         }  // Update operating_mode.
         if let Some(new_daylight_mode) = req.daylight_mode {
             let mut locked_state = self.state.lock().await;
+            let mut calibrating = false;
             if locked_state.operation_settings.daylight_mode.unwrap()
                 != new_daylight_mode
             {
-                locked_state.detect_engine.lock().await.set_daylight_mode(
-                    new_daylight_mode);
+                if locked_state.calibrating {
+                    return Err(tonic::Status::failed_precondition(
+                        "Cannot change daylight mode while calibrating"));
+                }
+                let mut final_focus_mode =
+                    locked_state.operation_settings.focus_assist_mode.unwrap();
+                if let Some(req_focus_assist_mode) = req.focus_assist_mode {
+                    final_focus_mode = req_focus_assist_mode;
+                    // We're handling this here, so don't also handle it below.
+                    req.focus_assist_mode = None;
+                }
                 if locked_state.operation_settings.operating_mode ==
                     Some(OperatingMode::Setup as i32)
                 {
-                    Self::set_gain(&mut locked_state, new_daylight_mode).await;
                     if !locked_state.operation_settings.focus_assist_mode.unwrap()
                     {
                         // In SETUP align mode.
@@ -376,31 +403,37 @@ impl Cedar for MyCedar {
                             // updates (i.e. detect engine's focus_mode, our
                             // operating_mode) to be completed properly.
                             Self::spawn_calibration(self.state.clone(),
-                                                    /*enter_operate_mode=*/false);
-                        } else if locked_state.calibrating {
-                            // Turning on daylight mode in SETUP align mode; cancel
-                            // calibration if any.
-                            Self::cancel_calibration(&locked_state);
+                                                    /*new_operate_mode=*/false,
+                                                    final_focus_mode,
+                                                    new_daylight_mode);
+                            calibrating = true;
                         }
+                    } else {
+                        Self::set_gain(&mut locked_state, new_daylight_mode).await;
                     }
                 }
             }
-            locked_state.operation_settings.daylight_mode = Some(new_daylight_mode);
+            if !calibrating {
+                locked_state.detect_engine.lock().await.set_daylight_mode(
+                    new_daylight_mode);
+                locked_state.operation_settings.daylight_mode = Some(new_daylight_mode);
+            }
         }
         if let Some(new_focus_assist_mode) = req.focus_assist_mode {
             let mut locked_state = self.state.lock().await;
+            let mut calibrating = false;
             if locked_state.operation_settings.operating_mode ==
                 Some(OperatingMode::Setup as i32) &&
                 locked_state.operation_settings.focus_assist_mode.unwrap()
                 != new_focus_assist_mode
             {
-                locked_state.detect_engine.lock().await.set_focus_mode(new_focus_assist_mode);
+                if locked_state.calibrating {
+                    return Err(tonic::Status::failed_precondition(
+                        "Cannot change focus assist mode while calibrating"));
+                }
                 let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
                 if new_focus_assist_mode {
                     // Entering focus assist mode.
-                    if locked_state.calibrating {
-                        Self::cancel_calibration(&locked_state);
-                    }
                     // Run at full speed for focus assist.
                     if let Err(x) = Self::set_update_interval(
                         &*locked_state, Duration::ZERO).await
@@ -420,13 +453,18 @@ impl Cedar for MyCedar {
                     // want the calibration and state updates (i.e. detect
                     // engine's focus_mode, our operating_mode) to be completed
                     // properly.
-                    Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
                     Self::spawn_calibration(self.state.clone(),
-                                            /*enter_operate_mode=*/false);
+                                            /*new_operate_mode=*/false,
+                                            new_focus_assist_mode,
+                                            daylight_mode);
+                    calibrating = true;
                 }
             }
-            locked_state.operation_settings.focus_assist_mode =
-                Some(new_focus_assist_mode);
+            if !calibrating {
+                locked_state.detect_engine.lock().await.set_focus_mode(new_focus_assist_mode);
+                locked_state.operation_settings.focus_assist_mode =
+                    Some(new_focus_assist_mode);
+            }
         }
         if let Some(update_interval) = req.update_interval {
             if update_interval.seconds < 0 || update_interval.nanos < 0 {
@@ -676,6 +714,11 @@ impl Cedar for MyCedar {
     async fn initiate_action(&self, request: tonic::Request<ActionRequest>)
                              -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req: ActionRequest = request.into_inner();
+        if req.cancel_calibration.unwrap_or(false) {
+            let locked_state = self.state.lock().await;
+            *locked_state.cancel_calibration.lock().unwrap() = true;
+            locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+        }
         if req.capture_boresight.unwrap_or(false) {
             let operating_mode =
                 self.state.lock().await.operation_settings.operating_mode.or(
@@ -1046,8 +1089,14 @@ impl MyCedar {
     // When we leave SETUP (with focus mode), either because focus mode is
     // turned off (transitioning to SETUP align mode), or because of
     // transitioning to OPERATE, we need to calibrate.
+    // When the calibration finishes, the `new_operate_mode`, `new_focus_mode`,
+    // and `new_daylight_mode` args are used to set the post-calibration
+    // operating mode. If the calibration is aborted, the current operating mode
+    // is retained.
     fn spawn_calibration(state: Arc<tokio::sync::Mutex<CedarState>>,
-                         enter_operate_mode: bool) {
+                         new_operate_mode: bool,
+                         new_focus_mode: bool,
+                         new_daylight_mode: bool) {
         // The calibrate() call can take several seconds. If the gRPC client
         // aborts the RPC (e.g. due to timeout), we want the calibration and
         // state updates (i.e. detect engine's focus_mode, our operating_mode)
@@ -1068,6 +1117,7 @@ impl MyCedar {
                     if locked_state.calibrating {
                         return Ok(());  // Already in flight.
                     }
+                    Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
                     locked_state.calibrating = true;
                     locked_state.calibration_start = Instant::now();
                     locked_state.calibration_duration_estimate =
@@ -1090,7 +1140,7 @@ impl MyCedar {
                 let mut locked_state = state.lock().await;
                 locked_state.calibrating = false;
                 if *locked_state.cancel_calibration.lock().unwrap() {
-                    // Calibration was cancelled. Stay in Setup mode.
+                    // Calibration was cancelled. Stay in current mode.
                     *locked_state.cancel_calibration.lock().unwrap() = false;
                     let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
                     let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
@@ -1099,36 +1149,39 @@ impl MyCedar {
                         locked_state.detect_engine.lock().await;
                     locked_detect_engine.set_focus_mode(focus_mode);
                     locked_detect_engine.set_daylight_mode(daylight_mode);
-                } else if enter_operate_mode {
-                    // Transition into Operate mode.
-                    Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
-                    locked_state.detect_engine.lock().await.set_focus_mode(false);
-                    locked_state.detect_engine.lock().await.set_daylight_mode(false);
-                    locked_state.solve_engine.lock().await.set_align_mode(false).await;
-                    locked_state.solve_engine.lock().await.start().await;
-                    // Restore OPERATE mode update interval.
-                    let update_interval = locked_state.operation_settings.
-                        update_interval.clone().unwrap();
-                    let std_duration = std::time::Duration::try_from(
-                        update_interval).unwrap();
-                    if let Err(x) = Self::set_update_interval(
-                        &*locked_state, std_duration).await
-                    {
-                        return Err(tonic_status(x));
+                } else {
+                    // Calibration completed.
+                    Self::set_gain(&mut locked_state, new_daylight_mode).await;
+                    locked_state.detect_engine.lock().await.set_daylight_mode(new_daylight_mode);
+                    locked_state.operation_settings.daylight_mode =
+                        Some(new_daylight_mode);
+                    locked_state.detect_engine.lock().await.set_focus_mode(new_focus_mode);
+                    locked_state.operation_settings.focus_assist_mode =
+                        Some(new_focus_mode);
+                    if new_operate_mode {
+                        // Transition into Operate mode.
+                        locked_state.detect_engine.lock().await.set_focus_mode(false);
+                        locked_state.detect_engine.lock().await.set_daylight_mode(false);
+                        locked_state.solve_engine.lock().await.set_align_mode(false).await;
+                        locked_state.solve_engine.lock().await.start().await;
+                        // Restore OPERATE mode update interval.
+                        let update_interval = locked_state.operation_settings.
+                            update_interval.clone().unwrap();
+                        let std_duration = std::time::Duration::try_from(
+                            update_interval).unwrap();
+                        if let Err(x) = Self::set_update_interval(
+                            &*locked_state, std_duration).await
+                        {
+                            return Err(tonic_status(x));
+                        }
+                        locked_state.operation_settings.operating_mode =
+                            Some(OperatingMode::Operate as i32);
                     }
-                    locked_state.operation_settings.operating_mode =
-                        Some(OperatingMode::Operate as i32);
                 }
                 Ok(())
             });
-        // Let _task_handle go out of scope, detaching the spawned
-        // calibration task to complete regardless of a possible RPC
-        // timeout.
-    }
-
-    fn cancel_calibration(state: &CedarState) {
-        *state.cancel_calibration.lock().unwrap() = true;
-        state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+        // Let _task_handle go out of scope, detaching the spawned calibration
+        // task to complete regardless of a possible RPC timeout.
     }
 
     fn write_preferences_file(preferences_file: &PathBuf, preferences: &Preferences) {
@@ -1330,7 +1383,7 @@ impl MyCedar {
 
         match calibrator.lock().await.calibrate_optical(
             solve_engine.clone(), exp_duration, solve_timeout,
-            binning, detection_sigma).await
+            binning, detection_sigma, cancel_calibration.clone()).await
         {
             Ok((fov, distortion, match_max_error, solve_duration)) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
@@ -1361,6 +1414,8 @@ impl MyCedar {
                 locked_calibration_data.fov_horizontal = None;
                 locked_calibration_data.lens_distortion = None;
                 locked_calibration_data.match_max_error = None;
+                locked_calibration_data.lens_fl_mm = None;
+                locked_calibration_data.pixel_angular_size = None;
                 let mut locked_solve_engine = solve_engine.lock().await;
                 locked_solve_engine.set_fov_estimate(None).await?;
                 locked_solve_engine.set_distortion(0.0).await?;

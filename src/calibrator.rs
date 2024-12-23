@@ -138,7 +138,8 @@ impl Calibrator {
 
         self.camera.lock().await.set_exposure_duration(setup_exposure_duration)?;
         let (_, mut stars, frame_id) = self.acquire_image_get_stars(
-            /*frame_id=*/None, detection_binning, detection_sigma).await?;
+            /*frame_id=*/None, detection_binning, detection_sigma,
+            cancel_calibration.clone()).await?;
 
         let mut num_stars_detected = stars.len();
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
@@ -162,7 +163,8 @@ impl Calibrator {
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
         (_, stars, _) = self.acquire_image_get_stars(
-            Some(frame_id), detection_binning, detection_sigma).await?;
+            Some(frame_id), detection_binning, detection_sigma,
+            cancel_calibration.clone()).await?;
 
         num_stars_detected = stars.len();
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
@@ -173,6 +175,10 @@ impl Calibrator {
             // Close enough to goal, the scaled exposure time is good.
             return Ok(Duration::from_secs_f64(scaled_exposure_duration_secs));
         }
+        if *cancel_calibration.lock().unwrap() {
+            return Err(aborted_error(
+                "Cancelled during calibrate_exposure_duration()."));
+        }
 
         // Iterate one more time.
         if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
@@ -181,7 +187,8 @@ impl Calibrator {
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
         (_, stars, _) = self.acquire_image_get_stars(
-            Some(frame_id), detection_binning, detection_sigma).await?;
+            Some(frame_id), detection_binning, detection_sigma,
+            cancel_calibration.clone()).await?;
 
         num_stars_detected = stars.len();
         if num_stars_detected < (star_count_goal / 5) as usize {
@@ -205,7 +212,8 @@ impl Calibrator {
         solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
         exposure_duration: Duration,
         solve_timeout: Duration,
-        detection_binning: u32, detection_sigma: f64)
+        detection_binning: u32, detection_sigma: f64,
+        cancel_calibration: Arc<Mutex<bool>>)
         -> Result<(f64, f64, f64, Duration), CanonicalError> {
         // Goal: find the field of view, lens distortion, match_max_error solver
         // parameter, and representative plate solve time.
@@ -224,8 +232,12 @@ impl Calibrator {
 
         self.camera.lock().await.set_exposure_duration(exposure_duration)?;
         let (image, stars, _) = self.acquire_image_get_stars(
-            /*frame_id=*/None, detection_binning, detection_sigma).await?;
+            /*frame_id=*/None, detection_binning, detection_sigma,
+            cancel_calibration.clone()).await?;
         let (width, height) = image.dimensions();
+        if *cancel_calibration.lock().unwrap() {
+            return Err(aborted_error("Cancelled during calibrate_optical()."));
+        }
 
         // Set up SolveRequest.
         let mut solve_request = SolveRequest::default();
@@ -243,7 +255,11 @@ impl Calibrator {
         solve_request.image_width = width as i32;
         solve_request.image_height = height as i32;
 
-        let mut solve_result_proto = solve_engine.lock().await.solve(solve_request.clone()).await?;
+        let mut solve_result_proto =
+            solve_engine.lock().await.solve(solve_request.clone()).await?;
+        if *cancel_calibration.lock().unwrap() {
+            return Err(aborted_error("Cancelled during calibrate_optical()."));
+        }
         let mut solve_duration = std::time::Duration::try_from(
             solve_result_proto.solve_time.unwrap()).unwrap();
         if solve_result_proto.status.unwrap() == SolveStatus::MatchFound as i32 {
@@ -286,11 +302,16 @@ impl Calibrator {
 
     async fn acquire_image_get_stars(
         &self, frame_id: Option<i32>,
-        detection_binning: u32, detection_sigma: f64)
+        detection_binning: u32, detection_sigma: f64,
+        cancel_calibration: Arc<Mutex<bool>>)
         -> Result<(Arc<GrayImage>, Vec<StarDescription>, i32), CanonicalError>
     {
         let (captured_image, frame_id) =
             Self::capture_image(self.camera.clone(), frame_id).await?;
+        if *cancel_calibration.lock().unwrap() {
+            return Err(aborted_error(
+                "Cancelled during calibrate_exposure_duration()."));
+        }
         // Run CedarDetect on the image.
         let image = &captured_image.image;
         let noise_estimate = estimate_noise_from_image(&image);
