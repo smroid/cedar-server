@@ -716,8 +716,10 @@ impl Cedar for MyCedar {
         let req: ActionRequest = request.into_inner();
         if req.cancel_calibration.unwrap_or(false) {
             let locked_state = self.state.lock().await;
-            *locked_state.cancel_calibration.lock().unwrap() = true;
-            locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+            if locked_state.calibrating {
+                *locked_state.cancel_calibration.lock().unwrap() = true;
+                locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+            }
         }
         if req.capture_boresight.unwrap_or(false) {
             let operating_mode =
