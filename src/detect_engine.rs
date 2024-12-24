@@ -15,7 +15,8 @@ use cedar_detect::algorithm::{StarDescription, estimate_noise_from_image,
                               get_stars_from_image, summarize_region_of_interest};
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
-                                    remove_stars_from_histogram};
+                                    remove_stars_from_histogram,
+                                    stats_for_histogram};
 use crate::image_utils::{normalize_rows_mut, scale_image_mut};
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
@@ -418,10 +419,9 @@ impl DetectEngine {
 
                 let correction_factor: f64;
                 if daylight_mode {
-                    let median_value =
-                        max(get_level_for_fraction(&roi_histogram, 0.5) as u8, 1);
-                    // Push median of image towards mid-level.
-                    correction_factor = 128.0 / median_value as f64;
+                    let stats = stats_for_histogram(&roi_histogram);
+                    // Push image towards mid-level.
+                    correction_factor = 128.0 / stats.mean;
                 } else {
                     // For auto exposure in focus mode, what is the target value
                     // of the brightest pixel in the image region? Note that a
