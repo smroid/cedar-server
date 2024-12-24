@@ -371,9 +371,6 @@ message FrameResult {
   // The time at which `image` was captured.
   google.protobuf.Timestamp capture_time = 9;
 
-  // The camera temperature when `image` was captured.
-  double camera_temperature_celsius = 10;
-
   // The star candidates detected by CedarDetect; ordered by brightest
   // first.
   repeated StarCentroid star_candidates = 4;
@@ -460,7 +457,7 @@ message FrameResult {
 
   // alerts
   // * prolonged loss of stars; need setup mode?
-  reserved 11;
+  reserved 10, 11;
 }
 
 message Image {

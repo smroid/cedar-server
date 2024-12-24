@@ -1552,7 +1552,6 @@ impl MyCedar {
             captured_image.capture_params.exposure_duration).unwrap());
         frame_result.capture_time = Some(prost_types::Timestamp::try_from(
             captured_image.readout_time).unwrap());
-        frame_result.camera_temperature_celsius = captured_image.temperature.0 as f64;
         frame_result.fixed_settings = Some(fixed_settings.clone());
         frame_result.preferences =
             Some(locked_state.preferences.lock().unwrap().clone());
