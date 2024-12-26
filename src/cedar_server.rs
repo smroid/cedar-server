@@ -51,7 +51,7 @@ use futures::join;
 
 use crate::activity_led::ActivityLed;
 use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az,
-                        fill_in_detections, position_angle};
+                        fill_in_detections, magnitude_intensity_ratio, position_angle};
 use crate::cedar::cedar_server::{Cedar, CedarServer};
 
 use crate::cedar::{ActionRequest, CalibrationData, CameraModel,
@@ -1641,8 +1641,7 @@ impl MyCedar {
         }
         let binning_factor = binning * if display_sampling { 2 } else { 1 };
 
-        if tetra3_solve_result.is_some() {
-            let tsr = &tetra3_solve_result.as_ref().unwrap();
+        if let Some(ref tsr) = tetra3_solve_result {
             if tsr.status == Some(SolveStatus::MatchFound.into()) {
                 let celestial_coords;
                 if tsr.target_coords.len() > 0 {
@@ -1803,8 +1802,7 @@ impl MyCedar {
                 }
             }
         }
-        if tetra3_solve_result.is_some() {
-            let tsr = &tetra3_solve_result.unwrap();
+        if let Some(ref tsr) = tetra3_solve_result {
             frame_result.plate_solution = Some(tsr.clone());
             if tsr.status == Some(SolveStatus::MatchFound.into()) &&
                 frame_result.slew_request.is_some()
@@ -1878,11 +1876,27 @@ impl MyCedar {
                                 y: height as f64 / 2.0});
         }
         if let Some(ref irr) = image_rotator {
+            // Having an image_rotator implies that we are in SETUP align mode.
+
             // Transform the boresight coords.
             let bp = frame_result.boresight_position.as_mut().unwrap();
             (bp.x, bp.y) = irr.transform_to_rotated(bp.x, bp.y, width, height);
 
-            // Transform the detected star image coordinates.
+            // Replace star_candidates with plate solve's catalog stars.
+            if let Some(ref tsr) = tetra3_solve_result {
+                frame_result.star_candidates = Vec::<StarCentroid>::new();
+                for star in &tsr.catalog_stars {
+                    let ic = star.image_coord.clone().unwrap();
+                    frame_result.star_candidates.push(
+                        StarCentroid{centroid_position: Some(ImageCoord{x: ic.x, y: ic.y}),
+                                     // Arbitrarily assign intensity=1 to mag=6.
+                                     brightness: magnitude_intensity_ratio(6.0, star.magnitude),
+                                     num_saturated: 0
+                        });
+                }
+            }
+
+            // Transform the detected (or plate solve catalog) star image coordinates.
             for star_centroid in &mut frame_result.star_candidates {
                 let cp = star_centroid.centroid_position.as_mut().unwrap();
                 (cp.x, cp.y) = irr.transform_to_rotated(
@@ -1890,8 +1904,7 @@ impl MyCedar {
             }
 
             // Augment the detected stars with catalog items from the plate solution.
-            // info!("star_candidates: {:?}", frame_result.star_candidates);
-            // info!("labeled catalog entries: {:?}", frame_result.labeled_catalog_entries);
+            // The labeled_catalog_entries have already been transformed to rotated.
             frame_result.star_candidates = fill_in_detections(
                 &frame_result.star_candidates, &frame_result.labeled_catalog_entries);
 
