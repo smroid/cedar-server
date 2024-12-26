@@ -490,6 +490,7 @@ impl SolveEngine {
                 solve_request.distortion = Some(locked_state.distortion);
                 solve_request.match_max_error = Some(locked_state.match_max_error);
                 solve_request.return_matches = locked_state.return_matches;
+                solve_request.return_catalog = true;
                 solve_request.return_rotation_matrix = true;
             }
             // Get the most recent star detection result.
