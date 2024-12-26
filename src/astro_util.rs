@@ -271,7 +271,7 @@ fn compute_centroid(vector: &[f64; 3], width: usize, height: usize, fov_rad: f64
 
 /// Give the intensity ratio for second / first corresponding to the
 /// passed stellar magnitudes.
-fn intensity_ratio(m1: f64, m2: f64) -> f64 {
+pub fn magnitude_intensity_ratio(m1: f64, m2: f64) -> f64 {
     2.512f64.powf(m1 - m2)
 }
 
@@ -341,7 +341,7 @@ pub fn fill_in_detections(detections: &Vec<StarCentroid>,
         }
         if !found_detection {
             // Synthesize a StarCentroid corresponding to `catalog_entry`.
-            let brightness = match_brightness * intensity_ratio(
+            let brightness = match_brightness * magnitude_intensity_ratio(
                 match_magnitude, catalog_entry.entry.as_ref().unwrap().magnitude);
             detections_for_catalog_entries.push(
                 StarCentroid{centroid_position: Some(cat_coord.clone()),
@@ -523,8 +523,8 @@ mod tests {
     }
 
     #[test]
-    fn test_intensity_ratio() {
-        let ratio = intensity_ratio(2.0, 1.0);
+    fn test_magnitude_intensity_ratio() {
+        let ratio = magnitude_intensity_ratio(2.0, 1.0);
         assert_abs_diff_eq!(ratio, 2.51, epsilon = 0.01);
     }
 
