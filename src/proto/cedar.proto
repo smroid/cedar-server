@@ -372,7 +372,9 @@ message FrameResult {
   google.protobuf.Timestamp capture_time = 9;
 
   // The star candidates detected by CedarDetect; ordered by brightest
-  // first.
+  // first. In SETUP alignment mode, these are the catalog stars from
+  // the plate solution, with relative `brightness` values derived from
+  // the star catalog magnitudes.
   repeated StarCentroid star_candidates = 4;
 
   // The current plate solution. Omitted if no plate solve was attempted for
