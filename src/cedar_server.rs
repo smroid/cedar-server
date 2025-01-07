@@ -151,7 +151,7 @@ struct CedarState {
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<Mutex<TelescopePosition>>,
     polar_analyzer: Arc<Mutex<PolarAnalyzer>>,
-    activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
+    activity_led: Arc<Mutex<ActivityLed>>,
 
     // Not all builds of Cedar-server support Cedar-sky.
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
@@ -691,7 +691,7 @@ impl Cedar for MyCedar {
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
-        self.state.lock().await.activity_led.lock().await.received_rpc().await;
+        self.state.lock().await.activity_led.lock().unwrap().received_rpc();
         let req: FrameRequest = request.into_inner();
         let non_blocking = req.non_blocking.is_some() && req.non_blocking.unwrap();
         let landscape = req.display_orientation.is_none() ||
@@ -789,7 +789,7 @@ impl Cedar for MyCedar {
         }
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
-            self.state.lock().await.activity_led.lock().await.stop().await;
+            self.state.lock().await.activity_led.lock().unwrap().stop();
             let output = Command::new("sudo")
                 .arg("shutdown")
                 .arg("now")
@@ -803,7 +803,7 @@ impl Cedar for MyCedar {
         }
         if req.restart_server.unwrap_or(false) {
             info!("Restarting host system");
-            self.state.lock().await.activity_led.lock().await.stop().await;
+            self.state.lock().await.activity_led.lock().unwrap().stop();
             let output = Command::new("sudo")
                 .arg("reboot")
                 .arg("now")
@@ -1929,6 +1929,7 @@ impl MyCedar {
         tetra3_database: String,
         tetra3_uds: String,
         got_signal: Arc<AtomicBool>,
+        activity_led: Arc<Mutex<ActivityLed>>,
         attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
@@ -2214,8 +2215,7 @@ impl MyCedar {
                     Calibrator::new(camera.clone(), normalize_rows))),
                 telescope_position,
                 polar_analyzer,
-                activity_led: Arc::new(tokio::sync::Mutex::new(
-                    ActivityLed::new(got_signal.clone()).await)),
+                activity_led,
                 cedar_sky, wifi,
                 preferences: shared_preferences.clone(),
                 scaled_image: None,
@@ -2773,6 +2773,8 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
     let rest = Router::new().nest_service(
         "/", ServeDir::new(flutter_app_path));
 
+    let activity_led = Arc::new(Mutex::new(ActivityLed::new(got_signal.clone())));
+
     // Build the gRPC service.
     let path: PathBuf = [args.log_dir, args.log_file].iter().collect();
     let cedar_server = CedarServer::new(MyCedar::new(
@@ -2780,7 +2782,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         invert_camera,
         initial_exposure_duration, args.min_exposure, args.max_exposure,
         args.tetra3_script, args.tetra3_database, args.tetra3_socket,
-        got_signal,
+        got_signal, activity_led.clone(),
         attached_camera, test_image_camera, camera,
         shared_telescope_position.clone(),
         args.star_count_goal, args.sigma, args.min_sigma,
@@ -2814,7 +2816,12 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
 
     // Spin up ASCOM Alpaca server for reporting our RA/Dec solution as the
     // telescope position.
-    let alpaca_server = create_alpaca_server(shared_telescope_position);
+
+    // Function called whenever SkySafari interrogates our position.
+    let async_callback = Box::new(move || {
+        activity_led.lock().unwrap().received_rpc();
+    });
+    let alpaca_server = create_alpaca_server(shared_telescope_position, async_callback);
     let alpaca_server_future = alpaca_server.start();
 
     let (service_result, service_result8080, alpaca_result) =

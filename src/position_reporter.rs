@@ -51,6 +51,14 @@ impl TelescopePosition {
     }
 }
 
+struct Callback(Box<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for Callback {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      write!(f, "Callback")
+  }
+}
+
 #[derive(Default, Debug)]
 struct MyTelescope {
     telescope_position: Arc<Mutex<TelescopePosition>>,
@@ -59,11 +67,18 @@ struct MyTelescope {
     // values are not valid. We instead "animate" the reported ra/dec position
     // when it is invalid.
     updates_while_invalid: Mutex<i32>,
+
+    // Called whenever SkySafari obtains our right_ascension().
+    callback: Option<Callback>,
 }
 
 impl MyTelescope {
-    pub fn new(telescope_position: Arc<Mutex<TelescopePosition>>) -> Self {
-        MyTelescope{ telescope_position, updates_while_invalid: Mutex::new(0) }
+    // cb: function to be called whenever SkySafari interrogates our position.
+    pub fn new(telescope_position: Arc<Mutex<TelescopePosition>>,
+               cb: Box<dyn Fn() + Send + Sync>) -> Self {
+        MyTelescope{ telescope_position,
+                     updates_while_invalid: Mutex::new(0),
+                     callback: Some(Callback(cb)) }
     }
 
     fn value_not_set_error(msg: &str) -> ASCOMError {
@@ -114,6 +129,9 @@ impl Telescope for MyTelescope {
     }
     // Hours.
     async fn right_ascension(&self) -> ASCOMResult<f64> {
+        if let Some(ref cb) = self.callback {
+            cb.0();
+        }
         let locked_position = self.telescope_position.lock().unwrap();
         Ok(locked_position.boresight_ra / 15.0)
     }
@@ -248,13 +266,14 @@ impl Telescope for MyTelescope {
     }
 }
 
-pub fn create_alpaca_server(telescope_position: Arc<Mutex<TelescopePosition>>)
-                            -> Server {
+// cb: function to be called whenever SkySafari interrogates our position.
+pub fn create_alpaca_server(telescope_position: Arc<Mutex<TelescopePosition>>,
+                            cb: Box<dyn Fn() + Send + Sync>) -> Server {
     let mut server = Server {
         info: CargoServerInfo!(),
         ..Default::default()
     };
     server.listen_addr.set_port(11111);
-    server.devices.register(MyTelescope::new(telescope_position));
+    server.devices.register(MyTelescope::new(telescope_position, cb));
     server
 }
