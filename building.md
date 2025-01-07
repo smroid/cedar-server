@@ -25,7 +25,7 @@ started!
 ## Download and burn
 
 First: download the SD card image
-[cedar_rpi_2024_dec_15.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2024_dec_15.img.gz)
+[cedar_rpi_2025_jan_07.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2025_jan_07.img.gz)
 to your computer.
 
 Second: burn an SD card (16GB or larger) with the image file you just downloaded
@@ -151,9 +151,7 @@ dart pub global activate protoc_plugin
 Add `/home/cedar/.pub-cache/bin` to your `PATH` environment variable.
 
 ```
-cd cedar-aim/cedar_flutter/lib
-protoc --experimental_allow_proto3_optional --dart_out=grpc:. --proto_path=../../src/proto cedar.proto tetra3.proto google/protobuf/duration.proto google/protobuf/timestamp.proto
-flutter build web --web-renderer canvaskit --no-web-resources-cdn
+./build.sh
 ```
 
 ### Setup Cedar-solve
