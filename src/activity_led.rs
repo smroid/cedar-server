@@ -2,16 +2,17 @@
 // See LICENSE file in root directory for license terms.
 
 use std::fs;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{JoinHandle, sleep, spawn};
 use std::time::{Duration, SystemTime};
 
 pub struct ActivityLed {
     // Our state, shared between ActivityLed methods and the worker thread.
-    state: Arc<tokio::sync::Mutex<SharedState>>,
+    state: Arc<Mutex<SharedState>>,
 
     // Executes worker().
-    worker_thread: Option<tokio::task::JoinHandle<()>>,
+    worker_thread: Option<JoinHandle<()>>,
 }
 
 // State shared between worker thread and the ActivityLed methods.
@@ -39,9 +40,9 @@ struct SharedState {
 
 impl ActivityLed {
     // Initiates the activity LED to blinking at 1hz.
-    pub async fn new(got_signal: Arc<AtomicBool>) -> Self {
+    pub fn new(got_signal: Arc<AtomicBool>) -> Self {
         let mut activity_led = ActivityLed{
-            state: Arc::new(tokio::sync::Mutex::new(
+            state: Arc::new(Mutex::new(
                 SharedState{
                     stop_request: false,
                     received_rpc: false,
@@ -51,8 +52,8 @@ impl ActivityLed {
         let cloned_state = activity_led.state.clone();
         let cloned_got_signal = got_signal.clone();
         activity_led.worker_thread =
-            Some(tokio::task::spawn(async move {
-                ActivityLed::worker(cloned_state, cloned_got_signal).await;
+            Some(spawn(|| {
+                ActivityLed::worker(cloned_state, cloned_got_signal);
             }));
         activity_led
     }
@@ -60,20 +61,19 @@ impl ActivityLed {
     // Indicates that Cedar has received an RPC from a client. We turn the
     // activity LED off; if too much time occurs without received_rpc() being
     // called again, we will resume blinking the LED at 1hz.
-    pub async fn received_rpc(&self) {
-        self.state.lock().await.received_rpc = true;
+    pub fn received_rpc(&self) {
+        self.state.lock().unwrap().received_rpc = true;
     }
 
     // Releases the activity LED back to its OS-defined "disk" activity
     // indicator. Currently there is no way to transition out of the released
     // state after stop() is called.
-    pub async fn stop(&mut self) {
-        self.state.lock().await.stop_request = true;
-        self.worker_thread.take().unwrap().await.unwrap();
+    pub fn stop(&mut self) {
+        self.state.lock().unwrap().stop_request = true;
+        self.worker_thread.take().unwrap().join().unwrap();
     }
 
-    async fn worker(state: Arc<tokio::sync::Mutex<SharedState>>,
-                    got_signal: Arc<AtomicBool>) {
+    fn worker(state: Arc<Mutex<SharedState>>, got_signal: Arc<AtomicBool>) {
         // https://www.jeffgeerling.com/blogs/jeff-geerling/controlling-pwr-act-leds-raspberry-pi
         let brightness_path = "/sys/class/leds/ACT/brightness";
         let trigger_path = "/sys/class/leds/ACT/trigger";
@@ -97,9 +97,9 @@ impl ActivityLed {
         let mut led_state = LedState::IdleOff;
         fs::write(brightness_path, "0").unwrap();
 
-        async fn process_received_rpc(state: &Arc<tokio::sync::Mutex<SharedState>>,
-                                      last_rpc_time: &mut SystemTime) -> bool {
-            let mut locked_state = state.lock().await;
+        fn process_received_rpc(state: &Arc<Mutex<SharedState>>,
+                                last_rpc_time: &mut SystemTime) -> bool {
+            let mut locked_state = state.lock().unwrap();
             let received_rpc = locked_state.received_rpc;
             if received_rpc {
                 *last_rpc_time = SystemTime::now();
@@ -109,7 +109,7 @@ impl ActivityLed {
         }
 
         loop {
-            if state.lock().await.stop_request {
+            if state.lock().unwrap().stop_request {
                 break;
             }
             if got_signal.load(Ordering::Relaxed) {
@@ -117,8 +117,8 @@ impl ActivityLed {
             }
             match led_state {
                 LedState::IdleOff => {
-                    tokio::time::sleep(blink_delay).await;
-                    if process_received_rpc(&state, &mut last_rpc_time).await {
+                    sleep(blink_delay);
+                    if process_received_rpc(&state, &mut last_rpc_time) {
                         led_state = LedState::ConnectedOff;
                         continue;
                     }
@@ -126,17 +126,17 @@ impl ActivityLed {
                     led_state = LedState::IdleOn;
                 },
                 LedState::IdleOn => {
-                    tokio::time::sleep(blink_delay).await;
+                    sleep(blink_delay);
                     fs::write(brightness_path, "0").unwrap();
-                    if process_received_rpc(&state, &mut last_rpc_time).await {
+                    if process_received_rpc(&state, &mut last_rpc_time) {
                         led_state = LedState::ConnectedOff;
                         continue;
                     }
                     led_state = LedState::IdleOff;
                 },
                 LedState::ConnectedOff => {
-                    tokio::time::sleep(connected_poll).await;
-                    if process_received_rpc(&state, &mut last_rpc_time).await {
+                    sleep(connected_poll);
+                    if process_received_rpc(&state, &mut last_rpc_time) {
                         continue;
                     }
                     let elapsed = SystemTime::now().duration_since(last_rpc_time);
