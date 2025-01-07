@@ -129,3 +129,22 @@ Cedar-server version: 0.7.0
 * Add star count and image noise to performance popup.
 
 * Fix missing alt/az vs. equatorial mount in preferences.
+
+January 7 2025
+
+Cedar-server version: 0.8.0
+
+* Fix bugs in calibration cancellation logic.
+
+* Remove camera temperature attribute.
+
+* Fix bug in Rpi camera logic regarding discarding images after setting change.
+
+* In align screen, ensure that bright star is highlighted as alignment target
+  even if it is so overexposed that it is not detected as a star.
+
+* Fix bug where activity light would blink when Cedar Aim is inactive because
+  user is interacting instead with SkySafari.
+
+* Reduce geolocation map resolution.
+
