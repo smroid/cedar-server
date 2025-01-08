@@ -2699,8 +2699,6 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         None => None,
     };
 
-    let mut initial_exposure_duration = Duration::from_millis(150);
-
     let feature_level = if product_name.eq_ignore_ascii_case("Cedar-Box") {
         FeatureLevel::Diy
     } else {
@@ -2709,7 +2707,6 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
             if camera_model == "imx296" {
                 FeatureLevel::Plus  // Hopper.
             } else {
-                initial_exposure_duration = Duration::from_millis(1000);
                 FeatureLevel::Basic  // Hopper LE.
             }
         } else {
@@ -2780,7 +2777,8 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
     let cedar_server = CedarServer::new(MyCedar::new(
         args.binning, args.display_sampling,
         invert_camera,
-        initial_exposure_duration, args.min_exposure, args.max_exposure,
+        /*initial_exposure_duration=*/Duration::from_millis(100),
+        args.min_exposure, args.max_exposure,
         args.tetra3_script, args.tetra3_database, args.tetra3_socket,
         got_signal, activity_led.clone(),
         attached_camera, test_image_camera, camera,
