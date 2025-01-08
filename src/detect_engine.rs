@@ -553,10 +553,9 @@ impl DetectEngine {
                 if !focus_mode {
                     // Auto exposure.
                     let mut baseline_exposure_duration = initial_exposure_duration;
-                    if let Some(calibrated_exposure_duration) =
-                        calibrated_exposure_duration
+                    if let Some(calibrated_duration) = calibrated_exposure_duration
                     {
-                        baseline_exposure_duration = calibrated_exposure_duration;
+                        baseline_exposure_duration = calibrated_duration;
                     }
                     let adjusted_star_count_goal = star_count_goal as f64;
                     let adjusted_exposure_duration_secs =
@@ -603,15 +602,17 @@ impl DetectEngine {
                                 // adjusted_exposure_duration.
                                 new_exposure_duration_secs =
                                     prev_exposure_duration_secs / star_goal_fraction;
-                                // Bound exposure duration to be within three
-                                // stops of adjusted_exposure_duration. Further
-                                // bounds are applied below.
-                                new_exposure_duration_secs = f64::max(
-                                    new_exposure_duration_secs,
-                                    adjusted_exposure_duration_secs / 8.0);
-                                new_exposure_duration_secs = f64::min(
-                                    new_exposure_duration_secs,
-                                    adjusted_exposure_duration_secs * 8.0);
+                                if calibrated_exposure_duration.is_some() {
+                                    // Bound exposure duration to be within three
+                                    // stops of adjusted_exposure_duration. Further
+                                    // bounds are applied below.
+                                    new_exposure_duration_secs = f64::max(
+                                        new_exposure_duration_secs,
+                                        adjusted_exposure_duration_secs / 8.0);
+                                    new_exposure_duration_secs = f64::min(
+                                        new_exposure_duration_secs,
+                                        adjusted_exposure_duration_secs * 8.0);
+                                }
                             }
                         }
                     }
