@@ -6,22 +6,11 @@ Default pattern database:
 
 auto-detect alt-az vs equatorial (with manual override)
 
-flutter app icons
-
 Mic button on keyboard for voice input. Can work offline? Good for
 "en gee cee oh five six" utterances?
 
-After 'set align' or 're-align', have an on-screen indication of
-alignment having been set/updated. Maybe some kind of highlighting
-of the boresight reticle having moved. Or nice haptic feedback.
-
-Catalog button available while in go-to mode.
-
 Make polar advice data block tappable, zooms to larger dialog.
 * polar advice can just be an "idea" icon.
-
-Performance box should include number of detected stars. Also noise
-estimate (advanced only).
 
 Mobile app: support split screen; support picture-in-picture.
 
@@ -31,11 +20,6 @@ wifi even if no internet.
 Different on-screen prompt on connection loss vs. never having connection.
 Loss reasons: check server power (battery drained?), check phone's wifi
 connection (sometimes phone reverts to cell connection).
-
-Investigate catalog object listing bug (Saturn was not displayed when
-"distance" slider was turned off.
-
-Investigate high RMSE.
 
 Mobile app: display available Cedar* wifi access points, offer to join.
 
@@ -48,10 +32,12 @@ if binning==2: do star detection on the 2x binned image, and centroid on
 if binning==4: compute a 2x binned (and hot-pixel-repaired) image.
   Do star detection on the 2x further binned image, and centroid on the
   first 2x-binned image.
+And be sure to apply the same processing in acquire_image_get_stars()
+in the calibrator module.
 
-remove cancel button from calibration progress. Or make it work properly.
+Hopper LE: drop NGC/IC; drop asteroids/comets.
 
-per-camera maximum exposure setting.
+per-camera maximum exposure setting, or scale max exposure up for color camera.
 
 "serve engine" pipeline stage. Moves some logic out of cedar_server.rs.
 
@@ -94,10 +80,6 @@ Catalog
   NGC 426
   NGC 0426
   N426
-
-cedar aim and hopper aim should share map tiles
-* or cedar aim should drop the highest resolution tier
-* hopper aim apps can drop the map altogether
 
 changing wifi doesn't take effect, need to restart server.
 
@@ -179,7 +161,6 @@ interoperation with SkySafari
 
 help system
 * long press? (GestureDetector wrapped around a widget)
-* 'i' icons?
 
 vignetting calibration
 
@@ -204,8 +185,6 @@ Preferences:
 * update rate (non-dwell, dwell)
 * flip options? To match telescope FOV orientation.
   - sync with SkySafari?
-
-Splash screen
 
 Help page
 * mostly redirects attention to long-press aids?
