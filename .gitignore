@@ -25,3 +25,5 @@ Cargo.lock
 
 cedar_ui_prefs.binpb
 cedar_log.txt
+
+bin/cedar-box-server

@@ -17,3 +17,7 @@ fi
 
 # Set capabilities
 sudo setcap cap_sys_time,cap_dac_override,cap_chown,cap_fowner,cap_net_bind_service+ep "$binary_path"
+
+# Move binary out so it survives 'cargo clean'.
+mkdir -p ../bin
+mv "$binary_path" ../bin
