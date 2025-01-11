@@ -23,7 +23,7 @@ Cargo.lock
 *.jpg
 *~
 
-cedar_ui_prefs.binpb
-cedar_log.txt
+**/cedar_log.txt
+**/cedar_ui_prefs.binpb
 
 bin/cedar-box-server
