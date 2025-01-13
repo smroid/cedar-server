@@ -148,3 +148,10 @@ Cedar-server version: 0.8.0
 
 * Reduce geolocation map resolution.
 
+January 13 2025
+
+Cedar-server version: 0.8.1
+
+* Fix bug that was hiding geolocation button.
+
+* Update camera logic for Rpi5 compressed raw.
