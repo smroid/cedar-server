@@ -102,13 +102,13 @@ Cedar-server version: 0.6.0
 
 * Change to rolling logs.
 
-November 17 2024
+# November 17 2024
 
 Cedar-server version: 0.6.1
 
 * Bug fixes.
 
-December 15 2024
+# December 15 2024
 
 Cedar-server version: 0.7.0
 
@@ -130,7 +130,7 @@ Cedar-server version: 0.7.0
 
 * Fix missing alt/az vs. equatorial mount in preferences.
 
-January 7 2025
+# January 7 2025
 
 Cedar-server version: 0.8.0
 
@@ -148,7 +148,7 @@ Cedar-server version: 0.8.0
 
 * Reduce geolocation map resolution.
 
-January 13 2025
+# January 13 2025
 
 Cedar-server version: 0.8.1
 
