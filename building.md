@@ -373,7 +373,7 @@ First, create a file `/home/cedar/run_cedar.sh` containing:
 source /home/cedar/projects/cedar-solve/.cedar_venv/bin/activate
 cd /home/cedar/projects/cedar-server/run
 export PATH=/home/cedar/.cargo/bin:$PATH
-/home/cedar/projects/cedar-server/target/release/cedar-box-server
+/home/cedar/projects/cedar-server/bin/cedar-box-server
 ```
 
 Next, create a file `/lib/systemd/system/cedar.service` with:
