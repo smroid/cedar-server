@@ -699,7 +699,8 @@ impl Cedar for MyCedar {
         let fr = Self::get_next_frame(
             self.state.clone(), req.prev_frame_id, non_blocking, landscape).await;
         let mut frame_result = FrameResult {..Default::default()};
-        if non_blocking && fr.is_none() {
+        if fr.is_none() {
+	    assert!(non_blocking);
             frame_result.has_result = Some(false);
         } else {
             frame_result = fr.unwrap();
@@ -1410,7 +1411,7 @@ impl MyCedar {
                 locked_solve_engine.set_distortion(distortion).await?;
                 locked_solve_engine.set_match_max_error(match_max_error).await?;
                 locked_solve_engine.set_solve_timeout(operation_solve_timeout).await?;
-            }
+            },
             Err(e) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
                 locked_calibration_data.fov_horizontal = None;
@@ -1479,6 +1480,9 @@ impl MyCedar {
                     fraction = 1.0;
                 }
                 frame_result.calibration_progress = Some(fraction);
+		// Return previous calibration data while calibrating.
+		frame_result.calibration_data =
+		    Some(locked_state.calibration_data.lock().await.clone());
 
                 if let Some(img) = &locked_state.scaled_image {
                     let (scaled_width, scaled_height) = img.dimensions();
@@ -2108,7 +2112,7 @@ impl MyCedar {
                         preferences.update_interval = None;
                     }
                     preferences.merge(&*file_prefs_bytes.unwrap()).unwrap();
-                }
+                },
                 Err(e) => {
                     warn!("Could not decode preferences {:?}", e);
                 },
@@ -2304,7 +2308,7 @@ impl MyCedar {
                     {
                         latest_file = Some((path, modified_time));
                     }
-                }
+                },
                 Err(e) => {
                     warn!("Error globbing pattern {:?}: {:?}", pattern, e);
                 }
@@ -2897,11 +2901,11 @@ mod multiplex_service {
                 match (self.rest_ready, self.grpc_ready) {
                     (true, true) => {
                         return Ok(()).into();
-                    }
+                    },
                     (false, _) => {
                         ready!(self.rest.poll_ready(cx)).map_err(|err| match err {})?;
                         self.rest_ready = true;
-                    }
+                    },
                     (_, false) => {
                         ready!(self.grpc.poll_ready(cx))?;
                         self.grpc_ready = true;
