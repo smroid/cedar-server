@@ -6,6 +6,12 @@ Default pattern database:
 
 auto-detect alt-az vs equatorial (with manual override)
 
+Calibrate button.
+
+Perfect solve stats.
+
+Brightest star exposure adu.
+
 Mic button on keyboard for voice input. Can work offline? Good for
 "en gee cee oh five six" utterances?
 
