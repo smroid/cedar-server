@@ -201,20 +201,23 @@ You can start the Cedar-server at the command line as follows:
 ```
 cd cedar-server/run
 source ../../cedar-solve/.cedar_venv/bin/activate
-../target/release/cedar-box-server
+../bin/cedar-box-server
 ```
 
 If things are working correctly, the output will be similar to:
 
 ```
-INFO cedar_server: Using Tetra3 server "./tetra3_server.py" listening at "/tmp/cedar.sock"
-INFO Camera camera_manager.cpp:313 libcamera v0.3.0+65-6ddd79b5
-WARN RPiSdn sdn.cpp:40 Using legacy SDN tuning - please consider moving SDN inside rpi.denoise
+INFO cedar_server: Using Tetra3 server "../../tetra3_server/python/tetra3_server.py" listening at "/tmp/cedar.sock"
+INFO Camera camera_manager.cpp:325 libcamera v0.3.2+99-1230f78d
 INFO RPI vc4.cpp:446 Registered camera /base/soc/i2c0mux/i2c@1/imx477@1a to Unicam device /dev/media4 and ISP device /dev/media1
-INFO Camera camera_manager.cpp:313 libcamera v0.3.0+65-6ddd79b5
-WARN RPiSdn sdn.cpp:40 Using legacy SDN tuning - please consider moving SDN inside rpi.denoise
+INFO Camera camera_manager.cpp:325 libcamera v0.3.2+99-1230f78d
 INFO RPI vc4.cpp:446 Registered camera /base/soc/i2c0mux/i2c@1/imx477@1a to Unicam device /dev/media4 and ISP device /dev/media1
 INFO cedar_server: Using camera imx477 4056x3040
+INFO cedar_server: Cedar-Box
+INFO cedar_server: Copyright (c) 2024 Steven Rosenthal smr@dt3.org.
+Licensed for non-commercial use.
+See LICENSE.md at https://github.com/smroid/cedar-server
+INFO cedar_server: Cedar server version "0.8.1" running on Raspberry Pi 4 Model B Rev 1.0/Debian GNU/Linux 12 (bookworm)
 INFO cedar_server::tetra3_subprocess: Tetra3 subprocess started
 WARN cedar_server::tetra3_subprocess: Loading database from: /home/cedar/projects/cedar-solve/tetra3/data/default_database.npz
 WARN cedar_server: Could not read file "./cedar_ui_prefs.binpb": Os { code: 2, kind: NotFound, message: "No such file or directory" }
