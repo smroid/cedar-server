@@ -20,4 +20,6 @@ mkdir -p ../bin
 cp "$binary_path" ../bin
 
 # Set capabilities.
-sudo setcap cap_sys_time,cap_dac_override,cap_chown,cap_fowner,cap_net_bind_service+ep ../bin/cedar-box-server
+caps="cap_sys_time,cap_dac_override,cap_chown,cap_fowner,cap_net_bind_service+ep"
+sudo setcap "$caps" "$binary_path"
+sudo setcap "$caps" ../bin/cedar-box-server
