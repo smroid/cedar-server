@@ -74,6 +74,14 @@ impl ActivityLed {
     }
 
     fn worker(state: Arc<Mutex<SharedState>>, got_signal: Arc<AtomicBool>) {
+	// Raspberry Pi 5 reverses the control signal to the ACT led.
+        let processor_model =
+            fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap()
+            .trim_end_matches('\0').to_string();
+	let is_rpi5 = processor_model.contains("Raspberry Pi 5");
+	let off_value = if is_rpi5 { "1" } else { "0" };
+	let on_value = if is_rpi5 { "0" } else { "1" };
+
         // https://www.jeffgeerling.com/blogs/jeff-geerling/controlling-pwr-act-leds-raspberry-pi
         let brightness_path = "/sys/class/leds/ACT/brightness";
         let trigger_path = "/sys/class/leds/ACT/trigger";
@@ -95,7 +103,7 @@ impl ActivityLed {
             ConnectedOff,
         }
         let mut led_state = LedState::IdleOff;
-        fs::write(brightness_path, "0").unwrap();
+        fs::write(brightness_path, off_value).unwrap();
 
         fn process_received_rpc(state: &Arc<Mutex<SharedState>>,
                                 last_rpc_time: &mut SystemTime) -> bool {
@@ -119,19 +127,21 @@ impl ActivityLed {
                 LedState::IdleOff => {
                     sleep(blink_delay);
                     if process_received_rpc(&state, &mut last_rpc_time) {
+			fs::write(brightness_path, off_value).unwrap();
                         led_state = LedState::ConnectedOff;
                         continue;
                     }
-                    fs::write(brightness_path, "1").unwrap();
+                    fs::write(brightness_path, on_value).unwrap();
                     led_state = LedState::IdleOn;
                 },
                 LedState::IdleOn => {
                     sleep(blink_delay);
-                    fs::write(brightness_path, "0").unwrap();
                     if process_received_rpc(&state, &mut last_rpc_time) {
+			fs::write(brightness_path, off_value).unwrap();
                         led_state = LedState::ConnectedOff;
                         continue;
                     }
+                    fs::write(brightness_path, off_value).unwrap();
                     led_state = LedState::IdleOff;
                 },
                 LedState::ConnectedOff => {
@@ -147,7 +157,7 @@ impl ActivityLed {
                     } else {
                         if *elapsed.as_ref().unwrap() > connected_timeout {
                             // Revert to Idle state.
-                            fs::write(brightness_path, "1").unwrap();
+                            fs::write(brightness_path, on_value).unwrap();
                             led_state = LedState::IdleOn;
                         }
                     }
