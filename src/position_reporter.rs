@@ -99,16 +99,19 @@ impl Device for MyTelescope {
 #[async_trait]
 impl Telescope for MyTelescope {
     async fn alignment_mode(&self) -> ASCOMResult<AlignmentMode> {
+	debug!("alignment_mode");
         // TODO: update if settings is alt/az.
         Ok(AlignmentMode::Polar)
     }
 
     async fn equatorial_system(&self) -> ASCOMResult<EquatorialSystem> {
+	debug!("equatorial_system");
         Ok(EquatorialSystem::J2000)
     }
 
     // Degrees.
     async fn declination(&self) -> ASCOMResult<f64> {
+	debug!("declination");
         let locked_position = self.telescope_position.lock().unwrap();
         if locked_position.boresight_valid {
             return Ok(locked_position.boresight_dec);
@@ -129,6 +132,7 @@ impl Telescope for MyTelescope {
     }
     // Hours.
     async fn right_ascension(&self) -> ASCOMResult<f64> {
+	debug!("right_ascension");
         if let Some(ref cb) = self.callback {
             cb.0();
         }
@@ -137,11 +141,13 @@ impl Telescope for MyTelescope {
     }
 
     async fn can_move_axis(&self, _axis: Axis) -> ASCOMResult<bool> {
+	debug!("can_move_axis");
         Ok(false)
     }
     // Even though we define 'can_move_axis()' as false, SkySafari still
     // offers axis movement UI that calls move_axis().
     async fn move_axis(&self, _axis: Axis, _rate: f64) -> ASCOMResult {
+	debug!("move_axis");
         Ok(())  // Silently ignore.
     }
 
@@ -258,10 +264,12 @@ impl Telescope for MyTelescope {
     }
 
     async fn tracking(&self) -> ASCOMResult<bool> {
+        debug!("tracking");
         // TODO: sense whether solve results are fixed or moving at sideral rate.
         Ok(false)
     }
     async fn can_set_tracking(&self) -> ASCOMResult<bool> {
+        debug!("can_set_tracking");
         Ok(false)
     }
 }
