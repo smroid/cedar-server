@@ -816,8 +816,8 @@ impl Cedar for MyCedar {
                         format!("sudo reboot error: {:?}.", error_str)));
             }
         }
-        let locked_state = self.state.lock().await;
         if let Some(slew_coord) = req.initiate_slew {
+            let locked_state = self.state.lock().await;
             let mount_type = locked_state.preferences.lock().unwrap().mount_type;
             if mount_type == Some(MountType::AltAz.into()) &&
                 locked_state.fixed_settings.lock().unwrap().observer_location.is_none()
@@ -831,9 +831,11 @@ impl Cedar for MyCedar {
             telescope.slew_active = true;
         }
         if req.stop_slew.unwrap_or(false) {
+            let locked_state = self.state.lock().await;
             locked_state.telescope_position.lock().unwrap().slew_active = false;
         }
         if req.save_image.unwrap_or(false) {
+            let locked_state = self.state.lock().await;
             let solve_engine = &mut locked_state.solve_engine.lock().await;
             // TODO: don't hold our state.lock() for this.
             if let Err(x) = solve_engine.save_image().await {
@@ -841,12 +843,12 @@ impl Cedar for MyCedar {
             }
         }
         if let Some(update_ap) = req.update_wifi_access_point {
-            if locked_state.wifi.is_none() {
+	    let wifi = self.state.lock().await.wifi.clone();
+	    if wifi.is_none() {
                 return Err(tonic::Status::unimplemented(
                     format!("{} does not include WiFi control.", self.product_name)));
-            }
-            let mut locked_wifi = locked_state.wifi.as_ref().unwrap().lock().unwrap();
-            // TODO: don't hold our state.lock() for this.
+	    }
+            let mut locked_wifi = wifi.as_ref().unwrap().lock().unwrap();
             if let Err(x) = locked_wifi.update_access_point(
                 update_ap.channel,
                 update_ap.ssid.as_deref(),
