@@ -8,7 +8,11 @@ auto-detect alt-az vs equatorial (with manual override)
 
 Calibrate button.
 
-Perfect solve stats.
+Perfect solve stats (avg. patterns checked, avg. hashes checked per pattern)
+
+Base python scripting support for working with Cedar grpc server.
+
+Orient to sky during goto.
 
 Brightest star exposure adu.
 
@@ -28,6 +32,9 @@ Loss reasons: check server power (battery drained?), check phone's wifi
 connection (sometimes phone reverts to cell connection).
 
 Mobile app: display available Cedar* wifi access points, offer to join.
+
+For calibrate optical, expose for a larger number of stars, for better
+FOV and distortion determination.
 
 Make sure centroiding is not done on bayer image. Currently centroiding
 is always done on the original full-res image; when this is color that
@@ -86,8 +93,6 @@ Catalog
   NGC 426
   NGC 0426
   N426
-
-changing wifi doesn't take effect, need to restart server.
 
 visual feedback on camera errors
 visual feedback on connectivity errors
