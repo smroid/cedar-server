@@ -315,6 +315,9 @@ mount to attach the camera to your scope. The Raspberry Pi running Cedar be
 anywhere, with the USB cable running up to the camera, or you can also attach
 the Raspberry Pi to the telescope if you prefer.
 
+CAUTION! Be sure to use a USB2 port (black) on your Raspberry Pi, not a USB3
+port (blue). USB3 is known to cause WiFi interference.
+
 #### Raspberry Pi camera
 
 A Raspberry Pi camera such as the HQ camera connects to the Rpi with a short and
