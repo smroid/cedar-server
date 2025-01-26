@@ -149,6 +149,7 @@ Remaining work:
   - cloud-based?
 * marathon ordering (advanced)
 * identify constellation of boresight
+* identify constellation of planet
 * constellation lines
 
 Push-to ra/dec button: pops up text entry field
