@@ -154,7 +154,7 @@ struct CedarState {
     activity_led: Arc<Mutex<ActivityLed>>,
 
     // Not all builds of Cedar-server support Cedar-sky.
-    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
 
     // Not all builds of Cedar-server support Wifi control.
     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
@@ -243,11 +243,6 @@ impl Cedar for MyCedar {
             info!("Updated server time to {:?}", Local::now());
             // Don't store the client time in our fixed_settings state, but
             // arrange to return our current time.
-            let locked_state = self.state.lock().await;
-            if let Some(cedar_sky) = &locked_state.cedar_sky {
-                cedar_sky.lock().await
-                    .initiate_solar_system_processing(SystemTime::now()).await;
-            }
         }
         if let Some(_session_name) = req.session_name {
             return Err(tonic::Status::unimplemented(
@@ -904,11 +899,8 @@ impl Cedar for MyCedar {
                 None
             };
 
-        locked_state.cedar_sky.as_ref().unwrap().lock().await
-            .check_solar_system_completion().await;
-        // TODO: don't hold our state.lock() during this.
         let result =
-            locked_state.cedar_sky.as_ref().unwrap().lock().await.query_catalog_entries(
+            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().query_catalog_entries(
                 req.max_distance,
                 req.min_elevation,
                 catalog_entry_match.faintest_magnitude,
@@ -956,10 +948,8 @@ impl Cedar for MyCedar {
             } else {
                 None
             };
-        locked_state.cedar_sky.as_ref().unwrap().lock().await
-            .check_solar_system_completion().await;
-        let x = locked_state.cedar_sky.as_ref().unwrap().lock().await.get_catalog_entry(
-            req, location_info).await;
+        let x = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_entry(
+            req, location_info);
         match x {
             Ok(entry) => {
                 Ok(tonic::Response::new(entry))
@@ -978,10 +968,8 @@ impl Cedar for MyCedar {
         if locked_state.cedar_sky.is_none() {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
-        locked_state.cedar_sky.as_ref().unwrap().lock().await
-            .check_solar_system_completion().await;
         let catalog_descriptions =
-            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_catalog_descriptions();
+            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_descriptions();
 
         let mut response = CatalogDescriptionResponse::default();
         for cd in catalog_descriptions {
@@ -1000,7 +988,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
         let object_types =
-            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_object_types();
+            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_object_types();
 
         let mut response = ObjectTypeResponse::default();
         for ot in object_types {
@@ -1019,7 +1007,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
         let constellations =
-            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_constellations();
+            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_constellations();
 
         let mut response = ConstellationResponse::default();
         for c in constellations {
@@ -1463,9 +1451,6 @@ impl MyCedar {
         let focus_assist_mode;
         {
             let locked_state = state.lock().await;
-            if let Some(cedar_sky) = &locked_state.cedar_sky {
-                cedar_sky.lock().await.check_solar_system_completion().await;
-            }
             fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
             operating_mode = locked_state.operation_settings.operating_mode.unwrap();
             focus_assist_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
@@ -1949,7 +1934,7 @@ impl MyCedar {
         product_name: &str,
         copyright: &str,
         feature_level: FeatureLevel,
-        cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+        cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
         wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) -> Self
     {
         let mut cedar_version = "unknown".to_string();
@@ -2531,9 +2516,8 @@ pub fn server_main(
     product_name: &str, copyright: &str,
     flutter_app_path: &str,
     invert_camera: bool,
-    get_dependencies: fn(Arguments, Arc<AtomicBool>)
-                         -> (Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-                             Option<Arc<Mutex<dyn WifiTrait + Send>>>)) {
+    get_dependencies: fn(Arguments) -> (Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+                                        Option<Arc<Mutex<dyn WifiTrait + Send>>>)) {
     const HELP: &str = "\
     FLAGS:
       -h, --help                     Prints help information
@@ -2625,8 +2609,7 @@ pub fn server_main(
         std::process::exit(-1);
     }).unwrap();
 
-    let (cedar_sky, wifi) =
-        get_dependencies(Arguments::from_vec(remaining), got_signal.clone());
+    let (cedar_sky, wifi) = get_dependencies(Arguments::from_vec(remaining));
     async_main(args, product_name, copyright, flutter_app_path, invert_camera,
                got_signal, cedar_sky, wifi);
 }
@@ -2663,7 +2646,7 @@ fn get_camera(
 async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
                     flutter_app_path: &str, invert_camera: bool,
                     got_signal: Arc<AtomicBool>,
-                    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+                    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
                     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) {
     info!("Using Tetra3 server {:?} listening at {:?}",
           args.tetra3_script, args.tetra3_socket);

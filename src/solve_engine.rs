@@ -70,7 +70,7 @@ struct SolveState {
     // Determines whether rows are normalized to have the same dark level.
     normalize_rows: bool,
 
-    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
     catalog_entry_match: Option<CatalogEntryMatch>,
 
     frame_id: Option<i32>,
@@ -148,7 +148,7 @@ impl SolveEngine {
     pub async fn new(
         normalize_rows: bool,
         tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
-        cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+        cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         tetra3_server_address: String,
         stats_capacity: usize,
@@ -711,10 +711,10 @@ impl SolveEngine {
     // the closest catalog entry, if any, and the distance in degrees between
     // the catalog entry and the target.
     async fn get_catalog_entry_for_target(
-        cedar_sky: &Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>,
+        cedar_sky: &Arc<Mutex<dyn CedarSkyTrait + Send>>,
         target_coords: &CelestialCoord)
         -> (Option<CatalogEntry>, Option<f64>) {
-        let query_result = cedar_sky.lock().await.query_catalog_entries(
+        let query_result = cedar_sky.lock().unwrap().query_catalog_entries(
             /*max_distance=*/Some(1.0 / 60.0),  // 1 arcmin.
             /*min_elevation=*/None,
             /*faintest_magnitude=*/None,
@@ -748,7 +748,7 @@ impl SolveEngine {
     }
 
     async fn handle_slew(
-        cedar_sky: &Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+        cedar_sky: &Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
         target_coords: &CelestialCoord,
         image: &GrayImage,
         boresight_coords: &CelestialCoord,
@@ -884,7 +884,7 @@ impl SolveEngine {
     async fn query_fov_catalog_entries(
         boresight_coords: &CelestialCoord,
         boresight_pixel: &Option<ImageCoord>,
-        cedar_sky: &Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>,
+        cedar_sky: &Arc<Mutex<dyn CedarSkyTrait + Send>>,
         catalog_entry_match: &CatalogEntryMatch,
         width: u32, height: u32,
         fov: f64, distortion: f64,
@@ -905,7 +905,7 @@ impl SolveEngine {
         let v = f64::max(bp.y, height as f64 - bp.y);
         let radius_deg = (h * h + v * v).sqrt() * deg_per_pixel;
 
-        let query_result = cedar_sky.lock().await.query_catalog_entries(
+        let query_result = cedar_sky.lock().unwrap().query_catalog_entries(
             /*max_distance=*/Some(radius_deg),
             /*min_elevation=*/None,
             catalog_entry_match.faintest_magnitude,

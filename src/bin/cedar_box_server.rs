@@ -1,9 +1,6 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
 use pico_args::Arguments;
 
 use cedar_server::cedar_server::server_main;
@@ -17,5 +14,5 @@ fn main() {
         /*flutter_app_path=*/"../../cedar-aim/cedar_flutter/build/web",
         /*invert_camera=*/false,
         /*get_dependencies=*/
-        |_pargs: Arguments, _got_signal: Arc::<AtomicBool>| { (None, None) });
+        |_pargs: Arguments| { (None, None) });
 }
