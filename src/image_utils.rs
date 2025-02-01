@@ -168,7 +168,7 @@ impl ImageRotator {
             &src_img, &mut dst_img,
             &ResizeOptions::new().resize_alg(FastInterp(
                 // Almost as fast as Box, with higher visual quality.
-                FilterType::Bilinear))).unwrap();
+                FilterType::Hamming))).unwrap();
 
         let resized_img = GrayImage::from_raw(w, h, dst_img.into_vec()).unwrap();
         rotate_about_center(&resized_img,
