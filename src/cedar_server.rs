@@ -561,9 +561,9 @@ impl Cedar for MyCedar {
                                                       std_duration).await {
                 return Err(tonic_status(x));
             }
-            let (binning, _display_sampling) =
+            let (binning, display_sampling) =
                 Self::compute_binning(&locked_state, width as u32, height as u32);
-            locked_state.detect_engine.lock().await.set_binning(binning);
+            locked_state.detect_engine.lock().await.set_binning(binning, display_sampling);
             locked_state.detect_engine.lock().await.replace_camera(new_camera.clone());
             locked_state.calibrator.lock().await.replace_camera(new_camera.clone());
 
@@ -2260,7 +2260,7 @@ impl MyCedar {
         // Set pre-calibration defaults on camera.
         let mut locked_state = state.lock().await;
         let (width, height) = locked_state.camera.lock().await.dimensions();
-        let (binning, _display_sampling) =
+        let (binning, display_sampling) =
             Self::compute_binning(&locked_state, width as u32, height as u32);
 
         if let Err(x) = Self::set_pre_calibration_defaults(
@@ -2269,7 +2269,7 @@ impl MyCedar {
             warn!("Could not set default settings on camera {:?}", x);
         }
 
-        locked_state.detect_engine.lock().await.set_binning(binning);
+        locked_state.detect_engine.lock().await.set_binning(binning, display_sampling);
         locked_state.detect_engine.lock().await.set_focus_mode(
             locked_state.operation_settings.focus_assist_mode.unwrap());
         locked_state.detect_engine.lock().await.set_daylight_mode(

@@ -71,6 +71,9 @@ struct DetectState {
     // See "About Resolutions" in cedar_server.rs.
     binning: u32,
 
+    // Together with 'binning', this is used to adjust central peak image size.
+    display_sampling: bool,
+
     // When using auto exposure in operate mode or setup align mode, this is the
     // exposure duration determined (by calibration) to yield `star_count_goal`
     // detected stars. Auto exposure logic will only deviate from this by a
@@ -125,6 +128,7 @@ impl DetectEngine {
                 focus_mode: false,
                 daylight_mode: false,
                 binning: 1,
+                display_sampling: false,
                 calibrated_exposure_duration: None,
                 detected_stars_moving_average: 0.0,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
@@ -143,9 +147,10 @@ impl DetectEngine {
         self.state.lock().unwrap().camera = camera.clone();
     }
 
-    pub fn set_binning(&mut self, binning: u32) {
+    pub fn set_binning(&mut self, binning: u32, display_sampling: bool) {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.binning = binning;
+        locked_state.display_sampling = display_sampling;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -335,6 +340,7 @@ impl DetectEngine {
             let focus_mode: bool;
             let daylight_mode: bool;
             let binning: u32;
+            let display_sampling: bool;
             let calibrated_exposure_duration: Option<Duration>;
             {
                 let mut locked_state = state.lock().unwrap();
@@ -349,6 +355,7 @@ impl DetectEngine {
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
                 binning = locked_state.binning;
+                display_sampling = locked_state.display_sampling;
                 calibrated_exposure_duration =
                     locked_state.calibrated_exposure_duration;
                 locked_state.eta = None;
@@ -394,7 +401,8 @@ impl DetectEngine {
             let image_region = Rect::at(0, 0).of_size(width, height);
             // To avoid edge when centroiding and creating central peak image,
             // inset a little.
-            let inset = 16;
+            let adjusted_binning = binning * if display_sampling { 2 } else { 1 };
+            let inset = 8 * adjusted_binning as i32;
             let inset_region = Rect::at(inset, inset)
                 .of_size(width - 2 * inset as u32, height - 2 * inset as u32);
 
@@ -447,7 +455,7 @@ impl DetectEngine {
                     // Get a small sub-image centered on the peak coordinates.
                     let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
                     debug!("peak at x/y {}/{}", peak_position.0, peak_position.1);
-                    let sub_image_size = 30;
+                    let sub_image_size = 15 * adjusted_binning as i32;
                     assert!(sub_image_size < 2 * inset);
                     let peak_region =
                         Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
