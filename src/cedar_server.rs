@@ -1612,6 +1612,9 @@ impl MyCedar {
         let mut disp_image = &captured_image.image;
         let mut resized_disp_image = disp_image;
         let mut resize_result: Arc<GrayImage>;
+        let mut black_level = detect_result.display_black_level;
+        let mut peak_value = detect_result.peak_value;
+
         if detect_result.binned_image.is_some() {
             disp_image = detect_result.binned_image.as_ref().unwrap();
             resized_disp_image = disp_image;
@@ -1629,6 +1632,12 @@ impl MyCedar {
         if display_sampling {
             resize_result = Arc::new(sample_2x2(resized_disp_image.deref().clone()));
             resized_disp_image = &resize_result;
+            // Adjust peak_value, binning can make point sources dimmer in the
+            // result.
+            peak_value /= 4;
+            if black_level > peak_value {
+                black_level = peak_value;
+            }
         }
         let binning_factor = binning * if display_sampling { 2 } else { 1 };
 
@@ -1703,10 +1712,8 @@ impl MyCedar {
         }
 
         let gamma = if daylight_mode { 1.0 } else { 0.7 };
-        let scaled_image = scale_image(resized_disp_image,
-                                       detect_result.display_black_level,
-                                       detect_result.peak_value,
-                                       gamma);
+        let scaled_image = scale_image(
+            resized_disp_image, black_level, peak_value, gamma);
         // Save most recent display image.
         locked_state.scaled_image = Some(Arc::new(scaled_image.clone()));
         let jpg_buf = Self::jpeg_encode(&Arc::new(scaled_image.clone()));
