@@ -14,6 +14,7 @@ pub mod position_reporter;
 pub mod rate_estimator;
 pub mod reservoir_sampler;
 pub mod solve_engine;
+pub mod solver_trait;
 pub mod tetra3_subprocess;
 pub mod value_stats;
 pub mod wifi_trait;
