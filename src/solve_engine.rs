@@ -48,7 +48,7 @@ pub struct SolveEngine {
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
 
     // Executes worker().
-    worker_thread: Option<tokio::task::JoinHandle<()>>,
+    worker_thread: Option<std::thread::JoinHandle<()>>,
 
     // Called whenever worker() finishes an evaluation when not in align mode.
     // Return value:
@@ -399,20 +399,32 @@ impl SolveEngine {
         if self.worker_thread.is_some() &&
             self.worker_thread.as_ref().unwrap().is_finished()
         {
-            self.worker_thread.take().unwrap().await.unwrap();
+            self.worker_thread.take().unwrap();
         }
         if self.worker_thread.is_none() {
             let cloned_client = self.client.clone();
             let cloned_state = self.state.clone();
             let cloned_detect_engine = self.detect_engine.clone();
             let cloned_callback = self.solution_callback.clone();
-            // Currently plate solving is not CPU bound in its tokio task,
-            // because it is running in another process. However in the future
-            // if we bring plate solving into Rust, it will be compute bound.
-            // See detect_engine.rs for notes on how to deal with this here.
-            self.worker_thread = Some(tokio::task::spawn(async move {
-                SolveEngine::worker(cloned_client, cloned_state,
-                                    cloned_detect_engine, cloned_callback).await;
+
+            // The SolveEngine::worker() function calls
+            // SolverTrait::solve_from_centroids() which is a blocking call
+            // either wrapping a gRPC call to tetra_server or is locally
+            // executing compute-intensive plate solving logic. Either way is
+            // beyond the guidelines for running async code without an .await
+            // yield point.
+            //
+            // We thus run SolveEngine::worker() on its own async runtime. See
+            // https://thenewstack.io/using-rustlangs-async-tokio-runtime-for-cpu-bound-tasks/
+            self.worker_thread = Some(std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("solve_engine")
+                    .build().unwrap();
+                runtime.block_on(async move {
+                    SolveEngine::worker(cloned_client, cloned_state,
+                                        cloned_detect_engine, cloned_callback).await;
+                });
             }));
         }
     }
@@ -425,7 +437,7 @@ impl SolveEngine {
         if self.worker_thread.is_some() {
             self.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
             self.state.lock().await.stop_request = true;
-            self.worker_thread.take().unwrap().await.unwrap();
+            self.worker_thread.take().unwrap();
         }
     }
 
