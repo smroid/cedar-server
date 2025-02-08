@@ -8,7 +8,6 @@ import "google/protobuf/timestamp.proto";
 
 import "cedar_sky.proto";
 import "cedar_common.proto";
-import "tetra3.proto";
 
 package cedar;
 
@@ -381,9 +380,9 @@ message FrameResult {
   // The current plate solution. Omitted if no plate solve was attempted for
   // this frame. Relevant in OPERATE mode and in SETUP mode when neither
   // `focus_assist_mode` nor `daylight_mode` is present.
-  // TODO: replace with proto wrapping of solver_trait::SolveResult, defined
-  // in this .proto file.
-  optional tetra3_server.SolveResult plate_solution = 17;
+  // Omitted if plate solving was not attempted or did not result in a
+  // solution.
+  optional PlateSolution plate_solution = 17;
 
   // Estimate of the RMS noise of the full-resolution image. In 8 bit ADU
   // units.
@@ -509,6 +508,47 @@ message ImageCoord {
   // the center of the image's upper left pixel.
   double x = 1;
   double y = 2;
+}
+
+message PlateSolution {
+  // See tetra3.py for descriptions of fields.
+  cedar_common.CelestialCoord image_sky_coord = 1;
+  double roll = 2;
+  double fov = 3;
+  optional double distortion = 4;
+
+  // Arcseconds.
+  double rmse = 5;
+  double p90_error = 6;
+  double max_error = 7;
+
+  int32 num_matches = 8;
+  double prob = 9;
+
+  int32 epoch_equinox = 10;
+  float epoch_proper_motion = 11;
+
+  google.protobuf.Duration solve_time = 12;
+
+  // Result of SolveExtension.target_pixel.
+  repeated cedar_common.CelestialCoord target_sky_coord = 13;
+
+  // Result of SolveExtension.target_sky_coord. (-1,-1) if sky target is not in
+  // image.
+  repeated ImageCoord target_pixel = 14;
+
+  repeated StarInfo matched_stars = 15;
+  repeated ImageCoord pattern_centroids = 16;
+  repeated StarInfo catalog_stars = 17;
+
+  // 3x3 matrix in row-major order.
+  repeated double rotation_matrix = 18;
+}
+
+message StarInfo {
+  ImageCoord pixel = 1;
+  cedar_common.CelestialCoord sky_coord = 2;
+  float mag = 3;
 }
 
 // Diagnostic information summarizing Cedar's performance.
