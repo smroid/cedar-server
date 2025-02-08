@@ -105,9 +105,8 @@ pub struct SolveResult {
 //     CancelledError, but CanonicalError does not provide that.
 //   InvalidArgument: too few centroids were provided.
 pub trait SolverTrait {
-    // Note: this is a blocking call, and can take up to several seconds in
-    // the Python/Numpy implementation (50ms typical).
-    // TODO: make async?
+    // Note: this is a blocking call, and can take up to several seconds in the
+    // Python/Numpy implementation (50ms typical).
     fn solve_from_centroids(&self,
                             star_centroids: &Vec<ImagePos>,
                             width: usize, height: usize,
