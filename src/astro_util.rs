@@ -383,7 +383,7 @@ mod tests {
     use chrono::{FixedOffset, TimeZone};
     use std::time::{Duration};
     use crate::cedar_sky::{CatalogEntry, ObjectType};
-    use crate::tetra3_server::CelestialCoord;
+    use crate::cedar_common::CelestialCoord;
     use super::*;
 
     #[test]
