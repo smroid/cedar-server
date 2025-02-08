@@ -1,0 +1,14 @@
+// Copyright (c) 2025 Steven Rosenthal smr@dt3.org
+// See LICENSE file in root directory for license terms.
+
+// Definitions shared between cedar.proto and cedar_sky.proto, to avoid
+// cyclic dependency.
+
+syntax = "proto3";
+
+package cedar_common;
+
+message CelestialCoord {
+  double ra = 1;  // Degrees, 0..360.
+  double dec = 2;  // Degrees, -90..90.
+}

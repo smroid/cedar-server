@@ -3,11 +3,11 @@
 
 use std::time::SystemTime;
 
+use crate::cedar_common::CelestialCoord;
 use crate::cedar_sky::{CatalogDescription, CatalogEntryKey,
                        CatalogEntry, Constellation,
                        ObjectType, Ordering, SelectedCatalogEntry};
 use crate::cedar::LatLong;
-use crate::tetra3_server::CelestialCoord;
 use canonical_error::CanonicalError;
 
 pub struct LocationInfo {

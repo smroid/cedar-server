@@ -26,8 +26,11 @@ pub mod cedar {
     // The string specified here must match the proto package name.
     tonic::include_proto!("cedar");
 }
+pub mod cedar_common {
+    // The string specified here must match the proto package name.
+    tonic::include_proto!("cedar_common");
+}
 pub mod cedar_sky {
     // The string specified here must match the proto package name.
     tonic::include_proto!("cedar_sky");
 }
-

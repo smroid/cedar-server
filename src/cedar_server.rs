@@ -25,6 +25,7 @@ use image::{GrayImage};
 use image::ImageReader;
 use image::codecs::jpeg::JpegEncoder;
 
+use crate::cedar_common::CelestialCoord;
 use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntry,
                        CatalogEntryKey, CatalogEntryMatch,
                        ConstellationResponse, ObjectTypeResponse, Ordering,
@@ -72,8 +73,7 @@ use crate::motion_estimator::MotionEstimator;
 use crate::polar_analyzer::PolarAnalyzer;
 use crate::tetra3_subprocess::Tetra3Subprocess;
 use crate::value_stats::ValueStatsAccumulator;
-use crate::tetra3_server;
-use crate::tetra3_server::{CelestialCoord, SolveResult as SolveResultProto, SolveStatus};
+use crate::tetra3_server::{SolveResult as SolveResultProto, SolveStatus};
 
 use self::multiplex_service::MultiplexService;
 
@@ -732,14 +732,12 @@ impl Cedar for MyCedar {
             if let Some(slew_request) = plate_solution.slew_request {
                 let bsp = slew_request.image_pos.unwrap();
                 if let Err(x) = locked_state.solve_engine.lock().await.
-                    set_boresight_pixel(Some(tetra3_server::ImageCoord{
-                        x: bsp.x,
-                        y: bsp.y})).await
+                    set_boresight_pixel(Some(bsp.clone())).await
                 {
                     return Err(tonic_status(x));
                 }
                 let preferences = Preferences{
-                    boresight_pixel: Some(bsp),
+                    boresight_pixel: Some(bsp.clone()),
                     ..Default::default()};
                 self.update_preferences(tonic::Request::new(preferences)).await?;
             } else {
@@ -772,14 +770,12 @@ impl Cedar for MyCedar {
             }
 
             if let Err(x) = self.state.lock().await.solve_engine.lock().await.
-                set_boresight_pixel(Some(tetra3_server::ImageCoord{
-                    x: bsp.x,
-                    y: bsp.y})).await
+                set_boresight_pixel(Some(bsp.clone())).await
             {
                 return Err(tonic_status(x));
             };
             let preferences = Preferences{
-                boresight_pixel: Some(bsp),
+                boresight_pixel: Some(bsp.clone()),
                 ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
         }
@@ -881,9 +877,12 @@ impl Cedar for MyCedar {
         let sky_location =
             if let Some(tsr) = plate_solution.tetra3_solve_result.as_ref() {
                 if tsr.target_coords.len() > 0 {
-                    Some(tsr.target_coords[0].clone())
+                    Some(CelestialCoord{ra: tsr.target_coords[0].ra,
+                                        dec: tsr.target_coords[0].dec})
                 } else {
-                    tsr.image_center_coords.clone()
+                    Some(CelestialCoord{
+                        ra: tsr.image_center_coords.as_ref().unwrap().ra,
+                        dec: tsr.image_center_coords.as_ref().unwrap().dec})
                 }
             } else {
                 None
@@ -2164,17 +2163,12 @@ impl MyCedar {
             /*gap_tolerance=*/Duration::from_secs(3),
             /*bump_tolerance=*/Duration::from_secs_f64(2.0))));
         let closure_polar_analyzer = polar_analyzer.clone();
-        let closure = Arc::new(move |boresight_pixel: Option<tetra3_server::ImageCoord>,
+        let closure = Arc::new(move |boresight_pixel: Option<ImageCoord>,
                                      detect_result: Option<DetectResult>,
                                      solve_result_proto: Option<SolveResultProto>|
         {
-            let bsp = match boresight_pixel {
-                Some(pos) => Some(tetra3_server::ImageCoord{
-                    x: pos.x, y: pos.y}),
-                None => None,
-            };
             Self::solution_callback(
-                bsp,
+                boresight_pixel,
                 detect_result,
                 solve_result_proto,
                 &mut closure_fixed_settings.lock().unwrap(),
@@ -2279,8 +2273,7 @@ impl MyCedar {
         locked_state.solve_engine.lock().await.set_align_mode(true).await;
         if let Some(bsp) = &shared_preferences.lock().unwrap().boresight_pixel {
             locked_state.solve_engine.lock().await.set_boresight_pixel(
-                Some(tetra3_server::ImageCoord{
-                    x: bsp.x, y: bsp.y})).await.unwrap();
+                Some(ImageCoord{x: bsp.x, y: bsp.y})).await.unwrap();
         }
 
         cedar
@@ -2336,7 +2329,7 @@ impl MyCedar {
         Ok(content)
     }
 
-    fn solution_callback(boresight_pixel: Option<tetra3_server::ImageCoord>,
+    fn solution_callback(boresight_pixel: Option<ImageCoord>,
                          detect_result: Option<DetectResult>,
                          solve_result_proto: Option<SolveResultProto>,
                          fixed_settings: &mut FixedSettings,
@@ -2345,7 +2338,8 @@ impl MyCedar {
                          telescope_position: &mut TelescopePosition,
                          motion_estimator: &mut MotionEstimator,
                          polar_analyzer: &mut PolarAnalyzer)
-                         -> (Option<CelestialCoord>, Option<CelestialCoord>)
+                         -> (Option<CelestialCoord>,
+                             Option<CelestialCoord>)
     {
         // Notice when solve engine has recently changed its boresight due
         // to a previous call to this callback function reporting a SkySafari

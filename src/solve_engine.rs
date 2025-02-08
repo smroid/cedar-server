@@ -19,14 +19,16 @@ use tokio::net::UnixStream;
 use tower::service_fn;
 
 use crate::astro_util::transform_to_image_coord;
-use crate::tetra3_server::{CelestialCoord, ImageCoord, SolveRequest,
+use crate::tetra3_server::{CelestialCoord as TetraCelestialCoord,
+                           ImageCoord as TetraImageCoord, SolveRequest,
                            SolveResult as SolveResultProto,
                            SolveStatus};
 use crate::tetra3_server::tetra3_client::Tetra3Client;
 use crate::tetra3_subprocess::Tetra3Subprocess;
 use crate::value_stats::ValueStatsAccumulator;
 use crate::cedar;
-use crate::cedar::FovCatalogEntry;
+use crate::cedar_common::CelestialCoord;
+use crate::cedar::{FovCatalogEntry, ImageCoord};
 use crate::cedar_sky_trait::CedarSkyTrait;
 use crate::cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering};
 use cedar_detect::histogram_funcs::{average_top_values,
@@ -57,7 +59,8 @@ pub struct SolveEngine {
     solution_callback: Arc<dyn Fn(Option<ImageCoord>,
                                   Option<DetectResult>,
                                   Option<SolveResultProto>)
-                                  -> (Option<CelestialCoord>, Option<CelestialCoord>)
+                                  -> (Option<CelestialCoord>,
+                                      Option<CelestialCoord>)
                            + Send + Sync>,
 }
 
@@ -494,10 +497,14 @@ impl SolveEngine {
                 });
 
                 if let Some(boresight_pixel) = &locked_state.boresight_pixel {
-                    solve_request.target_pixels.push(boresight_pixel.clone());
+                    let tetra_bsp = TetraImageCoord{x: boresight_pixel.x,
+                                                    y: boresight_pixel.y};
+                    solve_request.target_pixels.push(tetra_bsp);
                 }
                 if let Some(slew_target) = &locked_state.slew_target {
-                    solve_request.target_sky_coords.push(slew_target.clone());
+                    let tetra_st = TetraCelestialCoord{ra: slew_target.ra,
+                                                       dec: slew_target.dec};
+                    solve_request.target_sky_coords.push(tetra_st);
                 }
                 solve_request.distortion = Some(locked_state.distortion);
                 solve_request.match_max_error = Some(locked_state.match_max_error);
@@ -535,8 +542,9 @@ impl SolveEngine {
             let process_start_time = Instant::now();
 
             for sc in &detect_result.star_candidates {
-                solve_request.star_centroids.push(ImageCoord{x: sc.centroid_x,
-                                                             y: sc.centroid_y});
+                let tetra_centroid = TetraImageCoord{x: sc.centroid_x,
+                                                     y: sc.centroid_y};
+                solve_request.star_centroids.push(tetra_centroid);
             }
             solve_request.image_width = width as i32;
             solve_request.image_height = height as i32;
@@ -596,9 +604,12 @@ impl SolveEngine {
                         state.lock().await.solve_success_stats.add_value(1.0);
                     }
                     let boresight_coords = if tsr.target_coords.len() > 0 {
-                        tsr.target_coords[0].clone()
+                        CelestialCoord{ra: tsr.target_coords[0].ra,
+                                       dec: tsr.target_coords[0].dec}
                     } else {
-                        tsr.image_center_coords.as_ref().unwrap().clone()
+                        CelestialCoord{
+                            ra: tsr.image_center_coords.as_ref().unwrap().ra,
+                            dec: tsr.image_center_coords.as_ref().unwrap().dec}
                     };
                     let mut rotation_matrix: [f64; 9] = [0.0; 9];
                     for (idx, c) in tsr.rotation_matrix.as_ref().unwrap()

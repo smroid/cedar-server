@@ -3,7 +3,7 @@
 
 syntax = "proto3";
 
-import "tetra3.proto";
+import "cedar_common.proto";
 
 package cedar_sky;
 
@@ -114,7 +114,7 @@ message CatalogEntry {
   string catalog_label = 1;  // M, NGC, etc.
   string catalog_entry = 2;  // 51, 3982, etc.
 
-  tetra3_server.CelestialCoord coord = 3;
+  cedar_common.CelestialCoord coord = 3;
   optional Constellation constellation = 4;
   ObjectType object_type = 5;
 
