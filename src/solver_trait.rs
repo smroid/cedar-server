@@ -31,7 +31,7 @@ pub struct SolveParams {
 
     pub match_radius: Option<f64>,  // Defaults to 0.01.
     pub match_threshold: Option<f64>,  // Defaults to 1e-4.
-    pub solve_timeout: Option<Duration>,  // Defaults to 5 seconds.
+    pub solve_timeout: Option<Duration>,  // Default determined by implementation.
     pub distortion: Option<f64>,
     pub match_max_error: Option<f64>,  // Defaults to pattern_max_error from database.
 }
