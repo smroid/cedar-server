@@ -2513,8 +2513,11 @@ pub fn server_main(
     product_name: &str, copyright: &str,
     flutter_app_path: &str,
     invert_camera: bool,
-    get_dependencies: fn(Arguments) -> (Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
-                                        Option<Arc<Mutex<dyn WifiTrait + Send>>>)) {
+    get_dependencies: fn(Arguments)
+                         -> (Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+                             Option<Arc<Mutex<dyn WifiTrait + Send>>>,
+                             Option<Arc<tokio::sync::Mutex<
+                                     dyn SolverTrait + Send + Sync>>>)) {
     const HELP: &str = "\
     FLAGS:
       -h, --help                     Prints help information
@@ -2606,9 +2609,9 @@ pub fn server_main(
         std::process::exit(-1);
     }).unwrap();
 
-    let (cedar_sky, wifi) = get_dependencies(Arguments::from_vec(remaining));
+    let (cedar_sky, wifi, solver) = get_dependencies(Arguments::from_vec(remaining));
     async_main(args, product_name, copyright, flutter_app_path, invert_camera,
-               got_signal, cedar_sky, wifi);
+               got_signal, cedar_sky, wifi, solver);
 }
 
 fn get_attached_camera(camera_interface: Option<&CameraInterface>,
@@ -2640,11 +2643,14 @@ fn get_camera(
 }
 
 #[tokio::main]
-async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
-                    flutter_app_path: &str, invert_camera: bool,
-                    got_signal: Arc<AtomicBool>,
-                    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
-                    wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) {
+async fn async_main(
+    args: AppArgs, product_name: &str, copyright: &str,
+    flutter_app_path: &str, invert_camera: bool,
+    got_signal: Arc<AtomicBool>,
+    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+    wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
+    injected_solver: Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>)
+{
     info!("Using Tetra3 server {:?} listening at {:?}",
           args.tetra3_script, args.tetra3_socket);
 
@@ -2758,11 +2764,15 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
 
     let activity_led = Arc::new(Mutex::new(ActivityLed::new(got_signal.clone())));
 
-    // TODO: allow another solver to be injected, and use the Tetra3Solver as
-    // fallback.
-    let solver = Arc::new(tokio::sync::Mutex::new(Tetra3Solver::new(
-        &args.tetra3_script, &args.tetra3_database, got_signal.clone())
-        .await.unwrap()));
+    // Use supplied solver, with Tetra3Solver as fallback.
+    let solver = match injected_solver {
+        Some(s) => s,
+        None => {
+            Arc::new(tokio::sync::Mutex::new(Tetra3Solver::new(
+                &args.tetra3_script, &args.tetra3_database, got_signal.clone())
+                                             .await.unwrap()))
+        }
+    };
 
     // Build the gRPC service.
     let path: PathBuf = [args.log_dir, args.log_file].iter().collect();

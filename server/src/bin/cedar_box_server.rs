@@ -14,5 +14,5 @@ fn main() {
         /*flutter_app_path=*/"../../cedar-aim/cedar_flutter/build/web",
         /*invert_camera=*/false,
         /*get_dependencies=*/
-        |_pargs: Arguments| { (None, None) });
+        |_pargs: Arguments| { (None, None, None) });
 }
