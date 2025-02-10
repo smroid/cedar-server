@@ -25,13 +25,15 @@ use image::{GrayImage};
 use image::ImageReader;
 use image::codecs::jpeg::JpegEncoder;
 
-use crate::cedar_common::CelestialCoord;
-use crate::cedar_sky::{CatalogDescriptionResponse, CatalogEntry,
-                       CatalogEntryKey, CatalogEntryMatch,
-                       ConstellationResponse, ObjectTypeResponse, Ordering,
-                       QueryCatalogRequest, QueryCatalogResponse};
-use crate::cedar_sky_trait::{CedarSkyTrait, LocationInfo};
-use crate::wifi_trait::WifiTrait;
+use cedar_elements::cedar_common::CelestialCoord;
+use cedar_elements::cedar_sky::{
+    CatalogDescriptionResponse, CatalogEntry,
+    CatalogEntryKey, CatalogEntryMatch,
+    ConstellationResponse, ObjectTypeResponse, Ordering,
+    QueryCatalogRequest, QueryCatalogResponse};
+use cedar_elements::cedar_sky_trait::{CedarSkyTrait, LocationInfo};
+use cedar_elements::solver_trait::SolverTrait;
+use cedar_elements::wifi_trait::WifiTrait;
 
 use nix::time::{ClockId, clock_gettime, clock_settime};
 use nix::sys::time::TimeSpec;
@@ -51,30 +53,31 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use futures::join;
 
 use crate::activity_led::ActivityLed;
-use crate::astro_util::{alt_az_from_equatorial, equatorial_from_alt_az,
-                        fill_in_detections, magnitude_intensity_ratio, position_angle};
-use crate::cedar::cedar_server::{Cedar, CedarServer};
+use cedar_elements::astro_util::{
+    alt_az_from_equatorial, equatorial_from_alt_az,
+    fill_in_detections, magnitude_intensity_ratio, position_angle};
+use cedar_elements::cedar::cedar_server::{Cedar, CedarServer};
 
-use crate::cedar::{ActionRequest, CalibrationData, CameraModel,
-                   CelestialCoordChoice, CelestialCoordFormat,
-                   DisplayOrientation, EmptyMessage, FeatureLevel,
-                   FixedSettings, FovCatalogEntry, FrameRequest, FrameResult,
-                   Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
-                   OperatingMode, OperationSettings, PlateSolution,
-                   ProcessingStats, Rectangle, StarCentroid, Preferences,
-                   ServerLogRequest, ServerLogResult, ServerInformation,
-                   StarInfo, WiFiAccessPoint};
+use cedar_elements::cedar::{
+    ActionRequest, CalibrationData, CameraModel,
+    CelestialCoordChoice, CelestialCoordFormat,
+    DisplayOrientation, EmptyMessage, FeatureLevel,
+    FixedSettings, FovCatalogEntry, FrameRequest, FrameResult,
+    Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
+    OperatingMode, OperationSettings, PlateSolution as PlateSolutionProto,
+    ProcessingStats, Rectangle, StarCentroid, Preferences,
+    ServerLogRequest, ServerLogResult, ServerInformation,
+    WiFiAccessPoint};
 
 use crate::calibrator::Calibrator;
 use crate::detect_engine::{DetectEngine, DetectResult};
-use crate::image_utils::{ImageRotator, scale_image};
-use crate::solve_engine::{PlateSolution as SolvePlateSolution, SolveEngine};
+use crate::solve_engine::{PlateSolution, SolveEngine};
 use crate::position_reporter::{TelescopePosition, create_alpaca_server};
 use crate::motion_estimator::MotionEstimator;
 use crate::polar_analyzer::PolarAnalyzer;
-use crate::tetra3_subprocess::Tetra3Subprocess;
-use crate::value_stats::ValueStatsAccumulator;
-use crate::tetra3_server::{SolveResult as SolveResultProto, SolveStatus};
+use cedar_elements::image_utils::{ImageRotator, scale_image};
+use cedar_elements::value_stats::ValueStatsAccumulator;
+use tetra3_server::tetra3_solver::Tetra3Solver;
 
 use self::multiplex_service::MultiplexService;
 
@@ -135,6 +138,9 @@ struct MyCedar {
 }
 
 struct CedarState {
+    // The plate solver we are using.
+    solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
+
     // The `camera` field is always populated with a usable AbstractCamera. This
     // will be one of:
     // * attached_camera
@@ -147,7 +153,6 @@ struct CedarState {
     calibration_data: Arc<tokio::sync::Mutex<CalibrationData>>,
     operation_settings: OperationSettings,
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-    tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<Mutex<TelescopePosition>>,
@@ -715,7 +720,8 @@ impl Cedar for MyCedar {
             let locked_state = self.state.lock().await;
             if locked_state.calibrating {
                 *locked_state.cancel_calibration.lock().unwrap() = true;
-                locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+                // TODO: cancel solver.
+                // locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
             }
         }
         if req.capture_boresight.unwrap_or(false) {
@@ -876,14 +882,11 @@ impl Cedar for MyCedar {
         let plate_solution = locked_state.solve_engine.lock().await.
             get_next_result(None, /*non_blocking=*/false).await.unwrap();
         let sky_location =
-            if let Some(tsr) = plate_solution.tetra3_solve_result.as_ref() {
-                if tsr.target_coords.len() > 0 {
-                    Some(CelestialCoord{ra: tsr.target_coords[0].ra,
-                                        dec: tsr.target_coords[0].dec})
+            if let Some(psp) = plate_solution.plate_solution.as_ref() {
+                if psp.target_sky_coord.len() > 0 {
+                    Some(psp.target_sky_coord[0].clone())
                 } else {
-                    Some(CelestialCoord{
-                        ra: tsr.image_center_coords.as_ref().unwrap().ra,
-                        dec: tsr.image_center_coords.as_ref().unwrap().dec})
+                    psp.image_sky_coord.clone()
                 }
             } else {
                 None
@@ -1102,6 +1105,7 @@ impl MyCedar {
         // task_handle. We arrange for get_frame() to return a FrameResult with
         // a information about the ongoing calibration.
 
+        // TODO: scale this from the solver's default timeout.
         let calibration_solve_timeout = Duration::from_secs(5);
         let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
             tokio::task::spawn(async move {
@@ -1123,8 +1127,7 @@ impl MyCedar {
                             SystemTime::now()).unwrap());
                 }
                 // No locks held.
-                let cal_result = Self::calibrate(
-                    state.clone(), calibration_solve_timeout).await;
+                let cal_result = Self::calibrate(state.clone()).await;
                 if let Err(x) = cal_result {
                     // The only error we expect is Aborted.
                     assert!(x.code == CanonicalErrorCode::Aborted);
@@ -1299,8 +1302,7 @@ impl MyCedar {
     // Called when entering OPERATE mode. This always succeeds (even if
     // calibration fails), unless the callibration was cancelled in which
     // case an ABORTED error is returned.
-    async fn calibrate(state: Arc<tokio::sync::Mutex<CedarState>>,
-                       solve_timeout: Duration)
+    async fn calibrate(state: Arc<tokio::sync::Mutex<CedarState>>)
                        -> Result<(), CanonicalError> {
         let setup_exposure_duration;
         let max_exposure_duration;
@@ -1313,6 +1315,7 @@ impl MyCedar {
         let calibration_data;
         let detect_engine;
         let solve_engine;
+        let solver;
         {
             let locked_state = state.lock().await;
             camera = locked_state.camera.clone();
@@ -1321,6 +1324,7 @@ impl MyCedar {
             calibration_data = locked_state.calibration_data.clone();
             detect_engine = locked_state.detect_engine.clone();
             solve_engine = locked_state.solve_engine.clone();
+            solver = locked_state.solver.clone();
             max_exposure_duration = std::time::Duration::try_from(
                 locked_state.fixed_settings.lock().unwrap()
                     .max_exposure_time.clone().unwrap()).unwrap();
@@ -1375,8 +1379,8 @@ impl MyCedar {
         detect_engine.lock().await.set_calibrated_exposure_duration(Some(exp_duration));
 
         match calibrator.lock().await.calibrate_optical(
-            solve_engine.clone(), exp_duration, solve_timeout,
-            binning, detection_sigma, cancel_calibration.clone()).await
+            solver.clone(), exp_duration, binning, detection_sigma,
+            cancel_calibration.clone()).await
         {
             Ok((fov, distortion, match_max_error, solve_duration)) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
@@ -1504,8 +1508,8 @@ impl MyCedar {
 
         // Populated only in OperatingMode::Operate mode and Setup alignment
         // mode.
-        let mut tetra3_solve_result: Option<SolveResultProto> = None;
-        let mut plate_solution: Option<SolvePlateSolution> = None;
+        let mut plate_solution: Option<PlateSolution> = None;
+        let mut plate_solution_proto: Option<PlateSolutionProto> = None;
 
         let detect_result =
             if operating_mode == OperatingMode::Setup as i32 && focus_assist_mode {
@@ -1529,7 +1533,7 @@ impl MyCedar {
                     return None;
                 }
                 let psr = plate_solution.as_ref().unwrap();
-                tetra3_solve_result = psr.tetra3_solve_result.clone();
+                plate_solution_proto = psr.plate_solution.clone();
 
                 psr.detect_result.clone()
             };
@@ -1645,43 +1649,40 @@ impl MyCedar {
         }
         let binning_factor = binning * if display_sampling { 2 } else { 1 };
 
-        if let Some(ref tsr) = tetra3_solve_result {
-            if tsr.status == Some(SolveStatus::MatchFound.into()) {
-                let celestial_coords =
-                    if tsr.target_coords.len() > 0 {
-                        tsr.target_coords[0].clone()
-                    } else {
-                        tsr.image_center_coords.as_ref().unwrap().clone()
-                    };
-                let bs_ra = celestial_coords.ra.to_radians();
-                let bs_dec = celestial_coords.dec.to_radians();
-                if fixed_settings.observer_location.is_some() {
-                    let geo_location = fixed_settings.observer_location.clone().unwrap();
-                    let lat = geo_location.latitude.to_radians();
-                    let long = geo_location.longitude.to_radians();
-                    let time = captured_image.readout_time;
-                    // alt/az of boresight. Also boresight hour angle.
-                    let (bs_alt, bs_az, bs_ha) =
-                        alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
-                    // ra/dec of zenith.
-                    let (z_ra, z_dec) = equatorial_from_alt_az(
-                        90_f64.to_radians(),
-                        0.0,
-                        lat, long, time);
-                    let mut zenith_roll_angle = (position_angle(
-                        bs_ra, bs_dec, z_ra, z_dec).to_degrees() +
-                                                 tsr.roll.unwrap()) % 360.0;
-                    // Arrange for angle to be 0..360.
-                    if zenith_roll_angle < 0.0 {
-                        zenith_roll_angle += 360.0;
-                    }
-                    frame_result.location_based_info =
-                        Some(LocationBasedInfo{zenith_roll_angle,
-                                               altitude: bs_alt.to_degrees(),
-                                               azimuth: bs_az.to_degrees(),
-                                               hour_angle: bs_ha.to_degrees(),
-                        });
+        if let Some(ref psp) = plate_solution_proto {
+            let celestial_coords =
+                if psp.target_sky_coord.len() > 0 {
+                    psp.target_sky_coord[0].clone()
+                } else {
+                    psp.image_sky_coord.as_ref().unwrap().clone()
+                };
+            let bs_ra = celestial_coords.ra.to_radians();
+            let bs_dec = celestial_coords.dec.to_radians();
+            if fixed_settings.observer_location.is_some() {
+                let geo_location = fixed_settings.observer_location.clone().unwrap();
+                let lat = geo_location.latitude.to_radians();
+                let long = geo_location.longitude.to_radians();
+                let time = captured_image.readout_time;
+                // alt/az of boresight. Also boresight hour angle.
+                let (bs_alt, bs_az, bs_ha) =
+                    alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
+                // ra/dec of zenith.
+                let (z_ra, z_dec) = equatorial_from_alt_az(
+                    90_f64.to_radians(),
+                    0.0,
+                    lat, long, time);
+                let mut zenith_roll_angle = (position_angle(
+                    bs_ra, bs_dec, z_ra, z_dec).to_degrees() + psp.roll) % 360.0;
+                // Arrange for angle to be 0..360.
+                if zenith_roll_angle < 0.0 {
+                    zenith_roll_angle += 360.0;
                 }
+                frame_result.location_based_info =
+                    Some(LocationBasedInfo{zenith_roll_angle,
+                                           altitude: bs_alt.to_degrees(),
+                                           azimuth: bs_az.to_degrees(),
+                                           hour_angle: bs_ha.to_degrees(),
+                    });
             }
         }
 
@@ -1800,127 +1801,67 @@ impl MyCedar {
                 }
             }
         }
-        if let Some(ref tsr) = tetra3_solve_result {
-            if tsr.status == Some(SolveStatus::MatchFound.into()) {
-                frame_result.plate_solution = Some(
-                    PlateSolution{
-                        image_sky_coord: Some(CelestialCoord{
-                            ra: tsr.image_center_coords.as_ref().unwrap().ra,
-                            dec: tsr.image_center_coords.as_ref().unwrap().dec}),
-                        roll: tsr.roll.unwrap(),
-                        fov: tsr.fov.unwrap(),
-                        distortion: tsr.distortion,
-                        rmse: tsr.rmse.unwrap(),
-                        p90_error: tsr.p90e.unwrap(),
-                        max_error: tsr.maxe.unwrap(),
-                        num_matches: tsr.matches.unwrap(),
-                        prob: tsr.prob.unwrap(),
-                        epoch_equinox: tsr.epoch_equinox.unwrap() as i32,
-                        epoch_proper_motion: tsr.epoch_proper_motion.unwrap() as f32,
-                        solve_time: tsr.solve_time.clone(),
-                        ..Default::default()
-                });
-                let plate_solution =
-                    &mut frame_result.plate_solution.as_mut().unwrap();
-                for tc in &tsr.target_coords {
-                    plate_solution.target_sky_coord.push(
-                        CelestialCoord{ra: tc.ra, dec: tc.dec});
-                }
-                for tstic in &tsr.target_sky_to_image_coords {
-                    plate_solution.target_pixel.push(
-                        ImageCoord{x: tstic.x, y: tstic.y});
-                }
-                for ms in &tsr.matched_stars {
-                    plate_solution.matched_stars.push(
-                        StarInfo{
-                            pixel: Some(ImageCoord{
-                                x: ms.image_coord.as_ref().unwrap().x,
-                                y: ms.image_coord.as_ref().unwrap().y}),
-                            sky_coord: Some(CelestialCoord{
-                                ra: ms.celestial_coord.as_ref().unwrap().ra,
-                                dec: ms.celestial_coord.as_ref().unwrap().dec}),
-                            mag: ms.magnitude as f32,
-                        });
-                }
-                for pc in &tsr.pattern_centroids {
-                    plate_solution.pattern_centroids.push(
-                        ImageCoord{x: pc.x, y: pc.y});
-                }
-                for cs in &tsr.catalog_stars {
-                    plate_solution.catalog_stars.push(
-                        StarInfo{
-                            pixel: Some(ImageCoord{
-                                x: cs.image_coord.as_ref().unwrap().x,
-                                y: cs.image_coord.as_ref().unwrap().y}),
-                            sky_coord: Some(CelestialCoord{
-                                ra: cs.celestial_coord.as_ref().unwrap().ra,
-                                dec: cs.celestial_coord.as_ref().unwrap().dec}),
-                            mag: cs.magnitude as f32,
-                        });
-                }
-                plate_solution.rotation_matrix =
-                    tsr.rotation_matrix.as_ref().unwrap().matrix_elements.clone();
+        if let Some(ref psp) = plate_solution_proto {
+            frame_result.plate_solution = Some(psp.clone());
+            if let Some(ref mut slew_request) = frame_result.slew_request {
+                let celestial_coords =
+                    if psp.target_sky_coord.len() > 0 {
+                        psp.target_sky_coord[0].clone()
+                    } else {
+                        psp.image_sky_coord.as_ref().unwrap().clone()
+                    };
+                let bs_ra = celestial_coords.ra.to_radians();
+                let bs_dec = celestial_coords.dec.to_radians();
 
-                if let Some(ref mut slew_request) = frame_result.slew_request {
-                    let celestial_coords =
-                        if tsr.target_coords.len() > 0 {
-                            tsr.target_coords[0].clone()
-                        } else {
-                            tsr.image_center_coords.as_ref().unwrap().clone()
-                        };
-                    let bs_ra = celestial_coords.ra.to_radians();
-                    let bs_dec = celestial_coords.dec.to_radians();
-
-                    let target_ra = slew_request.target.as_ref().unwrap().ra;
-                    let target_dec = slew_request.target.as_ref().unwrap().dec;
-                    let mount_type = locked_state.preferences.lock().unwrap().mount_type;
-                    if mount_type == Some(MountType::Equatorial.into()) {
-                        // Compute the movement required in RA and Dec to move boresight to
-                        // target.
-                        let mut rel_ra = target_ra - bs_ra.to_degrees();
-                        if rel_ra < -180.0 {
-                            rel_ra += 360.0;
-                        }
-                        if rel_ra > 180.0 {
-                            rel_ra -= 360.0;
-                        }
-                        slew_request.offset_rotation_axis = Some(rel_ra);
-
-                        let rel_dec = target_dec - bs_dec.to_degrees();
-                        slew_request.offset_tilt_axis = Some(rel_dec);
+                let target_ra = slew_request.target.as_ref().unwrap().ra;
+                let target_dec = slew_request.target.as_ref().unwrap().dec;
+                let mount_type = locked_state.preferences.lock().unwrap().mount_type;
+                if mount_type == Some(MountType::Equatorial.into()) {
+                    // Compute the movement required in RA and Dec to move boresight to
+                    // target.
+                    let mut rel_ra = target_ra - bs_ra.to_degrees();
+                    if rel_ra < -180.0 {
+                        rel_ra += 360.0;
                     }
-                    if fixed_settings.observer_location.is_some() &&
-                        mount_type == Some(MountType::AltAz.into())
-                    {
-                        // Compute the movement required in azimuith and altitude to move
-                        // boresight to target.
-                        let geo_location = fixed_settings.observer_location.clone().unwrap();
-                        let lat = geo_location.latitude.to_radians();
-                        let long = geo_location.longitude.to_radians();
-                        let time = captured_image.readout_time;
-                        // alt/az of boresight.
-                        let (bs_alt, bs_az, _bs_ha) =
-                            alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
-                        // alt/az of target.
-                        let (target_alt, target_az, _target_ha) =
-                            alt_az_from_equatorial(target_ra.to_radians(),
-                                                   target_dec.to_radians(),
-                                                   lat, long, time);
-                        let mut rel_az = target_az.to_degrees() - bs_az.to_degrees();
-                        if rel_az < -180.0 {
-                            rel_az += 360.0;
-                        }
-                        if rel_az > 180.0 {
-                            rel_az -= 360.0;
-                        }
-                        slew_request.offset_rotation_axis = Some(rel_az);
-
-                        let rel_alt = target_alt.to_degrees() - bs_alt.to_degrees();
-                        slew_request.offset_tilt_axis = Some(rel_alt);
+                    if rel_ra > 180.0 {
+                        rel_ra -= 360.0;
                     }
+                    slew_request.offset_rotation_axis = Some(rel_ra);
+
+                    let rel_dec = target_dec - bs_dec.to_degrees();
+                    slew_request.offset_tilt_axis = Some(rel_dec);
+                }
+                if fixed_settings.observer_location.is_some() &&
+                    mount_type == Some(MountType::AltAz.into())
+                {
+                    // Compute the movement required in azimuith and altitude to move
+                    // boresight to target.
+                    let geo_location = fixed_settings.observer_location.clone().unwrap();
+                    let lat = geo_location.latitude.to_radians();
+                    let long = geo_location.longitude.to_radians();
+                    let time = captured_image.readout_time;
+                    // alt/az of boresight.
+                    let (bs_alt, bs_az, _bs_ha) =
+                        alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
+                    // alt/az of target.
+                    let (target_alt, target_az, _target_ha) =
+                        alt_az_from_equatorial(target_ra.to_radians(),
+                                               target_dec.to_radians(),
+                                               lat, long, time);
+                    let mut rel_az = target_az.to_degrees() - bs_az.to_degrees();
+                    if rel_az < -180.0 {
+                        rel_az += 360.0;
+                    }
+                    if rel_az > 180.0 {
+                        rel_az -= 360.0;
+                    }
+                    slew_request.offset_rotation_axis = Some(rel_az);
+
+                    let rel_alt = target_alt.to_degrees() - bs_alt.to_degrees();
+                    slew_request.offset_tilt_axis = Some(rel_alt);
                 }
             }
-        }  // tetra3_solve_result.
+        }  // plate_solution_proto.
         let boresight_position =
             locked_state.solve_engine.lock().await.boresight_pixel().await;
         if let Some(bs) = boresight_position {
@@ -1938,14 +1879,15 @@ impl MyCedar {
             (bp.x, bp.y) = irr.transform_to_rotated(bp.x, bp.y, width, height);
 
             // Replace star_candidates with plate solve's catalog stars.
-            if let Some(ref tsr) = tetra3_solve_result {
+            if let Some(ref psp) = plate_solution_proto {
                 frame_result.star_candidates = Vec::<StarCentroid>::new();
-                for star in &tsr.catalog_stars {
-                    let ic = star.image_coord.clone().unwrap();
+                for star in &psp.catalog_stars {
+                    let ic = star.pixel.clone().unwrap();
                     frame_result.star_candidates.push(
                         StarCentroid{centroid_position: Some(ImageCoord{x: ic.x, y: ic.y}),
                                      // Arbitrarily assign intensity=1 to mag=6.
-                                     brightness: magnitude_intensity_ratio(6.0, star.magnitude),
+                                     brightness: magnitude_intensity_ratio(
+                                         6.0, star.mag as f64),
                                      num_saturated: 0
                         });
                 }
@@ -1973,17 +1915,15 @@ impl MyCedar {
         Some(frame_result)
     }
 
+    // MyCedar::new().
     pub async fn new(
+        solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         args_binning: Option<u32>,
         args_display_sampling: Option<bool>,
         invert_camera: bool,
         initial_exposure_duration: Duration,
         min_exposure_duration: Duration,
         max_exposure_duration: Duration,
-        tetra3_script: String,
-        tetra3_database: String,
-        tetra3_uds: String,
-        got_signal: Arc<AtomicBool>,
         activity_led: Arc<Mutex<ActivityLed>>,
         attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
@@ -1999,12 +1939,13 @@ impl MyCedar {
         copyright: &str,
         feature_level: FeatureLevel,
         cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
-        wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>) -> Self
+        wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>)
+        -> Result<Self, CanonicalError>
     {
         let mut cedar_version = "unknown".to_string();
         // We might be in hopper-server/run dir, navigate accordingly. Also
         // works if we're in cedar-server/run dir.
-        let cargo_path = "../../cedar-server/Cargo.toml";
+        let cargo_path = "../../cedar-server/server/Cargo.toml";
         match fs::File::open(cargo_path) {
             Err(x) => {
                 warn!("Could not open {} {:?}", cargo_path, x);
@@ -2055,9 +1996,6 @@ impl MyCedar {
             camera.clone(),
             normalize_rows,
             stats_capacity)));
-        let tetra3_subprocess = Arc::new(Mutex::new(
-            Tetra3Subprocess::new(
-                tetra3_script, tetra3_database, got_signal.clone()).unwrap()));
 
         // Set up initial Preferences to use if preferences file cannot be loaded.
         let mut preferences = Preferences{
@@ -2221,12 +2159,12 @@ impl MyCedar {
         let closure_polar_analyzer = polar_analyzer.clone();
         let closure = Arc::new(move |boresight_pixel: Option<ImageCoord>,
                                      detect_result: Option<DetectResult>,
-                                     solve_result_proto: Option<SolveResultProto>|
+                                     plate_solution: Option<PlateSolutionProto>|
         {
             Self::solution_callback(
                 boresight_pixel,
                 detect_result,
-                solve_result_proto,
+                plate_solution,
                 &mut closure_fixed_settings.lock().unwrap(),
                 &mut closure_preferences.lock().unwrap(),
                 closure_preferences_file.clone(),
@@ -2238,6 +2176,7 @@ impl MyCedar {
         {
             let locked_preferences = shared_preferences.lock().unwrap();
             Arc::new(tokio::sync::Mutex::new(CedarState {
+                solver: solver.clone(),
                 camera: camera.clone(),
                 fixed_settings,
                 operation_settings: OperationSettings {
@@ -2254,11 +2193,10 @@ impl MyCedar {
                 calibration_data: Arc::new(tokio::sync::Mutex::new(
                     CalibrationData{..Default::default()})),
                 detect_engine: detect_engine.clone(),
-                tetra3_subprocess: tetra3_subprocess.clone(),
                 solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
                     normalize_rows,
-                    tetra3_subprocess.clone(), cedar_sky.clone(), detect_engine.clone(),
-                    tetra3_uds, stats_capacity, closure).await.unwrap())),
+                    solver.clone(), cedar_sky.clone(), detect_engine.clone(),
+                    stats_capacity, closure).await.unwrap())),
                 calibrator: Arc::new(tokio::sync::Mutex::new(
                     Calibrator::new(camera.clone(), normalize_rows))),
                 telescope_position,
@@ -2332,8 +2270,8 @@ impl MyCedar {
                 Some(ImageCoord{x: bsp.x, y: bsp.y})).await.unwrap();
         }
 
-        cedar
-    }
+        Ok(cedar)
+    }  // MyCedar::new().
 
     // From Gemini.
     fn find_most_recent_file(pattern: &str) -> Option<PathBuf> {
@@ -2387,7 +2325,7 @@ impl MyCedar {
 
     fn solution_callback(boresight_pixel: Option<ImageCoord>,
                          detect_result: Option<DetectResult>,
-                         solve_result_proto: Option<SolveResultProto>,
+                         plate_solution: Option<PlateSolutionProto>,
                          fixed_settings: &mut FixedSettings,
                          preferences: &mut Preferences,
                          preferences_file: PathBuf,
@@ -2412,25 +2350,27 @@ impl MyCedar {
             }
         }
         let mut sync_coord: Option<CelestialCoord> = None;
-        if solve_result_proto.is_none() {
+        if plate_solution.is_none() {
             telescope_position.boresight_valid = false;
             if let Some(detect_result) = detect_result {
-                motion_estimator.add(detect_result.captured_image.readout_time, None, None);
+                motion_estimator.add(detect_result.captured_image.readout_time,
+                                     None, None);
             }
         } else {
-            let solve_result_proto = solve_result_proto.unwrap();
+            let plate_solution = plate_solution.unwrap();
             // Update SkySafari telescope interface with our position.
-            let coords;
-            if solve_result_proto.target_coords.len() > 0 {
-                coords = solve_result_proto.target_coords[0].clone();
-            } else {
-                coords = solve_result_proto.image_center_coords.as_ref().unwrap().clone();
-            }
+            let coords =
+                if plate_solution.target_sky_coord.len() > 0 {
+                    plate_solution.target_sky_coord[0].clone()
+                } else {
+                    plate_solution.image_sky_coord.as_ref().unwrap().clone()
+                };
             telescope_position.boresight_ra = coords.ra;
             telescope_position.boresight_dec = coords.dec;
             telescope_position.boresight_valid = true;
             let readout_time = detect_result.unwrap().captured_image.readout_time;
-            motion_estimator.add(readout_time, Some(coords.clone()), solve_result_proto.rmse);
+            motion_estimator.add(
+                readout_time, Some(coords.clone()), Some(plate_solution.rmse));
 
             // Has SkySafari reported the site geolocation?
             if telescope_position.site_latitude.is_some() &&
@@ -2818,15 +2758,21 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
 
     let activity_led = Arc::new(Mutex::new(ActivityLed::new(got_signal.clone())));
 
+    // TODO: allow another solver to be injected, and use the Tetra3Solver as
+    // fallback.
+    let solver = Arc::new(tokio::sync::Mutex::new(Tetra3Solver::new(
+        &args.tetra3_script, &args.tetra3_database, got_signal.clone())
+        .await.unwrap()));
+
     // Build the gRPC service.
     let path: PathBuf = [args.log_dir, args.log_file].iter().collect();
     let cedar_server = CedarServer::new(MyCedar::new(
+        solver,
         args.binning, args.display_sampling,
         invert_camera,
         /*initial_exposure_duration=*/Duration::from_millis(100),
         args.min_exposure, args.max_exposure,
-        args.tetra3_script, args.tetra3_database, args.tetra3_socket,
-        got_signal, activity_led.clone(),
+        activity_led.clone(),
         attached_camera, test_image_camera, camera,
         shared_telescope_position.clone(),
         args.star_count_goal, args.sigma, args.min_sigma,
@@ -2834,7 +2780,7 @@ async fn async_main(args: AppArgs, product_name: &str, copyright: &str,
         /*stats_capacity=*/100,
         PathBuf::from(args.ui_prefs),
         path, product_name, copyright, feature_level, cedar_sky, wifi,
-    ).await);
+    ).await.unwrap());
 
     let grpc = tonic::transport::Server::builder()
         .accept_http1(true)  // TODO: don't need this?
@@ -2999,8 +2945,7 @@ mod multiplex_service {
 
 #[cfg(test)]
 mod tests {
-    use crate::cedar::Preferences;
-    use prost::Message;
+    use super::*;
 
     #[test]
     fn test_proto_merge() {

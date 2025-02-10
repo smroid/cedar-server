@@ -9,7 +9,7 @@ use env_logger;
 use image::ImageReader;
 use log::{info, warn};
 
-use cedar_server::image_utils::ImageRotator;
+use cedar_elements::image_utils::ImageRotator;
 
 /// Test program for rotating an image.
 #[derive(Parser, Debug)]

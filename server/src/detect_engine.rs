@@ -17,9 +17,10 @@ use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram,
                                     stats_for_histogram};
-use crate::image_utils::{normalize_rows_mut, scale_image_mut};
-use crate::value_stats::ValueStatsAccumulator;
-use crate::cedar;
+use cedar_elements::image_utils::{
+    normalize_rows_mut, scale_image_mut};
+use cedar_elements::value_stats::ValueStatsAccumulator;
+use cedar_elements::cedar::ValueStats;
 
 pub struct DetectEngine {
     // Initial exposure duration, prior to doing any calibrations. Setup mode
@@ -716,7 +717,7 @@ pub struct DetectResult {
     pub processing_duration: std::time::Duration,
 
     // Distribution of `processing_duration` values.
-    pub detect_latency_stats: cedar::ValueStats,
+    pub detect_latency_stats: ValueStats,
 }
 
 #[derive(Clone)]

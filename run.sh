@@ -6,7 +6,9 @@ if [[ "$1" == "--release" ]]; then
     shift
 fi
 
-../src/build.sh $release_flag
+./build.sh $release_flag
+
+cd run
 
 # Start the binary we just built.
 ../bin/cedar-box-server "$@"

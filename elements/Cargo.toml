@@ -1,0 +1,25 @@
+[package]
+name = "cedar-elements"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+approx = "0.5.1"
+astro = "2.0.0"
+canonical-error = "0.1.0"
+chrono = "0.4.31"
+fast_image_resize = "4.0.0"
+image = "0.25.2"
+imageproc = "0.25.0"
+medians = "3.0.5"
+nalgebra = "0.33.0"
+prost = "0.12.3"
+prost-types = "0.12.3"
+rand = "0.8.5"
+rolling-stats = "0.7.0"
+statistical = "1.0.0"
+tonic = "0.11"
+
+[build-dependencies]
+tonic-build = "0.11"
+prost-build = "0.12.3"

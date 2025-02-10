@@ -82,6 +82,7 @@ version of Raspberry Pi OS. Make sure you've done the following:
 ```
 sudo apt update; sudo apt full-upgrade
 sudo apt install git pip protobuf-compiler libjpeg-dev zlib1g-dev libcamera-dev libclang-dev
+sudo apt install python3-grpcio python3-grpc-tools
 ```
 
 Before going further, if your Rpi has only 1GB of RAM, you'll need to expand its
@@ -186,7 +187,7 @@ site.
 Now build Cedar-server:
 
 ```
-cd cedar-server/src
+cd cedar-server
 ./build.sh --release
 ```
 

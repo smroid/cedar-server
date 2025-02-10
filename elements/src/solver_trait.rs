@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use canonical_error::CanonicalError;
+use tonic::async_trait;
 
 use crate::cedar_common::CelestialCoord;
 use crate::cedar::{ImageCoord, PlateSolution};
@@ -43,16 +44,20 @@ pub struct SolveParams {
 //   DeadlineExceeded: the solve operation was canceled. This should return
 //     CancelledError, but CanonicalError does not provide that.
 //   InvalidArgument: too few centroids were provided.
+#[async_trait]
 pub trait SolverTrait {
     // Note: this is a blocking call, and can take up to several seconds in the
     // Python/Numpy implementation (50ms typical).
-    fn solve_from_centroids(&self,
-                            star_centroids: &Vec<ImageCoord>,
-                            width: usize, height: usize,
-                            extension: &SolveExtension,
-                            params: &SolveParams,
-                            cancel: Option<Arc<AtomicBool>>)
-                            -> Result<PlateSolution, CanonicalError>;
+    async fn solve_from_centroids(&self,
+                                  star_centroids: &Vec<ImageCoord>,
+                                  width: usize, height: usize,
+                                  extension: &SolveExtension,
+                                  params: &SolveParams,
+                                  cancel: Option<Arc<AtomicBool>>)
+                                  -> Result<PlateSolution, CanonicalError>;
+
+    // TODO: cancel method.
+    // TODO: method to return default timeout.
 
     // Note: Equivalents for Tetra3's transform_to_image_coords() and
     // transform_to_celestial_coords() can be found in

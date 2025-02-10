@@ -4,7 +4,7 @@
 use log::warn;
 use std::time::{Duration, SystemTime};
 
-use crate::reservoir_sampler::ReservoirSampler;
+use cedar_elements::reservoir_sampler::ReservoirSampler;
 
 struct DataPoint {
     x: SystemTime,

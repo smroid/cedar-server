@@ -5,7 +5,7 @@ use log::{debug, warn};
 use std::time::{Duration, SystemTime};
 
 use crate::rate_estimator::RateEstimation;
-use crate::tetra3_server::CelestialCoord;
+use cedar_elements::cedar_common::CelestialCoord;
 
 pub struct MotionEstimate {
     // Estimated rate of RA boresight movement eastward (positive) or westward

@@ -11,12 +11,12 @@ use log::warn;
 
 use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage, Gain, Offset};
 use canonical_error::{CanonicalError,
-                      aborted_error, failed_precondition_error, internal_error,
-                      deadline_exceeded_error, unknown_error};
+                      aborted_error, failed_precondition_error};
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
-use crate::solve_engine::SolveEngine;
-use crate::tetra3_server::{ImageCoord, SolveRequest, SolveStatus};
+use cedar_elements::solver_trait::{
+    SolveExtension, SolveParams, SolverTrait};
+use cedar_elements::cedar::ImageCoord;
 
 pub struct Calibrator {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
@@ -209,9 +209,8 @@ impl Calibrator {
     // Result is FOV (degrees), lens distortion, match_max_error, solve duration.
     pub async fn calibrate_optical(
         &self,
-        solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
+        solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         exposure_duration: Duration,
-        solve_timeout: Duration,
         detection_binning: u32, detection_sigma: f64,
         cancel_calibration: Arc<Mutex<bool>>)
         -> Result<(f64, f64, f64, Duration), CanonicalError> {
@@ -221,9 +220,11 @@ impl Calibrator {
         // Assumption: camera is focused and pointed at sky with stars.
         //
         // Approach:
-        // * Grab an image, detect the stars.
+        // * Grab an image, detect the stars. TODO: increase the exposure
+        //   (caller does this?) to improve FOV/distortion precision.
         // * Do a plate solution with no FOV estimate and no distortion estimate.
-        //   Use a generous match_max_error value and a generous solve_timeout.
+        //   Use a generous match_max_error value and the default (generous)
+        //   solve_timeout.
         // * Use the plate solution to obtain FOV and lens distortion, and determine
         //   an appropriate match_max_error value.
         // * Do another plate solution with the known FOV, lens distortion, and
@@ -239,65 +240,53 @@ impl Calibrator {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
         }
 
-        // Set up SolveRequest.
-        let mut solve_request = SolveRequest::default();
-        solve_request.fov_estimate = None;
-        solve_request.fov_max_error = None;
-        solve_request.solve_timeout =
-            Some(prost_types::Duration::try_from(solve_timeout).unwrap());
-        solve_request.distortion = Some(0.0);
-        solve_request.return_matches = false;
-        solve_request.match_max_error = Some(0.005);
+        // Set up solve arguments.
+        let solve_extension = SolveExtension::default();
+        let mut solve_params = SolveParams{
+            fov_estimate: None,  // Initially blind w.r.t. FOV.
+            distortion: Some(0.0),
+            match_max_error: Some(0.005),
+            ..Default::default()
+        };
+        let mut star_centroids = Vec::<ImageCoord>::with_capacity(stars.len());
         for star in &stars {
-            solve_request.star_centroids.push(ImageCoord{x: star.centroid_x,
-                                                         y: star.centroid_y});
+            star_centroids.push(ImageCoord{x: star.centroid_x,
+                                           y: star.centroid_y});
         }
-        solve_request.image_width = width as i32;
-        solve_request.image_height = height as i32;
+        let plate_solution = solver.lock().await.solve_from_centroids(
+            &star_centroids,
+            width as usize, height as usize,
+            &solve_extension, &solve_params,
+            None).await?;
 
-        let mut solve_result_proto =
-            solve_engine.lock().await.solve(solve_request.clone()).await?;
         if *cancel_calibration.lock().unwrap() {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
         }
-        let mut solve_duration = std::time::Duration::try_from(
-            solve_result_proto.solve_time.unwrap()).unwrap();
-        if solve_result_proto.status.unwrap() == SolveStatus::MatchFound as i32 {
-            let fov = solve_result_proto.fov.unwrap();  // Degrees.
-            let distortion = solve_result_proto.distortion.unwrap();
 
-            // Use the 90th percentile error residual as a basis for determining the
-            // 'match_max_error' argument to the solver.
-            let p90_error_deg = solve_result_proto.p90e.unwrap() / 3600.0;
-            let p90_err_frac = p90_error_deg / fov;  // As fraction of FOV.
-            let match_max_error = p90_err_frac * 2.0;
+        let fov = plate_solution.fov;  // Degrees.
+        let distortion = plate_solution.distortion.unwrap();
 
-            // Do another solve with now-known FOV, distortion, and
-            // match_max_error, to get a more representative solve_duration.
-            solve_request.fov_estimate = Some(fov);
-            solve_request.fov_max_error = Some(fov / 10.0);
-            solve_request.distortion = Some(distortion);
-            solve_request.match_max_error = Some(match_max_error);
+        // Use the 90th percentile error residual as a basis for determining the
+        // 'match_max_error' argument to the solver.
+        let p90_error_deg = plate_solution.p90_error / 3600.0;  // Degrees.
+        let p90_err_frac = p90_error_deg / fov;  // As fraction of FOV.
+        let match_max_error = p90_err_frac * 2.0;
 
-            solve_result_proto = solve_engine.lock().await.solve(solve_request).await?;
-            solve_duration = std::time::Duration::try_from(
-                solve_result_proto.solve_time.unwrap()).unwrap();
-            if solve_result_proto.status.unwrap() == SolveStatus::MatchFound as i32 {
-                return Ok((fov, distortion, match_max_error, solve_duration));
-            }
-        }
-        let status_enum =
-            SolveStatus::try_from(solve_result_proto.status.unwrap()).unwrap();
-        let msg = format!("SolveStatus::{:?}: elapsed time {:?}",
-                          status_enum, solve_duration);
-        match status_enum {
-            SolveStatus::Unspecified => Err(unknown_error(msg.as_str())),
-            SolveStatus::MatchFound => Err(internal_error(msg.as_str())),
-            SolveStatus::NoMatch => Err(failed_precondition_error(msg.as_str())),
-            SolveStatus::Timeout => Err(deadline_exceeded_error(msg.as_str())),
-            SolveStatus::Cancelled => Err(aborted_error(msg.as_str())),
-            SolveStatus::TooFew => Err(failed_precondition_error(msg.as_str())),
-        }
+        // Do another solve with now-known FOV, distortion, and
+        // match_max_error, to get a more representative solve_duration.
+        solve_params.fov_estimate = Some((fov, fov / 10.0));
+        solve_params.distortion = Some(distortion);
+        solve_params.match_max_error = Some(match_max_error);
+
+        let plate_solution2 = solver.lock().await.solve_from_centroids(
+            &star_centroids,
+            width as usize, height as usize,
+            &solve_extension, &solve_params,
+            None).await?;
+        let solve_duration = std::time::Duration::try_from(
+            plate_solution2.solve_time.unwrap()).unwrap();
+
+        return Ok((fov, distortion, match_max_error, solve_duration));
     }
 
     async fn acquire_image_get_stars(

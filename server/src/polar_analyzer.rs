@@ -6,8 +6,8 @@
 
 use log::{debug};
 
-use crate::cedar::{ErrorBoundedValue, PolarAlignAdvice};
-use crate::tetra3_server::CelestialCoord;
+use cedar_elements::cedar::{ErrorBoundedValue, PolarAlignAdvice};
+use cedar_elements::cedar_common::CelestialCoord;
 use crate::motion_estimator::MotionEstimate;
 
 pub struct PolarAnalyzer {

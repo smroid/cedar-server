@@ -14,34 +14,26 @@ use chrono::{DateTime, Local, Utc};
 use image::{GenericImageView, GrayImage};
 use imageproc::rect::Rect;
 use log::{debug, error, warn};
-use tonic::transport::{Endpoint, Uri};
-use tokio::net::UnixStream;
-use tower::service_fn;
 
-use crate::astro_util::transform_to_image_coord;
-use crate::tetra3_server::{CelestialCoord as TetraCelestialCoord,
-                           ImageCoord as TetraImageCoord, SolveRequest,
-                           SolveResult as SolveResultProto,
-                           SolveStatus};
-use crate::tetra3_server::tetra3_client::Tetra3Client;
-use crate::tetra3_subprocess::Tetra3Subprocess;
-use crate::value_stats::ValueStatsAccumulator;
-use crate::cedar;
-use crate::cedar_common::CelestialCoord;
-use crate::cedar::{FovCatalogEntry, ImageCoord};
-use crate::cedar_sky_trait::CedarSkyTrait;
-use crate::cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering};
+use cedar_elements::solver_trait::{
+    SolveExtension, SolveParams, SolverTrait};
+use cedar_elements::value_stats::ValueStatsAccumulator;
+use cedar_elements::cedar_common::CelestialCoord;
+use cedar_elements::cedar::{
+    FovCatalogEntry, ImageCoord, PlateSolution as PlateSolutionProto,
+    SlewRequest, ValueStats};
+use cedar_elements::cedar_sky_trait::CedarSkyTrait;
+use cedar_elements::cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering};
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram};
-use crate::image_utils::{normalize_rows_mut, scale_image_mut};
-use crate::astro_util::{angular_separation, position_angle};
+use cedar_elements::image_utils::{normalize_rows_mut, scale_image_mut};
+use cedar_elements::astro_util::{
+    angular_separation, position_angle, transform_to_image_coord};
 
 pub struct SolveEngine {
-    tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
-
-    // Our connection to the tetra3 gRPC server.
-    client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
+    // The plate solver we are using.
+    solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
 
     // Our state, shared between SolveEngine methods and the worker thread.
     state: Arc<tokio::sync::Mutex<SolveState>>,
@@ -58,7 +50,7 @@ pub struct SolveEngine {
     //  sky coordinate of sync operation (if any))
     solution_callback: Arc<dyn Fn(Option<ImageCoord>,
                                   Option<DetectResult>,
-                                  Option<SolveResultProto>)
+                                  Option<PlateSolutionProto>)
                                   -> (Option<CelestialCoord>,
                                       Option<CelestialCoord>)
                            + Send + Sync>,
@@ -117,56 +109,22 @@ impl Drop for SolveEngine {
 }
 
 impl SolveEngine {
-    async fn connect(tetra3_server_address: String)
-        -> Result<Tetra3Client<tonic::transport::Channel>, CanonicalError>
-    {
-        // Set up gRPC client, connect to a UDS socket. URL is ignored.
-        let mut backoff = Duration::from_millis(100);
-        loop {
-            let addr = tetra3_server_address.clone();
-            let channel = Endpoint::try_from("http://[::]:50051").unwrap()
-                .connect_with_connector(service_fn(move |_: Uri| {
-                    // Connect to a Uds socket
-                    UnixStream::connect(addr.clone())
-                })).await;
-            match channel {
-                Ok(ch) => {
-                    return Ok(Tetra3Client::new(ch));
-                },
-                Err(e) => {
-                    if backoff > Duration::from_secs(20) {
-                        return Err(failed_precondition_error(format!(
-                            "Error connecting to Tetra server at {:?}: {:?}",
-                            tetra3_server_address, e).as_str()));
-                    }
-                    // Give time for tetra3_server binary to start up, load its
-                    // pattern database, and start to accept connections.
-                    tokio::time::sleep(backoff).await;
-                    backoff = backoff.mul_f32(1.5);
-                }
-            }
-        }
-    }
-
     pub async fn new(
         normalize_rows: bool,
-        tetra3_subprocess: Arc<Mutex<Tetra3Subprocess>>,
+        solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-        tetra3_server_address: String,
         stats_capacity: usize,
         solution_callback: Arc<dyn Fn(Option<ImageCoord>,
                                       Option<DetectResult>,
-                                      Option<SolveResultProto>)
+                                      Option<PlateSolutionProto>)
                                       -> (Option<CelestialCoord>,
                                           Option<CelestialCoord>)
                                + Send + Sync>)
         -> Result<Self, CanonicalError>
     {
-        let client = Self::connect(tetra3_server_address).await?;
         Ok(SolveEngine{
-            tetra3_subprocess,
-            client: Arc::new(tokio::sync::Mutex::new(client)),
+            solver: solver.clone(),
             state: Arc::new(tokio::sync::Mutex::new(SolveState{
                 align_mode: false,
                 normalize_rows,
@@ -377,24 +335,15 @@ impl SolveEngine {
         }
     }
 
-    pub async fn solve(&self, solve_request: SolveRequest)
-                       -> Result<SolveResultProto, CanonicalError> {
-        Self::solve_with_client(self.client.clone(), solve_request).await
-    }
-
-    async fn solve_with_client(
-        client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
-        solve_request: SolveRequest)
-        -> Result<SolveResultProto, CanonicalError> {
-        match client.lock().await.solve_from_centroids(solve_request).await {
-            Ok(response) => {
-                return Ok(response.into_inner());
-            },
-            Err(e) => {
-                return Err(failed_precondition_error(
-                    format!("Error invoking plate solver: {:?}", e).as_str()));
-            },
-        }
+    async fn solve_with_solver(
+        solver: Arc<tokio::sync::Mutex<dyn SolverTrait>>,
+        star_centroids: &Vec<ImageCoord>,
+        width: usize, height: usize,
+        extension: &SolveExtension,
+        params: &SolveParams) -> Result<PlateSolutionProto, CanonicalError>
+    {
+        solver.lock().await.solve_from_centroids(
+            star_centroids, width, height, extension, params, None).await
     }
 
     pub async fn start(&mut self) {
@@ -405,27 +354,19 @@ impl SolveEngine {
             self.worker_thread.take().unwrap();
         }
         if self.worker_thread.is_none() {
-            let cloned_client = self.client.clone();
+            let cloned_solver = self.solver.clone();
             let cloned_state = self.state.clone();
             let cloned_detect_engine = self.detect_engine.clone();
             let cloned_callback = self.solution_callback.clone();
-
-            // The SolveEngine::worker() function calls
-            // SolverTrait::solve_from_centroids() which is a blocking call
-            // either wrapping a gRPC call to tetra_server or is locally
-            // executing compute-intensive plate solving logic. Either way is
-            // beyond the guidelines for running async code without an .await
-            // yield point.
-            //
-            // We thus run SolveEngine::worker() on its own async runtime. See
-            // https://thenewstack.io/using-rustlangs-async-tokio-runtime-for-cpu-bound-tasks/
+            // Allocate a thread for concurrent execution of solver with
+            // other activities.
             self.worker_thread = Some(std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .thread_name("solve_engine")
                     .build().unwrap();
                 runtime.block_on(async move {
-                    SolveEngine::worker(cloned_client, cloned_state,
+                    SolveEngine::worker(cloned_solver, cloned_state,
                                         cloned_detect_engine, cloned_callback).await;
                 });
             }));
@@ -438,19 +379,20 @@ impl SolveEngine {
     /// taking longer than usual.
     pub async fn stop(&mut self) {
         if self.worker_thread.is_some() {
-            self.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+            // TODO: cancel solver
+            // self.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
             self.state.lock().await.stop_request = true;
             self.worker_thread.take().unwrap();
         }
     }
 
     async fn worker(
-        client: Arc<tokio::sync::Mutex<Tetra3Client<tonic::transport::Channel>>>,
+        solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         solution_callback: Arc<dyn Fn(Option<ImageCoord>,
                                       Option<DetectResult>,
-                                      Option<SolveResultProto>)
+                                      Option<PlateSolutionProto>)
                                       -> (Option<CelestialCoord>,
                                           Option<CelestialCoord>)
                                + Send + Sync>) {
@@ -472,45 +414,37 @@ impl SolveEngine {
             let minimum_stars;
             let frame_id;
             let normalize_rows;
-            let mut solve_request = SolveRequest::default();
+            let mut solve_extension = SolveExtension::default();
+            let mut solve_params = SolveParams::default();
             {
                 let locked_state = state.lock().await;
                 minimum_stars = locked_state.minimum_stars;
                 frame_id = locked_state.frame_id;
                 normalize_rows = locked_state.normalize_rows;
 
-                // Set up SolveRequest.
-                solve_request.fov_estimate = locked_state.fov_estimate;
+                // Set up solve arguments.
                 if let Some(fov) = locked_state.fov_estimate {
-                    solve_request.fov_max_error = Some(fov / 10.0);
+                    solve_params.fov_estimate = Some((fov, fov / 10.0));
                 }
-
-                solve_request.match_radius = Some(locked_state.match_radius);
-                solve_request.match_threshold = Some(locked_state.match_threshold);
-
-                let solve_timeout = locked_state.solve_timeout.as_secs_f64();
-                let solve_timeout_int = solve_timeout as i64;
-                let solve_timeout_frac = solve_timeout - solve_timeout_int as f64;
-                solve_request.solve_timeout = Some(prost_types::Duration {
-                    seconds: solve_timeout_int,
-                    nanos: (solve_timeout_frac * 1000000000.0) as i32,
-                });
-
+                solve_params.match_radius = Some(locked_state.match_radius);
+                solve_params.match_threshold = Some(locked_state.match_threshold);
+                solve_params.solve_timeout = Some(locked_state.solve_timeout);
                 if let Some(boresight_pixel) = &locked_state.boresight_pixel {
-                    let tetra_bsp = TetraImageCoord{x: boresight_pixel.x,
-                                                    y: boresight_pixel.y};
-                    solve_request.target_pixels.push(tetra_bsp);
+                    solve_extension.target_pixel = Some(Vec::<ImageCoord>::new());
+                    solve_extension.target_pixel
+                        .as_mut().unwrap().push(boresight_pixel.clone());
                 }
                 if let Some(slew_target) = &locked_state.slew_target {
-                    let tetra_st = TetraCelestialCoord{ra: slew_target.ra,
-                                                       dec: slew_target.dec};
-                    solve_request.target_sky_coords.push(tetra_st);
+                    solve_extension.target_sky_coord =
+                        Some(Vec::<CelestialCoord>::new());
+                    solve_extension.target_sky_coord
+                        .as_mut().unwrap().push(slew_target.clone());
                 }
-                solve_request.distortion = Some(locked_state.distortion);
-                solve_request.match_max_error = Some(locked_state.match_max_error);
-                solve_request.return_matches = locked_state.return_matches;
-                solve_request.return_catalog = true;
-                solve_request.return_rotation_matrix = true;
+                solve_params.distortion = Some(locked_state.distortion);
+                solve_params.match_max_error = Some(locked_state.match_max_error);
+                solve_extension.return_matches = locked_state.return_matches;
+                solve_extension.return_catalog = true;
+                solve_extension.return_rotation_matrix = true;
             }
             // Get the most recent star detection result.
             if let Some(delay_est) =
@@ -541,15 +475,14 @@ impl SolveEngine {
             // Plate-solve using the recently detected stars.
             let process_start_time = Instant::now();
 
+            let mut star_centroids = Vec::<ImageCoord>::with_capacity(
+                detect_result.star_candidates.len());
             for sc in &detect_result.star_candidates {
-                let tetra_centroid = TetraImageCoord{x: sc.centroid_x,
-                                                     y: sc.centroid_y};
-                solve_request.star_centroids.push(tetra_centroid);
+                star_centroids.push(ImageCoord{x: sc.centroid_x,
+                                               y: sc.centroid_y});
             }
-            solve_request.image_width = width as i32;
-            solve_request.image_height = height as i32;
 
-            let mut tetra3_solve_result: Option<SolveResultProto> = None;
+            let mut plate_solution: Option<PlateSolutionProto> = None;
             let mut solve_finish_time: Option<SystemTime> = None;
             if detect_result.star_candidates.len() >= minimum_stars as usize {
                 {
@@ -561,13 +494,18 @@ impl SolveEngine {
                         locked_state.eta = Some(Instant::now() + solve_duration);
                     }
                 }
-                match Self::solve_with_client(client.clone(), solve_request).await {
+                match Self::solve_with_solver(
+                    solver.clone(),
+                    &star_centroids,
+                    width as usize, height as usize,
+                    &solve_extension, &solve_params).await
+                {
                     Err(e) => {
                         error!("Unexpected error {:?}", e);
                         return;  // Abandon thread execution!
                     },
-                    Ok(response) => {
-                        tetra3_solve_result = Some(response);
+                    Ok(solution) => {
+                        plate_solution = Some(solution);
                     }
                 }
                 solve_finish_time = Some(SystemTime::now());
@@ -588,7 +526,7 @@ impl SolveEngine {
                 boresight_pixel = locked_state.boresight_pixel.clone();
                 cedar_sky = locked_state.cedar_sky.clone();
             }
-            if tetra3_solve_result.is_none() {
+            if plate_solution.is_none() {
                 if !align_mode {
                     state.lock().await.solve_attempt_stats.add_value(0.0);
                     solution_callback(boresight_pixel,
@@ -598,107 +536,94 @@ impl SolveEngine {
                 if !align_mode {
                     state.lock().await.solve_attempt_stats.add_value(1.0);
                 }
-                let tsr = tetra3_solve_result.as_ref().unwrap();
-                if tsr.status.unwrap() == SolveStatus::MatchFound as i32 {
-                    if !align_mode {
-                        state.lock().await.solve_success_stats.add_value(1.0);
-                    }
-                    let boresight_coords = if tsr.target_coords.len() > 0 {
-                        CelestialCoord{ra: tsr.target_coords[0].ra,
-                                       dec: tsr.target_coords[0].dec}
-                    } else {
-                        CelestialCoord{
-                            ra: tsr.image_center_coords.as_ref().unwrap().ra,
-                            dec: tsr.image_center_coords.as_ref().unwrap().dec}
-                    };
-                    let mut rotation_matrix: [f64; 9] = [0.0; 9];
-                    for (idx, c) in tsr.rotation_matrix.as_ref().unwrap()
-                        .matrix_elements.clone().into_iter().enumerate()
-                    {
-                        rotation_matrix[idx] = c;
-                    }
-
-                    if !align_mode {
-                        // Let integration layer pass solution to SkySafari telescope
-                        // interface and MotionEstimator. Integration layer returns current
-                        // slew target coords, if any.
-                        let (slew_target, sync_coord) =
-                            solution_callback(boresight_pixel.clone(),
-                                              Some(detect_result.clone()), Some(tsr.clone()));
-                        state.lock().await.slew_target = slew_target;
-                        // If we're slewing, see if the boresight is close enough to
-                        // the slew target that Cedar Aim should display an inset image
-                        // of the region around the boresight.
-                        if let Some(target_coords) = &state.lock().await.slew_target {
-                            (slew_request, boresight_image_region, boresight_image) =
-                                Self::handle_slew(
-                                    &cedar_sky,
-                                    target_coords, image, &boresight_coords,
-                                    &boresight_pixel, tsr,
-                                    normalize_rows, width, height).await;
-                        }
-                        if let Some(sync_coord) = sync_coord {
-                            // SkySafari user has invoked "Sync" operation on some
-                            // sky object, indicating that this object is centered at
-                            // the telescope boresight. We update the boresight pixel
-                            // accordingly.
-                            // First, translate `sync_coord` to image coordinates.
-                            let xy = transform_to_image_coord(
-                                &[sync_coord.ra, sync_coord.dec],
-                                width as usize, height as usize,
-                                tsr.fov.unwrap(),
-                                &rotation_matrix,
-                                tsr.distortion.unwrap());
-                            let img_coord = ImageCoord{x: xy[0], y: xy[1]};
-                            state.lock().await.boresight_pixel = Some(img_coord);
-                            // Note: we should update the boresight in the saved
-                            // preferences, but we don't have access to the
-                            // cedar_server logic here. Instead, we leave it to
-                            // the cedar_server logic to notice the boresight
-                            // change and update the saved prefs.
-                        }
-                    }  // !align_mode
-
-                    if cedar_sky.is_some() {
-                        let mut catalog_entry_match =
-                            state.lock().await.catalog_entry_match.clone().unwrap();
-                        catalog_entry_match.match_catalog_label = false;
-                        catalog_entry_match.match_object_type_label = false;
-                        if align_mode {
-                            // Replace catalog_entry_match.
-                            catalog_entry_match = CatalogEntryMatch {
-                                faintest_magnitude: Some(4),
-                                match_catalog_label: false,
-                                catalog_label: vec![],
-                                match_object_type_label: true,
-                                object_type_label: vec!["star".to_string(),
-                                                        "double star".to_string(),
-                                                        "nova star".to_string(),
-                                                        "planet".to_string()],
-                            };
-                        }
-                        let result = Self::query_fov_catalog_entries(
-                            &boresight_coords,
-                            &boresight_pixel,
-                            cedar_sky.as_ref().unwrap(),
-                            &catalog_entry_match,
-                            width, height,
-                            tsr.fov.unwrap(),
-                            tsr.distortion.unwrap(),
-                            &rotation_matrix).await;
-                        (fov_catalog_entries, decrowded_fov_catalog_entries) =
-                            (Some(result.0), Some(result.1));
-                    }
-                } else {
-                    if !align_mode {
-                        state.lock().await.solve_success_stats.add_value(0.0);
-                        solution_callback(boresight_pixel.clone(),
-                                          Some(detect_result.clone()), None);
-                    }
-                }
+                let psp = plate_solution.as_ref().unwrap();
                 if !align_mode {
-                    state.lock().await.solve_latency_stats.add_value(elapsed.as_secs_f64());
+                    state.lock().await.solve_success_stats.add_value(1.0);
                 }
+                let boresight_coords = if psp.target_sky_coord.len() > 0 {
+                    psp.target_sky_coord[0].clone()
+                } else {
+                    psp.image_sky_coord.as_ref().unwrap().clone()
+                };
+                let mut rotation_matrix: [f64; 9] = [0.0; 9];
+                for (idx, c) in psp.rotation_matrix.clone().into_iter().enumerate() {
+                    rotation_matrix[idx] = c;
+                }
+
+                if !align_mode {
+                    // Let integration layer pass solution to SkySafari telescope
+                    // interface and MotionEstimator. Integration layer returns current
+                    // slew target coords, if any.
+                    let (slew_target, sync_coord) =
+                        solution_callback(boresight_pixel.clone(),
+                                          Some(detect_result.clone()), Some(psp.clone()));
+                    state.lock().await.slew_target = slew_target;
+                    // If we're slewing, see if the boresight is close enough to
+                    // the slew target that Cedar Aim should display an inset image
+                    // of the region around the boresight.
+                    if let Some(target_coords) = &state.lock().await.slew_target {
+                        (slew_request, boresight_image_region, boresight_image) =
+                            Self::handle_slew(
+                                &cedar_sky,
+                                target_coords, image, &boresight_coords,
+                                &boresight_pixel, psp,
+                                normalize_rows, width, height).await;
+                    }
+                    if let Some(sync_coord) = sync_coord {
+                        // SkySafari user has invoked "Sync" operation on some
+                        // sky object, indicating that this object is centered at
+                        // the telescope boresight. We update the boresight pixel
+                        // accordingly.
+                        // First, translate `sync_coord` to image coordinates.
+                        let xy = transform_to_image_coord(
+                            &[sync_coord.ra, sync_coord.dec],
+                            width as usize, height as usize,
+                            psp.fov,
+                            &rotation_matrix,
+                            psp.distortion.unwrap());
+                        let img_coord = ImageCoord{x: xy[0], y: xy[1]};
+                        state.lock().await.boresight_pixel = Some(img_coord);
+                        // Note: we should update the boresight in the saved
+                        // preferences, but we don't have access to the
+                        // cedar_server logic here. Instead, we leave it to
+                        // the cedar_server logic to notice the boresight
+                        // change and update the saved prefs.
+                    }
+                }  // !align_mode
+
+                if cedar_sky.is_some() {
+                    let mut catalog_entry_match =
+                        state.lock().await.catalog_entry_match.clone().unwrap();
+                    catalog_entry_match.match_catalog_label = false;
+                    catalog_entry_match.match_object_type_label = false;
+                    if align_mode {
+                        // Replace catalog_entry_match.
+                        catalog_entry_match = CatalogEntryMatch {
+                            faintest_magnitude: Some(4),
+                            match_catalog_label: false,
+                            catalog_label: vec![],
+                            match_object_type_label: true,
+                            object_type_label: vec!["star".to_string(),
+                                                    "double star".to_string(),
+                                                    "nova star".to_string(),
+                                                    "planet".to_string()],
+                        };
+                    }
+                    let result = Self::query_fov_catalog_entries(
+                        &boresight_coords,
+                        &boresight_pixel,
+                        cedar_sky.as_ref().unwrap(),
+                        &catalog_entry_match,
+                        width, height,
+                        psp.fov,
+                        psp.distortion.unwrap(),
+                        &rotation_matrix).await;
+                    (fov_catalog_entries, decrowded_fov_catalog_entries) =
+                        (Some(result.0), Some(result.1));
+                }
+            }
+            if !align_mode {
+                state.lock().await.solve_latency_stats.add_value(elapsed.as_secs_f64());
             }
             // Post the result.
             let solve_latency_stats;
@@ -715,7 +640,7 @@ impl SolveEngine {
             }
             state.lock().await.plate_solution = Some(PlateSolution{
                 detect_result,
-                tetra3_solve_result,
+                plate_solution,
                 fov_catalog_entries,
                 decrowded_fov_catalog_entries,
                 slew_request,
@@ -776,12 +701,12 @@ impl SolveEngine {
         image: &GrayImage,
         boresight_coords: &CelestialCoord,
         boresight_pixel: &Option<ImageCoord>,
-        tetra3_solve_result: &SolveResultProto,
+        plate_solution: &PlateSolutionProto,
         normalize_rows: bool,
         width: u32, height: u32)
-        -> (Option<cedar::SlewRequest>, Option<Rect>, Option<GrayImage>)
+        -> (Option<SlewRequest>, Option<Rect>, Option<GrayImage>)
     {
-        let mut slew_request = cedar::SlewRequest{
+        let mut slew_request = SlewRequest{
             target: Some(target_coords.clone()), ..Default::default()};
         let bs_ra = boresight_coords.ra.to_radians();
         let bs_dec = boresight_coords.dec.to_radians();
@@ -792,7 +717,7 @@ impl SolveEngine {
 
         let mut angle = (position_angle(
             bs_ra, bs_dec, st_ra, st_dec).to_degrees() +
-                         tetra3_solve_result.roll.unwrap()) % 360.0;
+                         plate_solution.roll) % 360.0;
         // Arrange for angle to be 0..360.
         if angle < 0.0 {
             angle += 360.0;
@@ -808,16 +733,15 @@ impl SolveEngine {
             slew_request.target_catalog_entry_distance = distance;
         }
 
-        if tetra3_solve_result.target_sky_to_image_coords.len() == 0 {
+        if plate_solution.target_pixel.len() == 0 {
             return (Some(slew_request), None, None);
         }
-        let img_coord = &tetra3_solve_result.target_sky_to_image_coords[0];
+        let img_coord = &plate_solution.target_pixel[0];
         if img_coord.x < 0.0 {
             return (Some(slew_request), None, None);
         }
 
-        let target_image_coord =
-            cedar::ImageCoord{x: img_coord.x, y: img_coord.y};
+        let target_image_coord = ImageCoord{x: img_coord.x, y: img_coord.y};
         slew_request.image_pos = Some(target_image_coord.clone());
         // Is the target's image_pos close to the boresight's image position?
         let boresight_pos;
@@ -850,8 +774,8 @@ impl SolveEngine {
         boresight_image_region =
             Some(boresight_image_region.
                  unwrap().intersect(image_rect).unwrap());
-        // We scale up the pixel values in the sub_image for good
-        // display visibility.
+        // We scale up the pixel values in the sub_image for good display
+        // visibility.
         let mut boresight_image = Some(
             image.view(boresight_image_region.unwrap().left() as u32,
                        boresight_image_region.unwrap().top() as u32,
@@ -896,7 +820,7 @@ impl SolveEngine {
         }
         Some(FovCatalogEntry {
             entry: Some(entry.clone()),
-            image_pos: Some(cedar::ImageCoord { x, y }),
+            image_pos: Some(ImageCoord { x, y }),
         })
     }
 
@@ -978,8 +902,8 @@ pub struct PlateSolution {
     pub detect_result: DetectResult,
 
     // The plate solution for `detect_result`. Omitted if a solve was not
-    // attempted.
-    pub tetra3_solve_result: Option<SolveResultProto>,
+    // attempted or it failed.
+    pub plate_solution: Option<PlateSolutionProto>,
 
     // These are the catalog entries, if any, that are in the `detect_result`
     // image's FOV. Order is unspecified.
@@ -989,7 +913,7 @@ pub struct PlateSolution {
 
     // If the TelescopePosition has an active slew request, we populate
     // `slew_request` with its information.
-    pub slew_request: Option<cedar::SlewRequest>,
+    pub slew_request: Option<SlewRequest>,
 
     // A small crop of the full resolution `detect_result.captured_image`
     // centered at the boresight. Brightness scaled to full range for
@@ -1010,11 +934,11 @@ pub struct PlateSolution {
     pub processing_duration: std::time::Duration,
 
     // Distribution of `processing_duration` values.
-    pub solve_latency_stats: cedar::ValueStats,
+    pub solve_latency_stats: ValueStats,
 
     // Fraction of cycles in which a plate solve was attempted.
-    pub solve_attempt_stats: cedar::ValueStats,
+    pub solve_attempt_stats: ValueStats,
 
     // Fraction of attempted plate solves succeeded.
-    pub solve_success_stats: cedar::ValueStats,
+    pub solve_success_stats: ValueStats,
 }
