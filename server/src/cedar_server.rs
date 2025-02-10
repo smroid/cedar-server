@@ -720,8 +720,7 @@ impl Cedar for MyCedar {
             let locked_state = self.state.lock().await;
             if locked_state.calibrating {
                 *locked_state.cancel_calibration.lock().unwrap() = true;
-                // TODO: cancel solver.
-                // locked_state.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+                locked_state.solver.lock().await.cancel();
             }
         }
         if req.capture_boresight.unwrap_or(false) {
@@ -1105,8 +1104,6 @@ impl MyCedar {
         // task_handle. We arrange for get_frame() to return a FrameResult with
         // a information about the ongoing calibration.
 
-        // TODO: scale this from the solver's default timeout.
-        let calibration_solve_timeout = Duration::from_secs(5);
         let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
             tokio::task::spawn(async move {
                 {
@@ -1114,6 +1111,9 @@ impl MyCedar {
                     if locked_state.calibrating {
                         return Ok(());  // Already in flight.
                     }
+                    let calibration_solve_timeout =
+                        locked_state.solver.lock().await.default_timeout();
+
                     Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
                     locked_state.calibrating = true;
                     locked_state.calibration_start = Instant::now();
