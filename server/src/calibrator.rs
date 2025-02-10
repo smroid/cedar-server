@@ -256,8 +256,7 @@ impl Calibrator {
         let plate_solution = solver.lock().await.solve_from_centroids(
             &star_centroids,
             width as usize, height as usize,
-            &solve_extension, &solve_params,
-            None).await?;
+            &solve_extension, &solve_params).await?;
 
         if *cancel_calibration.lock().unwrap() {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
@@ -281,8 +280,7 @@ impl Calibrator {
         let plate_solution2 = solver.lock().await.solve_from_centroids(
             &star_centroids,
             width as usize, height as usize,
-            &solve_extension, &solve_params,
-            None).await?;
+            &solve_extension, &solve_params).await?;
         let solve_duration = std::time::Duration::try_from(
             plate_solution2.solve_time.unwrap()).unwrap();
 

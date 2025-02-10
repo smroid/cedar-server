@@ -1,8 +1,6 @@
 // Copyright (c) 2025 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use std::time::Duration;
 
 use canonical_error::CanonicalError;
@@ -46,18 +44,21 @@ pub struct SolveParams {
 //   InvalidArgument: too few centroids were provided.
 #[async_trait]
 pub trait SolverTrait {
-    // Note: this is a blocking call, and can take up to several seconds in the
-    // Python/Numpy implementation (50ms typical).
+    // Note: this can take up to several seconds in the Python/Numpy
+    // implementation (50ms typical).
     async fn solve_from_centroids(&self,
                                   star_centroids: &Vec<ImageCoord>,
                                   width: usize, height: usize,
                                   extension: &SolveExtension,
-                                  params: &SolveParams,
-                                  cancel: Option<Arc<AtomicBool>>)
+                                  params: &SolveParams)
                                   -> Result<PlateSolution, CanonicalError>;
 
-    // TODO: cancel method.
-    // TODO: method to return default timeout.
+    // Requests that the current solve_from_centroids() operation, if any,
+    // terminate soon. Returns without waiting for the cancel to take effect.
+    fn cancel(&self);
+
+    // Returns the default SolveParams::solve_timeout value.
+    fn default_timeout(&self) -> Duration;
 
     // Note: Equivalents for Tetra3's transform_to_image_coords() and
     // transform_to_celestial_coords() can be found in

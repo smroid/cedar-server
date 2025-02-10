@@ -343,7 +343,7 @@ impl SolveEngine {
         params: &SolveParams) -> Result<PlateSolutionProto, CanonicalError>
     {
         solver.lock().await.solve_from_centroids(
-            star_centroids, width, height, extension, params, None).await
+            star_centroids, width, height, extension, params).await
     }
 
     pub async fn start(&mut self) {
