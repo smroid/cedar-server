@@ -2480,7 +2480,6 @@ impl MyCedar {
 struct AppArgs {
     tetra3_script: String,
     tetra3_database: String,
-    tetra3_socket: String,
     camera_interface: String,
     camera_index: i32,
     binning: Option<u32>,
@@ -2525,7 +2524,6 @@ pub fn server_main(
     OPTIONS:
       --tetra3_script <path>         ../src/tetra3_server.py
       --tetra3_database <name>       default_database
-      --tetra3_socket <path>         /tmp/cedar.sock
       --camera_interface asi|rpi
       --camera_index NUMBER
       --binning 1|2|4
@@ -2551,8 +2549,6 @@ pub fn server_main(
             unwrap_or("../../tetra3_server/python/tetra3_server.py".to_string()),
         tetra3_database: pargs.value_from_str("--tetra3_database").
             unwrap_or("default_database".to_string()),
-        tetra3_socket: pargs.value_from_str("--tetra3_socket").
-            unwrap_or("/tmp/cedar.sock".to_string()),
         camera_interface: pargs.value_from_str("--camera_interface").
             unwrap_or("".to_string()),
         camera_index: pargs.value_from_str("--camera_index").
@@ -2651,9 +2647,6 @@ async fn async_main(
     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
     injected_solver: Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>)
 {
-    info!("Using Tetra3 server {:?} listening at {:?}",
-          args.tetra3_script, args.tetra3_socket);
-
     let camera_interface = match args.camera_interface.as_str() {
         "" => None,
         "asi" => Some(CameraInterface::ASI),
