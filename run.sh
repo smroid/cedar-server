@@ -8,6 +8,7 @@ fi
 
 ./build.sh $release_flag
 
+. ../cedar-solve/.cedar_venv/bin/activate
 cd run
 
 # Start the binary we just built.
