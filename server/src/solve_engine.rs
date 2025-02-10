@@ -379,8 +379,7 @@ impl SolveEngine {
     /// taking longer than usual.
     pub async fn stop(&mut self) {
         if self.worker_thread.is_some() {
-            // TODO: cancel solver
-            // self.tetra3_subprocess.lock().unwrap().send_interrupt_signal();
+            self.solver.lock().await.cancel();
             self.state.lock().await.stop_request = true;
             self.worker_thread.take().unwrap();
         }
