@@ -2165,12 +2165,12 @@ impl MyCedar {
                 boresight_pixel,
                 detect_result,
                 plate_solution,
-                &mut closure_fixed_settings.lock().unwrap(),
-                &mut closure_preferences.lock().unwrap(),
+                closure_fixed_settings.clone(),
+                closure_preferences.clone(),
                 closure_preferences_file.clone(),
-                &mut closure_telescope_position.lock().unwrap(),
-                &mut motion_estimator.lock().unwrap(),
-                &mut closure_polar_analyzer.lock().unwrap())
+                closure_telescope_position.clone(),
+                motion_estimator.clone(),
+                closure_polar_analyzer.clone())
         });
         let state =
         {
@@ -2326,35 +2326,38 @@ impl MyCedar {
     fn solution_callback(boresight_pixel: Option<ImageCoord>,
                          detect_result: Option<DetectResult>,
                          plate_solution: Option<PlateSolutionProto>,
-                         fixed_settings: &mut FixedSettings,
-                         preferences: &mut Preferences,
+                         fixed_settings: Arc<Mutex<FixedSettings>>,
+                         preferences: Arc<Mutex<Preferences>>,
                          preferences_file: PathBuf,
-                         telescope_position: &mut TelescopePosition,
-                         motion_estimator: &mut MotionEstimator,
-                         polar_analyzer: &mut PolarAnalyzer)
+                         telescope_position: Arc<Mutex<TelescopePosition>>,
+                         motion_estimator: Arc<Mutex<MotionEstimator>>,
+                         polar_analyzer: Arc<Mutex<PolarAnalyzer>>)
                          -> (Option<CelestialCoord>,
                              Option<CelestialCoord>)
     {
         // Notice when solve engine has recently changed its boresight due
         // to a previous call to this callback function reporting a SkySafari
         // sync.
+        let mut prefs_to_save: Option<Preferences> = None;
         if let Some(bp) = boresight_pixel {
             let cedar_bp = ImageCoord{x: bp.x, y: bp.y};
-            if preferences.boresight_pixel.is_none() ||
-                cedar_bp != *preferences.boresight_pixel.as_ref().unwrap()
+            let mut locked_preferences = preferences.lock().unwrap();
+            if locked_preferences.boresight_pixel.is_none() ||
+                cedar_bp != *locked_preferences.boresight_pixel.as_ref().unwrap()
             {
                 // Save in preferences.
-                preferences.boresight_pixel = Some(cedar_bp);
-                // Write updated preferences to file.
-                Self::write_preferences_file(&preferences_file, &preferences);
+                locked_preferences.boresight_pixel = Some(cedar_bp);
+                // Flag updated preferences to write to file below.
+                prefs_to_save = Some(locked_preferences.clone());
             }
         }
         let mut sync_coord: Option<CelestialCoord> = None;
         if plate_solution.is_none() {
-            telescope_position.boresight_valid = false;
+            telescope_position.lock().unwrap().boresight_valid = false;
             if let Some(detect_result) = detect_result {
-                motion_estimator.add(detect_result.captured_image.readout_time,
-                                     None, None);
+                motion_estimator.lock().unwrap().add(
+                    detect_result.captured_image.readout_time,
+                    None, None);
             }
         } else {
             let plate_solution = plate_solution.unwrap();
@@ -2365,43 +2368,46 @@ impl MyCedar {
                 } else {
                     plate_solution.image_sky_coord.as_ref().unwrap().clone()
                 };
-            telescope_position.boresight_ra = coords.ra;
-            telescope_position.boresight_dec = coords.dec;
-            telescope_position.boresight_valid = true;
+            let mut locked_telescope_position = telescope_position.lock().unwrap();
+            locked_telescope_position.boresight_ra = coords.ra;
+            locked_telescope_position.boresight_dec = coords.dec;
+            locked_telescope_position.boresight_valid = true;
             let readout_time = detect_result.unwrap().captured_image.readout_time;
-            motion_estimator.add(
+            motion_estimator.lock().unwrap().add(
                 readout_time, Some(coords.clone()), Some(plate_solution.rmse));
 
             // Has SkySafari reported the site geolocation?
-            if telescope_position.site_latitude.is_some() &&
-                telescope_position.site_longitude.is_some()
+            if locked_telescope_position.site_latitude.is_some() &&
+                locked_telescope_position.site_longitude.is_some()
             {
                 let observer_location = LatLong{
-                    latitude: telescope_position.site_latitude.unwrap(),
-                    longitude: telescope_position.site_longitude.unwrap(),
+                    latitude: locked_telescope_position.site_latitude.unwrap(),
+                    longitude: locked_telescope_position.site_longitude.unwrap(),
                 };
-                fixed_settings.observer_location = Some(observer_location.clone());
+                fixed_settings.lock().unwrap().observer_location =
+                    Some(observer_location.clone());
                 info!("Alpaca updated observer location to {:?}", observer_location);
-                telescope_position.site_latitude = None;
-                telescope_position.site_longitude = None;
+                locked_telescope_position.site_latitude = None;
+                locked_telescope_position.site_longitude = None;
                 // Save in preferences.
-                preferences.observer_location = Some(observer_location.clone());
-                // Write updated preferences to file.
-                Self::write_preferences_file(&preferences_file, &preferences);
+                let mut locked_preferences = preferences.lock().unwrap();
+                locked_preferences.observer_location = Some(observer_location.clone());
+                // Flag updated preferences to write to file below.
+                prefs_to_save = Some(locked_preferences.clone());
             }
             // Has SkySafari done a "sync"?
-            if telescope_position.sync_ra.is_some() &&
-                telescope_position.sync_dec.is_some()
+            if locked_telescope_position.sync_ra.is_some() &&
+                locked_telescope_position.sync_dec.is_some()
             {
                 sync_coord = Some(CelestialCoord{
-                    ra: telescope_position.sync_ra.unwrap(),
-                    dec: telescope_position.sync_dec.unwrap()});
+                    ra: locked_telescope_position.sync_ra.unwrap(),
+                    dec: locked_telescope_position.sync_dec.unwrap()});
                 info!("Alpaca synced boresight to {:?}", sync_coord);
-                telescope_position.sync_ra = None;
-                telescope_position.sync_dec = None;
+                locked_telescope_position.sync_ra = None;
+                locked_telescope_position.sync_dec = None;
             }
 
-            let geo_location = &fixed_settings.observer_location;
+            let geo_location = &fixed_settings.lock().unwrap().observer_location;
             if let Some(geo_location) = geo_location {
                 let lat = geo_location.latitude.to_radians();
                 let long = geo_location.longitude.to_radians();
@@ -2410,15 +2416,23 @@ impl MyCedar {
                 // alt/az of boresight. Also boresight hour angle.
                 let (_alt, _az, ha) =
                     alt_az_from_equatorial(bs_ra, bs_dec, lat, long, readout_time);
-                polar_analyzer.process_solution(&coords,
-                                                ha.to_degrees(),
-                                                geo_location.latitude,
-                                                &motion_estimator.get_estimate());
+                let motion_estimate = motion_estimator.lock().unwrap().get_estimate();
+                polar_analyzer.lock().unwrap().process_solution(
+                    &coords,
+                    ha.to_degrees(),
+                    geo_location.latitude,
+                    &motion_estimate);
             }
         }
-        if telescope_position.slew_active {
-            (Some(CelestialCoord{ra: telescope_position.slew_target_ra,
-                                 dec: telescope_position.slew_target_dec}),
+        if let Some(prefs) = prefs_to_save {
+            // Write updated preferences to file.
+            Self::write_preferences_file(&preferences_file, &prefs);
+        }
+        let locked_telescope_position = telescope_position.lock().unwrap();
+        if locked_telescope_position.slew_active {
+            (Some(CelestialCoord{
+                ra: locked_telescope_position.slew_target_ra,
+                dec: locked_telescope_position.slew_target_dec}),
              sync_coord)
         } else {
             (None, sync_coord)
