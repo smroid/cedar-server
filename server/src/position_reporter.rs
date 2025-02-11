@@ -19,6 +19,11 @@ pub struct TelescopePosition {
     // If true, boresight_ra/boresight_dec are current. If false, they are stale.
     pub boresight_valid: bool,
 
+    // SkySafari calls right_ascension() followed by declination(). The
+    // right_ascension() call saves the Dec corresponding to the RA it returns,
+    // so the subsequent call to declination() will return a consistent value.
+    snapshot_dec: Option<f64>,
+
     // A slew is initiated by SkySafari. The slew can be terminated either by
     // SkySafari or Cedar.
     pub slew_target_ra: f64,  // 0..360
@@ -109,12 +114,27 @@ impl Telescope for MyTelescope {
         Ok(EquatorialSystem::J2000)
     }
 
+    // Hours.
+    async fn right_ascension(&self) -> ASCOMResult<f64> {
+	debug!("right_ascension");
+        if let Some(ref cb) = self.callback {
+            cb.0();
+        }
+        let mut locked_position = self.telescope_position.lock().unwrap();
+        locked_position.snapshot_dec = Some(locked_position.boresight_dec);
+        Ok(locked_position.boresight_ra / 15.0)
+    }
     // Degrees.
     async fn declination(&self) -> ASCOMResult<f64> {
 	debug!("declination");
-        let locked_position = self.telescope_position.lock().unwrap();
+        let mut locked_position = self.telescope_position.lock().unwrap();
+        let snapshot_dec = locked_position.snapshot_dec.take();
         if locked_position.boresight_valid {
-            return Ok(locked_position.boresight_dec);
+            return if snapshot_dec.is_some() {
+                Ok(snapshot_dec.unwrap())
+            } else {
+                Ok(locked_position.boresight_dec)
+            };
         }
         // Sky Safari does not respond to error returns. To indicate
         // the position data is stale, we "wiggle" the position.
@@ -129,15 +149,6 @@ impl Telescope for MyTelescope {
         } else {
             Ok(locked_position.boresight_dec)
         }
-    }
-    // Hours.
-    async fn right_ascension(&self) -> ASCOMResult<f64> {
-	debug!("right_ascension");
-        if let Some(ref cb) = self.callback {
-            cb.0();
-        }
-        let locked_position = self.telescope_position.lock().unwrap();
-        Ok(locked_position.boresight_ra / 15.0)
     }
 
     async fn can_move_axis(&self, _axis: Axis) -> ASCOMResult<bool> {
