@@ -459,8 +459,14 @@ impl SolveEngine {
                 let dr = detect_engine.lock().await.get_next_result(
                     frame_id, /*non_blocking=*/true).await;
                 if dr.is_none() {
-                    // TODO: tune sleep duration according to delay_est.
-                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    let short_delay = Duration::from_millis(10);
+                    if let Some(delay_est) =
+                        detect_engine.lock().await.estimate_delay(frame_id)
+                    {
+                        tokio::time::sleep(max(delay_est, short_delay)).await;
+                    } else {
+                        tokio::time::sleep(short_delay).await;
+                    }
                     continue;
                 }
                 detect_result = dr.unwrap();

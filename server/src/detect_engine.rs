@@ -383,8 +383,14 @@ impl DetectEngine {
                         }
                     };
                     if capture.is_none() {
-                        // TODO: tune sleep duration according to delay_est.
-                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        let short_delay = Duration::from_millis(10);
+                        if let Some(delay_est) =
+                            camera.lock().await.estimate_delay(frame_id)
+                        {
+                            tokio::time::sleep(max(delay_est, short_delay)).await;
+                        } else {
+                            tokio::time::sleep(short_delay).await;
+                        }
                         continue;
                     }
                     let (image, id) = capture.unwrap();
