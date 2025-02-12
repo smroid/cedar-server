@@ -110,9 +110,6 @@ struct MyCedar {
     // needs access to our state.
     state: Arc<tokio::sync::Mutex<CedarState>>,
 
-    // The hardware camera that was detected, if any.
-    attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
-
     // An exposure duration which is a good starting point for `attached_camera`.
     initial_exposure_duration: Duration,
 
@@ -140,6 +137,9 @@ struct MyCedar {
 struct CedarState {
     // The plate solver we are using.
     solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
+
+    // The hardware camera that was detected, if any.
+    attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
 
     // The `camera` field is always populated with a usable AbstractCamera. This
     // will be one of:
@@ -521,7 +521,7 @@ impl Cedar for MyCedar {
             let mut locked_state = self.state.lock().await;
             if demo_image_filename.is_empty() {
                 // Go back to using our configured camera.
-                locked_state.camera = get_camera(&self.attached_camera,
+                locked_state.camera = get_camera(&locked_state.attached_camera,
                                                  &self.test_image_camera);
                 locked_state.operation_settings.demo_image_filename = None;
             } else {
@@ -595,7 +595,7 @@ impl Cedar for MyCedar {
                 let mut locked_state = self.state.lock().await;
                 locked_state.operation_settings.invert_camera =
                     Some(invert_camera);
-                if let Some(attached_camera) = &self.attached_camera {
+                if let Some(attached_camera) = &locked_state.attached_camera {
                     attached_camera.lock().await.set_inverted(invert_camera).unwrap();
                 }
             }
@@ -1211,7 +1211,7 @@ impl MyCedar {
                     image_width: locked_camera.dimensions().0,
                     image_height: locked_camera.dimensions().1,
                 })
-            } else if let Some(attached_camera) = &self.attached_camera {
+            } else if let Some(attached_camera) = &self.state.lock().await.attached_camera {
                 let locked_camera = attached_camera.lock().await;
                 Some(CameraModel{
                     model: locked_camera.model(),
@@ -1266,6 +1266,9 @@ impl MyCedar {
 
     async fn set_update_interval(state: &CedarState, update_interval: std::time::Duration)
                                  -> Result<(), CanonicalError> {
+        if let Some(attached_camera) = &state.attached_camera {
+            attached_camera.lock().await.set_update_interval(update_interval).unwrap();
+        }
         state.camera.lock().await.set_update_interval(update_interval)
     }
 
@@ -2177,6 +2180,7 @@ impl MyCedar {
             let locked_preferences = shared_preferences.lock().unwrap();
             Arc::new(tokio::sync::Mutex::new(CedarState {
                 solver: solver.clone(),
+                attached_camera: attached_camera.clone(),
                 camera: camera.clone(),
                 fixed_settings,
                 operation_settings: OperationSettings {
@@ -2231,7 +2235,6 @@ impl MyCedar {
 
         let cedar = MyCedar {
             state: state.clone(),
-            attached_camera: attached_camera.clone(),
             initial_exposure_duration,
             test_image_camera: test_image_camera.clone(),
             demo_images,
