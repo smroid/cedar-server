@@ -2539,7 +2539,7 @@ pub fn server_main(
       -h, --help                     Prints help information
 
     OPTIONS:
-      --tetra3_script <path>         ../src/tetra3_server.py
+      --tetra3_script <path>         ../../tetra3_server/python/tetra3_server.py
       --tetra3_database <name>       default_database
       --camera_interface asi|rpi
       --camera_index NUMBER
