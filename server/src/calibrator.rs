@@ -206,6 +206,7 @@ impl Calibrator {
         Ok(Duration::from_secs_f64(scaled_exposure_duration_secs))
     }
 
+    // exposure_duration is the result of calibrate_exposure_duration().
     // Result is FOV (degrees), lens distortion, match_max_error, solve duration.
     pub async fn calibrate_optical(
         &self,
@@ -220,8 +221,7 @@ impl Calibrator {
         // Assumption: camera is focused and pointed at sky with stars.
         //
         // Approach:
-        // * Grab an image, detect the stars. TODO: increase the exposure
-        //   (caller does this?) to improve FOV/distortion precision.
+        // * Grab an image, detect the stars.
         // * Do a plate solution with no FOV estimate and no distortion estimate.
         //   Use a generous match_max_error value and the default (generous)
         //   solve_timeout.
@@ -231,7 +231,10 @@ impl Calibrator {
         //   match_max_error to obtain a representative solution time.
         let _restore_settings = RestoreSettings::new(self.camera.clone());
 
-        self.camera.lock().await.set_exposure_duration(exposure_duration)?;
+        // Use a longer exposure duration to boost the number of stars to obtain
+        // better FOV and distortion estimates.
+        let longer_exposure_duration = 2 * exposure_duration;
+        self.camera.lock().await.set_exposure_duration(longer_exposure_duration)?;
         let (image, stars, _) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
