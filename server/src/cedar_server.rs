@@ -393,22 +393,21 @@ impl Cedar for MyCedar {
                 if locked_state.operation_settings.operating_mode ==
                     Some(OperatingMode::Setup as i32)
                 {
+                    // In SETUP align mode?
                     if !locked_state.operation_settings.focus_assist_mode.unwrap()
+                        && !new_daylight_mode
                     {
-                        // In SETUP align mode.
-                        if !new_daylight_mode {
-                            // Turning off daylight_mode in SETUP align mode;
-                            // need calibration, which can take several seconds.
-                            // If the gRPC client aborts the RPC (e.g. due to
-                            // timeout), we want the calibration and state
-                            // updates (i.e. detect engine's focus_mode, our
-                            // operating_mode) to be completed properly.
-                            Self::spawn_calibration(self.state.clone(),
-                                                    /*new_operate_mode=*/false,
-                                                    final_focus_mode,
-                                                    new_daylight_mode);
-                            calibrating = true;
-                        }
+                        // Turning off daylight_mode in SETUP align mode;
+                        // need calibration, which can take several seconds.
+                        // If the gRPC client aborts the RPC (e.g. due to
+                        // timeout), we want the calibration and state
+                        // updates (i.e. detect engine's focus_mode, our
+                        // operating_mode) to be completed properly.
+                        Self::spawn_calibration(self.state.clone(),
+                                                /*new_operate_mode=*/false,
+                                                final_focus_mode,
+                                                new_daylight_mode);
+                        calibrating = true;
                     } else {
                         Self::set_gain(&mut locked_state, new_daylight_mode).await;
                     }
