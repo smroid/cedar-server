@@ -155,3 +155,36 @@ Cedar-server version: 0.8.1
 * Fix bug that was hiding geolocation button.
 
 * Update camera logic for Rpi5 compressed raw.
+
+# February 15 2025
+
+Cedar-server version: 0.9.0
+
+* Fixes for high resolution camera modules such as the RPi HQ camera:
+  * When downsampling image for display on phone, preserve star brightness.
+  * Fix hit testing in alignment screen to make it easier to select
+    alignment star.
+  * Adjust size of focus assist inset image.
+
+* Improve threading and locking.
+
+* Fix bugs causing 100% CPU usage even when updating at low frequency.
+
+* Fix TelescopePosition implementation to avoid "split updates" in
+  SkySafari, eliminating occasional spurious position jumps.
+
+* When calibrating plate solver, use longer exposure to get more stars
+  for improved FOV/distortion estimates.
+
+* Goto mode:
+  * Show "Re-align" button only when close to target.
+  * Adjust slew directions text block placement.
+  * Add small icons for up/down and clockwise/counterclockwise.
+
+* Reorganize Rust package structure under cedar-server component.
+
+* Refactor Tetra3 dependency.
+  * Move subprocess management into tetra3_server directory.
+  * Implement new SolverTrait to use Tetra3 (Cedar-solve).
+  * Update protobuf types so that Cedar does not directly depend
+    on Tetra3 protobuf types.
