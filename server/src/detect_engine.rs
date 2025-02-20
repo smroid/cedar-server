@@ -377,9 +377,8 @@ impl DetectEngine {
                         Ok(c) => c,
                         Err(e) => {
                             error!("Error capturing image: {}", &e.to_string());
-                            // TODO: instead of abandoning, advertise camera
-                            // status and try again.
-                            return;  // Abandon thread execution!
+                            // TODO: advertise camera status somewhere.
+                            None  // Keep going.
                         }
                     };
                     if capture.is_none() {

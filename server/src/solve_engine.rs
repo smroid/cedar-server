@@ -397,6 +397,11 @@ impl SolveEngine {
                                + Send + Sync>) {
         debug!("Starting solve engine");
         loop {
+            let minimum_stars;
+            let frame_id;
+            let normalize_rows;
+            let mut solve_extension = SolveExtension::default();
+            let mut solve_params = SolveParams::default();
             {
                 let mut locked_state = state.lock().await;
                 if locked_state.stop_request {
@@ -408,15 +413,7 @@ impl SolveEngine {
                     return;  // Exit thread.
                 }
                 locked_state.eta = None;
-            }
 
-            let minimum_stars;
-            let frame_id;
-            let normalize_rows;
-            let mut solve_extension = SolveExtension::default();
-            let mut solve_params = SolveParams::default();
-            {
-                let locked_state = state.lock().await;
                 minimum_stars = locked_state.minimum_stars;
                 frame_id = locked_state.frame_id;
                 normalize_rows = locked_state.normalize_rows;
@@ -506,8 +503,8 @@ impl SolveEngine {
                     &solve_extension, &solve_params).await
                 {
                     Err(e) => {
-                        error!("Unexpected error {:?}", e);
-                        return;  // Abandon thread execution!
+                        error!("Solver error {:?}", e);
+                        continue;  // Try again with detection result on next frame.
                     },
                     Ok(solution) => {
                         plate_solution = Some(solution);

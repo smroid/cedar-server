@@ -1925,7 +1925,7 @@ impl MyCedar {
         invert_camera: bool,
         initial_exposure_duration: Duration,
         min_exposure_duration: Duration,
-        max_exposure_duration: Duration,
+        mut max_exposure_duration: Duration,
         activity_led: Arc<Mutex<ActivityLed>>,
         attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
@@ -1984,9 +1984,16 @@ impl MyCedar {
 
         let mut normalize_rows = false;
         if let Some(attached_camera) = &attached_camera {
-            let camera_model = attached_camera.lock().await.model();
-            if camera_model == "imx296" && processor_model.contains("Raspberry Pi Zero 2 W") {
+            let locked_camera = attached_camera.lock().await;
+            if locked_camera.model() == "imx296" &&
+                processor_model.contains("Raspberry Pi Zero 2 W")
+            {
                 normalize_rows = true;
+            }
+            if locked_camera.is_color() {
+                // Double max exposure time for color camera, which are
+                // generally less sensitive than monochrome cameras.
+                max_exposure_duration *= 2;
             }
         }
 
