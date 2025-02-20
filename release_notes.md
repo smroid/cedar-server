@@ -188,3 +188,12 @@ Cedar-server version: 0.9.0
   * Implement new SolverTrait to use Tetra3 (Cedar-solve).
   * Update protobuf types so that Cedar does not directly depend
     on Tetra3 protobuf types.
+
+# February 20 2025
+
+Cedar-server version: 0.9.1
+
+* Fixes bug where plate solve failures could cause SkySafari to
+  stop getting updates until Cedar Aim app is resumed.
+
+* Increases maximum exposure time for color cameras to 2 seconds.
