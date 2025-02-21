@@ -96,6 +96,7 @@ struct SolveState {
     eta: Option<Instant>,
 
     plate_solution: Option<PlateSolution>,
+    logged_error: bool,
 
     // Set by stop(); the worker thread exits when it sees this.
     stop_request: bool,
@@ -146,6 +147,7 @@ impl SolveEngine {
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 plate_solution: None,
+                logged_error: false,
                 stop_request: false,
             })),
             detect_engine,
@@ -503,10 +505,28 @@ impl SolveEngine {
                     &solve_extension, &solve_params).await
                 {
                     Err(e) => {
-                        error!("Solver error {:?}", e);
+                        // Let's not spam the log with solver failures. First of
+                        // all, if the number of detected stars is low, don't
+                        // bother to log, as this is a trivial source of solve
+                        // failures (e.g. due to telescope motion).
+                        // Empirically, solutions are possible at 6 centroids,
+                        // and are ~reliable at 10 or more centroids. For logging,
+                        // we split the difference.
+                        if star_centroids.len() < 8 {
+                            continue;
+                        }
+                        let mut locked_state = state.lock().await;
+                        // Secondly, don't log the error if we've just logged one.
+                        if !locked_state.logged_error {
+                            error!("Solver error {:?} with {} centroids",
+                                   e, star_centroids.len());
+                            locked_state.logged_error = true;
+                        }
                         continue;  // Try again with detection result on next frame.
                     },
                     Ok(solution) => {
+                        // Re-enable logging of the next non-trivial solve failure.
+                        state.lock().await.logged_error = false;
                         plate_solution = Some(solution);
                     }
                 }
