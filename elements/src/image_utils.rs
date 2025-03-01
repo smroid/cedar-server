@@ -10,8 +10,11 @@ use image::imageops;
 use imageproc::geometric_transformations::{Interpolation, rotate_about_center};
 
 fn compute_lut(min_pixel_value: u8,
-               peak_pixel_value: u8,
+               mut peak_pixel_value: u8,
                gamma: f32) -> [u8; 256] {
+    if peak_pixel_value < min_pixel_value {
+        peak_pixel_value = min_pixel_value;
+    }
     let mut lut: [u8; 256] = [0; 256];
     let scale = 256.0 / ((peak_pixel_value - min_pixel_value) as f32).powf(gamma);
     for n in 0..=255 {
@@ -23,7 +26,13 @@ fn compute_lut(min_pixel_value: u8,
             lut[n as usize] = 255;
             continue;
         }
-        lut[n as usize] = (scale * ((n - min_pixel_value) as f32).powf(gamma)) as u8;
+        let mut scaled = scale * ((n - min_pixel_value) as f32).powf(gamma);
+        if scaled < 0.0 {
+            scaled = 0.0;
+        } else if scaled > 255.0 {
+            scaled = 255.0;
+        }
+        lut[n as usize] = scaled as u8;
     }
     lut
 }
