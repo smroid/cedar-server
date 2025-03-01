@@ -1645,9 +1645,9 @@ impl MyCedar {
             // Adjust peak_value, binning can make point sources dimmer in the
             // result.
             peak_value /= 4;
-            if black_level > peak_value {
-                black_level = peak_value;
-            }
+        }
+        if black_level > peak_value {
+            black_level = peak_value;
         }
         let binning_factor = binning * if display_sampling { 2 } else { 1 };
 
@@ -1944,22 +1944,7 @@ impl MyCedar {
         wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>)
         -> Result<Self, CanonicalError>
     {
-        let mut cedar_version = "unknown".to_string();
-        // We might be in hopper-server/run dir, navigate accordingly. Also
-        // works if we're in cedar-server/run dir.
-        let cargo_path = "../../cedar-server/server/Cargo.toml";
-        match fs::File::open(cargo_path) {
-            Err(x) => {
-                warn!("Could not open {} {:?}", cargo_path, x);
-            },
-            Ok(mut file) => {
-                let mut contents = String::new();
-                file.read_to_string(&mut contents)
-                    .expect(format!("Failed to read {}", cargo_path).as_str());
-                let line = contents.lines().find(|line| line.starts_with("version")).unwrap();
-                cedar_version = line.split('=').nth(1).unwrap().trim().to_string();
-            }
-        }
+        let cedar_version = env!("CARGO_PKG_VERSION");
         let processor_model =
             fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap()
             .trim_end_matches('\0').to_string();
@@ -2249,7 +2234,7 @@ impl MyCedar {
             product_name: product_name.to_string(),
             copyright: copyright.to_string(),
             feature_level,
-            cedar_version,
+            cedar_version: cedar_version.to_string(),
             processor_model,
             os_version,
             serial_number,

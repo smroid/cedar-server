@@ -664,7 +664,7 @@ impl DetectEngine {
                 captured_image,
                 binned_image,
                 star_candidates: stars,
-                display_black_level: black_level as u8,
+                display_black_level: black_level,
                 noise_estimate,
                 hot_pixel_count: hot_pixel_count as i32,
                 peak_value,
