@@ -2019,7 +2019,7 @@ impl MyCedar {
                         faintest_magnitude: match feature_level {
                             FeatureLevel::Plus => Some(15),  // Max 20.
                             FeatureLevel::Basic => Some(10),  // Max 12.
-                            _ => None,  // Irrelevant, no Cedar Sky.
+                            _ => Some(10),  // Irrelevant, no Cedar Sky.
                         },
                         match_catalog_label: true,
                         catalog_label: Vec::<String>::new(),  // Filled below.
