@@ -8,13 +8,9 @@ auto-detect alt-az vs equatorial (with manual override)
 
 Calibrate button.
 
-Perfect solve stats (avg. patterns checked, avg. hashes checked per pattern)
-
 Base python scripting support for working with Cedar grpc server.
 
-Orient to sky during goto.
-
-Brightest star exposure adu.
+Orient to sky during goto. Or, always orient to sky in alt-az mode.
 
 Mic button on keyboard for voice input. Can work offline? Good for
 "en gee cee oh five six" utterances?
@@ -31,11 +27,6 @@ Different on-screen prompt on connection loss vs. never having connection.
 Loss reasons: check server power (battery drained?), check phone's wifi
 connection (sometimes phone reverts to cell connection).
 
-Mobile app: display available Cedar* wifi access points, offer to join.
-
-For calibrate optical, expose for a larger number of stars, for better
-FOV and distortion determination.
-
 Make sure centroiding is not done on bayer image. Currently centroiding
 is always done on the original full-res image; when this is color that
 could lead to inaccurate centroid positions. Better way, only needed
@@ -48,9 +39,7 @@ if binning==4: compute a 2x binned (and hot-pixel-repaired) image.
 And be sure to apply the same processing in acquire_image_get_stars()
 in the calibrator module.
 
-Hopper LE: drop NGC/IC; drop asteroids/comets.
-
-per-camera maximum exposure setting, or scale max exposure up for color camera.
+Hopper LE: drop NGC/IC.
 
 "serve engine" pipeline stage. Moves some logic out of cedar_server.rs.
 
@@ -61,6 +50,7 @@ Update "connection lost" message for app (instead of web app).
 
 Ability to access (and download) saved images in Cedar Aim.
 Maybe save them to web side in the first place?
+High-quality jpg with exif info.
 
 Tetra3
 * use brightness ratio (broadly quantized) of most separated stars in
@@ -145,6 +135,7 @@ Remaining work:
   - double stars
   - stars down to some limit
   - what else?
+* find non-python solution for asteroids/comets
 * way to add new solar system object, e.g. comet
   - cloud-based?
 * marathon ordering (advanced)
