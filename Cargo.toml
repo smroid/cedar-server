@@ -5,6 +5,3 @@ members = [
   "elements",
   "server",
 ]
-
-[profile.dev]
-panic = 'abort'
