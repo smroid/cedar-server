@@ -939,18 +939,8 @@ impl Cedar for MyCedar {
         }
         let req: CatalogEntryKey = request.into_inner();
 
-        let fixed_settings = locked_state.fixed_settings.lock();
-        let location_info =
-            if let Some(obs_loc) = &fixed_settings.unwrap().observer_location {
-                Some(LocationInfo {
-                    observer_location: obs_loc.clone(),
-                    observing_time: SystemTime::now(),
-                })
-            } else {
-                None
-            };
         let x = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_entry(
-            req, location_info);
+            req, SystemTime::now());
         match x {
             Ok(entry) => {
                 Ok(tonic::Response::new(entry))

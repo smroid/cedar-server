@@ -42,6 +42,6 @@ pub trait CedarSkyTrait {
     /// current position is calculated using `location_info`.
     fn get_catalog_entry(&mut self,
                          entry_key: CatalogEntryKey,
-                         location_info: Option<LocationInfo>)
+                         timestamp: SystemTime)
                          -> Result<CatalogEntry, CanonicalError>;
 }
