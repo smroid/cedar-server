@@ -39,7 +39,7 @@ pub trait CedarSkyTrait {
                              -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError>;
 
     /// Return the selected catalog entry. If it is a solar system object the
-    /// current position is calculated using `location_info`.
+    /// current position is calculated using `timestamp`.
     fn get_catalog_entry(&mut self,
                          entry_key: CatalogEntryKey,
                          timestamp: SystemTime)
