@@ -9,7 +9,7 @@ use image::GrayImage;
 use imageproc::stats::histogram;
 use log::warn;
 
-use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage, Gain, Offset};
+use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage, Offset};
 use canonical_error::{CanonicalError,
                       aborted_error, failed_precondition_error};
 use cedar_detect::algorithm::{StarDescription,
@@ -25,7 +25,6 @@ pub struct Calibrator {
     normalize_rows: bool,
 }
 
-// By convention, all methods restore any camera settings that they alter.
 impl Calibrator {
     pub fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                normalize_rows: bool) -> Self{
@@ -38,6 +37,7 @@ impl Calibrator {
         self.camera = camera.clone();
     }
 
+    // Leaves camera set to the returned calibrated offset value.
     pub async fn calibrate_offset(
         &self, cancel_calibration: Arc<Mutex<bool>>)
         -> Result<Offset, CanonicalError> {
@@ -53,7 +53,12 @@ impl Calibrator {
         if *cancel_calibration.lock().unwrap() {
             return Err(aborted_error("Cancelled during calibrate_offset()."));
         }
-        let _restore_settings = RestoreSettings::new(self.camera.clone());
+        // Restore the exposure duration that we change here.
+        let _restore_exposure = RestoreExposure::new(self.camera.clone());
+
+        // Set offset before changing exposure; if we can't set offset this
+        // lets us avoid changing the exposure only to have to restore it.
+        self.camera.lock().await.set_offset(Offset::new(0))?;
 
         self.camera.lock().await.set_exposure_duration(Duration::from_millis(1))?;
         let (width, height) = self.camera.lock().await.dimensions();
@@ -106,6 +111,7 @@ impl Calibrator {
         }
     }
 
+    // Leaves camera set to the returned calibrated exposure duration.
     pub async fn calibrate_exposure_duration(
         &self,
         setup_exposure_duration: Duration,
@@ -134,7 +140,6 @@ impl Calibrator {
             return Err(aborted_error(
                 "Cancelled during calibrate_exposure_duration()."));
         }
-        let _restore_settings = RestoreSettings::new(self.camera.clone());
 
         self.camera.lock().await.set_exposure_duration(setup_exposure_duration)?;
         let (_, mut stars, frame_id) = self.acquire_image_get_stars(
@@ -149,7 +154,9 @@ impl Calibrator {
             setup_exposure_duration.as_secs_f64() / star_goal_fraction;
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            return Ok(Duration::from_secs_f64(scaled_exposure_duration_secs));
+            let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
+            self.camera.lock().await.set_exposure_duration(exp)?;
+            return Ok(exp);
         }
         if *cancel_calibration.lock().unwrap() {
             return Err(aborted_error(
@@ -158,7 +165,9 @@ impl Calibrator {
 
         // Iterate with the refined exposure duration.
         if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
-            scaled_exposure_duration_secs = max_exposure_duration.as_secs_f64();
+            // We've saturated available exposure time latitude. Give up.
+            self.camera.lock().await.set_exposure_duration(max_exposure_duration)?;
+            return Ok(max_exposure_duration);
         }
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
@@ -173,7 +182,9 @@ impl Calibrator {
         scaled_exposure_duration_secs /= star_goal_fraction;
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            return Ok(Duration::from_secs_f64(scaled_exposure_duration_secs));
+            let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
+            self.camera.lock().await.set_exposure_duration(exp)?;
+            return Ok(exp);
         }
         if *cancel_calibration.lock().unwrap() {
             return Err(aborted_error(
@@ -182,7 +193,9 @@ impl Calibrator {
 
         // Iterate one more time.
         if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
-            scaled_exposure_duration_secs = max_exposure_duration.as_secs_f64();
+            // We've saturated available exposure time latitude. Give up.
+            self.camera.lock().await.set_exposure_duration(max_exposure_duration)?;
+            return Ok(max_exposure_duration);
         }
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
@@ -197,13 +210,25 @@ impl Calibrator {
         }
         star_goal_fraction =
             f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
+        if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
+            // Close enough to goal, the scaled exposure time is good.
+            let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
+            self.camera.lock().await.set_exposure_duration(exp)?;
+            return Ok(exp);
+        }
         if star_goal_fraction < 0.5 || star_goal_fraction > 2.0 {
             warn!("Exposure time calibration diverged, goal fraction {}",
                   star_goal_fraction);
         }
 
         scaled_exposure_duration_secs /= star_goal_fraction;
-        Ok(Duration::from_secs_f64(scaled_exposure_duration_secs))
+        if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
+            self.camera.lock().await.set_exposure_duration(max_exposure_duration)?;
+            return Ok(max_exposure_duration);
+        }
+        let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
+        self.camera.lock().await.set_exposure_duration(exp)?;
+        Ok(exp)
     }
 
     // exposure_duration is the result of calibrate_exposure_duration().
@@ -211,7 +236,6 @@ impl Calibrator {
     pub async fn calibrate_optical(
         &self,
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
-        exposure_duration: Duration,
         detection_binning: u32, detection_sigma: f64,
         cancel_calibration: Arc<Mutex<bool>>)
         -> Result<(f64, f64, f64, Duration), CanonicalError> {
@@ -229,12 +253,7 @@ impl Calibrator {
         //   an appropriate match_max_error value.
         // * Do another plate solution with the known FOV, lens distortion, and
         //   match_max_error to obtain a representative solution time.
-        let _restore_settings = RestoreSettings::new(self.camera.clone());
 
-        // Use a longer exposure duration to boost the number of stars to obtain
-        // better FOV and distortion estimates.
-        let longer_exposure_duration = 2 * exposure_duration;
-        self.camera.lock().await.set_exposure_duration(longer_exposure_duration)?;
         let (image, stars, _) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
@@ -315,32 +334,26 @@ impl Calibrator {
     }
 }
 
-// RAII gadget for saving/restoring camera settings.
-struct RestoreSettings {
+// RAII gadget for saving/restoring camera exposure time.
+struct RestoreExposure {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-    gain: Gain,
-    offset: Offset,
     exp_duration: Duration,
 }
-impl RestoreSettings {
+impl RestoreExposure {
     async fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>) -> Self {
         let locked_camera = camera.lock().await;
-        RestoreSettings{
+        RestoreExposure{
             camera: camera.clone(),
-            gain: locked_camera.get_gain(),
-            offset: locked_camera.get_offset(),
             exp_duration: locked_camera.get_exposure_duration(),
         }
     }
 
     async fn restore(&mut self) {
         let mut locked_camera = self.camera.lock().await;
-        locked_camera.set_gain(self.gain).unwrap();
-        let _ = locked_camera.set_offset(self.offset);  // Ignore unsupported offset.
         locked_camera.set_exposure_duration(self.exp_duration).unwrap();
     }
 }
-impl Drop for RestoreSettings {
+impl Drop for RestoreExposure {
     fn drop(&mut self) {
         // https://stackoverflow.com/questions/71541765/rust-async-drop
         futures::executor::block_on(self.restore());

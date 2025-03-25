@@ -135,7 +135,7 @@ impl SolveEngine {
                 minimum_stars: 4,
                 fov_estimate: None,
                 match_radius: 0.01,
-                match_threshold: 0.0001,  // TODO: pass in from cmdline arg.
+                match_threshold: 1e-5,  // TODO: pass in from cmdline arg.
                 solve_timeout: Duration::from_secs(1),
                 boresight_pixel: None,
                 distortion: 0.0,
@@ -486,7 +486,7 @@ impl SolveEngine {
                                                y: sc.centroid_y});
             }
 
-            let mut plate_solution: Option<PlateSolutionProto> = None;
+            let mut plate_solution_proto: Option<PlateSolutionProto> = None;
             let mut solve_finish_time: Option<SystemTime> = None;
             if detect_result.star_candidates.len() >= minimum_stars as usize {
                 {
@@ -505,29 +505,27 @@ impl SolveEngine {
                     &solve_extension, &solve_params).await
                 {
                     Err(e) => {
-                        // Let's not spam the log with solver failures. First of
-                        // all, if the number of detected stars is low, don't
-                        // bother to log, as this is a trivial source of solve
-                        // failures (e.g. due to telescope motion).
+                        // Let's not spam the log with solver failures. If the
+                        // number of detected stars is low, don't bother to log,
+                        // as this is a trivial source of solve failures (e.g.
+                        // due to telescope motion).
                         // Empirically, solutions are possible at 6 centroids,
                         // and are ~reliable at 10 or more centroids. For logging,
                         // we split the difference.
-                        if star_centroids.len() < 8 {
-                            continue;
+                        if star_centroids.len() >= 8 {
+                            let mut locked_state = state.lock().await;
+                            // Secondly, don't log the error if we've just logged one.
+                            if !locked_state.logged_error {
+                                error!("Solver error {:?} with {} centroids",
+                                       e, star_centroids.len());
+                                locked_state.logged_error = true;
+                            }
                         }
-                        let mut locked_state = state.lock().await;
-                        // Secondly, don't log the error if we've just logged one.
-                        if !locked_state.logged_error {
-                            error!("Solver error {:?} with {} centroids",
-                                   e, star_centroids.len());
-                            locked_state.logged_error = true;
-                        }
-                        continue;  // Try again with detection result on next frame.
                     },
                     Ok(solution) => {
                         // Re-enable logging of the next non-trivial solve failure.
                         state.lock().await.logged_error = false;
-                        plate_solution = Some(solution);
+                        plate_solution_proto = Some(solution);
                     }
                 }
                 solve_finish_time = Some(SystemTime::now());
@@ -548,7 +546,7 @@ impl SolveEngine {
                 boresight_pixel = locked_state.boresight_pixel.clone();
                 cedar_sky = locked_state.cedar_sky.clone();
             }
-            if plate_solution.is_none() {
+            if plate_solution_proto.is_none() {
                 if !align_mode {
                     state.lock().await.solve_attempt_stats.add_value(0.0);
                     solution_callback(boresight_pixel,
@@ -558,7 +556,7 @@ impl SolveEngine {
                 if !align_mode {
                     state.lock().await.solve_attempt_stats.add_value(1.0);
                 }
-                let psp = plate_solution.as_ref().unwrap();
+                let psp = plate_solution_proto.as_ref().unwrap();
                 if !align_mode {
                     state.lock().await.solve_success_stats.add_value(1.0);
                 }
@@ -662,7 +660,7 @@ impl SolveEngine {
             }
             state.lock().await.plate_solution = Some(PlateSolution{
                 detect_result,
-                plate_solution,
+                plate_solution: plate_solution_proto,
                 fov_catalog_entries,
                 decrowded_fov_catalog_entries,
                 slew_request,

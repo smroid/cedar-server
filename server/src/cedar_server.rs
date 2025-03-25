@@ -1292,7 +1292,7 @@ impl MyCedar {
     }
 
     // Called when entering OPERATE mode. This always succeeds (even if
-    // calibration fails), unless the callibration was cancelled in which
+    // calibration fails), unless the calibration was cancelled in which
     // case an ABORTED error is returned.
     async fn calibrate(state: Arc<tokio::sync::Mutex<CedarState>>)
                        -> Result<(), CanonicalError> {
@@ -1348,7 +1348,6 @@ impl MyCedar {
                 Offset::new(3)  // Sane fallback value.
             }
         };
-        _ = camera.lock().await.set_offset(offset);  // Ignore unsupported offset.
         calibration_data.lock().await.camera_offset = Some(offset.value());
 
         let exp_duration = match calibrator.lock().await.calibrate_exposure_duration(
@@ -1365,13 +1364,12 @@ impl MyCedar {
                 setup_exposure_duration  // Sane fallback value.
             }
         };
-        camera.lock().await.set_exposure_duration(exp_duration)?;
         calibration_data.lock().await.target_exposure_time =
             Some(prost_types::Duration::try_from(exp_duration).unwrap());
         detect_engine.lock().await.set_calibrated_exposure_duration(Some(exp_duration));
 
         match calibrator.lock().await.calibrate_optical(
-            solver.clone(), exp_duration, binning, detection_sigma,
+            solver.clone(), binning, detection_sigma,
             cancel_calibration.clone()).await
         {
             Ok((fov, distortion, match_max_error, solve_duration)) => {
