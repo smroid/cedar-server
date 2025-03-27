@@ -566,21 +566,21 @@ impl DetectEngine {
 
                 if !focus_mode {
                     // Auto exposure.
-                    let mut baseline_exposure_duration = initial_exposure_duration;
-                    if let Some(calibrated_duration) = calibrated_exposure_duration
+                    let baseline_exposure_duration =
+                        match calibrated_exposure_duration
                     {
-                        baseline_exposure_duration = calibrated_duration;
-                    }
-                    let adjusted_star_count_goal = star_count_goal as f64;
-                    let adjusted_exposure_duration_secs =
+                        Some(ced) => ced,
+                        None => initial_exposure_duration,
+                    };
+                    let baseline_exposure_duration_secs =
                         baseline_exposure_duration.as_secs_f64();
 
                     let num_stars_detected = stars.len();
                     if num_stars_detected == 0 {
                         // We're likely slewing and thus detecting no stars.
                         // Don't update the moving average, and for safety use
-                        // the adjusted baseline exposure duration.
-                        new_exposure_duration_secs = adjusted_exposure_duration_secs;
+                        // the baseline exposure duration.
+                        new_exposure_duration_secs = baseline_exposure_duration_secs;
                     } else {
                         let moving_average = Self::update_detected_stars_moving_average(
                             &mut state.lock().unwrap(), num_stars_detected);
@@ -588,12 +588,12 @@ impl DetectEngine {
                             // This shouldn't happen because we don't update the moving
                             // average with num_stars_detected==0. But just in case do
                             // something sane.
-                            new_exposure_duration_secs = adjusted_exposure_duration_secs;
+                            new_exposure_duration_secs = baseline_exposure_duration_secs;
                         } else {
                             // >1 if we have more stars than goal; <1 if fewer stars than
                             // goal.
                             let star_goal_fraction =
-                                moving_average / adjusted_star_count_goal;
+                                moving_average / star_count_goal as f64;
                             // Don't adjust exposure time too often, is a bit
                             // janky because the camera re-initializes. Allow
                             // number of detected stars to greatly exceed goal,
@@ -613,19 +613,19 @@ impl DetectEngine {
                                 // simply proportional to the exposure time.
                                 // This is OK because we'll only be varying the
                                 // exposure time a modest amount relative to the
-                                // adjusted_exposure_duration.
+                                // baseline_exposure_duration.
                                 new_exposure_duration_secs =
                                     prev_exposure_duration_secs / star_goal_fraction;
                                 if calibrated_exposure_duration.is_some() {
                                     // Bound exposure duration to be within three
-                                    // stops of adjusted_exposure_duration. Further
+                                    // stops of calibrated_exposure_duration. Further
                                     // bounds are applied below.
                                     new_exposure_duration_secs = f64::max(
                                         new_exposure_duration_secs,
-                                        adjusted_exposure_duration_secs / 8.0);
+                                        baseline_exposure_duration_secs / 8.0);
                                     new_exposure_duration_secs = f64::min(
                                         new_exposure_duration_secs,
-                                        adjusted_exposure_duration_secs * 8.0);
+                                        baseline_exposure_duration_secs * 8.0);
                                 }
                             }
                         }
