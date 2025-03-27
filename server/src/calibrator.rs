@@ -114,7 +114,7 @@ impl Calibrator {
     // Leaves camera set to the returned calibrated exposure duration.
     pub async fn calibrate_exposure_duration(
         &self,
-        setup_exposure_duration: Duration,
+        initial_exposure_duration: Duration,
         max_exposure_duration: Duration,
         star_count_goal: i32,
         detection_binning: u32, detection_sigma: f64,
@@ -124,12 +124,11 @@ impl Calibrator {
         // number of detected stars.
         //
         // Assumption: camera is focused and pointed at sky with stars. The
-        // passed `setup_exposure_duration` yields at least one star (the
-        // brightest star in the central region) which was used for focusing
-        // and aligning.
+        // passed `initial_exposure_duration` is expected to yield at least one
+        // star.
         //
         // Approach:
-        // * Using the `setup_exposure_duration`
+        // * Using the `initial_exposure_duration`
         //   * Grab an image.
         //   * Detect the stars.
         //   * If close enough to the goal, scale the exposure duration and
@@ -141,7 +140,7 @@ impl Calibrator {
                 "Cancelled during calibrate_exposure_duration()."));
         }
 
-        self.camera.lock().await.set_exposure_duration(setup_exposure_duration)?;
+        self.camera.lock().await.set_exposure_duration(initial_exposure_duration)?;
         let (_, mut stars, frame_id) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
@@ -151,7 +150,7 @@ impl Calibrator {
         let mut star_goal_fraction =
             f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
         let mut scaled_exposure_duration_secs =
-            setup_exposure_duration.as_secs_f64() / star_goal_fraction;
+            initial_exposure_duration.as_secs_f64() / star_goal_fraction;
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
             let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);

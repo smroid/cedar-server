@@ -110,9 +110,6 @@ struct MyCedar {
     // needs access to our state.
     state: Arc<tokio::sync::Mutex<CedarState>>,
 
-    // An exposure duration which is a good starting point for `attached_camera`.
-    initial_exposure_duration: Duration,
-
     // Fake camera for using static image instead of an attached camera.
     test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
 
@@ -140,6 +137,9 @@ struct CedarState {
 
     // The hardware camera that was detected, if any.
     attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
+
+    // An exposure duration which is a good starting point for `attached_camera`.
+    initial_exposure_duration: Duration,
 
     // The `camera` field is always populated with a usable AbstractCamera. This
     // will be one of:
@@ -305,7 +305,7 @@ impl Cedar for MyCedar {
                             return Err(tonic_status(x));
                         }
                         if let Err(x) = Self::set_pre_calibration_defaults(
-                            &mut locked_state, self.initial_exposure_duration).await
+                            &mut locked_state).await
                         {
                             return Err(tonic_status(x));
                         }
@@ -441,7 +441,7 @@ impl Cedar for MyCedar {
                         return Err(tonic_status(x));
                     }
                     if let Err(x) = Self::set_pre_calibration_defaults(
-                        &mut locked_state, self.initial_exposure_duration).await
+                        &mut locked_state).await
                     {
                         return Err(tonic_status(x));
                     }
@@ -1270,11 +1270,10 @@ impl MyCedar {
 
     // Called when entering SETUP mode.
     async fn set_pre_calibration_defaults(
-        state: &mut CedarState,
-        initial_exposure_duration: Duration) -> Result<(), CanonicalError>
+        state: &mut CedarState) -> Result<(), CanonicalError>
     {
         let mut locked_camera = state.camera.lock().await;
-        locked_camera.set_exposure_duration(initial_exposure_duration)?;
+        locked_camera.set_exposure_duration(state.initial_exposure_duration)?;
         if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
             debug!("Could not set offset: {:?}", e);
         }
@@ -1296,7 +1295,7 @@ impl MyCedar {
     // case an ABORTED error is returned.
     async fn calibrate(state: Arc<tokio::sync::Mutex<CedarState>>)
                        -> Result<(), CanonicalError> {
-        let setup_exposure_duration;
+        let initial_exposure_duration;
         let max_exposure_duration;
         let binning;
         let detection_sigma;
@@ -1317,13 +1316,13 @@ impl MyCedar {
             detect_engine = locked_state.detect_engine.clone();
             solve_engine = locked_state.solve_engine.clone();
             solver = locked_state.solver.clone();
+            initial_exposure_duration = locked_state.initial_exposure_duration;
             max_exposure_duration = std::time::Duration::try_from(
                 locked_state.fixed_settings.lock().unwrap()
                     .max_exposure_time.clone().unwrap()).unwrap();
             // What was the final exposure duration coming out of SETUP mode?
             {
                 let locked_camera = camera.lock().await;
-                setup_exposure_duration = locked_camera.get_exposure_duration();
                 let (width, height) = locked_camera.dimensions();
                 let _display_sampling;
                 (binning, _display_sampling) =
@@ -1351,7 +1350,7 @@ impl MyCedar {
         calibration_data.lock().await.camera_offset = Some(offset.value());
 
         let exp_duration = match calibrator.lock().await.calibrate_exposure_duration(
-            setup_exposure_duration, max_exposure_duration, star_count_goal,
+            initial_exposure_duration, max_exposure_duration, star_count_goal,
             binning, detection_sigma,
             cancel_calibration.clone()).await {
             Ok(ed) => ed,
@@ -1360,8 +1359,8 @@ impl MyCedar {
                     return Err(e);
                 }
                 warn!{"Error while calibrating exposure duration: {:?}, using {:?}",
-                      e, setup_exposure_duration};
-                setup_exposure_duration  // Sane fallback value.
+                      e, initial_exposure_duration};
+                initial_exposure_duration  // Sane fallback value.
             }
         };
         calibration_data.lock().await.target_exposure_time =
@@ -2161,6 +2160,7 @@ impl MyCedar {
                 solver: solver.clone(),
                 attached_camera: attached_camera.clone(),
                 camera: camera.clone(),
+                initial_exposure_duration,
                 fixed_settings,
                 operation_settings: OperationSettings {
                     operating_mode: Some(OperatingMode::Setup as i32),
@@ -2214,7 +2214,6 @@ impl MyCedar {
 
         let cedar = MyCedar {
             state: state.clone(),
-            initial_exposure_duration,
             test_image_camera: test_image_camera.clone(),
             demo_images,
             preferences_file,
@@ -2233,8 +2232,7 @@ impl MyCedar {
         let (binning, display_sampling) =
             Self::compute_binning(&locked_state, width as u32, height as u32);
 
-        if let Err(x) = Self::set_pre_calibration_defaults(
-            &mut locked_state, initial_exposure_duration).await
+        if let Err(x) = Self::set_pre_calibration_defaults(&mut locked_state).await
         {
             warn!("Could not set default settings on camera {:?}", x);
         }
