@@ -14,6 +14,7 @@ use canonical_error::{CanonicalError,
                       aborted_error, failed_precondition_error};
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
+use cedar_detect::histogram_funcs::stats_for_histogram;
 use cedar_elements::solver_trait::{
     SolveExtension, SolveParams, SolverTrait};
 use cedar_elements::cedar::ImageCoord;
@@ -141,7 +142,7 @@ impl Calibrator {
         }
 
         self.camera.lock().await.set_exposure_duration(initial_exposure_duration)?;
-        let (_, mut stars, frame_id) = self.acquire_image_get_stars(
+        let (_, mut stars, frame_id, mut histogram) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
 
@@ -163,14 +164,20 @@ impl Calibrator {
         }
 
         // Iterate with the refined exposure duration.
-        if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
-            // We've saturated available exposure time latitude. Give up.
-            self.camera.lock().await.set_exposure_duration(max_exposure_duration)?;
-            return Ok(max_exposure_duration);
+        if scaled_exposure_duration_secs >= max_exposure_duration.as_secs_f64() {
+            // We've saturated available exposure time latitude based on detected
+            // star count (or lack thereof). Keep things sane by adjusting the
+            // overall scene exposure.
+            let stats = stats_for_histogram(&histogram);
+            let mean = if stats.mean < 1.0 { 1.0 } else { stats.mean };
+            // Push image towards moderately low level.
+            let correction_factor = 32.0 / mean;
+            scaled_exposure_duration_secs =
+                initial_exposure_duration.as_secs_f64() * correction_factor;
         }
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
-        (_, stars, _) = self.acquire_image_get_stars(
+        (_, stars, _, histogram) = self.acquire_image_get_stars(
             Some(frame_id), detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
 
@@ -191,14 +198,23 @@ impl Calibrator {
         }
 
         // Iterate one more time.
-        if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
-            // We've saturated available exposure time latitude. Give up.
-            self.camera.lock().await.set_exposure_duration(max_exposure_duration)?;
-            return Ok(max_exposure_duration);
+        if scaled_exposure_duration_secs >= max_exposure_duration.as_secs_f64() {
+            // We've saturated available exposure time latitude based on detected
+            // star count (or lack thereof). Keep things sane by adjusting the
+            // overall scene exposure.
+
+            // Back out the scaling based on star count.
+            scaled_exposure_duration_secs *= star_goal_fraction;
+
+            let stats = stats_for_histogram(&histogram);
+            let mean = if stats.mean < 1.0 { 1.0 } else { stats.mean };
+            // Push image towards moderately low level.
+            let correction_factor = 64.0 / mean;
+            scaled_exposure_duration_secs *= correction_factor;
         }
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
-        (_, stars, _) = self.acquire_image_get_stars(
+        (_, stars, _, _) = self.acquire_image_get_stars(
             Some(frame_id), detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
 
@@ -253,7 +269,7 @@ impl Calibrator {
         // * Do another plate solution with the known FOV, lens distortion, and
         //   match_max_error to obtain a representative solution time.
 
-        let (image, stars, _) = self.acquire_image_get_stars(
+        let (image, stars, _, _) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
         let (width, height) = image.dimensions();
@@ -312,7 +328,8 @@ impl Calibrator {
         &self, frame_id: Option<i32>,
         detection_binning: u32, detection_sigma: f64,
         cancel_calibration: Arc<Mutex<bool>>)
-        -> Result<(Arc<GrayImage>, Vec<StarDescription>, i32), CanonicalError>
+        -> Result<(Arc<GrayImage>, Vec<StarDescription>, i32, [u32; 256]),
+                  CanonicalError>
     {
         let (captured_image, frame_id) =
             Self::capture_image(self.camera.clone(), frame_id).await?;
@@ -323,13 +340,13 @@ impl Calibrator {
         // Run CedarDetect on the image.
         let image = &captured_image.image;
         let noise_estimate = estimate_noise_from_image(&image);
-        let (stars, _, _, _) =
+        let (stars, _, _, histogram) =
             get_stars_from_image(&image, noise_estimate,
                                  detection_sigma, /*deprecated_max_size=*/1,
                                  self.normalize_rows, detection_binning,
                                  /*detect_hot_pixels*/true,
                                  /*return_binned_image=*/false);
-        Ok((image.clone(), stars, frame_id))
+        Ok((image.clone(), stars, frame_id, histogram))
     }
 }
 

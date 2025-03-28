@@ -435,7 +435,12 @@ impl DetectEngine {
                 if daylight_mode {
                     let stats = stats_for_histogram(&roi_histogram);
                     // Push image towards mid-level.
-                    correction_factor = 128.0 / stats.mean;
+                    correction_factor = if stats.mean > 250.0 {
+                        // If we're saturated, knock back exposure time quickly.
+                        0.1
+                    } else {
+                        128.0 / stats.mean
+                    };
                 } else {
                     // For auto exposure in focus mode, what is the target value
                     // of the brightest pixel in the image region? Note that a
