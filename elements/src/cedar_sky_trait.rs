@@ -16,12 +16,20 @@ pub struct LocationInfo {
 }
 
 pub trait CedarSkyTrait {
+    /// Populate solar system objects into the catalog as of the given
+    /// `timestamp`. The object positions as of `timestamp` are used for
+    /// `max_distance`, `min_elevation`, and `sky_location` constraint matching
+    /// in `query_catalog_entries()`.
+    fn initialize_solar_system(&mut self, timestamp: SystemTime);
+
     fn get_catalog_descriptions(&self) -> Vec<CatalogDescription>;
     fn get_object_types(&self) -> Vec<ObjectType>;
     fn get_constellations(&self) -> Vec<Constellation>;
 
-    /// Returns the selected catalog entries, plus the number of entries left off
-    /// because of `limit_result`.
+    /// Returns the selected catalog entries, plus the number of entries left
+    /// off because of `limit_result`. Returned solar system objects' current
+    /// position are determined using `location_info` if provided, current time
+    /// otherwise.
     fn query_catalog_entries(&self,
                              max_distance: Option<f64>,
                              min_elevation: Option<f64>,

@@ -246,6 +246,12 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::permission_denied(
                     format!("Error updating server time: {:?}", e)));
             }
+            // Now that we know the correct date/time, initialize the solar system
+            // object database.
+            if let Some(cedar_sky) = &self.state.lock().await.cedar_sky {
+                cedar_sky.lock().unwrap().initialize_solar_system(
+                    SystemTime::now());
+            }
             info!("Updated server time to {:?}", Local::now());
             // Don't store the client time in our fixed_settings state, but
             // arrange to return our current time.
