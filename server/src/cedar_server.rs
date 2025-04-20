@@ -1871,18 +1871,21 @@ impl MyCedar {
             let bp = frame_result.boresight_position.as_mut().unwrap();
             (bp.x, bp.y) = irr.transform_to_rotated(bp.x, bp.y, width, height);
 
-            // Replace star_candidates with plate solve's catalog stars.
-            if let Some(ref psp) = plate_solution_proto {
-                frame_result.star_candidates = Vec::<StarCentroid>::new();
-                for star in &psp.catalog_stars {
-                    let ic = star.pixel.clone().unwrap();
-                    frame_result.star_candidates.push(
-                        StarCentroid{centroid_position: Some(ImageCoord{x: ic.x, y: ic.y}),
-                                     // Arbitrarily assign intensity=1 to mag=6.
-                                     brightness: magnitude_intensity_ratio(
-                                         6.0, star.mag as f64),
-                                     num_saturated: 0
-                        });
+            // Setup align mode?
+            if operating_mode == OperatingMode::Setup as i32 && !focus_assist_mode {
+                // Replace star_candidates with plate solve's catalog stars.
+                if let Some(ref psp) = plate_solution_proto {
+                    frame_result.star_candidates = Vec::<StarCentroid>::new();
+                    for star in &psp.catalog_stars {
+                        let ic = star.pixel.clone().unwrap();
+                        frame_result.star_candidates.push(
+                            StarCentroid{centroid_position: Some(ImageCoord{x: ic.x, y: ic.y}),
+                                         // Arbitrarily assign intensity=1 to mag=6.
+                                         brightness: magnitude_intensity_ratio(
+                                             6.0, star.mag as f64),
+                                         num_saturated: 0
+                            });
+                    }
                 }
             }
 
@@ -1893,11 +1896,13 @@ impl MyCedar {
                     cp.x, cp.y, width, height);
             }
 
-            // Augment the detected stars with catalog items from the plate solution.
-            // The labeled_catalog_entries have already been transformed to rotated.
-            frame_result.star_candidates = fill_in_detections(
-                &frame_result.star_candidates, &frame_result.labeled_catalog_entries);
-
+            // Setup align mode?
+            if operating_mode == OperatingMode::Setup as i32 && !focus_assist_mode {
+                // Augment the detected stars with catalog items from the plate solution.
+                // The labeled_catalog_entries have already been transformed to rotated.
+                frame_result.star_candidates = fill_in_detections(
+                    &frame_result.star_candidates, &frame_result.labeled_catalog_entries);
+            }
         }
 
         frame_result.calibration_data =
