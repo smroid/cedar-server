@@ -2689,7 +2689,7 @@ async fn async_main(
     } else {
         if let Some(attached_camera) = &attached_camera {
             let camera_model = attached_camera.lock().await.model();
-            if camera_model == "imx296" {
+            if camera_model == "imx296" || camera_model == "imx290" {
                 FeatureLevel::Plus  // Hopper.
             } else {
                 FeatureLevel::Basic  // Hopper LE.
