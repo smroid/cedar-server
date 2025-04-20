@@ -175,8 +175,8 @@ struct CedarState {
     scaled_image_binning_factor: u32,
     scaled_image_frame_id: i32,
 
-    // Image rotator used in SETUP alignment mode. We retain it to cover
-    // momentary plate solve dropouts.
+    // Image rotator used outside of focus mode or daylight align. We retain it
+    // to cover momentary plate solve dropouts.
     image_rotator: Option<ImageRotator>,
 
     calibrating: bool,
@@ -773,9 +773,7 @@ impl Cedar for MyCedar {
                 image_rotator = locked_state.image_rotator.clone();
                 (width, height) = locked_state.camera.lock().await.dimensions();
             }
-            if operating_mode == OperatingMode::Setup as i32
-                && !focus_mode && !daylight_mode && image_rotator.is_some()
-            {
+            if !focus_mode && !daylight_mode && image_rotator.is_some() {
                 (bsp.x, bsp.y) = image_rotator.unwrap().transform_from_rotated(
                     bsp.x, bsp.y, width as u32, height as u32);
             }
@@ -1681,11 +1679,10 @@ impl MyCedar {
             }
         }
 
-        // In SETUP alignment mode, rotate resized_disp_image to orient zenith
-        // up.
+        // Outside of focus mode or daylight align mode, we rotate
+        // resized_disp_image to orient zenith up.
         let mut image_rotator: Option<ImageRotator> = None;
-        if operating_mode == OperatingMode::Setup as i32
-            && detect_result.focus_aid.is_none() && !daylight_mode
+        if detect_result.focus_aid.is_none() && !daylight_mode
         {
             // See if frame_result has location_based_info, pick up zenith
             // angle.
@@ -1867,7 +1864,8 @@ impl MyCedar {
                                 y: height as f64 / 2.0});
         }
         if let Some(ref irr) = image_rotator {
-            // Having an image_rotator implies that we are in SETUP align mode.
+            // Having an image_rotator implies that we are not in focus or
+            // daytime align mode.
 
             // Transform the boresight coords.
             let bp = frame_result.boresight_position.as_mut().unwrap();
