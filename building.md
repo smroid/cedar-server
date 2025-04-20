@@ -18,7 +18,7 @@ browser can run Cedar-aim.
 
 # Using the pre-built SD card image
 
-You can burn a pre-built image to your SD card (16GB or larger) which will boot
+You can burn a pre-built image to your SD card (32GB or larger) which will boot
 your Rpi directly into running Cedar. This is by far the easiest way to get
 started!
 
@@ -70,7 +70,7 @@ See below for how to set up SkySafari to work with Cedar.
 
 # Building from source
 
-If you're more adventerous, you can start with a fresh Rpi OS install and build
+If you're more adventurous, you can start with a fresh Rpi OS install and build
 Cedar yourself. Note that the pre-built SD card image was prepared using the same
 instructions here.
 
