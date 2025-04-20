@@ -11,7 +11,7 @@ use log::warn;
 
 use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage, Offset};
 use canonical_error::{CanonicalError,
-                      aborted_error, failed_precondition_error};
+                      aborted_error, failed_precondition_error, internal_error};
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
 use cedar_detect::histogram_funcs::stats_for_histogram;
@@ -246,8 +246,14 @@ impl Calibrator {
         Ok(exp)
     }
 
-    // exposure_duration is the result of calibrate_exposure_duration().
-    // Result is FOV (degrees), lens distortion, match_max_error, solve duration.
+    // Exposure duration is the result of calibrate_exposure_duration().
+    // Result is (FOV (degrees), lens distortion, match_max_error,
+    //            solve duration).
+    // Errors:
+    //   NotFound: no plate solution was found.
+    //   DeadlineExceeded: the solve operation timed out.
+    //   Aborted: the calibration was canceled.
+    //   InvalidArgument: too few stars were found.
     pub async fn calibrate_optical(
         &self,
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
@@ -314,10 +320,17 @@ impl Calibrator {
         solve_params.distortion = Some(distortion);
         solve_params.match_max_error = Some(match_max_error);
 
-        let plate_solution2 = solver.lock().await.solve_from_centroids(
+        let plate_solution2 = match solver.lock().await.solve_from_centroids(
             &star_centroids,
             width as usize, height as usize,
-            &solve_extension, &solve_params).await?;
+            &solve_extension, &solve_params).await
+        {
+            Ok(ps) => ps,
+            Err(e) => {
+                return Err(internal_error(
+                    &format!("Unexpected error during repeated plate solve: {:?}", e)));
+            }
+        };
         let solve_duration = std::time::Duration::try_from(
             plate_solution2.solve_time.unwrap()).unwrap();
 

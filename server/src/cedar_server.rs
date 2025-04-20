@@ -341,8 +341,8 @@ impl Cedar for MyCedar {
                         // properly.
                         Self::spawn_calibration(self.state.clone(),
                                                 /*new_operate_mode=*/true,
-                                                final_focus_mode,
-                                                final_daylight_mode);
+                                                /*new_focus_mode=*/false,
+                                                /*new_daylight_mode=*/false);
                         calibrating = true;
                         // The update of state.operation_settings.operation_mode
                         // happens when the calibration finishes. TODO: also focus
@@ -757,7 +757,6 @@ impl Cedar for MyCedar {
             }
         }  // capture_boresight.
         if let Some(mut bsp) = req.designate_boresight {
-            let operating_mode;
             let focus_mode;
             let daylight_mode;
             let image_rotator;
@@ -765,9 +764,6 @@ impl Cedar for MyCedar {
             let height;
             {
                 let locked_state = self.state.lock().await;
-                operating_mode =
-                    locked_state.operation_settings.operating_mode.or(
-                        Some(OperatingMode::Setup as i32)).unwrap();
                 focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
                 daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
                 image_rotator = locked_state.image_rotator.clone();
@@ -1120,16 +1116,19 @@ impl MyCedar {
                             SystemTime::now()).unwrap());
                 }
                 // No locks held.
-                let cal_result = Self::calibrate(state.clone()).await;
-                if let Err(x) = cal_result {
-                    // The only error we expect is Aborted.
-                    assert!(x.code == CanonicalErrorCode::Aborted);
-                }
+                let succeeded = match Self::calibrate(state.clone()).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // The only error we expect is Aborted.
+                        assert!(e.code == CanonicalErrorCode::Aborted);
+                        false
+                    },
+                };
 
                 let mut locked_state = state.lock().await;
                 locked_state.calibrating = false;
-                if *locked_state.cancel_calibration.lock().unwrap() {
-                    // Calibration was cancelled. Stay in current mode.
+                if *locked_state.cancel_calibration.lock().unwrap() || !succeeded {
+                    // Calibration failed or was cancelled. Stay in current mode.
                     *locked_state.cancel_calibration.lock().unwrap() = false;
                     let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
                     let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
@@ -1294,11 +1293,11 @@ impl MyCedar {
         locked_camera.set_gain(gain).unwrap();
     }
 
-    // Called when entering OPERATE mode. This always succeeds (even if
-    // calibration fails), unless the calibration was cancelled in which
-    // case an ABORTED error is returned.
+    // Called when entering OPERATE mode. The bool indicates whether the
+    // calibration succeeded; the only error returned is ABORTED if the
+    // calibration is canceled.
     async fn calibrate(state: Arc<tokio::sync::Mutex<CedarState>>)
-                       -> Result<(), CanonicalError> {
+                       -> Result<bool, CanonicalError> {
         let initial_exposure_duration;
         let max_exposure_duration;
         let binning;
@@ -1417,10 +1416,11 @@ impl MyCedar {
                     return Err(e);
                 }
                 warn!{"Error while calibrating optics: {:?}", e};
+                return Ok(false);
             }
         };
         debug!("Calibration result: {:?}", calibration_data.lock().await);
-        Ok(())
+        Ok(true)
     }
 
     fn jpeg_encode(img: &Arc<GrayImage>) -> Vec::<u8> {
