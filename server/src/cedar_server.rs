@@ -2010,8 +2010,8 @@ impl MyCedar {
                 let mut cat_match =
                     Some(CatalogEntryMatch {
                         faintest_magnitude: match feature_level {
-                            FeatureLevel::Plus => Some(15),  // Max 20.
-                            FeatureLevel::Basic => Some(10),  // Max 12.
+                            FeatureLevel::Plus => Some(12),  // Max 20.
+                            FeatureLevel::Basic => Some(8),  // Max 12.
                             _ => Some(10),  // Irrelevant, no Cedar Sky.
                         },
                         match_catalog_label: true,
