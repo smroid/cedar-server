@@ -10,7 +10,7 @@ Calibrate button.
 
 Base python scripting support for working with Cedar grpc server.
 
-Orient to sky during goto. Or, always orient to sky in alt-az mode.
+Drop 'invert camera' prefs item.
 
 Mic button on keyboard for voice input. Can work offline? Good for
 "en gee cee oh five six" utterances?
@@ -19,9 +19,6 @@ Make polar advice data block tappable, zooms to larger dialog.
 * polar advice can just be an "idea" icon.
 
 Mobile app: support split screen; support picture-in-picture.
-
-Mobile app: internal control to prevent fallback to cell networking, prefer
-wifi even if no internet.
 
 Different on-screen prompt on connection loss vs. never having connection.
 Loss reasons: check server power (battery drained?), check phone's wifi
@@ -39,12 +36,7 @@ if binning==4: compute a 2x binned (and hot-pixel-repaired) image.
 And be sure to apply the same processing in acquire_image_get_stars()
 in the calibrator module.
 
-Hopper LE: drop NGC/IC.
-
 "serve engine" pipeline stage. Moves some logic out of cedar_server.rs.
-
-Look into networking over bluetooth as alternative to wifi.
-* saves power
 
 Update "connection lost" message for app (instead of web app).
 
