@@ -1745,18 +1745,31 @@ impl MyCedar {
                 Some(psr.solve_success_stats.clone());
             frame_result.slew_request = psr.slew_request.clone();
             if let Some(boresight_image) = &psr.boresight_image {
-                let bsi_rect = psr.boresight_image_region.unwrap();
+                let rotated_boresight_image;
+                if let Some(ref irr) = image_rotator {
+                    let bsi_rotator =
+                        ImageRotator::new(boresight_image.width(),
+                                          boresight_image.height(),
+                                          irr.angle());
+                    rotated_boresight_image =
+                        bsi_rotator.rotate_image(&boresight_image, /*fill=*/0);
+                } else {
+                    rotated_boresight_image = boresight_image.clone();
+                }
                 // boresight_image is taken from the camera's acquired image. In
                 // OPERATE mode the camera capture is always full resolution. If
                 // it is a color camera, we 2x2 bin it to avoid displaying the
                 // Bayer grid.
-                let (binning_factor, jpg_buf) =
+                let (binning_factor, rotated_boresight_image) =
                     if is_color {
-                        let binned_boresight_image = bin_2x2(boresight_image.clone());
-                        (2, Self::jpeg_encode(&Arc::new(binned_boresight_image)))
+                        (2, &bin_2x2(rotated_boresight_image))
                     } else {
-                        (1, Self::jpeg_encode(&Arc::new(boresight_image.clone())))
+                        (1, &rotated_boresight_image)
                     };
+                let jpg_buf =
+                    Self::jpeg_encode(&Arc::new(rotated_boresight_image.clone()));
+
+                let bsi_rect = psr.boresight_image_region.unwrap();
                 frame_result.boresight_image = Some(Image{
                     binning_factor,
                     // Rectangle is always in full resolution coordinates.
@@ -1766,7 +1779,22 @@ impl MyCedar {
                                               height: bsi_rect.height() as i32}),
                     image_data: jpg_buf,
                 });
+            }  // boresight_image
+            if frame_result.slew_request.is_some() && image_rotator.is_some() &&
+                frame_result.slew_request.as_ref().unwrap().image_pos.is_some()
+            {
+                let slew_request = &mut frame_result.slew_request.as_mut().unwrap();
+                let irr = &image_rotator.as_ref().unwrap();
+
+                // Apply rotator to slew target.
+                let slew_target_image_pos =
+                    &mut slew_request.image_pos.as_mut().unwrap();
+                (slew_target_image_pos.x, slew_target_image_pos.y) =
+                    irr.transform_to_rotated(
+                        slew_target_image_pos.x, slew_target_image_pos.y,
+                        width as u32, height as u32);
             }
+
             // Return catalog objects that are in the field of view.
             if let Some(fces) = &mut psr.fov_catalog_entries {
                 frame_result.labeled_catalog_entries =

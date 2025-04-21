@@ -143,6 +143,10 @@ impl ImageRotator {
         ImageRotator{angle_rad, sin_term, cos_term, size_ratio: ratio}
     }
 
+    pub fn angle(&self) -> f64 {
+        return self.angle_rad.to_degrees();
+    }
+
     // The returned image has the same dimensions as the argument; the input image
     // is shrunk as needed such that the rotated image fits within the original
     // dimensions.
