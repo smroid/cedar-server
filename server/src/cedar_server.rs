@@ -1690,12 +1690,20 @@ impl MyCedar {
                 let zenith_roll_angle = lbi.zenith_roll_angle;
                 let image_rotate_angle =
                     if landscape {
-                        lbi.zenith_roll_angle = 0.0;
                         -zenith_roll_angle
                     } else {
-                        lbi.zenith_roll_angle = 90.0;
                         90.0 - zenith_roll_angle
                     };
+                // Adjust reported roll angles for image rotation.
+                lbi.zenith_roll_angle += image_rotate_angle;
+                // Result is 0 or 90, no need to adjust for mod 360.
+                if let Some(psp) = &mut plate_solution_proto {
+                    psp.roll = (psp.roll + image_rotate_angle) % 360.0;
+                    // Arrange for angle to be 0..360.
+                    if psp.roll < 0.0 {
+                        psp.roll += 360.0;
+                    }
+                }
                 locked_state.image_rotator =
                     Some(ImageRotator::new(width, height, image_rotate_angle));
             } else {
