@@ -60,7 +60,7 @@ impl Calibrator {
         self.camera.lock().await.set_offset(Offset::new(0))?;
 
         // Restore the exposure duration that we change here.
-        let _restore_exposure = RestoreExposure::new(self.camera.clone());
+        let _restore_exposure = RestoreExposure::new(self.camera.clone()).await;
         self.camera.lock().await.set_exposure_duration(Duration::from_millis(1))?;
         let (width, height) = self.camera.lock().await.dimensions();
         let total_pixels = width * height;
@@ -112,7 +112,9 @@ impl Calibrator {
         }
     }
 
-    // Leaves camera set to the returned calibrated exposure duration.
+    // Leaves camera set to the returned calibrated exposure duration. If an
+    // error occurs, the camera's exposure duration is restored to its value on
+    // entry.
     pub async fn calibrate_exposure_duration(
         &self,
         initial_exposure_duration: Duration,
@@ -141,6 +143,9 @@ impl Calibrator {
                 "Cancelled during calibrate_exposure_duration()."));
         }
 
+        // If we fail, restore the exposure duration that we change here.
+        let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
+
         self.camera.lock().await.set_exposure_duration(initial_exposure_duration)?;
         let (_, mut stars, frame_id, mut histogram) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma,
@@ -156,6 +161,7 @@ impl Calibrator {
             // Close enough to goal, the scaled exposure time is good.
             let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
             self.camera.lock().await.set_exposure_duration(exp)?;
+            restore_exposure.deactivate();
             return Ok(exp);
         }
         if *cancel_calibration.lock().unwrap() {
@@ -190,6 +196,7 @@ impl Calibrator {
             // Close enough to goal, the scaled exposure time is good.
             let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
             self.camera.lock().await.set_exposure_duration(exp)?;
+            restore_exposure.deactivate();
             return Ok(exp);
         }
         if *cancel_calibration.lock().unwrap() {
@@ -229,6 +236,7 @@ impl Calibrator {
             // Close enough to goal, the scaled exposure time is good.
             let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
             self.camera.lock().await.set_exposure_duration(exp)?;
+            restore_exposure.deactivate();
             return Ok(exp);
         }
         if star_goal_fraction < 0.5 || star_goal_fraction > 2.0 {
@@ -239,10 +247,12 @@ impl Calibrator {
         scaled_exposure_duration_secs /= star_goal_fraction;
         if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
             self.camera.lock().await.set_exposure_duration(max_exposure_duration)?;
+            restore_exposure.deactivate();
             return Ok(max_exposure_duration);
         }
         let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
         self.camera.lock().await.set_exposure_duration(exp)?;
+        restore_exposure.deactivate();
         Ok(exp)
     }
 
@@ -367,6 +377,7 @@ impl Calibrator {
 struct RestoreExposure {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
     exp_duration: Duration,
+    do_restore: bool,
 }
 impl RestoreExposure {
     async fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>) -> Self {
@@ -374,12 +385,20 @@ impl RestoreExposure {
         RestoreExposure{
             camera: camera.clone(),
             exp_duration: locked_camera.get_exposure_duration(),
+            do_restore: true,
         }
     }
 
+    // Turn off restoration of the saved exposure time.
+    fn deactivate(&mut self) {
+        self.do_restore = false;
+    }
+
     async fn restore(&mut self) {
-        let mut locked_camera = self.camera.lock().await;
-        locked_camera.set_exposure_duration(self.exp_duration).unwrap();
+        if self.do_restore {
+            let mut locked_camera = self.camera.lock().await;
+            locked_camera.set_exposure_duration(self.exp_duration).unwrap();
+        }
     }
 }
 impl Drop for RestoreExposure {
