@@ -534,42 +534,42 @@ impl DetectEngine {
                     None
                 };
 
-                // Average the peak pixels of the N brightest stars.
-                let mut sum_peak: i32 = 0;
-                let mut num_peak = 0;
-                const NUM_PEAKS: i32 = 10;
-                for star in &stars {
-                    sum_peak += star.peak_value as i32;
-                    num_peak += 1;
-                    if num_peak >= NUM_PEAKS {
-                        break;
-                    }
-                }
-                peak_value =
-                    if num_peak == 0 {
-                        // No stars detected; set peak_value according to histogram.
-                        let top_value = average_top_values(&histogram, 5);
-                        // Choose value a quarter of the way from top_value to 255.
-                        let span = 255 - top_value;
-                        top_value + span / 4
-                    } else {
-                        (sum_peak / num_peak) as u8
-                    };
-
-                // Get a good black level for display.
-                remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-                // Put the black level near the top of the non-star background,
-                // so we don't display too much of the noise floor.
-                black_level = get_level_for_fraction(&histogram, 0.98) as u8;
-
-                // Because we're determining peak_value from detected stars,
-                // in pathological situations the black_level might end up
-                // higher than the peak_value. Kludge this back to sanity.
-                if black_level > peak_value {
-                    black_level = peak_value;
-                }
-
                 if !focus_mode {
+                    // Average the peak pixels of the N brightest stars.
+                    let mut sum_peak: i32 = 0;
+                    let mut num_peak = 0;
+                    const NUM_PEAKS: i32 = 10;
+                    for star in &stars {
+                        sum_peak += star.peak_value as i32;
+                        num_peak += 1;
+                        if num_peak >= NUM_PEAKS {
+                            break;
+                        }
+                    }
+                    peak_value =
+                        if num_peak == 0 {
+                            // No stars detected; set peak_value according to histogram.
+                            let top_value = average_top_values(&histogram, 5);
+                            // Choose value a quarter of the way from top_value to 255.
+                            let span = 255 - top_value;
+                            top_value + span / 4
+                        } else {
+                            (sum_peak / num_peak) as u8
+                        };
+
+                    // Get a good black level for display.
+                    remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
+                    // Put the black level near the top of the non-star background,
+                    // so we don't display too much of the noise floor.
+                    black_level = get_level_for_fraction(&histogram, 0.98) as u8;
+
+                    // Because we're determining peak_value from detected stars,
+                    // in pathological situations the black_level might end up
+                    // higher than the peak_value. Kludge this back to sanity.
+                    if black_level > peak_value {
+                        black_level = peak_value;
+                    }
+
                     // Auto exposure.
                     let baseline_exposure_duration =
                         match calibrated_exposure_duration
