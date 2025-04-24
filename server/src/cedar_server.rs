@@ -1323,7 +1323,6 @@ impl MyCedar {
             max_exposure_duration = std::time::Duration::try_from(
                 locked_state.fixed_settings.lock().unwrap()
                     .max_exposure_time.clone().unwrap()).unwrap();
-            // What was the final exposure duration coming out of SETUP mode?
             {
                 let locked_camera = camera.lock().await;
                 let (width, height) = locked_camera.dimensions();
@@ -1363,7 +1362,7 @@ impl MyCedar {
                 }
                 warn!{"Error while calibrating exposure duration: {:?}, using {:?}",
                       e, initial_exposure_duration};
-                initial_exposure_duration  // Sane fallback value.
+                return Ok(false);
             }
         };
         calibration_data.lock().await.target_exposure_time =
