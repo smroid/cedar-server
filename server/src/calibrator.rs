@@ -54,13 +54,13 @@ impl Calibrator {
         if *cancel_calibration.lock().unwrap() {
             return Err(aborted_error("Cancelled during calibrate_offset()."));
         }
-        // Restore the exposure duration that we change here.
-        let _restore_exposure = RestoreExposure::new(self.camera.clone());
 
         // Set offset before changing exposure; if we can't set offset this
         // lets us avoid changing the exposure only to have to restore it.
         self.camera.lock().await.set_offset(Offset::new(0))?;
 
+        // Restore the exposure duration that we change here.
+        let _restore_exposure = RestoreExposure::new(self.camera.clone());
         self.camera.lock().await.set_exposure_duration(Duration::from_millis(1))?;
         let (width, height) = self.camera.lock().await.dimensions();
         let total_pixels = width * height;
