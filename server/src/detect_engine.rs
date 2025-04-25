@@ -424,16 +424,19 @@ impl DetectEngine {
                 let roi_summary = summarize_region_of_interest(
                     &image, &inset_region, noise_estimate, detection_sigma);
                 let roi_histogram = roi_summary.histogram;
-
-                black_level = get_level_for_fraction(&roi_histogram, 0.01) as u8;
-                peak_value = max(get_level_for_fraction(&roi_histogram, 0.99) as u8, 1);
+                black_level = get_level_for_fraction(&roi_histogram, 0.5) as u8;
+                peak_value = max(get_level_for_fraction(&roi_histogram, 1.0) as u8, 1);
+                if daylight_mode {
+                    black_level = get_level_for_fraction(&roi_histogram, 0.001) as u8;
+                    peak_value = max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
+                }
 
                 // Auto exposure. Adjust exposure time based on value of
                 // inset_region.
 
                 let correction_factor: f64;
+                let stats = stats_for_histogram(&roi_histogram);
                 if daylight_mode {
-                    let stats = stats_for_histogram(&roi_histogram);
                     // Push image towards mid-level.
                     correction_factor = if stats.mean > 250.0 {
                         // If we're saturated, knock back exposure time quickly.
@@ -452,7 +455,12 @@ impl DetectEngine {
                     // integration time to move towards the goal. Assumes linear
                     // detector response.
                     // Move proportionally towards the goal.
-                    correction_factor = brightness_goal / peak_value as f64;
+                    correction_factor = if stats.mean > 250.0 {
+                        // If we're saturated, knock back exposure time quickly.
+                        0.05
+                    } else {
+                        brightness_goal / peak_value as f64
+                    };
                 }
 
                 // Don't adjust exposure time too often, is a bit janky
