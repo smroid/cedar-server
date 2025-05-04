@@ -2160,6 +2160,9 @@ impl MyCedar {
                     Some(limit_magnitude);
             }
         }
+        if feature_level == FeatureLevel::Basic {
+            preferences.mount_type = Some(MountType::AltAz.into());
+        }
 
         let shared_preferences = Arc::new(Mutex::new(preferences));
 
