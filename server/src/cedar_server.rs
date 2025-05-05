@@ -1787,19 +1787,22 @@ impl MyCedar {
                     image_data: jpg_buf,
                 });
             }  // boresight_image
-            if frame_result.slew_request.is_some() && image_rotator.is_some() &&
-                frame_result.slew_request.as_ref().unwrap().image_pos.is_some()
-            {
+            if frame_result.slew_request.is_some() && image_rotator.is_some() {
                 let slew_request = &mut frame_result.slew_request.as_mut().unwrap();
                 let irr = &image_rotator.as_ref().unwrap();
-
-                // Apply rotator to slew target.
-                let slew_target_image_pos =
-                    &mut slew_request.image_pos.as_mut().unwrap();
-                (slew_target_image_pos.x, slew_target_image_pos.y) =
-                    irr.transform_to_rotated(
-                        slew_target_image_pos.x, slew_target_image_pos.y,
-                        width as u32, height as u32);
+                if slew_request.image_pos.is_some() {
+                    // Apply rotator to slew target.
+                    let slew_target_image_pos =
+                        &mut slew_request.image_pos.as_mut().unwrap();
+                    (slew_target_image_pos.x, slew_target_image_pos.y) =
+                        irr.transform_to_rotated(
+                            slew_target_image_pos.x, slew_target_image_pos.y,
+                            width as u32, height as u32);
+                }
+                if let Some(ta) = slew_request.target_angle {
+                    // Apply rotator to slew direction.
+                    slew_request.target_angle = Some((ta + irr.angle()) % 360.0);
+                }
             }
 
             // Return catalog objects that are in the field of view.
