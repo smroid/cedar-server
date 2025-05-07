@@ -162,9 +162,9 @@ impl ImageRotator {
         let (w, h) = image.dimensions();
         let ratio = self.size_ratio;
 
-        // Pad the image before shrinking.
-        let padded_w = w as f64 * ratio;
-        let padded_h = h as f64 * ratio;
+        // Pad the image before rotating and shrinking.
+        let padded_w = w as f64 * ratio + 0.5;
+        let padded_h = h as f64 * ratio + 0.5;
         let mut new_img = ImageBuffer::from_pixel(padded_w as u32, padded_h as u32,
                                                   Luma::<u8>([fill]));
         let border_w = (padded_w - w as f64) / 2.0;
@@ -173,13 +173,18 @@ impl ImageRotator {
         let y_offset = border_h as i64;
         imageops::replace(&mut new_img, image, x_offset, y_offset);
 
-        // Shrink the padded image before rotating.
+        let rotated_image = rotate_about_center(
+            &new_img,
+            -1.0 * self.angle_rad as f32,
+            // Almost as fast as Nearest, with much higher visual quality.
+            Interpolation::Bilinear,
+            Luma::<u8>([fill]));
 
         // Convert GrayImage to FastImage for fast_image_resize.
         let src_img = FastImage::from_vec_u8(padded_w as u32, padded_h as u32,
-                                             new_img.into_raw(),
+                                             rotated_image.into_raw(),
                                              fast_image_resize::PixelType::U8).unwrap();
-        // Resize the image.
+        // Shrink the image.
         let mut resizer = Resizer::new();
         let mut dst_img = FastImage::new(w, h, src_img.pixel_type());
         resizer.resize(
@@ -189,11 +194,7 @@ impl ImageRotator {
                 FilterType::Hamming))).unwrap();
 
         let resized_img = GrayImage::from_raw(w, h, dst_img.into_vec()).unwrap();
-        rotate_about_center(&resized_img,
-                            -1.0 * self.angle_rad as f32,
-                            // Almost as fast as Nearest, with much higher visual quality.
-                            Interpolation::Bilinear,
-                            Luma::<u8>([fill]))
+        resized_img
     }
 
     // Given (x, y), the image coordinates in the original image, returns the
