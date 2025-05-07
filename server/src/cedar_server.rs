@@ -173,6 +173,7 @@ struct CedarState {
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
     scaled_image_binning_factor: u32,
+    scaled_image_rotation_size_ratio: f64,  // >= 1.0.
     scaled_image_frame_id: i32,
 
     // Image rotator used outside of focus mode or daylight align. We retain it
@@ -1471,6 +1472,8 @@ impl MyCedar {
                     let (scaled_width, scaled_height) = img.dimensions();
                     let jpg_buf = Self::jpeg_encode(&img);
                     let binning_factor = locked_state.scaled_image_binning_factor as i32;
+                    let rotation_size_ratio =
+                        locked_state.scaled_image_rotation_size_ratio;
                     let image_rectangle = Rectangle{
                         origin_x: 0, origin_y: 0,
                         width: scaled_width as i32 * binning_factor,
@@ -1478,6 +1481,7 @@ impl MyCedar {
                     };
                     frame_result.image = Some(Image{
                         binning_factor,
+                        rotation_size_ratio,
                         // Rectangle is always in full resolution coordinates.
                         rectangle: Some(image_rectangle),
                         image_data: jpg_buf,
@@ -1596,6 +1600,7 @@ impl MyCedar {
             }
             frame_result.center_peak_image = Some(Image{
                 binning_factor,
+                rotation_size_ratio: 1.0,  // Is not rotated.
                 rectangle: Some(Rectangle{
                     origin_x: peak_image_region.left(),
                     origin_y: peak_image_region.top(),
@@ -1678,6 +1683,9 @@ impl MyCedar {
             }
         }
 
+        locked_state.scaled_image_binning_factor = binning_factor;
+        locked_state.scaled_image_rotation_size_ratio = 1.0;
+
         // Outside of focus mode or daylight align mode, we rotate
         // resized_disp_image to orient zenith up.
         let mut image_rotator: Option<ImageRotator> = None;
@@ -1712,6 +1720,7 @@ impl MyCedar {
             if let Some(ref irr) = image_rotator {
                 resize_result = Arc::new(irr.rotate_image(&resized_disp_image, /*fill=*/0));
                 resized_disp_image = &resize_result;
+                locked_state.scaled_image_rotation_size_ratio = irr.size_ratio();
             }
         }
 
@@ -1722,10 +1731,10 @@ impl MyCedar {
         locked_state.scaled_image = Some(Arc::new(scaled_image.clone()));
         let jpg_buf = Self::jpeg_encode(&Arc::new(scaled_image.clone()));
 
-        locked_state.scaled_image_binning_factor = binning_factor;
         locked_state.scaled_image_frame_id = frame_result.frame_id;
         frame_result.image = Some(Image{
             binning_factor: binning_factor as i32,
+            rotation_size_ratio: locked_state.scaled_image_rotation_size_ratio,
             // Rectangle is always in full resolution coordinates.
             rectangle: Some(image_rectangle),
             image_data: jpg_buf,
@@ -1752,33 +1761,36 @@ impl MyCedar {
                 Some(psr.solve_success_stats.clone());
             frame_result.slew_request = psr.slew_request.clone();
             if let Some(boresight_image) = &psr.boresight_image {
-                let rotated_boresight_image;
-                if let Some(ref irr) = image_rotator {
-                    let bsi_rotator =
-                        ImageRotator::new(boresight_image.width(),
-                                          boresight_image.height(),
-                                          irr.angle());
-                    rotated_boresight_image =
-                        bsi_rotator.rotate_image(&boresight_image, /*fill=*/0);
-                } else {
-                    rotated_boresight_image = boresight_image.clone();
-                }
                 // boresight_image is taken from the camera's acquired image. In
                 // OPERATE mode the camera capture is always full resolution. If
                 // it is a color camera, we 2x2 bin it to avoid displaying the
                 // Bayer grid.
-                let (binning_factor, rotated_boresight_image) =
+                let (binning_factor, resized_boresight_image) =
                     if is_color {
-                        (2, &bin_2x2(rotated_boresight_image))
+                        (2, bin_2x2(boresight_image.clone()))
                     } else {
-                        (1, &rotated_boresight_image)
+                        (1, boresight_image.clone())
                     };
+
+                let rotated_boresight_image;
+                if let Some(ref irr) = image_rotator {
+                    let bsi_rotator =
+                        ImageRotator::new(resized_boresight_image.width(),
+                                          resized_boresight_image.height(),
+                                          irr.angle());
+                    rotated_boresight_image =
+                        bsi_rotator.rotate_image(&resized_boresight_image, /*fill=*/0);
+                } else {
+                    rotated_boresight_image = resized_boresight_image.clone();
+                }
+
                 let jpg_buf =
                     Self::jpeg_encode(&Arc::new(rotated_boresight_image.clone()));
 
                 let bsi_rect = psr.boresight_image_region.unwrap();
                 frame_result.boresight_image = Some(Image{
                     binning_factor,
+                    rotation_size_ratio: locked_state.scaled_image_rotation_size_ratio,
                     // Rectangle is always in full resolution coordinates.
                     rectangle: Some(Rectangle{origin_x: bsi_rect.left(),
                                               origin_y: bsi_rect.top(),
@@ -2239,6 +2251,7 @@ impl MyCedar {
                 preferences: shared_preferences.clone(),
                 scaled_image: None,
                 scaled_image_binning_factor: 1,
+                scaled_image_rotation_size_ratio: 1.0,
                 scaled_image_frame_id: 0,
                 image_rotator: None,
                 calibrating: false,

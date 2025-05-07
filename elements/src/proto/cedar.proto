@@ -472,6 +472,10 @@ message Image {
   // 8: 8x lower resolution than camera sensor.
   int32 binning_factor = 1;
 
+  // If image was rotated for display, this is the degree by which the image
+  // was shrunk to fit. Always >= 1.0.
+  double rotation_size_ratio = 4;
+
   // Specifies what part of the camera sensor this Image corresponds to, in full
   // resolution units. If binning_factor is B, the `image_data` dimensions are
   // rectangle.width/B, rectangle.height/B (floored).
