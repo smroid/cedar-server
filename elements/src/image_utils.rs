@@ -144,7 +144,12 @@ impl ImageRotator {
     }
 
     pub fn angle(&self) -> f64 {
-        return self.angle_rad.to_degrees();
+        self.angle_rad.to_degrees()
+    }
+
+    // Returns >= 1.0, factor by which image was shrunk when rotating.
+    pub fn size_ratio(&self) -> f64 {
+        self.size_ratio
     }
 
     // The returned image has the same dimensions as the argument; the input image
