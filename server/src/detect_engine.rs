@@ -445,22 +445,26 @@ impl DetectEngine {
                         128.0 / stats.mean
                     };
                 } else {
-                    // For auto exposure in focus mode, what is the target value
-                    // of the brightest pixel in the image region? Note that a
-                    // lower brightness_goal value allows for faster exposures,
-                    // which is nice in focus mode.
-                    let brightness_goal = 24.0;
+                    // Auto exposure in focus mode.
+                    let dark_level_cap = 32.0;
 
-                    // Compute how much to scale the previous exposure
-                    // integration time to move towards the goal. Assumes linear
-                    // detector response.
-                    // Move proportionally towards the goal.
-                    correction_factor = if stats.mean > 250.0 {
-                        // If we're saturated, knock back exposure time quickly.
-                        0.05
+                    // Way overexposed?
+                    if stats.mean > 250.0 {
+                        // Knock back exposure time quickly.
+                        correction_factor = 0.05;
+                    } else if stats.mean > dark_level_cap {
+                        // In twilight or heavily light polluted situations (or with
+                        // moonlight), control the average scene exposure to avoid
+                        // whiting out the screen.
+                        correction_factor = dark_level_cap / stats.mean;
                     } else {
-                        brightness_goal / peak_value as f64
-                    };
+                        // Overall scene is below dark_level_cap. Set a target
+                        // value of the brightest pixel in the image region.
+                        // Note that a lower brightness_goal value allows for
+                        // faster exposures, which is nice in focus mode.
+                        let brightness_goal = 4.0 * stats.mean;
+                        correction_factor = brightness_goal / peak_value as f64
+                    }
                 }
 
                 // Don't adjust exposure time too often, is a bit janky
