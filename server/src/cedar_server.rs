@@ -1773,6 +1773,7 @@ impl MyCedar {
                     };
 
                 let rotated_boresight_image;
+                let boresight_rotation_size_ratio;
                 if let Some(ref irr) = image_rotator {
                     let bsi_rotator =
                         ImageRotator::new(resized_boresight_image.width(),
@@ -1780,8 +1781,10 @@ impl MyCedar {
                                           irr.angle());
                     rotated_boresight_image =
                         bsi_rotator.rotate_image(&resized_boresight_image, /*fill=*/0);
+                    boresight_rotation_size_ratio = bsi_rotator.size_ratio();
                 } else {
                     rotated_boresight_image = resized_boresight_image.clone();
+                    boresight_rotation_size_ratio = 1.0;
                 }
 
                 let jpg_buf =
@@ -1790,7 +1793,7 @@ impl MyCedar {
                 let bsi_rect = psr.boresight_image_region.unwrap();
                 frame_result.boresight_image = Some(Image{
                     binning_factor,
-                    rotation_size_ratio: locked_state.scaled_image_rotation_size_ratio,
+                    rotation_size_ratio: boresight_rotation_size_ratio,
                     // Rectangle is always in full resolution coordinates.
                     rectangle: Some(Rectangle{origin_x: bsi_rect.left(),
                                               origin_y: bsi_rect.top(),
