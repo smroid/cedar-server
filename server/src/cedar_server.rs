@@ -2019,15 +2019,16 @@ impl MyCedar {
         let mut normalize_rows = false;
         if let Some(attached_camera) = &attached_camera {
             let locked_camera = attached_camera.lock().await;
-            if locked_camera.model() == "imx296" &&
-                processor_model.contains("Raspberry Pi Zero 2 W")
+            if (locked_camera.model() == "imx296" || locked_camera.model() == "imx290")
+                && processor_model.contains("Raspberry Pi Zero 2 W")
             {
                 normalize_rows = true;
             }
             if locked_camera.is_color() {
                 // Double max exposure time for color camera, which are
                 // generally less sensitive than monochrome cameras.
-                max_exposure_duration *= 2;
+                // max_exposure_duration *= 2;
+                max_exposure_duration *= 1;
             }
         }
 
