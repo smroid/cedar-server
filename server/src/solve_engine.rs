@@ -97,16 +97,6 @@ struct SolveState {
 
     plate_solution: Option<PlateSolution>,
     logged_error: bool,
-
-    // Set by stop(); the worker thread exits when it sees this.
-    stop_request: bool,
-}
-
-impl Drop for SolveEngine {
-    fn drop(&mut self) {
-        // https://stackoverflow.com/questions/71541765/rust-async-drop
-        futures::executor::block_on(self.stop());
-    }
 }
 
 impl SolveEngine {
@@ -148,7 +138,6 @@ impl SolveEngine {
                 eta: None,
                 plate_solution: None,
                 logged_error: false,
-                stop_request: false,
             })),
             detect_engine,
             worker_thread: None,
@@ -375,18 +364,6 @@ impl SolveEngine {
         }
     }
 
-    /// Shuts down the worker thread; this can save power if get_next_result()
-    /// will not be called soon. A subsequent call to get_next_result() will
-    /// re-start processing, at the expense of that first get_next_result() call
-    /// taking longer than usual.
-    pub async fn stop(&mut self) {
-        if self.worker_thread.is_some() {
-            self.solver.lock().await.cancel();
-            self.state.lock().await.stop_request = true;
-            self.worker_thread.take().unwrap();
-        }
-    }
-
     async fn worker(
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         state: Arc<tokio::sync::Mutex<SolveState>>,
@@ -406,14 +383,6 @@ impl SolveEngine {
             let mut solve_params = SolveParams::default();
             {
                 let mut locked_state = state.lock().await;
-                if locked_state.stop_request {
-                    debug!("Stopping solve engine");
-                    locked_state.stop_request = false;
-                    if !locked_state.align_mode {
-                        solution_callback(None, None, None);
-                    }
-                    return;  // Exit thread.
-                }
                 locked_state.eta = None;
 
                 minimum_stars = locked_state.minimum_stars;

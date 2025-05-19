@@ -92,16 +92,6 @@ struct DetectState {
     eta: Option<Instant>,
 
     detect_result: Option<DetectResult>,
-
-    // Set by stop(); the worker thread exits when it sees this.
-    stop_request: bool,
-}
-
-impl Drop for DetectEngine {
-    fn drop(&mut self) {
-        // https://stackoverflow.com/questions/71541765/rust-async-drop
-        futures::executor::block_on(self.stop());
-    }
 }
 
 impl DetectEngine {
@@ -135,7 +125,6 @@ impl DetectEngine {
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 detect_result: None,
-                stop_request: false,
             })),
             worker_thread: None,
             worker_done: Arc::new(AtomicBool::new(false)),
@@ -308,24 +297,6 @@ impl DetectEngine {
         }
     }
 
-    /// Shuts down the worker thread; this can save power if get_next_result()
-    /// will not be called soon. A subsequent call to get_next_result() will
-    /// re-start processing, at the expense of that first get_next_result() call
-    /// taking longer than usual.
-    pub async fn stop(&mut self) {
-        if self.worker_thread.is_some() {
-            self.state.lock().unwrap().stop_request = true;
-            loop {
-                if self.worker_done.load(Ordering::Relaxed) {
-                    self.worker_done.store(false, Ordering::Relaxed);
-                    self.worker_thread = None;
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
-    }
-
     async fn worker(initial_exposure_duration: Duration,
                     min_exposure_duration: Duration,
                     max_exposure_duration: Duration,
@@ -345,12 +316,6 @@ impl DetectEngine {
             let calibrated_exposure_duration: Option<Duration>;
             {
                 let mut locked_state = state.lock().unwrap();
-                if locked_state.stop_request {
-                    debug!("Stopping detect engine");
-                    locked_state.stop_request = false;
-                    done.store(true, Ordering::Relaxed);
-                    return;  // Exit thread.
-                }
                 camera = locked_state.camera.clone();
                 normalize_rows = locked_state.normalize_rows;
                 focus_mode = locked_state.focus_mode;

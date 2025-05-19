@@ -1109,8 +1109,6 @@ impl MyCedar {
                     locked_state.calibration_start = Instant::now();
                     locked_state.calibration_duration_estimate =
                         Duration::from_secs(5) + calibration_solve_timeout;
-                    locked_state.solve_engine.lock().await.stop().await;
-                    locked_state.detect_engine.lock().await.stop().await;
                     locked_state.calibration_data.lock().await
                         .calibration_time =
                         Some(prost_types::Timestamp::try_from(
