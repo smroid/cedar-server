@@ -202,7 +202,7 @@ You can start the Cedar-server at the command line as follows:
 ```
 cd cedar-server/run
 source ../../cedar-solve/.cedar_venv/bin/activate
-../bin/cedar-box-server
+../cedar/bin/cedar-box-server
 ```
 
 If things are working correctly, the output will be similar to:
@@ -326,8 +326,11 @@ delicate ribbon cable. You will thus need some kind of box to hold both the Rpi
 and the camera, such that when the box is attached to the telescope the camera
 will be pointed in the same direction as the scope.
 
-This is an excellent job for a 3d printer. We hope to publish a suitable case
-and mounting design in the cedar-serve repo in the near future.
+This is an excellent job for a 3d printer. We've posted the ["Cedar
+Box"](https://www.thingiverse.com/thing:6995142) case design that accommodates a
+Raspberry Pi 4 or 5 along with the HQ camera or IMX296 camera module. The Cedar
+Box attaches to the Synta/Vixen dovetail finder scope mount that many telescopes
+have.
 
 ### Setup Raspberry Pi Wi-Fi hotspot
 
@@ -373,26 +376,18 @@ sudo systemctl restart NetworkManager
 If you want Cedar-server to start automatically when you power up your
 Rpi, you can set up a systemd configuration to do this.
 
-First, create a file `/home/cedar/run_cedar.sh` containing:
-
-```
-#!/bin/bash
-source /home/cedar/projects/cedar-solve/.cedar_venv/bin/activate
-cd /home/cedar/projects/cedar-server/run
-export PATH=/home/cedar/.cargo/bin:$PATH
-/home/cedar/projects/cedar-server/bin/cedar-box-server
-```
-
-Next, create a file `/lib/systemd/system/cedar.service` with:
+Create a file `/lib/systemd/system/cedar.service` with:
 
 ```
 [Unit]
-Description=Cedar server.
+Description=Cedar Server
+Wants=NetworkManager.service network-online.target
 
 [Service]
 User=cedar
+WorkingDirectory=/home/cedar/projects/cedar-server/run
 Type=simple
-ExecStart=/bin/bash /home/cedar/run_cedar.sh
+ExecStart=/bin/bash -c '. /home/cedar/projects/cedar-solve/.cedar_venv/bin/activate && /home/cedar/projects/cedar-server/cedar/bin/cedar-box-server'
 
 [Install]
 WantedBy=multi-user.target

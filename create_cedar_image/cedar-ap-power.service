@@ -1,0 +1,16 @@
+# This service definition is to be copied onto the target at its
+# /etc/systemd/system/cedar-ap-power.service
+
+[Unit]
+Description=Set WiFi TX Power
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 10
+ExecStart=/sbin/iwconfig wlan0 txpower 10
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

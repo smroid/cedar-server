@@ -12,4 +12,4 @@ fi
 cd run
 
 # Start the binary we just built.
-../bin/cedar-box-server "$@"
+../cedar/bin/cedar-box-server "$@"

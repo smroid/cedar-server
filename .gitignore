@@ -19,8 +19,6 @@ Cargo.lock
 /Cargo.lock
 
 # Added by smr
-*.bmp
-*.jpg
 *~
 
 **/cedar_log.txt

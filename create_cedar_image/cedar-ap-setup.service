@@ -1,0 +1,16 @@
+# This service definition is to be copied onto the target at its
+# /etc/systemd/system/cedar-ap-setup.service
+
+[Unit]
+Description=Cedar AP Setup Service
+After=NetworkManager.service
+Wants=NetworkManager.service
+ConditionPathExists=!/etc/cedar-ap-configured
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cedar-ap-setup.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

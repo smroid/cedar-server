@@ -2581,7 +2581,7 @@ pub fn server_main(
       -h, --help                     Prints help information
 
     OPTIONS:
-      --tetra3_script <path>         ../../tetra3_server/python/tetra3_server.py
+      --tetra3_script <path>         ../cedar/tetra3_server/python/tetra3_server.py
       --tetra3_database <name>       default_database
       --camera_interface asi|rpi
       --camera_index NUMBER
@@ -2605,7 +2605,7 @@ pub fn server_main(
     }
     let args = AppArgs {
         tetra3_script: pargs.value_from_str("--tetra3_script").
-            unwrap_or("../../tetra3_server/python/tetra3_server.py".to_string()),
+            unwrap_or("../cedar/tetra3_server/python/tetra3_server.py".to_string()),
         tetra3_database: pargs.value_from_str("--tetra3_database").
             unwrap_or("default_database".to_string()),
         camera_interface: pargs.value_from_str("--camera_interface").
@@ -2706,6 +2706,12 @@ async fn async_main(
     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
     injected_solver: Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>)
 {
+    // If any thread panics, bail out.
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("Thread panicked: {}", panic_info);
+        std::process::exit(1);
+    }));
+
     let camera_interface = match args.camera_interface.as_str() {
         "" => None,
         "asi" => Some(CameraInterface::ASI),
