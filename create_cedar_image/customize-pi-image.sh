@@ -51,6 +51,11 @@ echo "Expand swap"
 sudo python modify_swap.py
 
 echo
+echo "Enable i2c"
+sudo sed -i 's/#dtparam=i2c_arm=on/dtparam=i2c_arm=on/g' $BOOT_PATH/config.txt
+echo "i2c-dev" | sudo tee -a $ROOTFS_PATH/etc/modules
+
+echo
 echo "Add user 'pi'"
 sudo python create_userconf.py
 
