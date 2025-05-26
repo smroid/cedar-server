@@ -197,3 +197,28 @@ Cedar-server version: 0.9.1
   stop getting updates until Cedar Aim app is resumed.
 
 * Increases maximum exposure time for color cameras to 2 seconds.
+
+# May 26 2025
+
+Cedar-server version: 0.9.3
+
+* Update plate solver match_threshold to 1e-5, reducing the chance of
+  a false solution.
+
+* Fix hanging behavior in solver.
+
+* Improve auto-exposure algorithms.
+
+* Always rotate image to zenith up when not in focus or daytime align mode.
+
+* If calibration fails, stay in current mode (focus or daytime align).
+
+* Other calibration fixes.
+
+* Add interstitial explanation screens for startup, focus, and align.
+
+* Broaden target tap tolerance in align mode.
+
+* Increase text sizes, tweak layouts.
+
+* Improve formatting of push-to directions.

@@ -8,9 +8,10 @@ Cedar's user interface.
 
 ## Supported platforms
 
-These instructions are for building and running Cedar-server on a Raspberry Pi
-4B (or 3B) running Bookworm. For building, at least 4GB RAM is recommended; for
-running, at least 1GB RAM is recommended.
+These instructions are for building and running Cedar-server on a Raspberry Pi 4
+or 5 (or 3, but this model is a bit slow for Cedar) running Bookworm. For
+building, at least 4GB RAM is recommended; for running, at least 1GB RAM is
+recommended.
 
 The Cedar-aim web app works with both Android and IOS devices (phones/tablets)
 and also laptops (Windows/Mac/Linux). Basically, anything with a modern web
@@ -25,7 +26,7 @@ started!
 ## Download and burn
 
 First: download the SD card image
-[cedar_rpi_2025_feb_20.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2025_feb_20.img.gz)
+[cedar_rpi_2025_may_26.img.gz](https://storage.googleapis.com/cs-astro-files/cedar_rpi_2025_may_26.img.gz)
 to your computer.
 
 Second: burn an SD card (32GB or larger) with the image file you just downloaded
@@ -55,34 +56,33 @@ With the pre-built SD card you just burned, your Rpi is set up as follows:
 
 * SSH is enabled, in case you want to poke around. Username is 'cedar', password
   is 'cedar'.
-* The Rpi puts up its own Wi-Fi hot spot. The SSID is 'cedar', password is
-  'cedar123'
+* The Rpi puts up its own Wi-Fi hot spot. The SSID is 'cedar-xxx', password is
+  'cedar123'.
 
 Insert the SD card and power up your Rpi4. Wait a minute or two, then on your phone,
 tablet, or laptop, join the 'cedar' Wi-Fi network (password is 'cedar123').
 
 Now, in your device's web browser, navigate to '192.168.4.1'. You should
 see Cedar's "setup" mode screen where the camera image is shown (assuming you
-have a camera connected!) for focusing and aligning. Under the hamburger menu,
-look for Preferences, and enable Full Screen.
+have a camera connected!) for focusing and aligning.
 
 See below for how to set up SkySafari to work with Cedar.
 
 # Building from source
 
 If you're more adventurous, you can start with a fresh Rpi OS install and build
-Cedar yourself. Note that the pre-built SD card image was prepared using the same
-instructions here.
+Cedar yourself.
 
 ## Initial steps
 
-These instructions assume you've set up a Raspberry Pi 4 (or 3) with the Bookworm
+These instructions assume you've set up a Raspberry Pi 4 (or 5) with the Bookworm
 version of Raspberry Pi OS. Make sure you've done the following:
 
 ```
 sudo apt update; sudo apt full-upgrade
 sudo apt install git pip protobuf-compiler libjpeg-dev zlib1g-dev libcamera-dev libclang-dev
 sudo apt install python3-grpcio python3-grpc-tools
+sudo apt install i2c-tools
 ```
 
 Before going further, if your Rpi has only 1GB of RAM, you'll need to expand its
@@ -193,7 +193,7 @@ cd cedar-server
 
 This builds Cedar-server and all of its dependencies. Rust crates are downloaded
 and built as needed. The initial build takes around a half hour on a Rpi 4 and
-well over an hour on a Rpi 3.
+well over an hour on a Rpi 3. The Rpi 5 is much faster for this!
 
 ### Run Cedar-server
 
@@ -245,10 +245,9 @@ Here's what's happening:
 ### Run Cedar-aim
 
 On a phone, tablet, or computer that is on the same network as the Raspberry Pi
-that is running Cedar-server, use a web browser to navigate to the
-IP address of your Rpi. In my case this is `cedar.local`; yours might
-be something like `192.168.4.1`, depending on how your Rpi is set up on
-the network.
+that is running Cedar-server, use a web browser to navigate to the IP address of
+your Rpi. This will be like `192.168.4.1`, depending on how your Rpi is set up
+on the network.
 
 If you're successful, you'll see the Cedar-aim setup screen. TODO: add screenshot.
 
