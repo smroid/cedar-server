@@ -39,8 +39,7 @@ pub fn distance(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
 }
 
 /// Return the square of the Euclidean distance between the given vectors.
-#[allow(dead_code)]
-fn distance_sq(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
+pub fn distance_sq(v1: &[f64; 3], v2: &[f64; 3]) -> f64 {
     (v1[0] - v2[0]) * (v1[0] - v2[0]) +
     (v1[1] - v2[1]) * (v1[1] - v2[1]) +
     (v1[2] - v2[2]) * (v1[2] - v2[2])
@@ -53,8 +52,7 @@ pub fn distance_from_angle(angle: f64) -> f64 {
 }
 
 /// Converts distance between two unit vectors the the angle between them.
-#[allow(dead_code)]
-fn angle_from_distance(distance: f64) -> f64 {
+pub fn angle_from_distance(distance: f64) -> f64 {
     2.0 * (0.5 * distance).asin()
 }
 
