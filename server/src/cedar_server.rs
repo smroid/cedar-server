@@ -2708,7 +2708,7 @@ async fn async_main(
 {
     // If any thread panics, bail out.
     std::panic::set_hook(Box::new(|panic_info| {
-        eprintln!("Thread panicked: {}", panic_info);
+        error!("Thread panicked: {}", panic_info);
         std::process::exit(1);
     }));
 
