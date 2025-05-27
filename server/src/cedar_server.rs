@@ -1914,6 +1914,23 @@ impl MyCedar {
                 Some(ImageCoord{x: width as f64 / 2.0,
                                 y: height as f64 / 2.0});
         }
+        // Setup align mode?
+        if operating_mode == OperatingMode::Setup as i32 && !focus_assist_mode {
+            // Replace star_candidates with plate solve's catalog stars.
+            if let Some(ref psp) = plate_solution_proto {
+                frame_result.star_candidates = Vec::<StarCentroid>::new();
+                for star in &psp.catalog_stars {
+                    let ic = star.pixel.clone().unwrap();
+                    frame_result.star_candidates.push(
+                        StarCentroid{centroid_position: Some(ImageCoord{x: ic.x, y: ic.y}),
+                                     // Arbitrarily assign intensity=1 to mag=6.
+                                     brightness: magnitude_intensity_ratio(
+                                         6.0, star.mag as f64),
+                                     num_saturated: 0
+                        });
+                }
+            }
+        }
         if let Some(ref irr) = image_rotator {
             // Having an image_rotator implies that we are not in focus or
             // daytime align mode.
@@ -1921,24 +1938,6 @@ impl MyCedar {
             // Transform the boresight coords.
             let bp = frame_result.boresight_position.as_mut().unwrap();
             (bp.x, bp.y) = irr.transform_to_rotated(bp.x, bp.y, width, height);
-
-            // Setup align mode?
-            if operating_mode == OperatingMode::Setup as i32 && !focus_assist_mode {
-                // Replace star_candidates with plate solve's catalog stars.
-                if let Some(ref psp) = plate_solution_proto {
-                    frame_result.star_candidates = Vec::<StarCentroid>::new();
-                    for star in &psp.catalog_stars {
-                        let ic = star.pixel.clone().unwrap();
-                        frame_result.star_candidates.push(
-                            StarCentroid{centroid_position: Some(ImageCoord{x: ic.x, y: ic.y}),
-                                         // Arbitrarily assign intensity=1 to mag=6.
-                                         brightness: magnitude_intensity_ratio(
-                                             6.0, star.mag as f64),
-                                         num_saturated: 0
-                            });
-                    }
-                }
-            }
 
             // Transform the detected (or plate solve catalog) star image coordinates.
             for star_centroid in &mut frame_result.star_candidates {
