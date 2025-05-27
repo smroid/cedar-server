@@ -10,8 +10,6 @@ Calibrate button.
 
 Base python scripting support for working with Cedar grpc server.
 
-Drop 'invert camera' prefs item.
-
 Mic button on keyboard for voice input. Can work offline? Good for
 "en gee cee oh five six" utterances?
 
@@ -49,6 +47,7 @@ Tetra3
   pattern as additional discriminant (post hash lookup? or incorporate
   into hash?)
 
+
 time display:
 * local time, UTC
 * time to sunset/sunrise, astro twilight
@@ -83,8 +82,6 @@ visual feedback on SkySafari connection
 add (tm) at appropriate places for Cedar
 
 "happy" sound on "align" button press.
-
-alert icon if observer location not yet set.
 
 Remove refresh rate control. Go full speed; when dwelling for more than N
 seconds drop to 5hz.
@@ -130,7 +127,7 @@ Remaining work:
 * find non-python solution for asteroids/comets
 * way to add new solar system object, e.g. comet
   - cloud-based?
-* marathon ordering (advanced)
+* meridian ordering (advanced)
 * identify constellation of boresight
 * identify constellation of planet
 * constellation lines
@@ -175,11 +172,6 @@ motion classification
 UI:
 * operation controls
   - save image: add confirmation+rename
-
-Preferences:
-* update rate (non-dwell, dwell)
-* flip options? To match telescope FOV orientation.
-  - sync with SkySafari?
 
 Help page
 * mostly redirects attention to long-press aids?
