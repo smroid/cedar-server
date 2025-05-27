@@ -596,20 +596,6 @@ impl Cedar for MyCedar {
                 }
             };
         }
-        if let Some(invert_camera) = req.invert_camera {
-            {
-                let mut locked_state = self.state.lock().await;
-                locked_state.operation_settings.invert_camera =
-                    Some(invert_camera);
-                if let Some(attached_camera) = &locked_state.attached_camera {
-                    attached_camera.lock().await.set_inverted(invert_camera).unwrap();
-                }
-            }
-            let preferences = Preferences{
-                invert_camera: Some(invert_camera),
-                ..Default::default()};
-            self.update_preferences(tonic::Request::new(preferences)).await?;
-        }
 
         Ok(tonic::Response::new(self.state.lock().await.operation_settings.clone()))
     }  // update_operation_settings().
@@ -674,9 +660,6 @@ impl Cedar for MyCedar {
         }
         if let Some(boresight_pixel) = req.boresight_pixel {
             our_prefs.boresight_pixel = Some(boresight_pixel);
-        }
-        if let Some(invert_camera) = req.invert_camera {
-            our_prefs.invert_camera = Some(invert_camera);
         }
         if let Some(right_handed) = req.right_handed {
             our_prefs.right_handed = Some(right_handed);
@@ -1968,7 +1951,6 @@ impl MyCedar {
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         args_binning: Option<u32>,
         args_display_sampling: Option<bool>,
-        invert_camera: bool,
         initial_exposure_duration: Duration,
         min_exposure_duration: Duration,
         mut max_exposure_duration: Duration,
@@ -2103,7 +2085,6 @@ impl MyCedar {
             advanced: Some(false),
             text_size_index: Some(0),
             boresight_pixel: None,
-            invert_camera: Some(invert_camera),  // Initial value from command line.
             right_handed: Some(true),
             celestial_coord_choice: Some(CelestialCoordChoice::RaDec.into()),
             screen_always_on: Some(true),
@@ -2234,7 +2215,6 @@ impl MyCedar {
                     log_dwelled_positions: Some(false),
                     catalog_entry_match: locked_preferences.catalog_entry_match.clone(),
                     demo_image_filename: None,
-                    invert_camera: locked_preferences.invert_camera,
                 },
                 calibration_data: Arc::new(tokio::sync::Mutex::new(
                     CalibrationData{..Default::default()})),
@@ -2560,8 +2540,6 @@ fn parse_duration(arg: &str)
     Ok(std::time::Duration::from_secs_f64(seconds))
 }
 
-// `invert_camera` Determines whether camera image is inverted (rot180) during
-//     readout.
 // `get_dependencies` Is called to obtain the CedarSkyTrait and WifiTrait
 //     implementations, if any. This function is called after logging has been
 //     set up and `server_main()`s command line arguments have been consumed.
@@ -2569,7 +2547,6 @@ fn parse_duration(arg: &str)
 pub fn server_main(
     product_name: &str, copyright: &str,
     flutter_app_path: &str,
-    invert_camera: bool,
     get_dependencies: fn(Arguments)
                          -> (Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
                              Option<Arc<Mutex<dyn WifiTrait + Send>>>,
@@ -2664,7 +2641,7 @@ pub fn server_main(
     }).unwrap();
 
     let (cedar_sky, wifi, solver) = get_dependencies(Arguments::from_vec(remaining));
-    async_main(args, product_name, copyright, flutter_app_path, invert_camera,
+    async_main(args, product_name, copyright, flutter_app_path,
                got_signal, cedar_sky, wifi, solver);
 }
 
@@ -2699,7 +2676,7 @@ fn get_camera(
 #[tokio::main]
 async fn async_main(
     args: AppArgs, product_name: &str, copyright: &str,
-    flutter_app_path: &str, invert_camera: bool,
+    flutter_app_path: &str,
     got_signal: Arc<AtomicBool>,
     cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
@@ -2724,8 +2701,7 @@ async fn async_main(
     let attached_camera = match get_attached_camera(
         camera_interface.as_ref(), args.camera_index)
     {
-        Ok(mut cam) => {
-            cam.set_inverted(invert_camera).unwrap();
+        Ok(cam) => {
             Some(Arc::new(tokio::sync::Mutex::new(cam)))
         },
         Err(e) => {
@@ -2836,7 +2812,6 @@ async fn async_main(
     let cedar_server = CedarServer::new(MyCedar::new(
         solver,
         args.binning, args.display_sampling,
-        invert_camera,
         /*initial_exposure_duration=*/Duration::from_millis(100),
         args.min_exposure, args.max_exposure,
         activity_led.clone(),

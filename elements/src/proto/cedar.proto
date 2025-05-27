@@ -165,12 +165,9 @@ message OperationSettings {
   // demo mode.
   optional string demo_image_filename = 12;
 
-  // Determines whether camera image is inverted (rot180) during readout.
-  optional bool invert_camera = 13;
-
   // TODO: decrowd parameter for returned catalog entries?
 
-  reserved 3, 5;
+  reserved 3, 5, 13;
 }
 
 enum OperatingMode {
@@ -251,10 +248,6 @@ message Preferences {
   // not update this via UpdatePreferences().
   optional ImageCoord boresight_pixel = 19;
 
-  // Determines whether camera image is inverted (rot180) during readout. Note:
-  // do not update this via UpdatePreferences().
-  optional bool invert_camera = 20;
-
   // Whether UI buttons and such are positioned on right side of screen.
   optional bool right_handed = 21;
 
@@ -264,7 +257,7 @@ message Preferences {
   // Whether mobile screen is kept on while in Cedar Aim.
   optional bool screen_always_on = 23;
 
-  reserved 4, 8;
+  reserved 4, 8, 20;
 }
 
 enum CelestialCoordFormat {
