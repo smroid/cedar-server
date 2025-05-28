@@ -389,8 +389,9 @@ impl DetectEngine {
                 let roi_summary = summarize_region_of_interest(
                     &image, &inset_region, noise_estimate, detection_sigma);
                 let roi_histogram = roi_summary.histogram;
-                black_level = get_level_for_fraction(&roi_histogram, 0.5) as u8;
-                peak_value = max(get_level_for_fraction(&roi_histogram, 1.0) as u8, 1);
+                black_level = get_level_for_fraction(&roi_histogram, 0.6) as u8;
+                // Compute peak_value as the average of the 50 brightest pixels.
+                peak_value = average_top_values(&roi_histogram, 50);
                 if daylight_mode {
                     black_level = get_level_for_fraction(&roi_histogram, 0.001) as u8;
                     peak_value = max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
@@ -464,10 +465,10 @@ impl DetectEngine {
                         histogram[pixel_value.0[0] as usize] += 1;
                     }
                     // Compute peak_value as the average of the 5 brightest pixels.
-                    let max_value = max(average_top_values(&histogram, 5), 64);
+                    let max_value = average_top_values(&histogram, 5);
 
                     remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-                    let min_value = get_level_for_fraction(&histogram, 0.8);
+                    let min_value = get_level_for_fraction(&histogram, 0.95);
 
                     scale_image_mut(
                         &mut peak_image, min_value as u8, max_value as u8, /*gamma=*/0.7);
