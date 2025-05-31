@@ -670,6 +670,18 @@ impl Cedar for MyCedar {
         if let Some(screen_always_on) = req.screen_always_on {
             our_prefs.screen_always_on = Some(screen_always_on);
         }
+        if let Some(ds) = req.dont_show_welcome {
+            our_prefs.dont_show_welcome = Some(ds);
+        }
+        if let Some(ds) = req.dont_show_focus_intro {
+            our_prefs.dont_show_focus_intro = Some(ds);
+        }
+        if let Some(ds) = req.dont_show_align_intro {
+            our_prefs.dont_show_align_intro = Some(ds);
+        }
+        if let Some(ds) = req.dont_show_calibration_fail {
+            our_prefs.dont_show_calibration_fail = Some(ds);
+        }
         *locked_state.preferences.lock().unwrap() = our_prefs.clone();
 
         // Write updated preferences to file. Note that this operation is
@@ -836,6 +848,15 @@ impl Cedar for MyCedar {
             {
                 return Err(tonic_status(x));
             }
+        }
+        if req.clear_dont_shows.unwrap_or(false) {
+            let preferences = Preferences{
+                dont_show_welcome: Some(false),
+                dont_show_focus_intro: Some(false),
+                dont_show_align_intro: Some(false),
+                dont_show_calibration_fail: Some(false),
+                ..Default::default()};
+            self.update_preferences(tonic::Request::new(preferences)).await?;
         }
         Ok(tonic::Response::new(EmptyMessage{}))
     }  // initiate_action().
@@ -2088,6 +2109,10 @@ impl MyCedar {
             right_handed: Some(true),
             celestial_coord_choice: Some(CelestialCoordChoice::RaDec.into()),
             screen_always_on: Some(true),
+            dont_show_welcome: Some(false),
+            dont_show_focus_intro: Some(false),
+            dont_show_align_intro: Some(false),
+            dont_show_calibration_fail: Some(false),
         };
 
         // If there is a preferences file, read it and merge its contents into
