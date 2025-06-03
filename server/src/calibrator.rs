@@ -364,8 +364,7 @@ impl Calibrator {
         let image = &captured_image.image;
         let noise_estimate = estimate_noise_from_image(&image);
         let (stars, _, _, histogram) =
-            get_stars_from_image(&image, noise_estimate,
-                                 detection_sigma, /*deprecated_max_size=*/1,
+            get_stars_from_image(&image, noise_estimate, detection_sigma,
                                  self.normalize_rows, detection_binning,
                                  /*detect_hot_pixels*/true,
                                  /*return_binned_image=*/false);

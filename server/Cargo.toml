@@ -14,7 +14,7 @@ async-trait = "0.1.77"
 axum = "0.6.20"
 canonical-error = "0.1.0"
 cedar-camera = { version = "0.3.0", path = "../../cedar-camera" }
-cedar_detect = { version = "0.7.0", path = "../../cedar-detect" }
+cedar_detect = { version = "0.8.0", path = "../../cedar-detect" }
 cedar-elements = { path = "../elements" }
 chrono = "0.4.31"
 clap = "4.5.23"
