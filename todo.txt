@@ -22,18 +22,6 @@ Different on-screen prompt on connection loss vs. never having connection.
 Loss reasons: check server power (battery drained?), check phone's wifi
 connection (sometimes phone reverts to cell connection).
 
-Make sure centroiding is not done on bayer image. Currently centroiding
-is always done on the original full-res image; when this is color that
-could lead to inaccurate centroid positions. Better way, only needed
-for color original image:
-if binning==2: do star detection on the 2x binned image, and centroid on
-  the binned image
-if binning==4: compute a 2x binned (and hot-pixel-repaired) image.
-  Do star detection on the 2x further binned image, and centroid on the
-  first 2x-binned image.
-And be sure to apply the same processing in acquire_image_get_stars()
-in the calibrator module.
-
 "serve engine" pipeline stage. Moves some logic out of cedar_server.rs.
 
 Update "connection lost" message for app (instead of web app).
@@ -51,6 +39,7 @@ Tetra3
 time display:
 * local time, UTC
 * time to sunset/sunrise, astro twilight
+* moonrise/set
 * display all? selectable?
 
 torture case: cap on
