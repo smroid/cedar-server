@@ -386,7 +386,6 @@ impl DetectEngine {
             let mut black_level = 0_u8;
             let mut peak_value = 0_u8;
             if focus_mode || daylight_mode {
-                // TODO: make the region of interest smaller, for speed.
                 let roi_summary = summarize_region_of_interest(
                     &image, &inset_region, noise_estimate, detection_sigma);
                 let roi_histogram = roi_summary.histogram;
