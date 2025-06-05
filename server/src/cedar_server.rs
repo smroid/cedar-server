@@ -2024,6 +2024,9 @@ impl MyCedar {
             {
                 normalize_rows = true;
             }
+            if locked_camera.model() == "ov5647" {
+                max_exposure_duration *= 3;  // This camera is less sensitive.
+            }
             if locked_camera.is_color() {
                 // Double max exposure time for color camera, which are
                 // generally less sensitive than monochrome cameras.
