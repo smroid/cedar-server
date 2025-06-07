@@ -390,8 +390,8 @@ impl DetectEngine {
                     &image, &inset_region, noise_estimate, detection_sigma);
                 let roi_histogram = roi_summary.histogram;
                 black_level = get_level_for_fraction(&roi_histogram, 0.6) as u8;
-                // Compute peak_value as the average of the 50 brightest pixels.
-                peak_value = average_top_values(&roi_histogram, 50);
+                // Compute peak_value as the average of the brightest pixels.
+                peak_value = average_top_values(&roi_histogram, 20);
                 if daylight_mode {
                     black_level = get_level_for_fraction(&roi_histogram, 0.001) as u8;
                     peak_value = max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
@@ -425,10 +425,10 @@ impl DetectEngine {
                         correction_factor = dark_level_cap / stats.mean;
                     } else {
                         // Overall scene is below dark_level_cap. Set a target
-                        // value of the brightest pixel in the image region.
+                        // value of the brightest pixels in the image region.
                         // Note that a lower brightness_goal value allows for
                         // faster exposures, which is nice in focus mode.
-                        let brightness_goal = 4.0 * stats.mean;
+                        let brightness_goal = 64.0;
                         correction_factor = brightness_goal / peak_value as f64
                     }
                 }
