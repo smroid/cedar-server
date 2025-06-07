@@ -189,7 +189,7 @@ impl DetectEngine {
         } else {
             // Alpha near 1.0: current value dominates. Alpha near 0.0: long
             // term average dominates.
-            let alpha = 0.5;
+            let alpha = 0.6;
             state.detected_stars_moving_average = alpha * num_stars_detected as f64 +
                 (1.0 - alpha) * state.detected_stars_moving_average;
         }
@@ -485,7 +485,7 @@ impl DetectEngine {
             let mut stars: Vec<StarDescription> = vec![];
             let mut hot_pixel_count = 0;
 
-            if !daylight_mode {
+            if !daylight_mode && !focus_mode {
                 // Run CedarDetect on the image.
                 {
                     let mut locked_state = state.lock().unwrap();
@@ -511,109 +511,107 @@ impl DetectEngine {
                     None
                 };
 
-                if !focus_mode {
-                    // Average the peak pixels of the N brightest stars.
-                    let mut sum_peak: i32 = 0;
-                    let mut num_peak = 0;
-                    const NUM_PEAKS: i32 = 10;
-                    for star in &stars {
-                        sum_peak += star.peak_value as i32;
-                        num_peak += 1;
-                        if num_peak >= NUM_PEAKS {
-                            break;
-                        }
+                // Average the peak pixels of the N brightest stars.
+                let mut sum_peak: i32 = 0;
+                let mut num_peak = 0;
+                const NUM_PEAKS: i32 = 10;
+                for star in &stars {
+                    sum_peak += star.peak_value as i32;
+                    num_peak += 1;
+                    if num_peak >= NUM_PEAKS {
+                        break;
                     }
-                    peak_value =
-                        if num_peak == 0 {
-                            // No stars detected; set peak_value according to histogram.
-                            let top_value = average_top_values(&histogram, 5);
-                            // Choose value a quarter of the way from top_value to 255.
-                            let span = 255 - top_value;
-                            top_value + span / 4
-                        } else {
-                            (sum_peak / num_peak) as u8
-                        };
-
-                    // Get a good black level for display.
-                    remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-                    // Put the black level near the top of the non-star background,
-                    // so we don't display too much of the noise floor.
-                    black_level = get_level_for_fraction(&histogram, 0.98) as u8;
-
-                    // Because we're determining peak_value from detected stars,
-                    // in pathological situations the black_level might end up
-                    // higher than the peak_value. Kludge this back to sanity.
-                    if black_level > peak_value {
-                        black_level = peak_value;
-                    }
-
-                    // Auto exposure.
-                    let baseline_exposure_duration =
-                        match calibrated_exposure_duration
-                    {
-                        Some(ced) => ced,
-                        None => initial_exposure_duration,
+                }
+                peak_value =
+                    if num_peak == 0 {
+                        // No stars detected; set peak_value according to histogram.
+                        let top_value = average_top_values(&histogram, 5);
+                        // Choose value a quarter of the way from top_value to 255.
+                        let span = 255 - top_value;
+                        top_value + span / 4
+                    } else {
+                        (sum_peak / num_peak) as u8
                     };
-                    let baseline_exposure_duration_secs =
-                        baseline_exposure_duration.as_secs_f64();
 
-                    let num_stars_detected = stars.len();
-                    if num_stars_detected == 0 {
-                        // We're likely slewing and thus detecting no stars.
-                        // Don't update the moving average, and for safety use
-                        // the baseline exposure duration.
+                // Get a good black level for display.
+                remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
+                // Put the black level near the top of the non-star background,
+                // so we don't display too much of the noise floor.
+                black_level = get_level_for_fraction(&histogram, 0.98) as u8;
+
+                // Because we're determining peak_value from detected stars,
+                // in pathological situations the black_level might end up
+                // higher than the peak_value. Kludge this back to sanity.
+                if black_level > peak_value {
+                    black_level = peak_value;
+                }
+
+                // Auto exposure.
+                let baseline_exposure_duration =
+                    match calibrated_exposure_duration
+                {
+                    Some(ced) => ced,
+                    None => initial_exposure_duration,
+                };
+                let baseline_exposure_duration_secs =
+                    baseline_exposure_duration.as_secs_f64();
+
+                let num_stars_detected = stars.len();
+                if num_stars_detected == 0 {
+                    // We're likely slewing and thus detecting no stars.
+                    // Don't update the moving average, and for safety use
+                    // the baseline exposure duration.
+                    new_exposure_duration_secs = baseline_exposure_duration_secs;
+                } else {
+                    let moving_average = Self::update_detected_stars_moving_average(
+                        &mut state.lock().unwrap(), num_stars_detected);
+                    if moving_average < 1.0 {
+                        // This shouldn't happen because we don't update the moving
+                        // average with num_stars_detected==0. But just in case do
+                        // something sane.
                         new_exposure_duration_secs = baseline_exposure_duration_secs;
                     } else {
-                        let moving_average = Self::update_detected_stars_moving_average(
-                            &mut state.lock().unwrap(), num_stars_detected);
-                        if moving_average < 1.0 {
-                            // This shouldn't happen because we don't update the moving
-                            // average with num_stars_detected==0. But just in case do
-                            // something sane.
-                            new_exposure_duration_secs = baseline_exposure_duration_secs;
-                        } else {
-                            // >1 if we have more stars than goal; <1 if fewer stars than
-                            // goal.
-                            let star_goal_fraction =
-                                moving_average / star_count_goal as f64;
-                            // Don't adjust exposure time too often, is a bit
-                            // janky because the camera re-initializes. Allow
-                            // number of detected stars to greatly exceed goal,
-                            // but don't allow much of a shortfall.
-                            if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
-                                // What is the relationship between exposure
-                                // time and number of stars detected?
-                                // * If we increase the exposure time by 2.5x,
-                                //   we'll be able to detect stars 40% as
-                                //   bright. This corresponds to an increase of
-                                //   one stellar magnitude.
-                                // * Per https://www.hnsky.org/star_count, at
-                                //   mag=5 a one magnitude increase corresponds
-                                //   to around 3x the number of stars.
-                                // * 2.5x and 3x are "close enough", so we model
-                                // the number of detectable stars as being
-                                // simply proportional to the exposure time.
-                                // This is OK because we'll only be varying the
-                                // exposure time a modest amount relative to the
-                                // baseline_exposure_duration.
-                                new_exposure_duration_secs =
-                                    prev_exposure_duration_secs / star_goal_fraction;
-                                if calibrated_exposure_duration.is_some() {
-                                    // Bound exposure duration to be within three
-                                    // stops of calibrated_exposure_duration. Further
-                                    // bounds are applied below.
-                                    new_exposure_duration_secs = f64::max(
-                                        new_exposure_duration_secs,
-                                        baseline_exposure_duration_secs / 8.0);
-                                    new_exposure_duration_secs = f64::min(
-                                        new_exposure_duration_secs,
-                                        baseline_exposure_duration_secs * 8.0);
-                                }
+                        // >1 if we have more stars than goal; <1 if fewer stars than
+                        // goal.
+                        let star_goal_fraction =
+                            moving_average / star_count_goal as f64;
+                        // Don't adjust exposure time too often, is a bit
+                        // janky because the camera re-initializes. Allow
+                        // number of detected stars to greatly exceed goal,
+                        // but don't allow much of a shortfall.
+                        if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
+                            // What is the relationship between exposure
+                            // time and number of stars detected?
+                            // * If we increase the exposure time by 2.5x,
+                            //   we'll be able to detect stars 40% as
+                            //   bright. This corresponds to an increase of
+                            //   one stellar magnitude.
+                            // * Per https://www.hnsky.org/star_count, at
+                            //   mag=5 a one magnitude increase corresponds
+                            //   to around 3x the number of stars.
+                            // * 2.5x and 3x are "close enough", so we model
+                            // the number of detectable stars as being
+                            // simply proportional to the exposure time.
+                            // This is OK because we'll only be varying the
+                            // exposure time a modest amount relative to the
+                            // baseline_exposure_duration.
+                            new_exposure_duration_secs =
+                                prev_exposure_duration_secs / star_goal_fraction;
+                            if calibrated_exposure_duration.is_some() {
+                                // Bound exposure duration to be within three
+                                // stops of calibrated_exposure_duration. Further
+                                // bounds are applied below.
+                                new_exposure_duration_secs = f64::max(
+                                    new_exposure_duration_secs,
+                                    baseline_exposure_duration_secs / 8.0);
+                                new_exposure_duration_secs = f64::min(
+                                    new_exposure_duration_secs,
+                                    baseline_exposure_duration_secs * 8.0);
                             }
                         }
                     }
                 }
-            }  // !daylight_mode
+            }  // !daylight_mode && !focus_mode
             let elapsed = process_start_time.elapsed();
             state.lock().unwrap().detect_latency_stats.add_value(elapsed.as_secs_f64());
 
