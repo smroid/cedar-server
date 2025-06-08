@@ -108,6 +108,11 @@ impl Calibrator {
                 continue;
             }
             let (image, id) = capture.unwrap();
+            if !image.params_accurate {
+                // Wait until image data is accurate w.r.t. the current camera
+                // settings.
+                continue;
+            }
             return Ok((image, id));
         }
     }

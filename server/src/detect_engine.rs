@@ -433,8 +433,7 @@ impl DetectEngine {
                     }
                 }
 
-                // Don't adjust exposure time too often, is a bit janky
-                // because the camera re-initializes.
+                // Don't adjust exposure time too often.
                 if correction_factor < 0.7 || correction_factor > 1.3 {
                     new_exposure_duration_secs =
                         prev_exposure_duration_secs * correction_factor;
@@ -484,6 +483,10 @@ impl DetectEngine {
             let mut binned_image: Option<Arc<GrayImage>> = None;
             let mut stars: Vec<StarDescription> = vec![];
             let mut hot_pixel_count = 0;
+
+            // If the captured_image is up to date w.r.t. the camera settings,
+            // we can use it to influence our new exposure.
+            let mut update_exposure = captured_image.params_accurate;
 
             if !daylight_mode && !focus_mode {
                 // Run CedarDetect on the image.
@@ -562,7 +565,9 @@ impl DetectEngine {
                     // Don't update the moving average, and for safety use
                     // the baseline exposure duration.
                     new_exposure_duration_secs = baseline_exposure_duration_secs;
-                } else {
+                    // Force update even if image is catching up to camera settings.
+                    update_exposure = true;
+                } else if captured_image.params_accurate {
                     let moving_average = Self::update_detected_stars_moving_average(
                         &mut state.lock().unwrap(), num_stars_detected);
                     if moving_average < 1.0 {
@@ -622,7 +627,9 @@ impl DetectEngine {
                                                   min_exposure_duration.as_secs_f64());
             new_exposure_duration_secs = f64::min(new_exposure_duration_secs,
                                                   max_exposure_duration.as_secs_f64());
-            if prev_exposure_duration_secs != new_exposure_duration_secs {
+            if update_exposure &&
+                prev_exposure_duration_secs != new_exposure_duration_secs
+            {
                 debug!("Setting new exposure duration {}s",
                        new_exposure_duration_secs);
                 match camera.lock().await.set_exposure_duration(
