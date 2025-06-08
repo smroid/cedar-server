@@ -387,7 +387,7 @@ impl DetectEngine {
             let mut peak_value = 0_u8;
             if focus_mode || daylight_mode {
                 let roi_summary = summarize_region_of_interest(
-                    &image, &inset_region, noise_estimate, detection_sigma);
+                    &image, &inset_region);
                 let roi_histogram = roi_summary.histogram;
                 black_level = get_level_for_fraction(&roi_histogram, 0.6) as u8;
                 // Compute peak_value as the average of the brightest pixels.
