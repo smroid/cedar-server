@@ -60,7 +60,7 @@ impl Calibrator {
         self.camera.lock().await.set_offset(Offset::new(0))?;
 
         // Restore the exposure duration that we change here.
-        let _restore_exposure = RestoreExposure::new(self.camera.clone()).await;
+        let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
         self.camera.lock().await.set_exposure_duration(Duration::from_millis(1))?;
         let (width, height) = self.camera.lock().await.dimensions();
         let total_pixels = width * height;
@@ -70,6 +70,7 @@ impl Calibrator {
         let mut num_zero_pixels = 0;
         for mut offset in 0..=max_offset {
             if *cancel_calibration.lock().unwrap() {
+                restore_exposure.restore().await;
                 return Err(aborted_error("Cancelled during calibrate_offset()."));
             }
             self.camera.lock().await.set_offset(Offset::new(offset))?;
@@ -83,16 +84,18 @@ impl Calibrator {
                 if offset < max_offset {
                     offset += 1;  // One more for good measure.
                 }
+                restore_exposure.restore().await;
                 return Ok(Offset::new(offset));
             }
         }
+        restore_exposure.restore().await;
         Err(failed_precondition_error(format!("Still have {} zero pixels at offset={}",
                                               num_zero_pixels, max_offset).as_str()))
     }
 
     async fn capture_image(
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-        frame_id: Option<i32>) -> Result<(CapturedImage, i32), CanonicalError>
+        mut frame_id: Option<i32>) -> Result<(CapturedImage, i32), CanonicalError>
     {
         // Don't hold camera lock for the entirety of the time waiting for
         // the next image.
@@ -104,10 +107,11 @@ impl Calibrator {
                 Err(e) => { return Err(e); }
             };
             if capture.is_none() {
-                tokio::time::sleep(Duration::from_millis(1)).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
             }
             let (image, id) = capture.unwrap();
+            frame_id = Some(id);
             if !image.params_accurate {
                 // Wait until image data is accurate w.r.t. the current camera
                 // settings.
@@ -155,21 +159,29 @@ impl Calibrator {
         let (_, mut stars, frame_id, mut histogram) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
+        let mut stats = stats_for_histogram(&histogram);
 
         let mut num_stars_detected = stars.len();
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         let mut star_goal_fraction =
             f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
+
+        // Increase exposure if necessary to increase star count, but don't
+        // exceed a brightness limit.
+        const BRIGHTNESS_LIMIT: u8 = 64;
+        let mut brightness_fraction = stats.mean / BRIGHTNESS_LIMIT as f64;
+        let mut fraction = f64::max(star_goal_fraction, brightness_fraction);
+
         let mut scaled_exposure_duration_secs =
-            initial_exposure_duration.as_secs_f64() / star_goal_fraction;
-        if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
+            initial_exposure_duration.as_secs_f64() / fraction;
+        if fraction > 0.8 && fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
             let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
             self.camera.lock().await.set_exposure_duration(exp)?;
-            restore_exposure.deactivate();
             return Ok(exp);
         }
         if *cancel_calibration.lock().unwrap() {
+            restore_exposure.restore().await;
             return Err(aborted_error(
                 "Cancelled during calibrate_exposure_duration()."));
         }
@@ -179,7 +191,6 @@ impl Calibrator {
             // We've saturated available exposure time latitude based on detected
             // star count (or lack thereof). Keep things sane by adjusting the
             // overall scene exposure.
-            let stats = stats_for_histogram(&histogram);
             let mean = if stats.mean < 1.0 { 1.0 } else { stats.mean };
             // Push image towards moderately low level.
             let correction_factor = 32.0 / mean;
@@ -191,20 +202,24 @@ impl Calibrator {
         (_, stars, _, histogram) = self.acquire_image_get_stars(
             Some(frame_id), detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
+        stats = stats_for_histogram(&histogram);
 
         num_stars_detected = stars.len();
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         star_goal_fraction =
             f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
-        scaled_exposure_duration_secs /= star_goal_fraction;
-        if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
+        brightness_fraction = stats.mean / BRIGHTNESS_LIMIT as f64;
+        fraction = f64::max(star_goal_fraction, brightness_fraction);
+        scaled_exposure_duration_secs /= fraction;
+
+        if fraction > 0.8 && fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
             let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
             self.camera.lock().await.set_exposure_duration(exp)?;
-            restore_exposure.deactivate();
             return Ok(exp);
         }
         if *cancel_calibration.lock().unwrap() {
+            restore_exposure.restore().await;
             return Err(aborted_error(
                 "Cancelled during calibrate_exposure_duration()."));
         }
@@ -216,9 +231,8 @@ impl Calibrator {
             // overall scene exposure.
 
             // Back out the scaling based on star count.
-            scaled_exposure_duration_secs *= star_goal_fraction;
+            scaled_exposure_duration_secs *= fraction;
 
-            let stats = stats_for_histogram(&histogram);
             let mean = if stats.mean < 1.0 { 1.0 } else { stats.mean };
             // Push image towards moderately low level.
             let correction_factor = 64.0 / mean;
@@ -229,19 +243,28 @@ impl Calibrator {
         (_, stars, _, _) = self.acquire_image_get_stars(
             Some(frame_id), detection_binning, detection_sigma,
             cancel_calibration.clone()).await?;
+        stats = stats_for_histogram(&histogram);
 
         num_stars_detected = stars.len();
         if num_stars_detected < (star_count_goal / 5) as usize {
+            restore_exposure.restore().await;
             return Err(failed_precondition_error(
                 format!("Too few stars detected ({})", num_stars_detected).as_str()))
         }
         star_goal_fraction =
             f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
+        if star_goal_fraction < 1.0 && stats.mean as u8 > BRIGHTNESS_LIMIT {
+            // Too few stars, but we can't increase exposure more because image
+            // is already too bright overall.
+            restore_exposure.restore().await;
+            return Err(failed_precondition_error(
+                format!("Too few stars detected ({})", num_stars_detected).as_str()))
+        }
+
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
             let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
             self.camera.lock().await.set_exposure_duration(exp)?;
-            restore_exposure.deactivate();
             return Ok(exp);
         }
         if star_goal_fraction < 0.5 || star_goal_fraction > 2.0 {
@@ -252,12 +275,10 @@ impl Calibrator {
         scaled_exposure_duration_secs /= star_goal_fraction;
         if scaled_exposure_duration_secs > max_exposure_duration.as_secs_f64() {
             self.camera.lock().await.set_exposure_duration(max_exposure_duration)?;
-            restore_exposure.deactivate();
             return Ok(max_exposure_duration);
         }
         let exp = Duration::from_secs_f64(scaled_exposure_duration_secs);
         self.camera.lock().await.set_exposure_duration(exp)?;
-        restore_exposure.deactivate();
         Ok(exp)
     }
 
@@ -377,7 +398,7 @@ impl Calibrator {
     }
 }
 
-// RAII gadget for saving/restoring camera exposure time.
+// Convenience for saving/restoring camera exposure time.
 struct RestoreExposure {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
     exp_duration: Duration,
@@ -393,21 +414,10 @@ impl RestoreExposure {
         }
     }
 
-    // Turn off restoration of the saved exposure time.
-    fn deactivate(&mut self) {
-        self.do_restore = false;
-    }
-
     async fn restore(&mut self) {
         if self.do_restore {
             let mut locked_camera = self.camera.lock().await;
             locked_camera.set_exposure_duration(self.exp_duration).unwrap();
         }
-    }
-}
-impl Drop for RestoreExposure {
-    fn drop(&mut self) {
-        // https://stackoverflow.com/questions/71541765/rust-async-drop
-        futures::executor::block_on(self.restore());
     }
 }
