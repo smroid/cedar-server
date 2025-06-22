@@ -261,6 +261,7 @@ message Preferences {
   optional bool dont_show_focus_intro = 25;
   optional bool dont_show_align_intro = 26;
   optional bool dont_show_calibration_fail = 27;
+  optional bool dont_show_setup_finished = 28;
 
   reserved 4, 8, 20;
 }
@@ -611,6 +612,10 @@ message DescriptiveStats {
 message CalibrationData {
   // Omitted if a sky/camera calibration has not been attempted.
   optional google.protobuf.Timestamp calibration_time = 1;
+
+  // Indicates reason, if any, that the calibration failed.
+  optional bool exposure_calibration_failed = 9;
+  optional bool plate_solve_failed = 10;
 
   // Exposure time determined to yield the desired number of star detections
   // during calibration.

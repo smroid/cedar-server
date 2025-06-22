@@ -682,6 +682,9 @@ impl Cedar for MyCedar {
         if let Some(ds) = req.dont_show_calibration_fail {
             our_prefs.dont_show_calibration_fail = Some(ds);
         }
+        if let Some(ds) = req.dont_show_setup_finished {
+            our_prefs.dont_show_setup_finished = Some(ds);
+        }
         *locked_state.preferences.lock().unwrap() = our_prefs.clone();
 
         // Write updated preferences to file. Note that this operation is
@@ -855,6 +858,7 @@ impl Cedar for MyCedar {
                 dont_show_focus_intro: Some(false),
                 dont_show_align_intro: Some(false),
                 dont_show_calibration_fail: Some(false),
+                dont_show_setup_finished: Some(false),
                 ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
         }
@@ -1371,6 +1375,7 @@ impl MyCedar {
                 }
                 warn!{"Error while calibrating exposure duration: {:?}, using {:?}",
                       e, initial_exposure_duration};
+                calibration_data.lock().await.exposure_calibration_failed = Some(true);
                 return Ok(false);
             }
         };
@@ -1408,6 +1413,9 @@ impl MyCedar {
             },
             Err(e) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
+                if e.code != CanonicalErrorCode::Aborted {
+                    locked_calibration_data.plate_solve_failed = Some(true);
+                }
                 locked_calibration_data.fov_horizontal = None;
                 locked_calibration_data.lens_distortion = None;
                 locked_calibration_data.match_max_error = None;
@@ -2122,6 +2130,7 @@ impl MyCedar {
             dont_show_focus_intro: Some(false),
             dont_show_align_intro: Some(false),
             dont_show_calibration_fail: Some(false),
+            dont_show_setup_finished: Some(false),
         };
 
         // If there is a preferences file, read it and merge its contents into
