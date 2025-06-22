@@ -1117,6 +1117,8 @@ impl MyCedar {
                         .calibration_time =
                         Some(prost_types::Timestamp::try_from(
                             SystemTime::now()).unwrap());
+                    locked_state.detect_engine.lock().await
+                        .set_autoexposure_enabled(false);
                 }
                 // No locks held.
                 let succeeded = match Self::calibrate(state.clone()).await {
@@ -1129,12 +1131,15 @@ impl MyCedar {
                 };
 
                 let mut locked_state = state.lock().await;
+                locked_state.detect_engine.lock().await.set_autoexposure_enabled(true);
                 locked_state.calibrating = false;
                 if *locked_state.cancel_calibration.lock().unwrap() || !succeeded {
                     // Calibration failed or was cancelled. Stay in current mode.
                     *locked_state.cancel_calibration.lock().unwrap() = false;
-                    let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
-                    let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
+                    let focus_mode =
+                        locked_state.operation_settings.focus_assist_mode.unwrap();
+                    let daylight_mode =
+                        locked_state.operation_settings.daylight_mode.unwrap();
                     Self::set_gain(&mut locked_state, daylight_mode).await;
                     let mut locked_detect_engine =
                         locked_state.detect_engine.lock().await;
@@ -1333,6 +1338,7 @@ impl MyCedar {
                 (binning, _display_sampling) =
                     Self::compute_binning(&locked_state, width as u32, height as u32);
             }
+
             // For calibrations, use statically configured sigma value.
             let locked_detect_engine = detect_engine.lock().await;
             detection_sigma = locked_detect_engine.get_detection_sigma();
