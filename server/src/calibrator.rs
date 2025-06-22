@@ -157,14 +157,15 @@ impl Calibrator {
 
         self.camera.lock().await.set_exposure_duration(initial_exposure_duration)?;
         let (_, mut stars, frame_id, mut histogram) = self.acquire_image_get_stars(
-            /*frame_id=*/None, detection_binning, detection_sigma,
-            cancel_calibration.clone()).await?;
+            /*frame_id=*/None, detection_binning, detection_sigma).await?;
         let mut stats = stats_for_histogram(&histogram);
 
         let mut num_stars_detected = stars.len();
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         let mut star_goal_fraction =
             f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
+        // See the rationale in DetectEngine::worker() for how we relate
+        // star_goal_fraction to exposure time adjustment.
 
         // Increase exposure if necessary to increase star count, but don't
         // exceed a brightness limit.
@@ -200,8 +201,7 @@ impl Calibrator {
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
         (_, stars, _, histogram) = self.acquire_image_get_stars(
-            Some(frame_id), detection_binning, detection_sigma,
-            cancel_calibration.clone()).await?;
+            Some(frame_id), detection_binning, detection_sigma).await?;
         stats = stats_for_histogram(&histogram);
 
         num_stars_detected = stars.len();
@@ -241,8 +241,7 @@ impl Calibrator {
         self.camera.lock().await.set_exposure_duration(
             Duration::from_secs_f64(scaled_exposure_duration_secs))?;
         (_, stars, _, _) = self.acquire_image_get_stars(
-            Some(frame_id), detection_binning, detection_sigma,
-            cancel_calibration.clone()).await?;
+            Some(frame_id), detection_binning, detection_sigma).await?;
         stats = stats_for_histogram(&histogram);
 
         num_stars_detected = stars.len();
@@ -312,8 +311,7 @@ impl Calibrator {
         //   match_max_error to obtain a representative solution time.
 
         let (image, stars, _, _) = self.acquire_image_get_stars(
-            /*frame_id=*/None, detection_binning, detection_sigma,
-            cancel_calibration.clone()).await?;
+            /*frame_id=*/None, detection_binning, detection_sigma).await?;
         let (width, height) = image.dimensions();
         if *cancel_calibration.lock().unwrap() {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
@@ -375,17 +373,12 @@ impl Calibrator {
 
     async fn acquire_image_get_stars(
         &self, frame_id: Option<i32>,
-        detection_binning: u32, detection_sigma: f64,
-        cancel_calibration: Arc<Mutex<bool>>)
+        detection_binning: u32, detection_sigma: f64)
         -> Result<(Arc<GrayImage>, Vec<StarDescription>, i32, [u32; 256]),
                   CanonicalError>
     {
         let (captured_image, frame_id) =
             Self::capture_image(self.camera.clone(), frame_id).await?;
-        if *cancel_calibration.lock().unwrap() {
-            return Err(aborted_error(
-                "Cancelled during calibrate_exposure_duration()."));
-        }
         // Run CedarDetect on the image.
         let image = &captured_image.image;
         let noise_estimate = estimate_noise_from_image(&image);
