@@ -57,6 +57,9 @@ struct DetectState {
     // Note: camera settings can be adjusted behind our back.
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
 
+    // Cedar server disables autoexposure during calibrations.
+    autoexposure_enabled: bool,
+
     // Determines whether rows are normalized to have the same dark level.
     normalize_rows: bool,
 
@@ -114,6 +117,7 @@ impl DetectEngine {
             star_count_goal,
             state: Arc::new(Mutex::new(DetectState{
                 camera: camera.clone(),
+                autoexposure_enabled: true,
                 normalize_rows,
                 frame_id: None,
                 focus_mode: false,
@@ -135,6 +139,10 @@ impl DetectEngine {
         &self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
     {
         self.state.lock().unwrap().camera = camera.clone();
+    }
+
+    pub fn set_autoexposure_enabled(&mut self, enabled: bool) {
+        self.state.lock().unwrap().autoexposure_enabled = enabled;
     }
 
     pub fn set_binning(&mut self, binning: u32, display_sampling: bool) {
@@ -508,6 +516,7 @@ impl DetectEngine {
                         normalize_rows, binning,
                         /*detect_hot_pixels=*/true,
                         /*return_binned_image=*/binning != 1);
+                let stats = stats_for_histogram(&histogram);
                 binned_image = if let Some(bi) = detect_binned_image {
                     Some(Arc::new(bi))
                 } else {
@@ -576,42 +585,51 @@ impl DetectEngine {
                         // something sane.
                         new_exposure_duration_secs = baseline_exposure_duration_secs;
                     } else {
+                        // When increasing exposure to increase star count,
+                        // don't exceed a brightness limit.
+                        const BRIGHTNESS_LIMIT: u8 = 64;
                         // >1 if we have more stars than goal; <1 if fewer stars than
                         // goal.
                         let star_goal_fraction =
                             moving_average / star_count_goal as f64;
-                        // Don't adjust exposure time too often, is a bit
-                        // janky because the camera re-initializes. Allow
-                        // number of detected stars to greatly exceed goal,
-                        // but don't allow much of a shortfall.
-                        if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
-                            // What is the relationship between exposure
-                            // time and number of stars detected?
-                            // * If we increase the exposure time by 2.5x,
-                            //   we'll be able to detect stars 40% as
-                            //   bright. This corresponds to an increase of
-                            //   one stellar magnitude.
-                            // * Per https://www.hnsky.org/star_count, at
-                            //   mag=5 a one magnitude increase corresponds
-                            //   to around 3x the number of stars.
-                            // * 2.5x and 3x are "close enough", so we model
-                            // the number of detectable stars as being
-                            // simply proportional to the exposure time.
-                            // This is OK because we'll only be varying the
-                            // exposure time a modest amount relative to the
-                            // baseline_exposure_duration.
-                            new_exposure_duration_secs =
-                                prev_exposure_duration_secs / star_goal_fraction;
-                            if calibrated_exposure_duration.is_some() {
-                                // Bound exposure duration to be within three
-                                // stops of calibrated_exposure_duration. Further
-                                // bounds are applied below.
-                                new_exposure_duration_secs = f64::max(
-                                    new_exposure_duration_secs,
-                                    baseline_exposure_duration_secs / 8.0);
-                                new_exposure_duration_secs = f64::min(
-                                    new_exposure_duration_secs,
-                                    baseline_exposure_duration_secs * 8.0);
+                        if star_goal_fraction < 1.0 &&
+                            stats.mean as u8 > BRIGHTNESS_LIMIT
+                        {
+                            new_exposure_duration_secs = baseline_exposure_duration_secs;
+                        } else {
+                            // Don't adjust exposure time too often, is a bit
+                            // janky because the camera re-initializes. Allow
+                            // number of detected stars to greatly exceed goal,
+                            // but don't allow much of a shortfall.
+                            if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
+                                // What is the relationship between exposure
+                                // time and number of stars detected?
+                                // * If we increase the exposure time by 2.5x,
+                                //   we'll be able to detect stars 40% as
+                                //   bright. This corresponds to an increase of
+                                //   one stellar magnitude.
+                                // * Per https://www.hnsky.org/star_count, at
+                                //   mag=5 a one magnitude increase corresponds
+                                //   to around 3x the number of stars.
+                                // * 2.5x and 3x are "close enough", so we model
+                                // the number of detectable stars as being
+                                // simply proportional to the exposure time.
+                                // This is OK because we'll only be varying the
+                                // exposure time a modest amount relative to the
+                                // baseline_exposure_duration.
+                                new_exposure_duration_secs =
+                                    prev_exposure_duration_secs / star_goal_fraction;
+                                if calibrated_exposure_duration.is_some() {
+                                    // Bound exposure duration to be within three
+                                    // stops of calibrated_exposure_duration. Further
+                                    // bounds are applied below.
+                                    new_exposure_duration_secs = f64::max(
+                                        new_exposure_duration_secs,
+                                        baseline_exposure_duration_secs / 8.0);
+                                    new_exposure_duration_secs = f64::min(
+                                        new_exposure_duration_secs,
+                                        baseline_exposure_duration_secs * 8.0);
+                                }
                             }
                         }
                     }
@@ -627,7 +645,7 @@ impl DetectEngine {
                                                   min_exposure_duration.as_secs_f64());
             new_exposure_duration_secs = f64::min(new_exposure_duration_secs,
                                                   max_exposure_duration.as_secs_f64());
-            if update_exposure &&
+            if update_exposure && state.lock().unwrap().autoexposure_enabled &&
                 prev_exposure_duration_secs != new_exposure_duration_secs
             {
                 debug!("Setting new exposure duration {}s",
