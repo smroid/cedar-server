@@ -222,3 +222,24 @@ Cedar-server version: 0.9.3
 * Increase text sizes, tweak layouts.
 
 * Improve formatting of push-to directions.
+
+# June 23 2025
+
+Cedar-server version: 0.10.0
+
+* Add more information screens.
+
+* Add "don't show again" checkbox on information screens.
+
+* When changing camera parameters, continue to process images that
+  don't yet reflect the parameter change.
+
+* Tweak hot pixel detection logic.
+
+* Auto exposure improvements.
+
+* Update calibration and auto exposure logic to not raise
+  exposure too high when trying to increase star count. This
+  might fix reported "white out" problems.
+
+* Fix occasional hang on calibration failure.
