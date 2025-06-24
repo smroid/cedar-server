@@ -1368,7 +1368,10 @@ impl MyCedar {
             initial_exposure_duration, max_exposure_duration, star_count_goal,
             binning, detection_sigma,
             cancel_calibration.clone()).await {
-            Ok(ed) => ed,
+            Ok(ed) => {
+                calibration_data.lock().await.exposure_calibration_failed = Some(false);
+                ed
+            },
             Err(e) => {
                 if e.code == CanonicalErrorCode::Aborted {
                     return Err(e);
@@ -1389,6 +1392,7 @@ impl MyCedar {
         {
             Ok((fov, distortion, match_max_error, solve_duration)) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
+                locked_calibration_data.plate_solve_failed = Some(false);
                 locked_calibration_data.fov_horizontal = Some(fov);
                 locked_calibration_data.lens_distortion = Some(distortion);
                 locked_calibration_data.match_max_error = Some(match_max_error);
