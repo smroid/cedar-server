@@ -527,6 +527,7 @@ impl Cedar for MyCedar {
                 locked_state.camera = get_camera(&locked_state.attached_camera,
                                                  &self.test_image_camera);
                 locked_state.operation_settings.demo_image_filename = None;
+                info!("Using camera {}", locked_state.camera.lock().await.model());
             } else {
                 let input_path = PathBuf::from("./demo_images").join(
                     demo_image_filename.clone());
@@ -550,6 +551,7 @@ impl Cedar for MyCedar {
                 locked_state.camera =
                     Arc::new(tokio::sync::Mutex::new(
                         Box::new(ImageCamera::new(img_u8).unwrap())));
+                info!("Using demo image {}", demo_image_filename);
                 locked_state.operation_settings.demo_image_filename =
                     Some(demo_image_filename);
             }
@@ -1206,24 +1208,34 @@ impl MyCedar {
     }
 
     async fn get_server_information(&self) -> ServerInformation {
+        let locked_state = self.state.lock().await;
         let camera =
-            if let Some(test_image_camera) = &self.test_image_camera {
-                let locked_camera = test_image_camera.lock().await;
-                Some(CameraModel{
-                    model: locked_camera.model(),
-                    image_width: locked_camera.dimensions().0,
-                    image_height: locked_camera.dimensions().1,
-                })
-            } else if let Some(attached_camera) = &self.state.lock().await.attached_camera {
-                let locked_camera = attached_camera.lock().await;
-                Some(CameraModel{
-                    model: locked_camera.model(),
-                    image_width: locked_camera.dimensions().0,
-                    image_height: locked_camera.dimensions().1,
-                })
-            } else {
-                None
-            };
+            if let Some(demo_image) =
+            &locked_state.operation_settings.demo_image_filename
+        {
+            let locked_camera = locked_state.camera.lock().await;
+            Some(CameraModel{
+                model: demo_image.to_string(),
+                image_width: locked_camera.dimensions().0,
+                image_height: locked_camera.dimensions().1,
+            })
+        } else if let Some(test_image_camera) = &self.test_image_camera {
+            let locked_camera = test_image_camera.lock().await;
+            Some(CameraModel{
+                model: locked_camera.model(),
+                image_width: locked_camera.dimensions().0,
+                image_height: locked_camera.dimensions().1,
+            })
+        } else if let Some(attached_camera) = &locked_state.attached_camera {
+            let locked_camera = attached_camera.lock().await;
+            Some(CameraModel{
+                model: locked_camera.model(),
+                image_width: locked_camera.dimensions().0,
+                image_height: locked_camera.dimensions().1,
+            })
+        } else {
+            None
+        };
         let mut server_info = ServerInformation {
             product_name: self.product_name.clone(),
             copyright: self.copyright.clone(),
@@ -1238,13 +1250,13 @@ impl MyCedar {
             wifi_access_point: None,
             demo_image_names: self.demo_images.clone(),
         };
-        Self::update_server_information(self.state.clone(), &mut server_info).await;
+        Self::update_server_information(&locked_state, &mut server_info).await;
         server_info
     }
 
-    async fn update_server_information(state: Arc<tokio::sync::Mutex<CedarState>>,
+    async fn update_server_information(state: &CedarState,
                                        server_info: &mut ServerInformation) {
-        if let Some(wifi) = &state.lock().await.wifi {
+        if let Some(wifi) = &state.wifi {
             let locked_wifi = wifi.lock().unwrap();
             server_info.wifi_access_point = Some(WiFiAccessPoint{
                 ssid: Some(locked_wifi.ssid()),
