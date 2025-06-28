@@ -378,12 +378,17 @@ impl DetectEngine {
             let (width, height) = image.dimensions();
 
             let image_region = Rect::at(0, 0).of_size(width, height);
+            let square_roi_size = height;
+
             // To avoid edge when centroiding and creating central peak image,
-            // inset a little.
+            // inset the ROI a little.
             let adjusted_binning = binning * if display_sampling { 2 } else { 1 };
             let inset = 8 * adjusted_binning as i32;
-            let inset_region = Rect::at(inset, inset)
-                .of_size(width - 2 * inset as u32, height - 2 * inset as u32);
+
+            let roi_region = Rect::at(
+                ((width - square_roi_size) / 2) as i32 + inset, inset)
+                .of_size(square_roi_size - 2 * inset as u32,
+                         square_roi_size - 2 * inset as u32);
 
             let noise_estimate = estimate_noise_from_image(&image);
             let prev_exposure_duration_secs =
@@ -395,7 +400,7 @@ impl DetectEngine {
             let mut peak_value = 0_u8;
             if focus_mode || daylight_mode {
                 let roi_summary = summarize_region_of_interest(
-                    &image, &inset_region);
+                    &image, &roi_region);
                 let roi_histogram = roi_summary.histogram;
                 black_level = get_level_for_fraction(&roi_histogram, 0.6) as u8;
                 // Compute peak_value as the average of the brightest pixels.
@@ -405,8 +410,8 @@ impl DetectEngine {
                     peak_value = max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
                 }
 
-                // Auto exposure. Adjust exposure time based on value of
-                // inset_region.
+                // Auto exposure. Adjust exposure time based on value of pixels
+                // in roi_region.
 
                 let correction_factor: f64;
                 let stats = stats_for_histogram(&roi_histogram);

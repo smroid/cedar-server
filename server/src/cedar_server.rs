@@ -173,12 +173,10 @@ struct CedarState {
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
     scaled_image_binning_factor: u32,
-    scaled_image_rotation_size_ratio: f64,  // >= 1.0.
     scaled_image_frame_id: i32,
 
-    // Image rotator used outside of focus mode or daylight align. We retain it
-    // to cover momentary plate solve dropouts.
-    image_rotator: Option<ImageRotator>,
+    // Image rotator used to display central square crop.
+    image_rotator: ImageRotator,
 
     calibrating: bool,
     cancel_calibration: Arc<Mutex<bool>>,
@@ -318,7 +316,6 @@ impl Cedar for MyCedar {
                         }
                     }
                     locked_state.solve_engine.lock().await.set_align_mode(true).await;
-                    locked_state.image_rotator = None;
                     Self::reset_session_stats(locked_state.deref_mut()).await;
                     {
                         let mut locked_detect_engine =
@@ -756,21 +753,23 @@ impl Cedar for MyCedar {
             }
         }  // capture_boresight.
         if let Some(mut bsp) = req.designate_boresight {
-            let focus_mode;
-            let daylight_mode;
             let image_rotator;
             let width;
             let height;
             {
                 let locked_state = self.state.lock().await;
-                focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
-                daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
                 image_rotator = locked_state.image_rotator.clone();
                 (width, height) = locked_state.camera.lock().await.dimensions();
             }
-            if !focus_mode && !daylight_mode && image_rotator.is_some() {
-                (bsp.x, bsp.y) = image_rotator.unwrap().transform_from_rotated(
-                    bsp.x, bsp.y, width as u32, height as u32);
+            (bsp.x, bsp.y) = image_rotator.transform_from_rotated(
+                bsp.x, bsp.y, width as u32, height as u32);
+
+            let distance_from_center =
+                ((width as f64 / 2.0 - bsp.x) * (width as f64  / 2.0 - bsp.x) +
+                 (height as f64 / 2.0 - bsp.y) * (height as f64  / 2.0 - bsp.y)).sqrt();
+            if distance_from_center > height as f64 / 2.0 {
+                return Err(tonic::Status::failed_precondition(
+                    format!("Too far from center")));
             }
 
             if let Err(x) = self.state.lock().await.solve_engine.lock().await.
@@ -1322,6 +1321,8 @@ impl MyCedar {
         let detect_engine;
         let solve_engine;
         let solver;
+        let width;
+        let height;
         {
             let locked_state = state.lock().await;
             camera = locked_state.camera.clone();
@@ -1337,7 +1338,7 @@ impl MyCedar {
                     .max_exposure_time.clone().unwrap()).unwrap();
             {
                 let locked_camera = camera.lock().await;
-                let (width, height) = locked_camera.dimensions();
+                (width, height) = locked_camera.dimensions();
                 let _display_sampling;
                 (binning, _display_sampling) =
                     Self::compute_binning(&locked_state, width as u32, height as u32);
@@ -1394,6 +1395,8 @@ impl MyCedar {
                 let mut locked_calibration_data = calibration_data.lock().await;
                 locked_calibration_data.plate_solve_failed = Some(false);
                 locked_calibration_data.fov_horizontal = Some(fov);
+                locked_calibration_data.fov_vertical =
+                    Some(fov * height as f64 / width as f64);
                 locked_calibration_data.lens_distortion = Some(distortion);
                 locked_calibration_data.match_max_error = Some(match_max_error);
                 let sensor_width_mm = camera.lock().await.sensor_size().0 as f64;
@@ -1492,8 +1495,6 @@ impl MyCedar {
                     let (scaled_width, scaled_height) = img.dimensions();
                     let jpg_buf = Self::jpeg_encode(&img);
                     let binning_factor = locked_state.scaled_image_binning_factor as i32;
-                    let rotation_size_ratio =
-                        locked_state.scaled_image_rotation_size_ratio;
                     let image_rectangle = Rectangle{
                         origin_x: 0, origin_y: 0,
                         width: scaled_width as i32 * binning_factor,
@@ -1501,7 +1502,7 @@ impl MyCedar {
                     };
                     frame_result.image = Some(Image{
                         binning_factor,
-                        rotation_size_ratio,
+                        rotation_size_ratio: 1.0,
                         // Rectangle is always in full resolution coordinates.
                         rectangle: Some(image_rectangle),
                         image_data: jpg_buf,
@@ -1560,9 +1561,6 @@ impl MyCedar {
         frame_result.frame_id = detect_result.frame_id;
         let captured_image = &detect_result.captured_image;
         let (width, height) = captured_image.image.dimensions();
-        let image_rectangle = Rectangle{
-            origin_x: 0, origin_y: 0,
-            width: width as i32, height: height as i32};
         frame_result.exposure_time = Some(prost_types::Duration::try_from(
             captured_image.capture_params.exposure_duration).unwrap());
         frame_result.capture_time = Some(prost_types::Timestamp::try_from(
@@ -1592,46 +1590,6 @@ impl MyCedar {
 
         let (binning, display_sampling) =
             Self::compute_binning(&locked_state, width, height);
-
-        if let Some(fa) = &detect_result.focus_aid {
-            let ic = ImageCoord {
-                x: fa.center_peak_position.0,
-                y: fa.center_peak_position.1,
-            };
-            *locked_state.center_peak_position.lock().unwrap() = Some(ic.clone());
-            frame_result.center_peak_position = Some(ic);
-            frame_result.center_peak_value = Some(fa.center_peak_value as i32);
-
-            // Populate `center_peak_image`.
-            let center_peak_image = &fa.peak_image;
-            let peak_image_region = &fa.peak_image_region;
-            // center_peak_image_image is taken from the camera's full
-            // resolution acquired image. If it is a color camera, we 2x2 bin it
-            // to avoid displaying the Bayer grid.
-            let binning_factor;
-            let center_peak_jpg_buf;
-            if is_color {
-                let binned_center_peak_image = bin_2x2(center_peak_image.clone());
-                binning_factor = 2;
-                center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(binned_center_peak_image));
-            } else {
-                binning_factor = 1;
-                center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(center_peak_image.clone()));
-            }
-            frame_result.center_peak_image = Some(Image{
-                binning_factor,
-                rotation_size_ratio: 1.0,  // Is not rotated.
-                rectangle: Some(Rectangle{
-                    origin_x: peak_image_region.left(),
-                    origin_y: peak_image_region.top(),
-                    width: peak_image_region.width() as i32,
-                    height: peak_image_region.height() as i32,
-                }),
-                image_data: center_peak_jpg_buf,
-            });
-        } else {
-            *locked_state.center_peak_position.lock().unwrap() = None;
-        }
 
         // Populate `image` as requested.
         let mut disp_image = &captured_image.image;
@@ -1704,44 +1662,83 @@ impl MyCedar {
         }
 
         locked_state.scaled_image_binning_factor = binning_factor;
-        locked_state.scaled_image_rotation_size_ratio = 1.0;
 
-        // Outside of focus mode or daylight align mode, we rotate
-        // resized_disp_image to orient zenith up.
-        let mut image_rotator: Option<ImageRotator> = None;
-        if detect_result.focus_aid.is_none() && !daylight_mode
-        {
-            // See if frame_result has location_based_info, pick up zenith
-            // angle.
-            if let Some(ref mut lbi) = frame_result.location_based_info {
-                let zenith_roll_angle = lbi.zenith_roll_angle;
-                let image_rotate_angle =
-                    if landscape {
-                        -zenith_roll_angle
-                    } else {
-                        90.0 - zenith_roll_angle
-                    };
-                // Adjust reported roll angles for image rotation.
-                lbi.zenith_roll_angle += image_rotate_angle;
-                // Result is 0 or 90, no need to adjust for mod 360.
-                if let Some(psp) = &mut plate_solution_proto {
-                    psp.roll = (psp.roll + image_rotate_angle) % 360.0;
-                    // Arrange for angle to be 0..360.
-                    if psp.roll < 0.0 {
-                        psp.roll += 360.0;
-                    }
+        if detect_result.focus_aid.is_some() || daylight_mode {
+            locked_state.image_rotator = ImageRotator::new(0.0);
+        } else if let Some(ref mut lbi) = frame_result.location_based_info {
+            let zenith_roll_angle = lbi.zenith_roll_angle;
+            let image_rotate_angle =
+                if landscape {
+                    -zenith_roll_angle
+                } else {
+                    90.0 - zenith_roll_angle
+                };
+            // Adjust reported roll angles for image rotation.
+            lbi.zenith_roll_angle += image_rotate_angle;
+            // Result is 0 or 90, no need to adjust for mod 360.
+            if let Some(psp) = &mut plate_solution_proto {
+                psp.roll = (psp.roll + image_rotate_angle) % 360.0;
+                // Arrange for angle to be 0..360.
+                if psp.roll < 0.0 {
+                    psp.roll += 360.0;
                 }
-                locked_state.image_rotator =
-                    Some(ImageRotator::new(width, height, image_rotate_angle));
+            }
+            locked_state.image_rotator = ImageRotator::new(image_rotate_angle);
+        } else {
+            // Plate solve dropout. Use previous locked_state.image_rotator.
+        }
+
+        let irr = locked_state.image_rotator.clone();
+        resize_result = Arc::new(irr.rotate_image_and_crop(&resized_disp_image));
+        resized_disp_image = &resize_result;
+
+        // Portion of camera image (in original full resolution units) that
+        // resized_disp_image corresponds to.
+        let disp_image_rectangle = irr.get_cropped_region(width, height);
+
+        if let Some(fa) = &detect_result.focus_aid {
+            let mut ic = ImageCoord {
+                x: fa.center_peak_position.0,
+                y: fa.center_peak_position.1,
+            };
+            // Apply rotator to ic.
+            (ic.x, ic.y) = irr.transform_to_rotated(
+                ic.x, ic.y, width as u32, height as u32);
+
+            *locked_state.center_peak_position.lock().unwrap() = Some(ic.clone());
+            frame_result.center_peak_position = Some(ic);
+            frame_result.center_peak_value = Some(fa.center_peak_value as i32);
+
+            // Populate `center_peak_image`.
+            let center_peak_image = &fa.peak_image;
+            let peak_image_region = &fa.peak_image_region;
+            // center_peak_image_image is taken from the camera's full
+            // resolution acquired image. If it is a color camera, we 2x2 bin it
+            // to avoid displaying the Bayer grid.
+            let binning_factor;
+            let center_peak_jpg_buf;
+            if is_color {
+                let binned_center_peak_image = bin_2x2(center_peak_image.clone());
+                binning_factor = 2;
+                center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(binned_center_peak_image));
             } else {
-                // Use previous ImageRotator, if any.
+                binning_factor = 1;
+                center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(center_peak_image.clone()));
             }
-            image_rotator = locked_state.image_rotator.clone();
-            if let Some(ref irr) = image_rotator {
-                resize_result = Arc::new(irr.rotate_image(&resized_disp_image, /*fill=*/0));
-                resized_disp_image = &resize_result;
-                locked_state.scaled_image_rotation_size_ratio = irr.size_ratio();
-            }
+
+            frame_result.center_peak_image = Some(Image{
+                binning_factor,
+                rotation_size_ratio: 1.0,
+                rectangle: Some(Rectangle{
+                    origin_x: peak_image_region.left(),
+                    origin_y: peak_image_region.top(),
+                    width: peak_image_region.width() as i32,
+                    height: peak_image_region.height() as i32,
+                }),
+                image_data: center_peak_jpg_buf,
+            });
+        } else {
+            *locked_state.center_peak_position.lock().unwrap() = None;
         }
 
         let gamma = if daylight_mode { 1.0 } else { 0.7 };
@@ -1754,9 +1751,9 @@ impl MyCedar {
         locked_state.scaled_image_frame_id = frame_result.frame_id;
         frame_result.image = Some(Image{
             binning_factor: binning_factor as i32,
-            rotation_size_ratio: locked_state.scaled_image_rotation_size_ratio,
+            rotation_size_ratio: 1.0,
             // Rectangle is always in full resolution coordinates.
-            rectangle: Some(image_rectangle),
+            rectangle: Some(disp_image_rectangle),
             image_data: jpg_buf,
         });
 
@@ -1792,28 +1789,15 @@ impl MyCedar {
                         (1, boresight_image.clone())
                     };
 
-                let rotated_boresight_image;
-                let boresight_rotation_size_ratio;
-                if let Some(ref irr) = image_rotator {
-                    let bsi_rotator =
-                        ImageRotator::new(resized_boresight_image.width(),
-                                          resized_boresight_image.height(),
-                                          irr.angle());
-                    rotated_boresight_image =
-                        bsi_rotator.rotate_image(&resized_boresight_image, /*fill=*/0);
-                    boresight_rotation_size_ratio = bsi_rotator.size_ratio();
-                } else {
-                    rotated_boresight_image = resized_boresight_image.clone();
-                    boresight_rotation_size_ratio = 1.0;
-                }
-
+                let rotated_boresight_image =
+                    irr.rotate_image_and_crop(&resized_boresight_image);
                 let jpg_buf =
                     Self::jpeg_encode(&Arc::new(rotated_boresight_image.clone()));
 
                 let bsi_rect = psr.boresight_image_region.unwrap();
                 frame_result.boresight_image = Some(Image{
                     binning_factor,
-                    rotation_size_ratio: boresight_rotation_size_ratio,
+                    rotation_size_ratio: 1.0,
                     // Rectangle is always in full resolution coordinates.
                     rectangle: Some(Rectangle{origin_x: bsi_rect.left(),
                                               origin_y: bsi_rect.top(),
@@ -1822,9 +1806,8 @@ impl MyCedar {
                     image_data: jpg_buf,
                 });
             }  // boresight_image
-            if frame_result.slew_request.is_some() && image_rotator.is_some() {
+            if frame_result.slew_request.is_some() {
                 let slew_request = &mut frame_result.slew_request.as_mut().unwrap();
-                let irr = &image_rotator.as_ref().unwrap();
                 if slew_request.image_pos.is_some() {
                     // Apply rotator to slew target.
                     let slew_target_image_pos =
@@ -1845,11 +1828,9 @@ impl MyCedar {
                 frame_result.labeled_catalog_entries =
                     Vec::<FovCatalogEntry>::with_capacity(fces.len());
                 for ref mut fce in fces {
-                    if let Some(ref irr) = image_rotator {
-                        let pos = fce.image_pos.as_mut().unwrap();
-                        (pos.x, pos.y) = irr.transform_to_rotated(
-                            pos.x, pos.y, width, height);
-                    }
+                    let pos = fce.image_pos.as_mut().unwrap();
+                    (pos.x, pos.y) = irr.transform_to_rotated(
+                        pos.x, pos.y, width, height);
                     frame_result.labeled_catalog_entries.push(fce.clone());
                 }
             }
@@ -1857,11 +1838,9 @@ impl MyCedar {
                 frame_result.unlabeled_catalog_entries =
                     Vec::<FovCatalogEntry>::with_capacity(decrowded_fces.len());
                 for ref mut fce in decrowded_fces {
-                    if let Some(ref irr) = image_rotator {
-                        let pos = fce.image_pos.as_mut().unwrap();
-                        (pos.x, pos.y) = irr.transform_to_rotated(
-                            pos.x, pos.y, width, height);
-                    }
+                    let pos = fce.image_pos.as_mut().unwrap();
+                    (pos.x, pos.y) = irr.transform_to_rotated(
+                        pos.x, pos.y, width, height);
                     frame_result.unlabeled_catalog_entries.push(fce.clone());
                 }
             }
@@ -1943,6 +1922,14 @@ impl MyCedar {
                 frame_result.star_candidates = Vec::<StarCentroid>::new();
                 for star in &psp.catalog_stars {
                     let ic = star.pixel.clone().unwrap();
+                    let distance_from_center =
+                        ((width as f64 / 2.0 - ic.x) *
+                         (width as f64  / 2.0 - ic.x) +
+                         (height as f64 / 2.0 - ic.y) *
+                         (height as f64  / 2.0 - ic.y)).sqrt();
+                    if distance_from_center > height as f64 / 2.0 {
+                        continue;
+                    }
                     frame_result.star_candidates.push(
                         StarCentroid{centroid_position: Some(ImageCoord{x: ic.x, y: ic.y}),
                                      // Arbitrarily assign intensity=1 to mag=6.
@@ -1953,28 +1940,24 @@ impl MyCedar {
                 }
             }
         }
-        if let Some(ref irr) = image_rotator {
-            // Having an image_rotator implies that we are not in focus or
-            // daytime align mode.
 
-            // Transform the boresight coords.
-            let bp = frame_result.boresight_position.as_mut().unwrap();
-            (bp.x, bp.y) = irr.transform_to_rotated(bp.x, bp.y, width, height);
+        // Transform the boresight coords.
+        let bp = frame_result.boresight_position.as_mut().unwrap();
+        (bp.x, bp.y) = irr.transform_to_rotated(bp.x, bp.y, width, height);
 
-            // Transform the detected (or plate solve catalog) star image coordinates.
-            for star_centroid in &mut frame_result.star_candidates {
-                let cp = star_centroid.centroid_position.as_mut().unwrap();
-                (cp.x, cp.y) = irr.transform_to_rotated(
-                    cp.x, cp.y, width, height);
-            }
+        // Transform the detected (or plate solve catalog) star image coordinates.
+        for star_centroid in &mut frame_result.star_candidates {
+            let cp = star_centroid.centroid_position.as_mut().unwrap();
+            (cp.x, cp.y) = irr.transform_to_rotated(
+                cp.x, cp.y, width, height);
+        }
 
-            // Setup align mode?
-            if operating_mode == OperatingMode::Setup as i32 && !focus_assist_mode {
-                // Augment the detected stars with catalog items from the plate solution.
-                // The labeled_catalog_entries have already been transformed to rotated.
-                frame_result.star_candidates = fill_in_detections(
-                    &frame_result.star_candidates, &frame_result.labeled_catalog_entries);
-            }
+        // Setup align mode?
+        if operating_mode == OperatingMode::Setup as i32 && !focus_assist_mode {
+            // Augment the detected stars with catalog items from the plate solution.
+            // The labeled_catalog_entries have already been transformed to rotated.
+            frame_result.star_candidates = fill_in_detections(
+                &frame_result.star_candidates, &frame_result.labeled_catalog_entries);
         }
 
         frame_result.calibration_data =
@@ -2279,9 +2262,8 @@ impl MyCedar {
                 preferences: shared_preferences.clone(),
                 scaled_image: None,
                 scaled_image_binning_factor: 1,
-                scaled_image_rotation_size_ratio: 1.0,
                 scaled_image_frame_id: 0,
-                image_rotator: None,
+                image_rotator: ImageRotator::new(0.0),
                 calibrating: false,
                 cancel_calibration: Arc::new(Mutex::new(false)),
                 calibration_start: Instant::now(),

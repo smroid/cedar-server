@@ -22,10 +22,6 @@ struct Args {
     /// Rotation angle, degrees.
     #[arg(short, long)]
     angle: f64,
-
-    /// Fill value.
-    #[arg(short, long, default_value_t = 128)]
-    fill: u8,
 }
 
 fn main() {
@@ -49,9 +45,9 @@ fn main() {
     };
     let input_img = img.to_luma8();
     let (width, height) = input_img.dimensions();
-    let image_rotator = ImageRotator::new(width, height, args.angle);
+    let image_rotator = ImageRotator::new(args.angle);
     let rotate_start = Instant::now();
-    let output_img = image_rotator.rotate_image(&input_img, args.fill);
+    let output_img = image_rotator.rotate_image_and_crop(&input_img);
     let elapsed = rotate_start.elapsed();
     info!("Rotated in {:?}", elapsed);
 

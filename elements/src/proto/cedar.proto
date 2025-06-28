@@ -357,8 +357,9 @@ message FrameResult {
 
   // Information returned regardless of `operating_mode`.
 
-  // The image from which information in this FrameResult is derived. This image
-  // is from the entire sensor, typically with some amount of binning.
+  // A portion of the image from which information in this FrameResult is
+  // derived. This image is cropped to be the center square portion of the
+  // sensor (full height), typically with some amount of binning.
   // Note that this image has stretch/gamma applied for better visibility of
   // dark features (unless OperationSettings.daylight_mode is in effect, in
   // which case a more natural rendering is used).
@@ -471,10 +472,6 @@ message Image {
   // 8: 8x lower resolution than camera sensor.
   int32 binning_factor = 1;
 
-  // If image was rotated for display, this is the degree by which the image
-  // was shrunk to fit. Always >= 1.0.
-  double rotation_size_ratio = 4;
-
   // Specifies what part of the camera sensor this Image corresponds to, in full
   // resolution units. If binning_factor is B, the `image_data` dimensions are
   // rectangle.width/B, rectangle.height/B (floored).
@@ -482,6 +479,8 @@ message Image {
 
   // Must be a recognized file format, e.g. BMP or JPEG grayscale 8 bits per pixel.
   bytes image_data = 3;
+
+  double rotation_size_ratio = 4;  // Deprecated. Always 1.0.
 }
 
 // Describes the position/size of an region within the camera's sensor. In
@@ -630,9 +629,10 @@ message CalibrationData {
   optional int32 camera_offset = 3;
 
   // The angular size (degrees) of the camera's width (longer dimension)
-  // projected onto the sky.
+  // and height projected onto the sky.
   // Omitted if a sky/camera calibration has not succeeded.
   optional double fov_horizontal = 4;
+  optional double fov_vertical = 11;
 
   // The plate solver's estimate of the lens distortion (pincushion or barrel).
   // Omitted if a sky/camera calibration has not succeeded.
