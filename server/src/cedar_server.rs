@@ -1481,11 +1481,13 @@ impl MyCedar {
         let mut fixed_settings;
         let operating_mode;
         let focus_assist_mode;
+        let daylight_mode;
         {
             let locked_state = state.lock().await;
             fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
             operating_mode = locked_state.operation_settings.operating_mode.unwrap();
             focus_assist_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
+            daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
             // Fill in our current time.
             Self::fill_in_time(&mut fixed_settings);
 
@@ -1541,31 +1543,33 @@ impl MyCedar {
         let mut plate_solution_proto: Option<PlateSolutionProto> = None;
 
         let detect_result =
-            if operating_mode == OperatingMode::Setup as i32 && focus_assist_mode {
-                // TODO: don't hold state.lock() across a blocking call to
-                // get_next_result(). Poll it non-blocking. Not urgent, as our
-                // calls are currently non-blocking.
-                let dr = state.lock().await.detect_engine.lock().await.
-                    get_next_result(prev_frame_id, non_blocking).await;
-                if dr.is_none() {
-                    return None;
-                }
+            if operating_mode == OperatingMode::Setup as i32 &&
+            (focus_assist_mode || daylight_mode)
+        {
+            // TODO: don't hold state.lock() across a blocking call to
+            // get_next_result(). Poll it non-blocking. Not urgent, as our
+            // calls are currently non-blocking.
+            let dr = state.lock().await.detect_engine.lock().await.
+                get_next_result(prev_frame_id, non_blocking).await;
+            if dr.is_none() {
+                return None;
+            }
 
-                dr.unwrap()
-            } else {
-                // TODO: don't hold state.lock() across a blocking call to
-                // get_next_result(). Poll it non-blocking. Not urgent, as our
-                // calls are currently non-blocking.
-                plate_solution = state.lock().await.solve_engine.lock().await.
-                    get_next_result(prev_frame_id, non_blocking).await;
-                if plate_solution.is_none() {
-                    return None;
-                }
-                let psr = plate_solution.as_ref().unwrap();
-                plate_solution_proto = psr.plate_solution.clone();
+            dr.unwrap()
+        } else {
+            // TODO: don't hold state.lock() across a blocking call to
+            // get_next_result(). Poll it non-blocking. Not urgent, as our
+            // calls are currently non-blocking.
+            plate_solution = state.lock().await.solve_engine.lock().await.
+                get_next_result(prev_frame_id, non_blocking).await;
+            if plate_solution.is_none() {
+                return None;
+            }
+            let psr = plate_solution.as_ref().unwrap();
+            plate_solution_proto = psr.plate_solution.clone();
 
-                psr.detect_result.clone()
-            };
+            psr.detect_result.clone()
+        };
         let serve_start_time = Instant::now();
         let mut locked_state = state.lock().await;
         let is_color = locked_state.camera.lock().await.is_color();
