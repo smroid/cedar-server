@@ -356,9 +356,11 @@ impl DetectEngine {
                     };
                     if capture.is_none() {
                         let short_delay = Duration::from_millis(10);
-                        if let Some(delay_est) =
-                            camera.lock().await.estimate_delay(frame_id)
+                        let delay_est;
                         {
+                            delay_est = camera.lock().await.estimate_delay(frame_id);
+                        }
+                        if let Some(delay_est) = delay_est {
                             tokio::time::sleep(max(delay_est, short_delay)).await;
                         } else {
                             tokio::time::sleep(short_delay).await;
