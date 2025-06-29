@@ -207,8 +207,9 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::failed_precondition(
                 format!("Error reading log file {:?}: {:?}.", self.log_file, e)));
         }
-        let mut response = ServerLogResult::default();
-        response.log_content = tail.unwrap();
+        let response = cedar_elements::cedar::ServerLogResult{
+            log_content: tail.unwrap()
+        };
 
         Ok(tonic::Response::new(response))
     }
@@ -305,7 +306,7 @@ impl Cedar for MyCedar {
                         // In SETUP focus assist mode we run at full speed with
                         // pre-calibrate settings.
                         if let Err(x) = Self::set_update_interval(
-                            &*locked_state, Duration::ZERO).await
+                            &locked_state, Duration::ZERO).await
                         {
                             return Err(tonic_status(x));
                         }
@@ -358,7 +359,7 @@ impl Cedar for MyCedar {
                         let std_duration = std::time::Duration::try_from(
                             update_interval).unwrap();
                         if let Err(x) = Self::set_update_interval(
-                            &*locked_state, std_duration).await
+                            &locked_state, std_duration).await
                         {
                             return Err(tonic_status(x));
                         }
@@ -440,7 +441,7 @@ impl Cedar for MyCedar {
                     // Entering focus assist mode.
                     // Run at full speed for focus assist.
                     if let Err(x) = Self::set_update_interval(
-                        &*locked_state, Duration::ZERO).await
+                        &locked_state, Duration::ZERO).await
                     {
                         return Err(tonic_status(x));
                     }
@@ -483,7 +484,7 @@ impl Cedar for MyCedar {
                     Some(OperatingMode::Operate as i32) ||
                     !locked_state.operation_settings.focus_assist_mode.unwrap()
                 {
-                    if let Err(x) = Self::set_update_interval(&*locked_state,
+                    if let Err(x) = Self::set_update_interval(&locked_state,
                                                               std_duration).await {
                         return Err(tonic_status(x));
                     }
@@ -568,7 +569,7 @@ impl Cedar for MyCedar {
             {
                 std_duration = Duration::ZERO;  // Fast update mode for focusing.
             }
-            if let Err(x) = Self::set_update_interval(&*locked_state,
+            if let Err(x) = Self::set_update_interval(&locked_state,
                                                       std_duration).await {
                 return Err(tonic_status(x));
             }
@@ -728,8 +729,8 @@ impl Cedar for MyCedar {
         }
         if req.capture_boresight.unwrap_or(false) {
             let operating_mode =
-                self.state.lock().await.operation_settings.operating_mode.or(
-                    Some(OperatingMode::Setup as i32)).unwrap();
+                self.state.lock().await.operation_settings.operating_mode
+                .unwrap_or(OperatingMode::Setup as i32);
             if operating_mode == OperatingMode::Setup as i32 {
                 return Err(tonic::Status::failed_precondition(
                     "Capture boresight not valid in setup mode."));
@@ -751,7 +752,7 @@ impl Cedar for MyCedar {
                 self.update_preferences(tonic::Request::new(preferences)).await?;
             } else {
                 return Err(tonic::Status::failed_precondition(
-                    format!("No slew request active")));
+                    "No slew request active".to_string()));
             }
         }  // capture_boresight.
         if let Some(mut bsp) = req.designate_boresight {
@@ -771,7 +772,7 @@ impl Cedar for MyCedar {
                  (height as f64 / 2.0 - bsp.y) * (height as f64  / 2.0 - bsp.y)).sqrt();
             if distance_from_center > height as f64 / 2.0 {
                 return Err(tonic::Status::failed_precondition(
-                    format!("Too far from center")));
+                    "Too far from center".to_string()));
             }
 
             if let Err(x) = self.state.lock().await.solve_engine.lock().await.
@@ -891,7 +892,7 @@ impl Cedar for MyCedar {
             get_next_result(None, /*non_blocking=*/false).await.unwrap();
         let sky_location =
             if let Some(psp) = plate_solution.plate_solution.as_ref() {
-                if psp.target_sky_coord.len() > 0 {
+                if !psp.target_sky_coord.is_empty() {
                     Some(psp.target_sky_coord[0].clone())
                 } else {
                     psp.image_sky_coord.clone()
@@ -1120,8 +1121,7 @@ impl MyCedar {
                         Duration::from_secs(5) + calibration_solve_timeout;
                     locked_state.calibration_data.lock().await
                         .calibration_time =
-                        Some(prost_types::Timestamp::try_from(
-                            SystemTime::now()).unwrap());
+                        Some(prost_types::Timestamp::from(SystemTime::now()));
                     locked_state.detect_engine.lock().await
                         .set_autoexposure_enabled(false);
                 }
@@ -1172,7 +1172,7 @@ impl MyCedar {
                         let std_duration = std::time::Duration::try_from(
                             update_interval).unwrap();
                         if let Err(x) = Self::set_update_interval(
-                            &*locked_state, std_duration).await
+                            &locked_state, std_duration).await
                         {
                             return Err(tonic_status(x));
                         }
@@ -1200,10 +1200,9 @@ impl MyCedar {
             warn!("Could not write file {:?}: {:?}", &scratch_path, e);
             return;
         }
-        if let Err(e) = fs::rename(&scratch_path, &prefs_path) {
+        if let Err(e) = fs::rename(&scratch_path, prefs_path) {
             warn!("Could not rename file {:?} to {:?}: {:?}",
                   &scratch_path, &prefs_path, e);
-            return;
         }
     }
 
@@ -1266,15 +1265,16 @@ impl MyCedar {
         let temp_str =
             fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").unwrap();
         server_info.cpu_temperature = temp_str.trim().parse::<f32>().unwrap() / 1000.0;
-        server_info.server_time = Some(prost_types::Timestamp::try_from(
-            SystemTime::now()).unwrap());
+        server_info.server_time =
+            Some(prost_types::Timestamp::from(SystemTime::now()));
     }
 
     fn fill_in_time(fixed_settings: &mut FixedSettings) {
         if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
-            let mut pst = prost_types::Timestamp::default();
-            pst.seconds = cur_time.tv_sec();
-            pst.nanos = cur_time.tv_nsec() as i32;
+            let pst = prost_types::Timestamp{
+                seconds: cur_time.tv_sec(),
+                nanos: cur_time.tv_nsec() as i32
+            };
             fixed_settings.current_time = Some(pst);
         }
     }
@@ -1460,8 +1460,7 @@ impl MyCedar {
 
     fn jpeg_encode(img: &Arc<GrayImage>) -> Vec::<u8> {
         let (width, height) = img.dimensions();
-        let mut jpg_buf = Vec::<u8>::new();
-        jpg_buf.reserve((width * height) as usize);
+        let mut jpg_buf = Vec::<u8>::with_capacity((width * height) as usize);
         let mut buffer = Cursor::new(&mut jpg_buf);
         // 75: 40x compression, bad artifacts.
         // 90: 20x compression, mild artifacts.
@@ -1507,7 +1506,7 @@ impl MyCedar {
 
                 if let Some(img) = &locked_state.scaled_image {
                     let (scaled_width, scaled_height) = img.dimensions();
-                    let jpg_buf = Self::jpeg_encode(&img);
+                    let jpg_buf = Self::jpeg_encode(img);
                     let binning_factor = locked_state.scaled_image_binning_factor as i32;
                     let image_rectangle = Rectangle{
                         origin_x: 0, origin_y: 0,
@@ -1579,8 +1578,8 @@ impl MyCedar {
         let (width, height) = captured_image.image.dimensions();
         frame_result.exposure_time = Some(prost_types::Duration::try_from(
             captured_image.capture_params.exposure_duration).unwrap());
-        frame_result.capture_time = Some(prost_types::Timestamp::try_from(
-            captured_image.readout_time).unwrap());
+        frame_result.capture_time = Some(prost_types::Timestamp::from(
+            captured_image.readout_time));
         frame_result.fixed_settings = Some(fixed_settings.clone());
         frame_result.preferences =
             Some(locked_state.preferences.lock().unwrap().clone());
@@ -1642,10 +1641,10 @@ impl MyCedar {
 
         if let Some(ref psp) = plate_solution_proto {
             let celestial_coords =
-                if psp.target_sky_coord.len() > 0 {
-                    psp.target_sky_coord[0].clone()
-                } else {
+                if psp.target_sky_coord.is_empty() {
                     psp.image_sky_coord.as_ref().unwrap().clone()
+                } else {
+                    psp.target_sky_coord[0].clone()
                 };
             let bs_ra = celestial_coords.ra.to_radians();
             let bs_dec = celestial_coords.dec.to_radians();
@@ -1705,7 +1704,7 @@ impl MyCedar {
         }
 
         let irr = locked_state.image_rotator.clone();
-        resize_result = Arc::new(irr.rotate_image_and_crop(&resized_disp_image));
+        resize_result = Arc::new(irr.rotate_image_and_crop(resized_disp_image));
         resized_disp_image = &resize_result;
 
         // Portion of camera image (in original full resolution units) that
@@ -1718,8 +1717,7 @@ impl MyCedar {
                 y: fa.center_peak_position.1,
             };
             // Apply rotator to ic.
-            (ic.x, ic.y) = irr.transform_to_rotated(
-                ic.x, ic.y, width as u32, height as u32);
+            (ic.x, ic.y) = irr.transform_to_rotated(ic.x, ic.y, width, height);
 
             *locked_state.center_peak_position.lock().unwrap() = Some(ic.clone());
             frame_result.center_peak_position = Some(ic);
@@ -1831,7 +1829,7 @@ impl MyCedar {
                     (slew_target_image_pos.x, slew_target_image_pos.y) =
                         irr.transform_to_rotated(
                             slew_target_image_pos.x, slew_target_image_pos.y,
-                            width as u32, height as u32);
+                            width, height);
                 }
                 if let Some(ta) = slew_request.target_angle {
                     // Apply rotator to slew direction.
@@ -1865,10 +1863,10 @@ impl MyCedar {
             frame_result.plate_solution = Some(psp.clone());
             if let Some(ref mut slew_request) = frame_result.slew_request {
                 let celestial_coords =
-                    if psp.target_sky_coord.len() > 0 {
-                        psp.target_sky_coord[0].clone()
-                    } else {
+                    if psp.target_sky_coord.is_empty() {
                         psp.image_sky_coord.as_ref().unwrap().clone()
+                    } else {
+                        psp.target_sky_coord[0].clone()
                     };
                 let bs_ra = celestial_coords.ra.to_radians();
                 let bs_dec = celestial_coords.dec.to_radians();
@@ -2208,9 +2206,10 @@ impl MyCedar {
         }
 
         let shared_preferences = Arc::new(Mutex::new(preferences));
+        let copied_preferences = shared_preferences.lock().unwrap().clone();
 
         let fixed_settings = Arc::new(Mutex::new(FixedSettings {
-            observer_location: shared_preferences.lock().unwrap().observer_location.clone(),
+            observer_location: copied_preferences.observer_location.clone(),
             current_time: None,
             session_name: None,
             max_exposure_time: Some(
@@ -2245,7 +2244,6 @@ impl MyCedar {
         });
         let state =
         {
-            let locked_preferences = shared_preferences.lock().unwrap();
             Arc::new(tokio::sync::Mutex::new(CedarState {
                 solver: solver.clone(),
                 attached_camera: attached_camera.clone(),
@@ -2256,10 +2254,10 @@ impl MyCedar {
                     operating_mode: Some(OperatingMode::Setup as i32),
                     daylight_mode: Some(false),
                     focus_assist_mode: Some(true),
-                    update_interval: locked_preferences.update_interval.clone(),
+                    update_interval: copied_preferences.update_interval.clone(),
                     dwell_update_interval: None,
                     log_dwelled_positions: Some(false),
-                    catalog_entry_match: locked_preferences.catalog_entry_match.clone(),
+                    catalog_entry_match: copied_preferences.catalog_entry_match.clone(),
                     demo_image_filename: None,
                 },
                 calibration_data: Arc::new(tokio::sync::Mutex::new(
@@ -2332,9 +2330,9 @@ impl MyCedar {
         locked_state.detect_engine.lock().await.set_daylight_mode(
             locked_state.operation_settings.daylight_mode.unwrap());
         locked_state.solve_engine.lock().await.set_catalog_entry_match(
-            shared_preferences.lock().unwrap().catalog_entry_match.clone()).await;
+            copied_preferences.catalog_entry_match.clone()).await;
         locked_state.solve_engine.lock().await.set_align_mode(true).await;
-        if let Some(bsp) = &shared_preferences.lock().unwrap().boresight_pixel {
+        if let Some(bsp) = &copied_preferences.boresight_pixel {
             locked_state.solve_engine.lock().await.set_boresight_pixel(
                 Some(ImageCoord{x: bsp.x, y: bsp.y})).await.unwrap();
         }
@@ -2372,7 +2370,7 @@ impl MyCedar {
         }
     }
 
-    fn read_log_tail(log_file: &PathBuf, bytes_to_read: i32) -> io::Result<String> {
+    fn read_log_tail(log_file: &Path, bytes_to_read: i32) -> io::Result<String> {
         let pat = log_file.to_str().unwrap().to_owned() + ".*";
         let latest_file = Self::find_most_recent_file(&pat);
         if latest_file.is_none() {
@@ -2432,10 +2430,10 @@ impl MyCedar {
             let plate_solution = plate_solution.unwrap();
             // Update SkySafari telescope interface with our position.
             let coords =
-                if plate_solution.target_sky_coord.len() > 0 {
-                    plate_solution.target_sky_coord[0].clone()
-                } else {
+                if plate_solution.target_sky_coord.is_empty() {
                     plate_solution.image_sky_coord.as_ref().unwrap().clone()
+                } else {
+                    plate_solution.target_sky_coord[0].clone()
                 };
             let mut locked_telescope_position = telescope_position.lock().unwrap();
             locked_telescope_position.boresight_ra = coords.ra;
@@ -2668,7 +2666,7 @@ pub fn server_main(
     let (non_blocking_stdout, _guard2) = NonBlockingBuilder::default()
         .lossy(false)
         .finish(std::io::stdout());
-    let _subscriber = registry()
+    registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(fmt::layer().with_writer(non_blocking_stdout))
         .with(fmt::layer().with_ansi(false).with_writer(non_blocking_file))
@@ -2714,8 +2712,9 @@ fn get_camera(
     let pixels = vec![16_u8; width * height];
     let img_u8 = GrayImage::from_vec(
         width as u32, height as u32, pixels).unwrap();
-    return Arc::new(tokio::sync::Mutex::new(Box::new(
-        ImageCamera::new(img_u8).unwrap())));
+
+    Arc::new(tokio::sync::Mutex::new(Box::new(
+        ImageCamera::new(img_u8).unwrap())))
 }
 
 #[tokio::main]
@@ -2771,17 +2770,15 @@ async fn async_main(
 
     let feature_level = if product_name.eq_ignore_ascii_case("Cedar-Box") {
         FeatureLevel::Diy
-    } else {
-        if let Some(attached_camera) = &attached_camera {
-            let camera_model = attached_camera.lock().await.model();
-            if camera_model == "imx296" || camera_model == "imx290" {
-                FeatureLevel::Plus  // Hopper.
-            } else {
-                FeatureLevel::Basic  // Hopper LE.
-            }
+    } else if let Some(attached_camera) = &attached_camera {
+        let camera_model = attached_camera.lock().await.model();
+        if camera_model == "imx296" || camera_model == "imx290" {
+            FeatureLevel::Plus  // Hopper.
         } else {
-            FeatureLevel::Diy
+            FeatureLevel::Basic  // Hopper LE.
         }
+    } else {
+        FeatureLevel::Diy
     };
 
     if let Some(binning_arg) = args.binning {
@@ -3047,7 +3044,7 @@ mod tests {
             ..Default::default()
         };
         let prefs2_bytes = Preferences::encode_to_vec(&prefs2);
-        prefs1.merge(&*prefs2_bytes).unwrap();
+        prefs1.merge(&prefs2_bytes).unwrap();
 
         // Field present only in prefs1.
         assert_eq!(prefs1.eyepiece_fov, Some(1.0));

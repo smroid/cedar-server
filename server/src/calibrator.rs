@@ -368,7 +368,7 @@ impl Calibrator {
         let solve_duration = std::time::Duration::try_from(
             plate_solution2.solve_time.unwrap()).unwrap();
 
-        return Ok((fov, distortion, match_max_error, solve_duration));
+        Ok((fov, distortion, match_max_error, solve_duration))
     }
 
     async fn acquire_image_get_stars(
@@ -381,9 +381,9 @@ impl Calibrator {
             Self::capture_image(self.camera.clone(), frame_id).await?;
         // Run CedarDetect on the image.
         let image = &captured_image.image;
-        let noise_estimate = estimate_noise_from_image(&image);
+        let noise_estimate = estimate_noise_from_image(image);
         let (stars, _, _, histogram) =
-            get_stars_from_image(&image, noise_estimate, detection_sigma,
+            get_stars_from_image(image, noise_estimate, detection_sigma,
                                  self.normalize_rows, detection_binning,
                                  /*detect_hot_pixels*/true,
                                  /*return_binned_image=*/false);

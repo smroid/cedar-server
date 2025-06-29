@@ -146,14 +146,14 @@ impl RateEstimation {
 
     fn estimate_value(&self, time: SystemTime) -> f64 {
         let x = time.duration_since(self.first).unwrap().as_secs_f64();
-        (self.intercept + x * self.slope).into()
+        self.intercept + x * self.slope
     }
 
     // Returns estimated rate of change in value per second of time.
     // count() must be at least 2.
     pub fn slope(&self) -> f64 {
         assert!(self.count() > 1);
-        self.slope.into()
+        self.slope
     }
 
     // This bound is an estimate of the +/- range of slope() within which the

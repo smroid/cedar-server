@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
-use env_logger;
 use image::ImageReader;
 use log::{info, warn};
 

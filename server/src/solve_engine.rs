@@ -320,15 +320,15 @@ impl SolveEngine {
         match image.save(filename) {
             Ok(()) => Ok(()),
             Err(x) => {
-                return Err(failed_precondition_error(
-                    format!("Error saving file: {:?}", x).as_str()));
+                Err(failed_precondition_error(
+                    format!("Error saving file: {:?}", x).as_str()))
             }
         }
     }
 
     async fn solve_with_solver(
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait>>,
-        star_centroids: &Vec<ImageCoord>,
+        star_centroids: &[ImageCoord],
         width: usize, height: usize,
         extension: &SolveExtension,
         params: &SolveParams) -> Result<PlateSolutionProto, CanonicalError>
@@ -428,9 +428,9 @@ impl SolveEngine {
                     frame_id, /*non_blocking=*/true).await;
                 if dr.is_none() {
                     let short_delay = Duration::from_millis(10);
-                    if let Some(delay_est) =
-                        detect_engine.lock().await.estimate_delay(frame_id)
-                    {
+                    let delay_est =
+                        detect_engine.lock().await.estimate_delay(frame_id);
+                    if let Some(delay_est) = delay_est {
                         tokio::time::sleep(max(delay_est, short_delay)).await;
                     } else {
                         tokio::time::sleep(short_delay).await;
@@ -529,10 +529,10 @@ impl SolveEngine {
                 if !align_mode {
                     state.lock().await.solve_success_stats.add_value(1.0);
                 }
-                let boresight_coords = if psp.target_sky_coord.len() > 0 {
-                    psp.target_sky_coord[0].clone()
-                } else {
+                let boresight_coords = if psp.target_sky_coord.is_empty() {
                     psp.image_sky_coord.as_ref().unwrap().clone()
+                } else {
+                    psp.target_sky_coord[0].clone()
                 };
                 let mut rotation_matrix: [f64; 9] = [0.0; 9];
                 for (idx, c) in psp.rotation_matrix.clone().into_iter().enumerate() {
@@ -656,9 +656,9 @@ impl SolveEngine {
             /*min_elevation=*/None,
             /*faintest_magnitude=*/None,
             /*match_catalog_label=*/false,
-            /*catalog_label=*/&vec![],
+            /*catalog_label=*/&[],
             /*match_object_type_label=*/false,
-            /*object_type_label=*/&vec![],
+            /*object_type_label=*/&[],
             /*text_search*/None,
             /*ordering=*/Some(Ordering::SkyLocation),
             /*decrowd_distance=*/None,
@@ -722,7 +722,7 @@ impl SolveEngine {
             slew_request.target_catalog_entry_distance = distance;
         }
 
-        if plate_solution.target_pixel.len() == 0 {
+        if plate_solution.target_pixel.is_empty() {
             return (Some(slew_request), None, None);
         }
         let img_coord = &plate_solution.target_pixel[0];
@@ -757,9 +757,7 @@ impl SolveEngine {
         let mut boresight_image_region = Some(Rect::at(
             boresight_pos.x as i32 - bs_image_size as i32/2,
             boresight_pos.y as i32 - bs_image_size as i32/2)
-                                              .of_size(
-                                                  bs_image_size as u32,
-                                                  bs_image_size as u32));
+                                              .of_size(bs_image_size, bs_image_size));
         boresight_image_region =
             Some(boresight_image_region.
                  unwrap().intersect(image_rect).unwrap());
@@ -768,8 +766,8 @@ impl SolveEngine {
         let mut boresight_image = Some(
             image.view(boresight_image_region.unwrap().left() as u32,
                        boresight_image_region.unwrap().top() as u32,
-                       boresight_image_region.unwrap().width() as u32,
-                       boresight_image_region.unwrap().height() as u32).to_image());
+                       boresight_image_region.unwrap().width(),
+                       boresight_image_region.unwrap().height()).to_image());
         if normalize_rows {
             normalize_rows_mut(boresight_image.as_mut().unwrap());
         }
@@ -783,7 +781,7 @@ impl SolveEngine {
         let min_pixel_value = get_level_for_fraction(&histogram, 0.9);
         scale_image_mut(boresight_image.as_mut().unwrap(),
                         min_pixel_value as u8,
-                        peak_pixel_value as u8,
+                        peak_pixel_value,
                         /*gamma=*/0.7);
 
         (Some(slew_request), boresight_image_region, boresight_image)
@@ -797,8 +795,8 @@ impl SolveEngine {
         let coord = entry.coord.clone().unwrap();
         let img_coord = transform_to_image_coord(
             &[coord.ra, coord.dec],
-            width as usize, height as usize,
-            fov, &rotation_matrix, distortion);
+            width, height,
+            fov, rotation_matrix, distortion);
         let x = img_coord[0];
         if x < 0.0 || x >= width as f64 {
             return None;

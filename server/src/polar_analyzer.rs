@@ -14,6 +14,12 @@ pub struct PolarAnalyzer {
     polar_align_advice: PolarAlignAdvice,
 }
 
+impl Default for PolarAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PolarAnalyzer {
     pub fn new() -> Self {
         PolarAnalyzer{

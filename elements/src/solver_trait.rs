@@ -47,7 +47,7 @@ pub trait SolverTrait {
     // Note: this can take up to several seconds in the Python/Numpy
     // implementation (50ms typical).
     async fn solve_from_centroids(&self,
-                                  star_centroids: &Vec<ImageCoord>,
+                                  star_centroids: &[ImageCoord],
                                   width: usize, height: usize,
                                   extension: &SolveExtension,
                                   params: &SolveParams)

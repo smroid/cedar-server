@@ -174,11 +174,11 @@ impl DetectEngine {
     }
 
     pub fn get_detection_sigma(&self) -> f64 {
-        return self.detection_sigma;
+        self.detection_sigma
     }
 
     pub fn get_star_count_goal(&self) -> i32 {
-        return self.star_count_goal;
+        self.star_count_goal
     }
 
     pub fn set_calibrated_exposure_duration(
@@ -356,10 +356,7 @@ impl DetectEngine {
                     };
                     if capture.is_none() {
                         let short_delay = Duration::from_millis(10);
-                        let delay_est;
-                        {
-                            delay_est = camera.lock().await.estimate_delay(frame_id);
-                        }
+                        let delay_est = camera.lock().await.estimate_delay(frame_id);
                         if let Some(delay_est) = delay_est {
                             tokio::time::sleep(max(delay_est, short_delay)).await;
                         } else {
@@ -392,7 +389,7 @@ impl DetectEngine {
                 .of_size(square_roi_size - 2 * inset as u32,
                          square_roi_size - 2 * inset as u32);
 
-            let noise_estimate = estimate_noise_from_image(&image);
+            let noise_estimate = estimate_noise_from_image(image);
             let prev_exposure_duration_secs =
                 captured_image.capture_params.exposure_duration.as_secs_f64();
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
@@ -402,7 +399,7 @@ impl DetectEngine {
             let mut peak_value = 0_u8;
             if focus_mode || daylight_mode {
                 let roi_summary = summarize_region_of_interest(
-                    &image, &roi_region);
+                    image, &roi_region);
                 let roi_histogram = roi_summary.histogram;
                 black_level = get_level_for_fraction(&roi_histogram, 0.6) as u8;
                 // Compute peak_value as the average of the brightest pixels.
@@ -485,7 +482,7 @@ impl DetectEngine {
                     let min_value = get_level_for_fraction(&histogram, 0.95);
 
                     scale_image_mut(
-                        &mut peak_image, min_value as u8, max_value as u8, /*gamma=*/0.7);
+                        &mut peak_image, min_value as u8, max_value, /*gamma=*/0.7);
                     focus_aid = Some(FocusAid{
                         center_peak_position: peak_position,
                         center_peak_value: peak_value,
@@ -519,7 +516,7 @@ impl DetectEngine {
                 let mut histogram;
                 (stars, hot_pixel_count, detect_binned_image, histogram) =
                     get_stars_from_image(
-                        &image, noise_estimate, adjusted_sigma,
+                        image, noise_estimate, adjusted_sigma,
                         normalize_rows, binning,
                         /*detect_hot_pixels=*/true,
                         /*return_binned_image=*/binning != 1);
@@ -678,7 +675,7 @@ impl DetectEngine {
                 star_candidates: stars,
                 display_black_level: black_level,
                 noise_estimate,
-                hot_pixel_count: hot_pixel_count as i32,
+                hot_pixel_count,
                 peak_value,
                 focus_aid,
                 daylight_mode,

@@ -154,12 +154,10 @@ impl ActivityLed {
                         // This can happen when the client sends a time update
                         // to Cedar server.
                         last_rpc_time = SystemTime::now();  // Start countdown fresh.
-                    } else {
-                        if *elapsed.as_ref().unwrap() > connected_timeout {
-                            // Revert to Idle state.
-                            fs::write(brightness_path, on_value).unwrap();
-                            led_state = LedState::IdleOn;
-                        }
+                    } else if *elapsed.as_ref().unwrap() > connected_timeout {
+                        // Revert to Idle state.
+                        fs::write(brightness_path, on_value).unwrap();
+                        led_state = LedState::IdleOn;
                     }
                 },
             };

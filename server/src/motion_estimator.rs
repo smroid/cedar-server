@@ -130,7 +130,7 @@ impl MotionEstimator {
             return;
         }
         let position = position.unwrap();
-        let position_rmse = position_rmse.unwrap() as f64 / 3600.0;  // arcsec->deg.
+        let position_rmse = position_rmse.unwrap() / 3600.0;  // arcsec->deg.
         let prev_pos = prev_pos.unwrap();
         match self.state {
             State::Unknown => {
@@ -150,14 +150,13 @@ impl MotionEstimator {
                     // current and previous positions/times.
                     self.set_state(State::SteadyRate);
                     self.ra_rate = Some(RateEstimation::new(
-                        1000, prev_time, prev_pos.ra as f64));
+                        1000, prev_time, prev_pos.ra));
                     self.ra_rate.as_mut().unwrap().add(
-                        time, position.ra as f64, position_rmse);
-                    self.dec_rate =
-                        Some(RateEstimation::new(
-                            1000, prev_time, prev_pos.dec as f64));
+                        time, position.ra, position_rmse);
+                    self.dec_rate = Some(RateEstimation::new(
+                        1000, prev_time, prev_pos.dec));
                     self.dec_rate.as_mut().unwrap().add(
-                        time, position.dec as f64, position_rmse);
+                        time, position.dec, position_rmse);
                 } else {
                     self.set_state(State::Moving);
                 }
@@ -165,11 +164,11 @@ impl MotionEstimator {
             State::SteadyRate => {
                 let ra_rate = &mut self.ra_rate.as_mut().unwrap();
                 let dec_rate = &mut self.dec_rate.as_mut().unwrap();
-                if ra_rate.fits_trend(time, position.ra as f64, /*sigma=*/10.0) &&
-                    dec_rate.fits_trend(time, position.dec as f64, /*sigma=*/10.0)
+                if ra_rate.fits_trend(time, position.ra, /*sigma=*/10.0) &&
+                    dec_rate.fits_trend(time, position.dec, /*sigma=*/10.0)
                 {
-                    ra_rate.add(time, position.ra as f64, position_rmse);
-                    dec_rate.add(time, position.dec as f64, position_rmse);
+                    ra_rate.add(time, position.ra, position_rmse);
+                    dec_rate.add(time, position.dec, position_rmse);
                 } else {
                     // Has rate trend violation persisted for too long?
                     if time.duration_since(ra_rate.last_time()).unwrap() > self.bump_tolerance {
@@ -213,7 +212,7 @@ impl MotionEstimator {
             time.duration_since(prev_time).unwrap().as_secs_f64();
 
         // Max movement rate below which we are considered to be stopped.
-        let max_rate = f64::max(pos_rmse as f64 * 8.0, Self::SIDEREAL_RATE * 2.0);
+        let max_rate = f64::max(pos_rmse * 8.0, Self::SIDEREAL_RATE * 2.0);
 
         let dec_rate = Self::dec_change(prev_pos.dec, pos.dec) / elapsed_secs;
         if dec_rate.abs() > max_rate {

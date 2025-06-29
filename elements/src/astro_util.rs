@@ -211,7 +211,7 @@ pub fn transform_to_image_coord(celestial_coord: &[f64; 2],
     );
     let rot_matrix = na::Matrix3::from_row_slice(rotation_matrix);
     let celestial_vector_derot =
-        rot_matrix * &celestial_vector.transpose();
+        rot_matrix * celestial_vector.transpose();
     let binding = celestial_vector_derot.column(0);
     let slice = binding.as_slice();
     let vec = [slice[0], slice[1], slice[2]];
@@ -229,11 +229,11 @@ pub fn transform_to_celestial_coords(image_coord: &[f64; 2],
                                      -> [f64; 2] {
     let rot_matrix = na::Matrix3::from_row_slice(rotation_matrix);
     let image_coord = undistort_centroid(
-        &image_coord, width, height, distortion);
+        image_coord, width, height, distortion);
     let vec = compute_vector(&image_coord, width, height, fov.to_radians());
     let image_vector = na::RowVector3::<f64>::new(vec[0], vec[1], vec[2]);
     let rotated_image_vector =
-        rot_matrix.transpose() * &image_vector.transpose();
+        rot_matrix.transpose() * image_vector.transpose();
 
     let ra = rotated_image_vector[1].atan2(rotated_image_vector[0]).
         to_degrees() % 360.0;

@@ -24,12 +24,8 @@ fn compute_lut(min_pixel_value: u8,
             lut[n as usize] = 255;
             continue;
         }
-        let mut scaled = scale * ((n - min_pixel_value) as f32).powf(gamma);
-        if scaled < 0.0 {
-            scaled = 0.0;
-        } else if scaled > 255.0 {
-            scaled = 255.0;
-        }
+        let scaled = (scale * ((n - min_pixel_value) as f32).powf(gamma))
+            .clamp(0.0, 255.0);
         lut[n as usize] = scaled as u8;
     }
     lut
@@ -66,13 +62,13 @@ pub fn normalize_rows_mut(image: &mut GrayImage) {
     for y in 0..image.height() {
         let mut min_value = 255_u8;
         for x in 0..image.width() {
-            let value = image.get_pixel(x as u32, y as u32).0[0];
+            let value = image.get_pixel(x, y).0[0];
             if value < min_value {
                 min_value = value;
             }
         }
         for x in 0..image.width() {
-            let value = image.get_pixel_mut(x as u32, y as u32);
+            let value = image.get_pixel_mut(x, y);
             value[0] -= min_value;
         }
     }
@@ -114,7 +110,7 @@ impl ImageRotator {
         let square_size = h;
 
         let rotated_image = rotate_about_center(
-            &image,
+            image,
             -1.0 * self.angle_rad as f32,
             // Almost as fast as Nearest, with much higher visual quality.
             Interpolation::Bilinear,
