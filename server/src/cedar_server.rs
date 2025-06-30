@@ -728,32 +728,35 @@ impl Cedar for MyCedar {
             }
         }
         if req.capture_boresight.unwrap_or(false) {
-            let operating_mode =
-                self.state.lock().await.operation_settings.operating_mode
-                .unwrap_or(OperatingMode::Setup as i32);
-            if operating_mode == OperatingMode::Setup as i32 {
-                return Err(tonic::Status::failed_precondition(
-                    "Capture boresight not valid in setup mode."));
-            }
-            // Operate mode.
-            let locked_state = self.state.lock().await;
-            let plate_solution = locked_state.solve_engine.lock().await.
-                get_next_result(None, /*non_blocking=*/false).await.unwrap();
-            if let Some(slew_request) = plate_solution.slew_request {
-                let bsp = slew_request.image_pos.unwrap();
-                if let Err(x) = locked_state.solve_engine.lock().await.
-                    set_boresight_pixel(Some(bsp.clone())).await
-                {
-                    return Err(tonic_status(x));
+            let preferences;
+            {
+                let operating_mode =
+                    self.state.lock().await.operation_settings.operating_mode
+                    .unwrap_or(OperatingMode::Setup as i32);
+                if operating_mode == OperatingMode::Setup as i32 {
+                    return Err(tonic::Status::failed_precondition(
+                        "Capture boresight not valid in setup mode."));
                 }
-                let preferences = Preferences{
-                    boresight_pixel: Some(bsp.clone()),
-                    ..Default::default()};
-                self.update_preferences(tonic::Request::new(preferences)).await?;
-            } else {
-                return Err(tonic::Status::failed_precondition(
-                    "No slew request active".to_string()));
+                // Operate mode.
+                let locked_state = self.state.lock().await;
+                let plate_solution = locked_state.solve_engine.lock().await.
+                    get_next_result(None, /*non_blocking=*/false).await.unwrap();
+                if let Some(slew_request) = plate_solution.slew_request {
+                    let bsp = slew_request.image_pos.unwrap();
+                    if let Err(x) = locked_state.solve_engine.lock().await.
+                        set_boresight_pixel(Some(bsp.clone())).await
+                    {
+                        return Err(tonic_status(x));
+                    }
+                    preferences = Preferences{
+                        boresight_pixel: Some(bsp.clone()),
+                        ..Default::default()};
+                } else {
+                    return Err(tonic::Status::failed_precondition(
+                        "No slew request active".to_string()));
+                }
             }
+            self.update_preferences(tonic::Request::new(preferences)).await?;
         }  // capture_boresight.
         if let Some(mut bsp) = req.designate_boresight {
             let image_rotator;
