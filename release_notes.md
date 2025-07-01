@@ -243,3 +243,8 @@ Cedar-server version: 0.10.0
   might fix reported "white out" problems.
 
 * Fix occasional hang on calibration failure.
+
+# July 1 2025
+
+Cedar-server version: 0.11.0
+
