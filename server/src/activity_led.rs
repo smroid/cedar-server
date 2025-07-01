@@ -5,7 +5,7 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{JoinHandle, sleep, spawn};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 pub struct ActivityLed {
     // Our state, shared between ActivityLed methods and the worker thread.
@@ -31,10 +31,10 @@ struct SharedState {
 // When ActivityLed is constructed, it takes over the Raspberry Pi activity LED
 // and manages it in three states:
 //
-// * Idle: the LED is blinked on and off at 1hz. This occurs when ActivityLed
-//   has been created but received_rpc() has not not been called recently.
-// * Connected: the LED is turned off. This occurs when received_rpc() is being
-//   called often enough.
+// * Ready: the LED is blinked on and off at 1hz. This occurs when ActivityLed
+//   has been created but received_rpc() has not not been called yet.
+// * Connected: the LED is turned off. This occurs when received_rpc() has been
+//   called at least once.
 // * Released: The LED is re-configured back to the Raspberry Pi default, where
 //   it indicates "disk" activity. This occurs when the stop() method is called.
 
@@ -59,15 +59,13 @@ impl ActivityLed {
     }
 
     // Indicates that Cedar has received an RPC from a client. We turn the
-    // activity LED off; if too much time occurs without received_rpc() being
-    // called again, we will resume blinking the LED at 1hz.
+    // activity LED off.
     pub fn received_rpc(&self) {
         self.state.lock().unwrap().received_rpc = true;
     }
 
     // Releases the activity LED back to its OS-defined "disk" activity
-    // indicator. Currently there is no way to transition out of the released
-    // state after stop() is called.
+    // indicator.
     pub fn stop(&mut self) {
         self.state.lock().unwrap().stop_request = true;
         self.worker_thread.take().unwrap().join().unwrap();
@@ -86,80 +84,42 @@ impl ActivityLed {
         let brightness_path = "/sys/class/leds/ACT/brightness";
         let trigger_path = "/sys/class/leds/ACT/trigger";
 
-        let blink_delay = Duration::from_millis(500);
+        let delay = Duration::from_millis(500);
 
-        // How often we look for received_rpc() when we're in the ConnectedOff state.
-        let connected_poll = Duration::from_millis(500);
-
-        // How long we can go without received_rpc() before we revert to Idle
-        // state.
-        let connected_timeout = Duration::from_secs(5);
-
-        let mut last_rpc_time = SystemTime::now();
-
+        #[derive(PartialEq)]
         enum LedState {
-            IdleOff,
-            IdleOn,
+            ReadyOff,
+            ReadyOn,
             ConnectedOff,
         }
-        let mut led_state = LedState::IdleOff;
+        let mut led_state = LedState::ReadyOff;
         fs::write(brightness_path, off_value).unwrap();
 
-        fn process_received_rpc(state: &Arc<Mutex<SharedState>>,
-                                last_rpc_time: &mut SystemTime) -> bool {
-            let mut locked_state = state.lock().unwrap();
-            let received_rpc = locked_state.received_rpc;
-            if received_rpc {
-                *last_rpc_time = SystemTime::now();
-                locked_state.received_rpc = false;
-            }
-            received_rpc
-        }
-
         loop {
+            sleep(delay);
             if state.lock().unwrap().stop_request {
                 break;
             }
             if got_signal.load(Ordering::Relaxed) {
                 break;
             }
+            if led_state != LedState::ConnectedOff &&
+                state.lock().unwrap().received_rpc
+            {
+		fs::write(brightness_path, off_value).unwrap();
+                led_state = LedState::ConnectedOff;
+                continue;
+            }
             match led_state {
-                LedState::IdleOff => {
-                    sleep(blink_delay);
-                    if process_received_rpc(&state, &mut last_rpc_time) {
-			fs::write(brightness_path, off_value).unwrap();
-                        led_state = LedState::ConnectedOff;
-                        continue;
-                    }
+                LedState::ReadyOff => {
                     fs::write(brightness_path, on_value).unwrap();
-                    led_state = LedState::IdleOn;
+                    led_state = LedState::ReadyOn;
                 },
-                LedState::IdleOn => {
-                    sleep(blink_delay);
-                    if process_received_rpc(&state, &mut last_rpc_time) {
-			fs::write(brightness_path, off_value).unwrap();
-                        led_state = LedState::ConnectedOff;
-                        continue;
-                    }
+                LedState::ReadyOn => {
                     fs::write(brightness_path, off_value).unwrap();
-                    led_state = LedState::IdleOff;
+                    led_state = LedState::ReadyOff;
                 },
-                LedState::ConnectedOff => {
-                    sleep(connected_poll);
-                    if process_received_rpc(&state, &mut last_rpc_time) {
-                        continue;
-                    }
-                    let elapsed = SystemTime::now().duration_since(last_rpc_time);
-                    if let Err(_e) = elapsed {
-                        // This can happen when the client sends a time update
-                        // to Cedar server.
-                        last_rpc_time = SystemTime::now();  // Start countdown fresh.
-                    } else if *elapsed.as_ref().unwrap() > connected_timeout {
-                        // Revert to Idle state.
-                        fs::write(brightness_path, on_value).unwrap();
-                        led_state = LedState::IdleOn;
-                    }
-                },
+                LedState::ConnectedOff => {}
             };
         }
         // Revert LED back to system default state (disk activity).
