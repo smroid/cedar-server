@@ -35,17 +35,11 @@ Tetra3
   pattern as additional discriminant (post hash lookup? or incorporate
   into hash?)
 
-
 time display:
 * local time, UTC
 * time to sunset/sunrise, astro twilight
 * moonrise/set
 * display all? selectable?
-
-torture case: cap on
-* don't time out UI
-* don't cause led to blink
-* put up screen suggesting to check lens cap
 
 Why need to disconnect/reconnect wifi? Symptom is that wifi
 icon in phone status bar disappears even though wifi still
@@ -70,10 +64,9 @@ visual feedback on SkySafari connection
 
 add (tm) at appropriate places for Cedar
 
-"happy" sound on "align" button press.
-
 Remove refresh rate control. Go full speed; when dwelling for more than N
-seconds drop to 5hz.
+seconds drop to 5hz. Use accelerometer to quickly detect resumption of
+motion.
 
 Pacifier/busy indicator for capturing/downloading image
 
