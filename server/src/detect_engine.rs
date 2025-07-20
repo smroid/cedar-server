@@ -402,11 +402,9 @@ impl DetectEngine {
                     image, &roi_region);
                 let roi_histogram = roi_summary.histogram;
                 black_level = get_level_for_fraction(&roi_histogram, 0.6) as u8;
-                // Compute peak_value as the average of the brightest pixels.
-                peak_value = average_top_values(&roi_histogram, 20);
+                peak_value = max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
                 if daylight_mode {
                     black_level = get_level_for_fraction(&roi_histogram, 0.001) as u8;
-                    peak_value = max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
                 }
 
                 // Auto exposure. Adjust exposure time based on value of pixels
