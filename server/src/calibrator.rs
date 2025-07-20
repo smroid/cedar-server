@@ -169,7 +169,7 @@ impl Calibrator {
 
         // Increase exposure if necessary to increase star count, but don't
         // exceed a brightness limit.
-        const BRIGHTNESS_LIMIT: u8 = 64;
+        const BRIGHTNESS_LIMIT: u8 = 128;
         let mut brightness_fraction = stats.mean / BRIGHTNESS_LIMIT as f64;
         let mut fraction = f64::max(star_goal_fraction, brightness_fraction);
 
@@ -194,7 +194,7 @@ impl Calibrator {
             // overall scene exposure.
             let mean = if stats.mean < 1.0 { 1.0 } else { stats.mean };
             // Push image towards moderately low level.
-            let correction_factor = 32.0 / mean;
+            let correction_factor = 64.0 / mean;
             scaled_exposure_duration_secs =
                 initial_exposure_duration.as_secs_f64() * correction_factor;
         }
