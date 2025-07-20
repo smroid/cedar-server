@@ -2041,7 +2041,7 @@ impl MyCedar {
             // noise.
             if (locked_camera.model() == "imx296" ||
                 (locked_camera.model() == "imx290" &&
-                 locked_camera.model_detail() == 
+                 locked_camera.model_detail() ==
                  Some("clock-frequency=37125000".to_string())))
                 && processor_model.contains("Raspberry Pi Zero 2 W")
             {
