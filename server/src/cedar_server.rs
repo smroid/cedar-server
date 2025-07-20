@@ -2037,19 +2037,19 @@ impl MyCedar {
         let mut normalize_rows = false;
         if let Some(attached_camera) = &attached_camera {
             let locked_camera = attached_camera.lock().await;
-            if (locked_camera.model() == "imx296" || locked_camera.model() == "imx290")
+            // The 37.125 mhz variant of the imx290 that we are using has row
+            // noise.
+            if (locked_camera.model() == "imx296" ||
+                (locked_camera.model() == "imx290" &&
+                 locked_camera.model_detail() == 
+                 Some("clock-frequency=37125000".to_string())))
                 && processor_model.contains("Raspberry Pi Zero 2 W")
             {
                 normalize_rows = true;
+                info!("Normalizing camera rows for {}", locked_camera.model());
             }
-            if locked_camera.model() == "ov5647" {
+            if locked_camera.model() == "ov5647" || locked_camera.model() == "imx219" {
                 max_exposure_duration *= 3;  // This camera is less sensitive.
-            }
-            if locked_camera.is_color() {
-                // Double max exposure time for color camera, which are
-                // generally less sensitive than monochrome cameras.
-                // max_exposure_duration *= 2;
-                max_exposure_duration *= 1;
             }
         }
 
