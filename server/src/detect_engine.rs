@@ -198,7 +198,7 @@ impl DetectEngine {
         } else {
             // Alpha near 1.0: current value dominates. Alpha near 0.0: long
             // term average dominates.
-            let alpha = 0.6;
+            let alpha = 0.5;
             state.star_count_moving_average = alpha * num_stars_detected as f64 +
                 (1.0 - alpha) * state.star_count_moving_average;
         }
