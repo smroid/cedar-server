@@ -747,7 +747,8 @@ pub struct DetectResult {
 
     // A measure of the image contrast in focus mode. 0 means no contrast,
     // uniform brightness over image. 1 means high contrast (range of bright -
-    // dark equals bright level; in other words dark == 0).
+    // dark equals bright level; in other words dark == 0). Omitted if not
+    // focus mode.
     pub contrast_ratio: Option<f64>,
 
     // Estimate of the RMS noise of the full-resolution image.

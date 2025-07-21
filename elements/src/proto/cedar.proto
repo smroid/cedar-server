@@ -327,7 +327,7 @@ message FrameRequest {
   optional DisplayOrientation display_orientation = 3;
 }
 
-// Next tag: 35.
+// Next tag: 37.
 message FrameResult {
   // If FrameRequest.non_blocking is omitted or false, this field will be
   // absent. If FrameRequest.non_blocking is true, this field will be true
@@ -377,6 +377,10 @@ message FrameResult {
   // the star catalog magnitudes.
   repeated StarCentroid star_candidates = 4;
 
+  // The number of detected stars as a moving average of recent processing
+  // cycles.
+  double star_count_moving_average = 35;
+
   // The current plate solution. Omitted if no plate solve was attempted for
   // this frame. Relevant in OPERATE mode and in SETUP mode when neither
   // `focus_assist_mode` nor `daylight_mode` is present.
@@ -422,6 +426,12 @@ message FrameResult {
   // stretch/gamma applied for better visibility of dark features. Only present
   // in `focus_assist_mode`.
   optional Image center_peak_image = 13;
+
+  // A measure of the image contrast in focus mode. 0 means no contrast, uniform
+  // brightness over image. 1 means high contrast (range of bright - dark equals
+  // bright level; in other words dark == 0). Only present in
+  // `focus_assist_mode`.
+  optional double contrast_ratio = 36;
 
   // Information returned when `operating_mode` is OPERATE.
 

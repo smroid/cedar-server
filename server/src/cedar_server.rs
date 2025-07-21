@@ -1604,6 +1604,8 @@ impl MyCedar {
             });
         }
         frame_result.star_candidates = centroids;
+        frame_result.star_count_moving_average =
+            detect_result.star_count_moving_average;
         frame_result.noise_estimate = detect_result.noise_estimate;
 
         let (binning, display_sampling) =
@@ -1757,6 +1759,7 @@ impl MyCedar {
         } else {
             *locked_state.center_peak_position.lock().unwrap() = None;
         }
+        frame_result.contrast_ratio = detect_result.contrast_ratio;
 
         let gamma = if daylight_mode { 1.0 } else { 0.7 };
         let scaled_image = scale_image(
