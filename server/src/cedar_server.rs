@@ -1218,6 +1218,7 @@ impl MyCedar {
             let locked_camera = locked_state.camera.lock().await;
             Some(CameraModel{
                 model: demo_image.to_string(),
+                model_detail: None,
                 image_width: locked_camera.dimensions().0,
                 image_height: locked_camera.dimensions().1,
             })
@@ -1225,6 +1226,7 @@ impl MyCedar {
             let locked_camera = test_image_camera.lock().await;
             Some(CameraModel{
                 model: locked_camera.model(),
+                model_detail: None,  // TODO: file path?
                 image_width: locked_camera.dimensions().0,
                 image_height: locked_camera.dimensions().1,
             })
@@ -1232,6 +1234,7 @@ impl MyCedar {
             let locked_camera = attached_camera.lock().await;
             Some(CameraModel{
                 model: locked_camera.model(),
+                model_detail: locked_camera.model_detail(),
                 image_width: locked_camera.dimensions().0,
                 image_height: locked_camera.dimensions().1,
             })

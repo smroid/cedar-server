@@ -62,10 +62,11 @@ message ServerInformation {
   // Omitted if no camera detected.
   optional CameraModel camera = 9;
 
+  // Omitted if no IMU detected.
+  // optional ImuState imu = 13;
+
   // Network info.
   optional WiFiAccessPoint wifi_access_point = 10;
-  // TODO: optional info for wifi client mode, mutually exclusive with
-  // access point.
 
   // Filenames of image(s) found in run/demo_images directory.
   repeated string demo_image_names = 11;
@@ -75,9 +76,22 @@ message ServerInformation {
 
 message CameraModel {
   string model = 1;
+  optional string model_detail = 4;
   int32 image_width = 2;
   int32 image_height = 3;
 }
+
+// message ImuState {
+//   // Meters per second squared.
+//   double accel_x = 1;
+//   double accel_y = 2;
+//   double accel_z = 3;
+
+//   // Degrees per second.
+//   double angle_rate_x = 4;
+//   double angle_rate_y = 5;
+//   double angle_rate_z = 6;
+// }
 
 // Information about the WiFi access point that Cedar server puts
 // up.
@@ -803,8 +817,7 @@ message ActionRequest {
   optional bool save_image = 5;
 
   // Update ssid, psk, and/or channel setting for Cedar server's
-  // WiFi access point. TODO: Switches to access point mode if currently
-  // in client mode.
+  // WiFi access point.
   optional WiFiAccessPoint update_wifi_access_point = 7;
 
   // Reset all Preferences.dont_show_xxx fields.
