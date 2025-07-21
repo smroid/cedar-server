@@ -17,6 +17,7 @@ use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram,
                                     stats_for_histogram};
+use cedar_detect::image_funcs::bin_and_histogram_2x2;
 use cedar_elements::image_utils::{
     normalize_rows_mut, scale_image_mut};
 use cedar_elements::value_stats::ValueStatsAccumulator;
@@ -87,7 +88,7 @@ struct DetectState {
 
     // We update the exposure time based on the number of detected stars.
     // Because of noise, twinking, etc., use a moving average.
-    detected_stars_moving_average: f64,
+    star_count_moving_average: f64,
 
     detect_latency_stats: ValueStatsAccumulator,
 
@@ -125,7 +126,7 @@ impl DetectEngine {
                 binning: 1,
                 display_sampling: false,
                 calibrated_exposure_duration: None,
-                detected_stars_moving_average: 0.0,
+                star_count_moving_average: 0.0,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 detect_result: None,
@@ -157,7 +158,7 @@ impl DetectEngine {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.focus_mode = enabled;
         if !enabled {
-            locked_state.detected_stars_moving_average = 0.0;
+            locked_state.star_count_moving_average = 0.0;
         }
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
@@ -167,7 +168,7 @@ impl DetectEngine {
         let mut locked_state = self.state.lock().unwrap();
         locked_state.daylight_mode = enabled;
         if !enabled {
-            locked_state.detected_stars_moving_average = 0.0;
+            locked_state.star_count_moving_average = 0.0;
         }
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
@@ -189,19 +190,19 @@ impl DetectEngine {
         // it finishes the current interval.
     }
 
-    fn update_detected_stars_moving_average(state: &mut DetectState,
-                                            num_stars_detected: usize) -> f64 {
+    fn update_star_count_moving_average(state: &mut DetectState,
+                                        num_stars_detected: usize) -> f64 {
         // First time?
-        if state.detected_stars_moving_average == 0.0 {
-            state.detected_stars_moving_average = num_stars_detected as f64;
+        if state.star_count_moving_average == 0.0 {
+            state.star_count_moving_average = num_stars_detected as f64;
         } else {
             // Alpha near 1.0: current value dominates. Alpha near 0.0: long
             // term average dominates.
             let alpha = 0.6;
-            state.detected_stars_moving_average = alpha * num_stars_detected as f64 +
-                (1.0 - alpha) * state.detected_stars_moving_average;
+            state.star_count_moving_average = alpha * num_stars_detected as f64 +
+                (1.0 - alpha) * state.star_count_moving_average;
         }
-        state.detected_stars_moving_average
+        state.star_count_moving_average
     }
 
     /// Obtains a result bundle, as configured above. The returned result is
@@ -377,17 +378,11 @@ impl DetectEngine {
             let (width, height) = image.dimensions();
 
             let image_region = Rect::at(0, 0).of_size(width, height);
-            let square_roi_size = height;
 
             // To avoid edge when centroiding and creating central peak image,
             // inset the ROI a little.
             let adjusted_binning = binning * if display_sampling { 2 } else { 1 };
             let inset = 8 * adjusted_binning as i32;
-
-            let roi_region = Rect::at(
-                ((width - square_roi_size) / 2) as i32 + inset, inset)
-                .of_size(square_roi_size - 2 * inset as u32,
-                         square_roi_size - 2 * inset as u32);
 
             let noise_estimate = estimate_noise_from_image(image);
             let prev_exposure_duration_secs =
@@ -397,15 +392,52 @@ impl DetectEngine {
             let mut focus_aid: Option<FocusAid> = None;
             let mut black_level = 0_u8;
             let mut peak_value = 0_u8;
+            let mut contrast_ratio: Option<f64> = None;
             if focus_mode || daylight_mode {
+                // Region of interest is the central square crop of the image.
+                let square_roi_size = height;
+                let roi_region = Rect::at(
+                    ((width - square_roi_size) / 2) as i32 + inset, inset)
+                    .of_size(square_roi_size - 2 * inset as u32,
+                             square_roi_size - 2 * inset as u32);
+
                 let roi_summary = summarize_region_of_interest(
                     image, &roi_region);
                 let roi_histogram = roi_summary.histogram;
-                black_level = get_level_for_fraction(&roi_histogram, 0.6) as u8;
                 peak_value = max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
-                if daylight_mode {
-                    black_level = get_level_for_fraction(&roi_histogram, 0.001) as u8;
-                }
+                black_level =
+                    if daylight_mode {
+                        get_level_for_fraction(&roi_histogram, 0.001) as u8
+                    } else {
+                        get_level_for_fraction(&roi_histogram, 0.6) as u8
+                    };
+
+                // For contrast ratio, use a smaller central crop. Do a 2x2
+                // binning in case we have a color image.
+                let contrast_region_size = height / 8;
+                let contrast_region = Rect::at(
+                    ((width - contrast_region_size) / 2) as i32,
+                    ((height - contrast_region_size) / 2) as i32)
+                    .of_size(contrast_region_size as u32,
+                             contrast_region_size as u32);
+                let contrast_image = image.view(
+                    contrast_region.left() as u32,
+                    contrast_region.top() as u32,
+                    contrast_region.width() as u32,
+                    contrast_region.height() as u32).to_image();
+                let contrast_region_histogram =
+                    bin_and_histogram_2x2(&contrast_image,
+                                          /*normalize_rows=*/false).histogram;
+                let contrast_peak_value =
+                    max(get_level_for_fraction(&contrast_region_histogram, 0.99) as u8, 1);
+                let contrast_black_level = if daylight_mode {
+                    get_level_for_fraction(&contrast_region_histogram, 0.01) as u8
+                } else{
+                    get_level_for_fraction(&contrast_region_histogram, 0.6) as u8
+                };
+                contrast_ratio = Some(
+                    (contrast_peak_value - contrast_black_level) as f64
+                        / contrast_peak_value as f64);
 
                 // Auto exposure. Adjust exposure time based on value of pixels
                 // in roi_region.
@@ -579,7 +611,7 @@ impl DetectEngine {
                     // Force update even if image is catching up to camera settings.
                     update_exposure = true;
                 } else if captured_image.params_accurate {
-                    let moving_average = Self::update_detected_stars_moving_average(
+                    let moving_average = Self::update_star_count_moving_average(
                         &mut state.lock().unwrap(), num_stars_detected);
                     if moving_average < 1.0 {
                         // This shouldn't happen because we don't update the moving
@@ -671,7 +703,9 @@ impl DetectEngine {
                 captured_image,
                 binned_image,
                 star_candidates: stars,
+                star_count_moving_average: locked_state.star_count_moving_average,
                 display_black_level: black_level,
+                contrast_ratio,
                 noise_estimate,
                 hot_pixel_count,
                 peak_value,
@@ -702,10 +736,19 @@ pub struct DetectResult {
     // StarDescription.mean_brightness first.
     pub star_candidates: Vec<StarDescription>,
 
+    // The number of detected stars as a moving average of recent processing
+    // cycles.
+    pub star_count_moving_average: f64,
+
     // When displaying the captured (or binned) image, map this pixel value to
     // black. This is chosen to allow stars to be visible but supress the
     // background level.
     pub display_black_level: u8,
+
+    // A measure of the image contrast in focus mode. 0 means no contrast,
+    // uniform brightness over image. 1 means high contrast (range of bright -
+    // dark equals bright level; in other words dark == 0).
+    pub contrast_ratio: Option<f64>,
 
     // Estimate of the RMS noise of the full-resolution image.
     pub noise_estimate: f64,
