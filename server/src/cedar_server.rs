@@ -52,7 +52,6 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
 use futures::join;
 
-use crate::activity_led::ActivityLed;
 use cedar_elements::astro_util::{
     alt_az_from_equatorial, equatorial_from_alt_az,
     fill_in_detections, magnitude_intensity_ratio, position_angle};
@@ -69,12 +68,15 @@ use cedar_elements::cedar::{
     ServerLogRequest, ServerLogResult, ServerInformation,
     WiFiAccessPoint};
 
+use crate::activity_led::ActivityLed;
 use crate::calibrator::Calibrator;
 use crate::detect_engine::{DetectEngine, DetectResult};
-use crate::solve_engine::{PlateSolution, SolveEngine};
-use crate::position_reporter::{TelescopePosition, create_alpaca_server};
+use crate::imu6050::Mpu6050;
 use crate::motion_estimator::MotionEstimator;
 use crate::polar_analyzer::PolarAnalyzer;
+use crate::position_reporter::{TelescopePosition, create_alpaca_server};
+use crate::solve_engine::{PlateSolution, SolveEngine};
+
 use cedar_elements::image_utils::{ImageRotator, scale_image};
 use cedar_elements::value_stats::ValueStatsAccumulator;
 use tetra3_server::tetra3_solver::Tetra3Solver;
@@ -137,6 +139,9 @@ struct CedarState {
 
     // The hardware camera that was detected, if any.
     attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
+
+    // Detected IMU, if any.
+    imu: Option<Arc<tokio::sync::Mutex<Mpu6050>>>,
 
     // An exposure duration which is a good starting point for `attached_camera`.
     initial_exposure_duration: Duration,
@@ -2001,6 +2006,7 @@ impl MyCedar {
         mut max_exposure_duration: Duration,
         activity_led: Arc<Mutex<ActivityLed>>,
         attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
+        imu: Option<Arc<tokio::sync::Mutex<Mpu6050>>>,
         test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
         telescope_position: Arc<Mutex<TelescopePosition>>,
@@ -2256,6 +2262,7 @@ impl MyCedar {
             Arc::new(tokio::sync::Mutex::new(CedarState {
                 solver: solver.clone(),
                 attached_camera: attached_camera.clone(),
+                imu: imu.clone(),
                 camera: camera.clone(),
                 initial_exposure_duration,
                 fixed_settings,
@@ -2763,6 +2770,16 @@ async fn async_main(
         }
     };
 
+    let imu = match Mpu6050::new() {
+        Ok(i) => {
+            Some(Arc::new(tokio::sync::Mutex::new(i)))
+        },
+        Err(e) => {
+            warn!("Did not find IMU: {:?}", e);
+            None
+        }
+    };
+
     let test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>> =
         match &args.test_image
     {
@@ -2866,7 +2883,7 @@ async fn async_main(
         /*initial_exposure_duration=*/Duration::from_millis(100),
         args.min_exposure, args.max_exposure,
         activity_led.clone(),
-        attached_camera, test_image_camera, camera,
+        attached_camera, imu, test_image_camera, camera,
         shared_telescope_position.clone(),
         args.star_count_goal, args.sigma, args.min_sigma,
         // TODO: arg for this?
