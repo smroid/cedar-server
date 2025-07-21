@@ -5,6 +5,7 @@ pub mod activity_led;
 pub mod calibrator;
 pub mod cedar_server;
 pub mod detect_engine;
+pub mod imu6050;
 pub mod motion_estimator;
 pub mod polar_analyzer;
 pub mod position_reporter;
