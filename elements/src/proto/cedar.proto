@@ -63,7 +63,7 @@ message ServerInformation {
   optional CameraModel camera = 9;
 
   // Omitted if no IMU detected.
-  // optional ImuState imu = 13;
+  optional ImuState imu = 13;
 
   // Network info.
   optional WiFiAccessPoint wifi_access_point = 10;
@@ -81,17 +81,17 @@ message CameraModel {
   int32 image_height = 3;
 }
 
-// message ImuState {
-//   // Meters per second squared.
-//   double accel_x = 1;
-//   double accel_y = 2;
-//   double accel_z = 3;
+message ImuState {
+  // Meters per second squared.
+  double accel_x = 1;
+  double accel_y = 2;
+  double accel_z = 3;
 
-//   // Degrees per second.
-//   double angle_rate_x = 4;
-//   double angle_rate_y = 5;
-//   double angle_rate_z = 6;
-// }
+  // Degrees per second.
+  double angle_rate_x = 4;
+  double angle_rate_y = 5;
+  double angle_rate_z = 6;
+}
 
 // Information about the WiFi access point that Cedar server puts
 // up.

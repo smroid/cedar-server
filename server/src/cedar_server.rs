@@ -62,7 +62,7 @@ use cedar_elements::cedar::{
     CelestialCoordChoice, CelestialCoordFormat,
     DisplayOrientation, EmptyMessage, FeatureLevel,
     FixedSettings, FovCatalogEntry, FrameRequest, FrameResult,
-    Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
+    Image, ImageCoord, ImuState, LatLong, LocationBasedInfo, MountType,
     OperatingMode, OperationSettings, PlateSolution as PlateSolutionProto,
     ProcessingStats, Rectangle, StarCentroid, Preferences,
     ServerLogRequest, ServerLogResult, ServerInformation,
@@ -71,7 +71,7 @@ use cedar_elements::cedar::{
 use crate::activity_led::ActivityLed;
 use crate::calibrator::Calibrator;
 use crate::detect_engine::{DetectEngine, DetectResult};
-use crate::imu6050::Mpu6050;
+use crate::imu6050::{AccelData, GyroData, Mpu6050};
 use crate::motion_estimator::MotionEstimator;
 use crate::polar_analyzer::PolarAnalyzer;
 use crate::position_reporter::{TelescopePosition, create_alpaca_server};
@@ -1246,6 +1246,35 @@ impl MyCedar {
         } else {
             None
         };
+
+        let mut imu_state: Option<ImuState> = None;
+        if let Some(imu) = &locked_state.imu {
+            let accel: Option<AccelData> = match imu.lock().await.get_acceleration() {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    warn!{"Error getting acceleration: {:?}", e};
+                    None
+                },
+            };
+            let angles: Option<GyroData> = match imu.lock().await.get_angular_velocity() {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    warn!{"Error getting angle rates: {:?}", e};
+                    None
+                },
+            };
+            if accel.is_some() && angles.is_some() {
+                imu_state = Some(ImuState{
+                    accel_x: accel.unwrap().x,
+                    accel_y: accel.unwrap().y,
+                    accel_z: accel.unwrap().z,
+                    angle_rate_x: angles.unwrap().x,
+                    angle_rate_y: angles.unwrap().y,
+                    angle_rate_z: angles.unwrap().z,
+                });
+            }
+        }
+
         let mut server_info = ServerInformation {
             product_name: self.product_name.clone(),
             copyright: self.copyright.clone(),
@@ -1257,6 +1286,7 @@ impl MyCedar {
             cpu_temperature: 0.0,
             server_time: None,
             camera,
+            imu: imu_state,
             wifi_access_point: None,
             demo_image_names: self.demo_images.clone(),
         };
