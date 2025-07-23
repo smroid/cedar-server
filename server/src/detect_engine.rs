@@ -633,11 +633,10 @@ impl DetectEngine {
                         {
                             new_exposure_duration_secs = baseline_exposure_duration_secs;
                         } else {
-                            // Don't adjust exposure time too often, is a bit
-                            // janky because the camera re-initializes. Allow
+                            // Don't adjust exposure time too often. Allow
                             // number of detected stars to greatly exceed goal,
                             // but don't allow much of a shortfall.
-                            if star_goal_fraction < 0.8 || star_goal_fraction > 2.0 {
+                            if star_goal_fraction < 0.8 || star_goal_fraction > 1.6 {
                                 // What is the relationship between exposure
                                 // time and number of stars detected?
                                 // * If we increase the exposure time by 2.5x,
