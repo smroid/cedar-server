@@ -3100,7 +3100,7 @@ mod tests {
             ..Default::default()
         };
         let prefs2_bytes = Preferences::encode_to_vec(&prefs2);
-        prefs1.merge(&prefs2_bytes).unwrap();
+        prefs1.merge(&*prefs2_bytes).unwrap();
 
         // Field present only in prefs1.
         assert_eq!(prefs1.eyepiece_fov, Some(1.0));
