@@ -390,9 +390,10 @@ impl DetectEngine {
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
 
             let mut focus_aid: Option<FocusAid> = None;
+            let mut contrast_ratio: Option<f64> = None;
+            // black_level and peak_value for display stretching.
             let mut black_level = 0_u8;
             let mut peak_value = 0_u8;
-            let mut contrast_ratio: Option<f64> = None;
             if focus_mode || daylight_mode {
                 // Region of interest is the central square crop of the image.
                 let square_roi_size = height;
@@ -402,7 +403,7 @@ impl DetectEngine {
                              square_roi_size - 2 * inset as u32);
 
                 let roi_summary = summarize_region_of_interest(
-                    image, &roi_region);
+                    image, &roi_region, noise_estimate, detection_sigma);
                 let roi_histogram = roi_summary.histogram;
                 peak_value = max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
                 black_level =
@@ -440,7 +441,7 @@ impl DetectEngine {
                         / contrast_peak_value as f64);
 
                 // Auto exposure. Adjust exposure time based on value of pixels
-                // in roi_region.
+                // in detected peak.
 
                 let correction_factor: f64;
                 let stats = stats_for_histogram(&roi_histogram);
@@ -467,11 +468,12 @@ impl DetectEngine {
                         correction_factor = dark_level_cap / stats.mean;
                     } else {
                         // Overall scene is below dark_level_cap. Set a target
-                        // value of the brightest pixels in the image region.
+                        // value of the pixels in the detected peak region.
                         // Note that a lower brightness_goal value allows for
                         // faster exposures, which is nice in focus mode.
+                        let peak_region_val = f64::max(roi_summary.peak_value, 1.0);
                         let brightness_goal = 64.0;
-                        correction_factor = brightness_goal / peak_value as f64
+                        correction_factor = brightness_goal / peak_region_val;
                     }
                 }
 
