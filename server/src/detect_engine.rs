@@ -440,18 +440,20 @@ impl DetectEngine {
                     (contrast_peak_value - contrast_black_level) as f64
                         / contrast_peak_value as f64);
 
-                // Auto exposure. Adjust exposure time based on value of pixels
-                // in detected peak.
+                // Auto exposure.
 
                 let correction_factor: f64;
                 let stats = stats_for_histogram(&roi_histogram);
                 if daylight_mode {
-                    // Push image towards mid-level.
-                    correction_factor = if stats.mean > 250.0 {
+                    let bright_value =
+                        max(get_level_for_fraction(&roi_histogram, 0.9) as u8, 1);
+
+                    // Push bright part of image towards upper mid-level.
+                    correction_factor = if bright_value > 250 {
                         // If we're saturated, knock back exposure time quickly.
                         0.1
                     } else {
-                        128.0 / stats.mean
+                        220.0 / bright_value as f64
                     };
                 } else {
                     // Auto exposure in focus mode.
