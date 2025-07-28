@@ -684,8 +684,14 @@ impl Cedar for MyCedar {
         if let Some(ds) = req.dont_show_align_intro {
             our_prefs.dont_show_align_intro = Some(ds);
         }
-        if let Some(ds) = req.dont_show_calibration_fail {
-            our_prefs.dont_show_calibration_fail = Some(ds);
+        if let Some(ds) = req.dont_show_too_few_stars {
+            our_prefs.dont_show_too_few_stars = Some(ds);
+        }
+        if let Some(ds) = req.dont_show_bright_sky {
+            our_prefs.dont_show_bright_sky = Some(ds);
+        }
+        if let Some(ds) = req.dont_show_solver_failed {
+            our_prefs.dont_show_solver_failed = Some(ds);
         }
         if let Some(ds) = req.dont_show_setup_finished {
             our_prefs.dont_show_setup_finished = Some(ds);
@@ -867,7 +873,9 @@ impl Cedar for MyCedar {
                 dont_show_welcome: Some(false),
                 dont_show_focus_intro: Some(false),
                 dont_show_align_intro: Some(false),
-                dont_show_calibration_fail: Some(false),
+                dont_show_too_few_stars: Some(false),
+                dont_show_bright_sky: Some(false),
+                dont_show_solver_failed: Some(false),
                 dont_show_setup_finished: Some(false),
                 ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
@@ -2186,7 +2194,9 @@ impl MyCedar {
             dont_show_welcome: Some(false),
             dont_show_focus_intro: Some(false),
             dont_show_align_intro: Some(false),
-            dont_show_calibration_fail: Some(false),
+            dont_show_too_few_stars: Some(false),
+            dont_show_bright_sky: Some(false),
+            dont_show_solver_failed: Some(false),
             dont_show_setup_finished: Some(false),
         };
 
