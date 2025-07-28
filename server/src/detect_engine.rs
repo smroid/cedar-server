@@ -86,6 +86,11 @@ struct DetectState {
     // we are still focusing.
     calibrated_exposure_duration: Option<Duration>,
 
+    // If we have determined a good star detection exposure duration that yields
+    // close to `star_count_goal`, remember it here. None if auto exposure did
+    // not find a good value.
+    auto_exposure_duration: Option<Duration>,
+
     // We update the exposure time based on the number of detected stars.
     // Because of noise, twinking, etc., use a moving average.
     star_count_moving_average: f64,
@@ -126,6 +131,7 @@ impl DetectEngine {
                 binning: 1,
                 display_sampling: false,
                 calibrated_exposure_duration: None,
+                auto_exposure_duration: None,
                 star_count_moving_average: 0.0,
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
@@ -143,7 +149,9 @@ impl DetectEngine {
     }
 
     pub fn set_autoexposure_enabled(&mut self, enabled: bool) {
-        self.state.lock().unwrap().autoexposure_enabled = enabled;
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.autoexposure_enabled = enabled;
+        locked_state.auto_exposure_duration = None;
     }
 
     pub fn set_binning(&mut self, binning: u32, display_sampling: bool) {
@@ -170,6 +178,7 @@ impl DetectEngine {
         if !enabled {
             locked_state.star_count_moving_average = 0.0;
         }
+        locked_state.auto_exposure_duration = None;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
@@ -323,6 +332,7 @@ impl DetectEngine {
             let binning: u32;
             let display_sampling: bool;
             let calibrated_exposure_duration: Option<Duration>;
+            let auto_exposure_duration: Option<Duration>;
             {
                 let mut locked_state = state.lock().unwrap();
                 camera = locked_state.camera.clone();
@@ -333,6 +343,8 @@ impl DetectEngine {
                 display_sampling = locked_state.display_sampling;
                 calibrated_exposure_duration =
                     locked_state.calibrated_exposure_duration;
+                auto_exposure_duration =
+                    locked_state.auto_exposure_duration;
                 locked_state.eta = None;
             }
 
@@ -605,23 +617,29 @@ impl DetectEngine {
                 };
                 let baseline_exposure_duration_secs =
                     baseline_exposure_duration.as_secs_f64();
+                let fallback_exposure_duration_secs =
+                    if auto_exposure_duration.is_some() {
+                        auto_exposure_duration.unwrap().as_secs_f64()
+                    } else {
+                        baseline_exposure_duration_secs
+                    };
 
                 let num_stars_detected = stars.len();
-                if num_stars_detected == 0 {
+                if num_stars_detected < 4 {
                     // We're likely slewing and thus detecting no stars.
                     // Don't update the moving average, and for safety use
-                    // the baseline exposure duration.
-                    new_exposure_duration_secs = baseline_exposure_duration_secs;
+                    // a known-good exposure duration.
+                    new_exposure_duration_secs = fallback_exposure_duration_secs;
                     // Force update even if image is catching up to camera settings.
                     update_exposure = true;
                 } else if captured_image.params_accurate {
                     let moving_average = Self::update_star_count_moving_average(
                         &mut state.lock().unwrap(), num_stars_detected);
-                    if moving_average < 1.0 {
+                    if moving_average < 4.0 {
                         // This shouldn't happen because we don't update the moving
-                        // average with num_stars_detected==0. But just in case do
+                        // average with num_stars_detected<4. But just in case do
                         // something sane.
-                        new_exposure_duration_secs = baseline_exposure_duration_secs;
+                        new_exposure_duration_secs = fallback_exposure_duration_secs;
                     } else {
                         // When increasing exposure to increase star count,
                         // don't exceed a brightness limit. Note: this should be
@@ -635,7 +653,7 @@ impl DetectEngine {
                         if star_goal_fraction < 1.0 &&
                             stats.mean as u8 > BRIGHTNESS_LIMIT
                         {
-                            new_exposure_duration_secs = baseline_exposure_duration_secs;
+                            new_exposure_duration_secs = fallback_exposure_duration_secs;
                         } else {
                             // Don't adjust exposure time too often. Allow
                             // number of detected stars to exceed goal, but
@@ -669,6 +687,11 @@ impl DetectEngine {
                                         new_exposure_duration_secs,
                                         baseline_exposure_duration_secs * 8.0);
                                 }
+                            } else {
+                                // Auto exposure time is good. Record it.
+                                state.lock().unwrap().auto_exposure_duration =
+                                    Some(Duration::from_secs_f64(
+                                        prev_exposure_duration_secs));
                             }
                         }
                     }
