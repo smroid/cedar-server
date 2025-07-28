@@ -688,7 +688,8 @@ impl DetectEngine {
                                         baseline_exposure_duration_secs * 8.0);
                                 }
                             } else {
-                                // Auto exposure time is good. Record it.
+                                // Auto exposure time is good. Remember it for
+                                // use as a fallback.
                                 state.lock().unwrap().auto_exposure_duration =
                                     Some(Duration::from_secs_f64(
                                         prev_exposure_duration_secs));
