@@ -26,6 +26,15 @@ pub struct Calibrator {
     normalize_rows: bool,
 }
 
+#[derive(Debug)]
+pub enum ExposureCalibrationError {
+    // See CalibrationFailureReason in cedar.proto.
+    TooFewStars,
+    BrightSky,
+    // Cancel signaled.
+    Aborted,
+}
+
 impl Calibrator {
     pub fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                normalize_rows: bool) -> Self{
@@ -131,7 +140,7 @@ impl Calibrator {
         star_count_goal: i32,
         detection_binning: u32, detection_sigma: f64,
         cancel_calibration: Arc<Mutex<bool>>)
-        -> Result<Duration, CanonicalError> {
+        -> Result<Duration, ExposureCalibrationError> {
         // Goal: find the camera exposure duration that yields the desired
         // number of detected stars.
         //
@@ -148,143 +157,128 @@ impl Calibrator {
         //   * If not close to the goal, scale the exposure duration and
         //     do one more exposure/detect/scale.
         if *cancel_calibration.lock().unwrap() {
-            return Err(aborted_error(
-                "Cancelled during calibrate_exposure_duration()."));
+            return Err(ExposureCalibrationError::Aborted);
         }
 
         // If we fail, restore the exposure duration that we change here.
         let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
 
-        self.camera.lock().await.set_exposure_duration(initial_exposure_duration)?;
+        self.camera.lock().await.set_exposure_duration(
+            initial_exposure_duration).unwrap();
         let (_, mut exp_duration, mut stars, mut frame_id, mut histogram) =
             self.acquire_image_get_stars(
-                /*frame_id=*/None, detection_binning, detection_sigma).await?;
+                /*frame_id=*/None, detection_binning, detection_sigma).await.unwrap();
         let mut stats = stats_for_histogram(&histogram);
 
-        let mut num_stars_detected = stars.len();
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         let mut star_goal_fraction =
-            f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
+            f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
         // See the rationale in DetectEngine::worker() for how we relate
         // star_goal_fraction to exposure time adjustment.
         debug!("1: exp {:?}, {} stars, pix mean {:.2} ",
-               exp_duration, num_stars_detected, stats.mean);
-
-        // Increase exposure if necessary to increase star count, but don't
-        // exceed a brightness limit.
-        const BRIGHTNESS_LIMIT: u8 = 128;
-        let mut brightness_fraction = stats.mean / BRIGHTNESS_LIMIT as f64;
-        let mut fraction = f64::max(star_goal_fraction, brightness_fraction);
+               exp_duration, stars.len(), stats.mean);
 
         let mut scaled_exp_duration =
-            Duration::from_secs_f64(exp_duration.as_secs_f64() / fraction);
-        if fraction > 0.8 && fraction < 1.2 {
+            Duration::from_secs_f64(exp_duration.as_secs_f64() / star_goal_fraction);
+        if scaled_exp_duration > max_exposure_duration {
+            scaled_exp_duration = max_exposure_duration;
+        }
+        if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            self.camera.lock().await.set_exposure_duration(scaled_exp_duration)?;
+            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
             return Ok(scaled_exp_duration);
         }
-        if *cancel_calibration.lock().unwrap() {
+
+        const BRIGHTNESS_LIMIT: f64 = 192.0;
+        if star_goal_fraction < 1.0 && stats.mean > BRIGHTNESS_LIMIT {
+            // We are increasing exposure if necessary to increase star count.
+            // Don't exceed a brightness limit.
             restore_exposure.restore().await;
-            return Err(aborted_error(
-                "Cancelled during calibrate_exposure_duration()."));
+            return Err(ExposureCalibrationError::BrightSky);
         }
 
         // Iterate with the refined exposure duration.
-        if scaled_exp_duration >= max_exposure_duration {
-            // We've saturated available exposure time latitude based on detected
-            // star count (or lack thereof). Keep things sane by adjusting the
-            // overall scene exposure.
-            let mean = if stats.mean < 1.0 { 1.0 } else { stats.mean };
-            // Push image towards moderately low level.
-            let correction_factor = 64.0 / mean;
-            scaled_exp_duration = Duration::from_secs_f64(
-                initial_exposure_duration.as_secs_f64() * correction_factor);
-        }
-        self.camera.lock().await.set_exposure_duration(scaled_exp_duration)?;
-        (_, exp_duration, stars, frame_id, histogram) =
-            self.acquire_image_get_stars(
-                Some(frame_id), detection_binning, detection_sigma).await?;
-        stats = stats_for_histogram(&histogram);
-        num_stars_detected = stars.len();
-        debug!("2: exp {:?}, {} stars, pix mean {:.2} ",
-               exp_duration, num_stars_detected, stats.mean);
-
-        // >1 if we have more stars than goal; <1 if fewer stars than goal.
-        star_goal_fraction =
-            f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
-        brightness_fraction = stats.mean / BRIGHTNESS_LIMIT as f64;
-        fraction = f64::max(star_goal_fraction, brightness_fraction);
-        scaled_exp_duration = Duration::from_secs_f64(
-            scaled_exp_duration.as_secs_f64() / fraction);
-
-        if fraction > 0.8 && fraction < 1.2 {
-            // Close enough to goal, the scaled exposure time is good.
-            self.camera.lock().await.set_exposure_duration(scaled_exp_duration)?;
-            return Ok(scaled_exp_duration);
-        }
         if *cancel_calibration.lock().unwrap() {
             restore_exposure.restore().await;
-            return Err(aborted_error(
-                "Cancelled during calibrate_exposure_duration()."));
+            return Err(ExposureCalibrationError::Aborted);
+        }
+        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
+        (_, exp_duration, stars, frame_id, histogram) =
+            self.acquire_image_get_stars(
+                Some(frame_id), detection_binning, detection_sigma).await.unwrap();
+        stats = stats_for_histogram(&histogram);
+        star_goal_fraction =
+            f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
+        debug!("2: exp {:?}, {} stars, pix mean {:.2} ",
+               exp_duration, stars.len(), stats.mean);
+
+        scaled_exp_duration = Duration::from_secs_f64(
+            exp_duration.as_secs_f64() / star_goal_fraction);
+        if scaled_exp_duration > max_exposure_duration {
+            scaled_exp_duration = max_exposure_duration;
+        }
+        if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
+            // Close enough to goal, the scaled exposure time is good.
+            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
+            return Ok(scaled_exp_duration);
+        }
+        if star_goal_fraction < 1.0 {
+            // We are increasing exposure as necessary to increase star count.
+            // Don't exceed a brightness limit or maximum exposure time.
+            if stats.mean > BRIGHTNESS_LIMIT {
+                restore_exposure.restore().await;
+                return Err(ExposureCalibrationError::BrightSky);
+            }
+            if exp_duration >= max_exposure_duration {
+                restore_exposure.restore().await;
+                return Err(ExposureCalibrationError::TooFewStars);
+            }
         }
 
         // Iterate one more time.
-        if scaled_exp_duration >= max_exposure_duration {
-            // We've saturated available exposure time latitude based on detected
-            // star count (or lack thereof). Keep things sane by adjusting the
-            // overall scene exposure.
-
-            // Back out the scaling based on star count.
-            scaled_exp_duration = Duration::from_secs_f64(
-                scaled_exp_duration.as_secs_f64() * fraction);
-
-            let mean = if stats.mean < 1.0 { 1.0 } else { stats.mean };
-            // Push image towards moderately low level.
-            let correction_factor = 64.0 / mean;
-            scaled_exp_duration = Duration::from_secs_f64(
-                scaled_exp_duration.as_secs_f64() * correction_factor);
+        if *cancel_calibration.lock().unwrap() {
+            restore_exposure.restore().await;
+            return Err(ExposureCalibrationError::Aborted);
         }
-        self.camera.lock().await.set_exposure_duration(scaled_exp_duration)?;
+        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
         (_, exp_duration, stars, _, histogram) =
             self.acquire_image_get_stars(
-                Some(frame_id), detection_binning, detection_sigma).await?;
+                Some(frame_id), detection_binning, detection_sigma).await.unwrap();
         stats = stats_for_histogram(&histogram);
-        num_stars_detected = stars.len();
-        debug!("3: exp {:?}, {} stars, pix mean {:.2} ",
-               exp_duration, num_stars_detected, stats.mean);
-
-        if num_stars_detected < (star_count_goal / 5) as usize {
-            restore_exposure.restore().await;
-            return Err(failed_precondition_error(
-                format!("Too few stars detected ({})", num_stars_detected).as_str()))
-        }
         star_goal_fraction =
-            f64::max(num_stars_detected as f64, 1.0) / star_count_goal as f64;
-        if star_goal_fraction < 1.0 && stats.mean as u8 > BRIGHTNESS_LIMIT {
-            // Too few stars, but we can't increase exposure more because image
-            // is already too bright overall.
-            restore_exposure.restore().await;
-            return Err(failed_precondition_error(
-                format!("Too few stars detected ({})", num_stars_detected).as_str()))
-        }
+            f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
+        debug!("3: exp {:?}, {} stars, pix mean {:.2} ",
+               exp_duration, stars.len(), stats.mean);
 
+        scaled_exp_duration = Duration::from_secs_f64(
+            exp_duration.as_secs_f64() / star_goal_fraction);
+        if scaled_exp_duration > max_exposure_duration {
+            scaled_exp_duration = max_exposure_duration;
+        }
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            self.camera.lock().await.set_exposure_duration(scaled_exp_duration)?;
+            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
             return Ok(scaled_exp_duration);
+        }
+        if star_goal_fraction < 1.0 {
+            // Increased exposure was insufficent to increase star count, we'd
+            // need to go even longer. Don't exceed a brightness limit or
+            // maximum exposure time.
+            if stats.mean > BRIGHTNESS_LIMIT {
+                restore_exposure.restore().await;
+                return Err(ExposureCalibrationError::BrightSky);
+            }
+            if exp_duration >= max_exposure_duration {
+                restore_exposure.restore().await;
+                return Err(ExposureCalibrationError::TooFewStars);
+            }
         }
         if star_goal_fraction < 0.5 || star_goal_fraction > 2.0 {
             warn!("Exposure time calibration diverged, goal fraction {}",
                   star_goal_fraction);
         }
 
-        scaled_exp_duration = Duration::from_secs_f64(
-            scaled_exp_duration.as_secs_f64() / star_goal_fraction);
-        if scaled_exp_duration > max_exposure_duration {
-            self.camera.lock().await.set_exposure_duration(max_exposure_duration)?;
-            return Ok(max_exposure_duration);
-        }
-        self.camera.lock().await.set_exposure_duration(scaled_exp_duration)?;
+        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
         Ok(scaled_exp_duration)
     }
 

@@ -18,7 +18,7 @@ use cedar_camera::abstract_camera::{AbstractCamera, Gain, Offset,
 use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
 
-use canonical_error::{CanonicalError, CanonicalErrorCode};
+use canonical_error::{CanonicalError, CanonicalErrorCode, aborted_error};
 use chrono::offset::Local;
 use glob::glob;
 use image::{GrayImage};
@@ -58,7 +58,7 @@ use cedar_elements::astro_util::{
 use cedar_elements::cedar::cedar_server::{Cedar, CedarServer};
 
 use cedar_elements::cedar::{
-    ActionRequest, CalibrationData, CameraModel,
+    ActionRequest, CalibrationData, CalibrationFailureReason, CameraModel,
     CelestialCoordChoice, CelestialCoordFormat,
     DisplayOrientation, EmptyMessage, FeatureLevel,
     FixedSettings, FovCatalogEntry, FrameRequest, FrameResult,
@@ -69,7 +69,7 @@ use cedar_elements::cedar::{
     WiFiAccessPoint};
 
 use crate::activity_led::ActivityLed;
-use crate::calibrator::Calibrator;
+use crate::calibrator::{Calibrator, ExposureCalibrationError};
 use crate::detect_engine::{DetectEngine, DetectResult};
 use crate::imu6050::{AccelData, GyroData, Mpu6050};
 use crate::motion_estimator::MotionEstimator;
@@ -1402,6 +1402,8 @@ impl MyCedar {
             detection_sigma = locked_detect_engine.get_detection_sigma();
             star_count_goal = locked_detect_engine.get_star_count_goal();
         }
+        calibration_data.lock().await.calibration_failure_reason = None;
+
         let offset = match calibrator.lock().await.calibrate_offset(
             cancel_calibration.clone()).await
         {
@@ -1423,16 +1425,25 @@ impl MyCedar {
             binning, detection_sigma,
             cancel_calibration.clone()).await {
             Ok(ed) => {
-                calibration_data.lock().await.exposure_calibration_failed = Some(false);
                 ed
             },
             Err(e) => {
-                if e.code == CanonicalErrorCode::Aborted {
-                    return Err(e);
+                match e {
+                    ExposureCalibrationError::TooFewStars => {
+                        calibration_data.lock().await.calibration_failure_reason =
+                            Some(CalibrationFailureReason::TooFewStars.into());
+                    },
+                    ExposureCalibrationError::BrightSky => {
+                        calibration_data.lock().await.calibration_failure_reason =
+                            Some(CalibrationFailureReason::BrightSky.into());
+                    },
+                    ExposureCalibrationError::Aborted => {
+                        return Err(aborted_error(
+                            "Cancelled during calibrate_exposure_duration()."));
+                    },
                 }
                 warn!{"Error while calibrating exposure duration: {:?}, using {:?}",
                       e, initial_exposure_duration};
-                calibration_data.lock().await.exposure_calibration_failed = Some(true);
                 return Ok(false);
             }
         };
@@ -1446,7 +1457,6 @@ impl MyCedar {
         {
             Ok((fov, distortion, match_max_error, solve_duration)) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
-                locked_calibration_data.plate_solve_failed = Some(false);
                 locked_calibration_data.fov_horizontal = Some(fov);
                 locked_calibration_data.fov_vertical =
                     Some(fov * height as f64 / width as f64);
@@ -1474,7 +1484,8 @@ impl MyCedar {
             Err(e) => {
                 let mut locked_calibration_data = calibration_data.lock().await;
                 if e.code != CanonicalErrorCode::Aborted {
-                    locked_calibration_data.plate_solve_failed = Some(true);
+                    locked_calibration_data.calibration_failure_reason =
+                        Some(CalibrationFailureReason::SolverFailed.into());
                 }
                 locked_calibration_data.fov_horizontal = None;
                 locked_calibration_data.lens_distortion = None;

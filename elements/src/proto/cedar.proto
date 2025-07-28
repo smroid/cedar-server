@@ -637,15 +637,12 @@ message CalibrationData {
   optional google.protobuf.Timestamp calibration_time = 1;
 
   // Indicates reason, if any, that the calibration failed.
-  optional bool exposure_calibration_failed = 9;
-  optional bool plate_solve_failed = 10;
+  optional CalibrationFailureReason calibration_failure_reason = 12;
 
   // Exposure time determined to yield the desired number of star detections
   // during calibration.
   // Operation mode varies the exposure duration around this value based on
   // the current detected star count.
-  // If no calibration has succeeded, this will have reasonable default value
-  // based on setup mode's auto exposure.
   optional google.protobuf.Duration target_exposure_time = 2;
 
   // The camera offset value [0..20] found to be needed to avoid black crush.
@@ -675,6 +672,25 @@ message CalibrationData {
   // pixel/angle scale to vary as you move away from the center.
   // Omitted if a sky/camera calibration has not succeeded.
   optional double pixel_angular_size = 7;
+
+  reserved 9, 10;
+}
+
+enum CalibrationFailureReason {
+  REASON_UNSPECIFIED = 0;
+
+  // Exposure calibration failed to find stars at maximum exposure duration.
+  // Likely causes: lens cover is closed; dark clouds.
+  TOO_FEW_STARS = 1;
+
+  // Exposure calibration reached its mean scene brightness limit before
+  // detecting the desired number of stars. Likely causes: not pointed at sky;
+  // bright clouds; twilight too bright; extreme light pollution.
+  BRIGHT_SKY = 2;
+
+  // Cedar Solve could not find a solution. If exposure calibration succeeds
+  // a solver failure is unusual.
+  SOLVER_FAILED = 3;
 }
 
 // When the observer's geographic location is known, the

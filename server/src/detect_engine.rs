@@ -624,8 +624,10 @@ impl DetectEngine {
                         new_exposure_duration_secs = baseline_exposure_duration_secs;
                     } else {
                         // When increasing exposure to increase star count,
-                        // don't exceed a brightness limit.
-                        const BRIGHTNESS_LIMIT: u8 = 64;
+                        // don't exceed a brightness limit. Note: this should be
+                        // the same value as in
+                        // Calibrator::calibrate_exposure_duration().
+                        const BRIGHTNESS_LIMIT: u8 = 192;
                         // >1 if we have more stars than goal; <1 if fewer stars than
                         // goal.
                         let star_goal_fraction =
