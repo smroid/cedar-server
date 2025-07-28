@@ -274,10 +274,12 @@ message Preferences {
   optional bool dont_show_welcome = 24;
   optional bool dont_show_focus_intro = 25;
   optional bool dont_show_align_intro = 26;
-  optional bool dont_show_calibration_fail = 27;
+  optional bool dont_show_too_few_stars = 29;
+  optional bool dont_show_bright_sky = 30;
+  optional bool dont_show_solver_failed = 31;
   optional bool dont_show_setup_finished = 28;
 
-  reserved 4, 8, 20;
+  reserved 4, 8, 20, 27;
 }
 
 enum CelestialCoordFormat {
