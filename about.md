@@ -50,10 +50,9 @@ provides:
   the telescope view and then taps a button to capture the x/y position of the
   telescope boresight.
 
-* Daylight boresight alignment (coming soon). In daylight, the user aims the
-  telescope at a landmark such as a distant light pole or corner of a building,
-  then taps on the corresponding item on a magnified view of the central region
-  of the FOV.
+* Daylight boresight alignment. In daylight, the user aims the telescope at a
+  landmark such as a distant light pole or corner of a building, then taps on
+  the corresponding item on a magnified view of the central region of the FOV.
 
 ### Aim
 
@@ -95,7 +94,7 @@ follows, taking several seconds in total:
   solve timeout to be determined for Aim mode solves. In addition, the residual
   centroid position error (even after using the calibrated lens distortion) is
   captured to allow determination of the plate solver's 'match_max_error'
-  parameter (coming soon).
+  parameter.
 
 ## Moving to target
 
@@ -126,9 +125,8 @@ on the full resolution original image for best accuracy.
 
 ### Gain
 
-Cedar-server operates each kind of camera at its optimal gain setting. The
-optimal gain is taken to be the lowest gain that yields RMS noise of around 0.5
-ADU on a dark image taken at a typical plate solving exposure time. The optimal
+Cedar-server operates each kind of camera at its optimal gain setting, which is
+typically the highest analog gain setting, with no digital gain. The optimal
 gain values are determined by offline trials and are baked into the Cedar-camera
 library.
 
@@ -190,9 +188,9 @@ automatically adjusts the exposure time in a mode-specific fashion.
 
 ### Daylight alignment mode
 
-In daylight alignment mode (coming soon), the camera is pointed at a terrestrial
-scene before dark. Here Cedar-server adjusts the exposure time to achieve good
-brightness of the central region of the field of view.
+In daylight alignment mode, the camera is pointed at a terrestrial scene before
+dark. Here Cedar-server adjusts the exposure time to achieve good brightness of
+the central region of the field of view.
 
 ### Setup mode (focusing)
 
@@ -203,63 +201,7 @@ brightest star is then stretched for display.
 ### Aim mode (plate solving)
 
 When plate solving, Cedar-server adjust the exposure time to achieve a desired
-number of detected stars (see below).
-
-## Speed vs accuracy slider
-
-Reliable plate solving requires a good number of correctly detected stars with
-reasonably accurate relative brightness ranking. Cedar-solve can succeed with as
-few as 6 detected stars, but is much more reliable at above 10 stars. In
-practice using 20 detected stars yields solid solve results; using more than 20
-stars provides little added benefit but incurs longer exposure times.
-
-The number of detected stars is influenced by:
-
-* Exposure time. A longer exposure produces higher signal-to-noise and thus allows
-  additional fainter stars to be detected.
-
-* Noise-relative detection threshold. A "sigma multiple" parameter governs the
-  sensitivity of Cedar-detect. A high sigma value yields fewer star detections
-  but very few false positives; a lower sigma value allows fainter stars to be
-  detected but also causes some noise fluctuations to be mistaken for stars.
-
-So we have potentially three parameters to present to the user:
-
-1. Desired number of detected stars for plate solving.
-
-2. Exposure time.
-
-3. Detection "sigma multiple" parameter.
-
-These are interrelated, as items 2 and 3 together influence the number of
-star detections, which relates to item 1.
-
-Instead of having these knobs, Cedar-server instead provides a simple speed vs.
-accuracy knob with three settings:
-
-* Balanced: Baseline values (see below) for desired number of stars and detection sigma
-  are used.
-
-* Faster: Baseline values for star count and detection sigma are multiplied by 0.7.
-
-* Accurate: Baseline values for star count and detection sigma are multiplied by 1.4.
-
-In each case, auto-exposure logic determines the exposure time to acheive the
-desired number of stars.
-
-In the "faster" case, we are seeking fewer stars so Cedar-server will use
-shorter exposures. Furthermore, the lowered sigma value allows the exposure time
-to be lowered yet more because it is "easier" to detect stars (plus false
-positives).
-
-In the "accurate" case, we are seeking more stars at a higher sigma threshold,
-so Cedar-server will use longer exposures. By detecting more stars with fewer
-false positives, plate solutions are more robust and the resulting astrometric
-accuracy will be increased due to the larger number of matches.
-
-The baseline value for desired number of stars is 20; the baseline value for
-detection sigma multiple is 8. These can be overridden on the Cedar-server
-command line.
+number of detected stars.
 
 ## Motion analysis
 
