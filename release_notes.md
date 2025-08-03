@@ -280,6 +280,6 @@ Cedar-server version: 0.12.2
 * Fix daylight mode auto-exposure.
 
 * On exposure calibration failure, UI pops a message identifying reason:
-  Too few stars due to len cap being covered; sky too bright.
+  Too few stars due to lens cap being covered; sky too bright.
 
 * Improved twilight tolerance.
