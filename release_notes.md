@@ -248,3 +248,38 @@ Cedar-server version: 0.10.0
 
 Cedar-server version: 0.11.0
 
+* Display central square crop of camera image instead of full camera image.
+
+* Adjust app layout to take advantage of larger data/control panels around
+  square image.
+
+* In about screen camera information, reflect when demo image is being used.
+
+* Don't hold camera lock when waiting for next exposure to be ready; this was
+  causing UI responsiveness problems.
+
+* Clean up other locking issues.
+
+* Once LED turns off (when app connects), don't turn LED back on (e.g. when app
+  goes to sleep due to screen off etc.).
+
+* Make FOV bullseye more visible in daylight align mode.
+
+* Add haptic feedback in align mode and for re-align.
+
+# August 2 2025
+
+Cedar-server version: 0.12.2
+
+* Update/fix auto-exposure logic.
+
+* Update/fix exposure calibration logic.
+
+* Star count gauge displays moving average rather than instantaneous value.
+
+* Fix daylight mode auto-exposure.
+
+* On exposure calibration failure, UI pops a message identifying reason:
+  Too few stars due to len cap being covered; sky too bright.
+
+* Improved twilight tolerance.
