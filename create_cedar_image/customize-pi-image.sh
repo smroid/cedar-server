@@ -27,7 +27,7 @@ echo "Copying to $CUSTOMIZED_RPI_FILE"
 cp $SOURCE_IMG_FILE $CUSTOMIZED_RPI_FILE
 
 echo "Extending $CUSTOMIZED_RPI_FILE"
-dd if=/dev/zero bs=1M count=2500 >> $CUSTOMIZED_RPI_FILE
+dd if=/dev/zero bs=1M count=3500 >> $CUSTOMIZED_RPI_FILE
 echo "Resizing filesystem"
 sudo parted $CUSTOMIZED_RPI_FILE resizepart 2 100%
 sudo python resize_fs.py $CUSTOMIZED_RPI_FILE
