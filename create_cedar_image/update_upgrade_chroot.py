@@ -112,7 +112,12 @@ def update_system(rootfs_path):
 
             # Perform full upgrade
             print("\nPerforming full upgrade...")
-            run_chroot_command(rootfs_path, ['apt', 'full-upgrade', '-y'])
+            run_chroot_command(rootfs_path, [
+                'env', 'DEBIAN_FRONTEND=noninteractive',
+                'apt', 'full-upgrade', '-y',
+                '-o', 'Dpkg::Options::=--force-confdef',
+                '-o', 'Dpkg::Options::=--force-confold'
+            ])
 
             # While we're at it...
             print("\nInstalling mDNS/Bonjour support...")
