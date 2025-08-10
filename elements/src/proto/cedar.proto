@@ -271,15 +271,13 @@ message Preferences {
   // Whether mobile screen is kept on while in Cedar Aim.
   optional bool screen_always_on = 23;
 
-  optional bool dont_show_welcome = 24;
-  optional bool dont_show_focus_intro = 25;
-  optional bool dont_show_align_intro = 26;
-  optional bool dont_show_too_few_stars = 29;
-  optional bool dont_show_bright_sky = 30;
-  optional bool dont_show_solver_failed = 31;
-  optional bool dont_show_setup_finished = 28;
+  // Set of UI information items that should not be shown. Each string
+  // identifies a specific piece of information (e.g., "welcome", "focus_intro",
+  // "align_intro", "too_few_stars", "bright_sky", "solver_failed", 
+  // "setup_finished").
+  repeated string dont_show_items = 32;
 
-  reserved 4, 8, 20, 27;
+  reserved 4, 8, 20, 24, 25, 26, 27, 28, 29, 30, 31;
 }
 
 enum CelestialCoordFormat {
@@ -838,8 +836,8 @@ message ActionRequest {
   // WiFi access point.
   optional WiFiAccessPoint update_wifi_access_point = 7;
 
-  // Reset all Preferences.dont_show_xxx fields.
-  optional bool clear_dont_shows = 10;
+  // Clear all items from Preferences.dont_show_items.
+  optional bool clear_dont_show_items = 10;
 }
 
 message ServerLogRequest {
@@ -873,6 +871,8 @@ service Cedar {
 
   // Changes zero or more of Cedar's user interface preferences. If a field is
   // omitted from the supplied Preferences, that preference is not updated.
+  // For the dont_show_items field: an empty array means no change; a non-empty
+  // array means add these items to the existing set (no duplicates).
   // Returns the Preferences after any updates have been applied. To get the
   // current preferences without making any changes, pass an empty Preferences
   // request.
