@@ -672,6 +672,9 @@ impl Cedar for MyCedar {
         if let Some(celestial_coord_choice) = req.celestial_coord_choice {
             our_prefs.celestial_coord_choice = Some(celestial_coord_choice);
         }
+        if let Some(perf_gauge_choice) = req.perf_gauge_choice {
+            our_prefs.perf_gauge_choice = Some(perf_gauge_choice);
+        }
         if let Some(screen_always_on) = req.screen_always_on {
             our_prefs.screen_always_on = Some(screen_always_on);
         }
