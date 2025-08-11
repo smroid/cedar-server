@@ -1835,6 +1835,7 @@ impl MyCedar {
                 Some(psr.solve_attempt_stats.clone());
             stats.solve_success_fraction =
                 Some(psr.solve_success_stats.clone());
+            stats.solve_interval = Some(psr.solve_interval_stats.clone());
             frame_result.slew_request = psr.slew_request.clone();
             if let Some(boresight_image) = &psr.boresight_image {
                 // boresight_image is taken from the camera's acquired image. In

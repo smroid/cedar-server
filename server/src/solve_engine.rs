@@ -91,6 +91,11 @@ struct SolveState {
     solve_latency_stats: ValueStatsAccumulator,
     solve_attempt_stats: ValueStatsAccumulator,
     solve_success_stats: ValueStatsAccumulator,
+    solve_interval_stats: ValueStatsAccumulator,
+
+    // Time of the last plate solve attempt. Reset to None if a plate solve is
+    // not attempted.
+    last_solve_attempt_time: Option<Instant>,
 
     // Estimated time at which `plate_solution` will next be updated.
     eta: Option<Instant>,
@@ -135,6 +140,8 @@ impl SolveEngine {
                 solve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_attempt_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
+                solve_interval_stats: ValueStatsAccumulator::new(stats_capacity),
+                last_solve_attempt_time: None,
                 eta: None,
                 plate_solution: None,
                 logged_error: false,
@@ -294,6 +301,7 @@ impl SolveEngine {
         locked_state.solve_latency_stats.reset_session();
         locked_state.solve_attempt_stats.reset_session();
         locked_state.solve_success_stats.reset_session();
+        locked_state.solve_interval_stats.reset_session();
     }
 
     // TODO: arg specifying directory to save to.
@@ -460,6 +468,14 @@ impl SolveEngine {
             if detect_result.star_candidates.len() >= minimum_stars as usize {
                 {
                     let mut locked_state = state.lock().await;
+                    // Record interval since last solve attempt
+                    let now = Instant::now();
+                    if let Some(last_attempt) = locked_state.last_solve_attempt_time {
+                        let interval = now.duration_since(last_attempt).as_secs_f64();
+                        locked_state.solve_interval_stats.add_value(interval);
+                    }
+                    locked_state.last_solve_attempt_time = Some(now);
+                    state.lock().await.solve_attempt_stats.add_value(1.0);
                     if let Some(recent_stats) =
                         &locked_state.solve_latency_stats.value_stats.recent
                     {
@@ -498,6 +514,12 @@ impl SolveEngine {
                     }
                 }
                 solve_finish_time = Some(SystemTime::now());
+            } else {
+                // Not enough stars for solve attempt - clear last attempt time
+                // so we don't include non-solving periods in interval stats
+                let mut locked_state = state.lock().await;
+                locked_state.last_solve_attempt_time = None;
+                locked_state.solve_attempt_stats.add_value(0.0);
             }
 
             let elapsed = process_start_time.elapsed();
@@ -517,18 +539,11 @@ impl SolveEngine {
             }
             if plate_solution_proto.is_none() {
                 if !align_mode {
-                    state.lock().await.solve_attempt_stats.add_value(0.0);
                     solution_callback(boresight_pixel,
                                       Some(detect_result.clone()), None);
                 }
             } else {
-                if !align_mode {
-                    state.lock().await.solve_attempt_stats.add_value(1.0);
-                }
                 let psp = plate_solution_proto.as_ref().unwrap();
-                if !align_mode {
-                    state.lock().await.solve_success_stats.add_value(1.0);
-                }
                 let boresight_coords = if psp.target_sky_coord.is_empty() {
                     psp.image_sky_coord.as_ref().unwrap().clone()
                 } else {
@@ -538,6 +553,7 @@ impl SolveEngine {
                 for (idx, c) in psp.rotation_matrix.clone().into_iter().enumerate() {
                     rotation_matrix[idx] = c;
                 }
+                state.lock().await.solve_success_stats.add_value(1.0);
 
                 if !align_mode {
                     // Let integration layer pass solution to SkySafari telescope
@@ -611,13 +627,14 @@ impl SolveEngine {
                         (Some(result.0), Some(result.1));
                 }
             }
-            if !align_mode {
+            if state.lock().await.last_solve_attempt_time.is_some() {
                 state.lock().await.solve_latency_stats.add_value(elapsed.as_secs_f64());
             }
             // Post the result.
             let solve_latency_stats;
             let solve_attempt_stats;
             let solve_success_stats;
+            let solve_interval_stats;
             {
                 let locked_state = state.lock().await;
                 solve_latency_stats =
@@ -626,6 +643,8 @@ impl SolveEngine {
                     locked_state.solve_attempt_stats.value_stats.clone();
                 solve_success_stats =
                     locked_state.solve_success_stats.value_stats.clone();
+                solve_interval_stats =
+                    locked_state.solve_interval_stats.value_stats.clone();
             }
             state.lock().await.plate_solution = Some(PlateSolution{
                 detect_result,
@@ -640,6 +659,7 @@ impl SolveEngine {
                 solve_latency_stats,
                 solve_attempt_stats,
                 solve_success_stats,
+                solve_interval_stats,
             });
         }  // loop.
     }  // worker
@@ -928,4 +948,7 @@ pub struct PlateSolution {
 
     // Fraction of attempted plate solves succeeded.
     pub solve_success_stats: ValueStats,
+
+    // Time interval between successive plate solve attempts.
+    pub solve_interval_stats: ValueStats,
 }

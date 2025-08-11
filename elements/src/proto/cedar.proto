@@ -275,6 +275,8 @@ message Preferences {
   // identifies a specific piece of information (e.g., "welcome", "focus_intro",
   // "align_intro", "too_few_stars", "bright_sky", "solver_failed", 
   // "setup_finished").
+  // Note that this field is used solely by the UI and are not used by server
+  // logic.
   repeated string dont_show_items = 32;
 
   reserved 4, 8, 20, 24, 25, 26, 27, 28, 29, 30, 31;
@@ -604,6 +606,9 @@ message ProcessingStats {
   // returned. This includes time spent e.g. applying gamma to the display
   // image.
   ValueStats serve_latency = 7;
+
+  // Time interval (in seconds) between successive plate solve attempts.
+  ValueStats solve_interval = 8;
 
   reserved 1;
 }
