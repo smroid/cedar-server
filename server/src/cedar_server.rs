@@ -59,7 +59,7 @@ use cedar_elements::cedar::cedar_server::{Cedar, CedarServer};
 
 use cedar_elements::cedar::{
     ActionRequest, CalibrationData, CalibrationFailureReason, CameraModel,
-    CelestialCoordChoice, CelestialCoordFormat,
+    CelestialCoordFormat,
     DisplayOrientation, EmptyMessage, FeatureLevel,
     FixedSettings, FovCatalogEntry, FrameRequest, FrameResult,
     Image, ImageCoord, ImuState, LatLong, LocationBasedInfo, MountType,
@@ -2172,7 +2172,8 @@ impl MyCedar {
             text_size_index: Some(0),
             boresight_pixel: None,
             right_handed: Some(true),
-            celestial_coord_choice: Some(CelestialCoordChoice::RaDec.into()),
+            celestial_coord_choice: None,
+            perf_gauge_choice: None,
             screen_always_on: Some(true),
             dont_show_items: Vec::new(),
         };
