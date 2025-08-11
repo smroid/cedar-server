@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2025 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
 use crate::detect_engine::{DetectEngine, DetectResult};
@@ -31,6 +31,9 @@ use cedar_elements::image_utils::{normalize_rows_mut, scale_image_mut};
 use cedar_elements::astro_util::{
     angular_separation, position_angle, transform_to_image_coord};
 
+type SolutionCallback = Arc<dyn Fn(Option<ImageCoord>, Option<DetectResult>, Option<PlateSolutionProto>)
+                           -> (Option<CelestialCoord>, Option<CelestialCoord>) + Send + Sync>;
+
 pub struct SolveEngine {
     // The plate solver we are using.
     solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
@@ -48,12 +51,7 @@ pub struct SolveEngine {
     // Return value:
     // (sky coordinate of slew target (if any),
     //  sky coordinate of sync operation (if any))
-    solution_callback: Arc<dyn Fn(Option<ImageCoord>,
-                                  Option<DetectResult>,
-                                  Option<PlateSolutionProto>)
-                                  -> (Option<CelestialCoord>,
-                                      Option<CelestialCoord>)
-                           + Send + Sync>,
+    solution_callback: SolutionCallback,
 }
 
 // State shared between worker thread and the SolveEngine methods.
@@ -111,16 +109,11 @@ impl SolveEngine {
         cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         stats_capacity: usize,
-        solution_callback: Arc<dyn Fn(Option<ImageCoord>,
-                                      Option<DetectResult>,
-                                      Option<PlateSolutionProto>)
-                                      -> (Option<CelestialCoord>,
-                                          Option<CelestialCoord>)
-                               + Send + Sync>)
+        solution_callback: SolutionCallback)
         -> Result<Self, CanonicalError>
     {
         Ok(SolveEngine{
-            solver: solver.clone(),
+            solver,
             state: Arc::new(tokio::sync::Mutex::new(SolveState{
                 align_mode: false,
                 normalize_rows,
@@ -372,16 +365,251 @@ impl SolveEngine {
         }
     }
 
+    async fn attempt_plate_solve(
+        solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
+        state: Arc<tokio::sync::Mutex<SolveState>>,
+        detect_result: &DetectResult,
+        minimum_stars: i32,
+        solve_extension: &SolveExtension,
+        solve_params: &SolveParams,
+    ) -> (Option<PlateSolutionProto>, Option<SystemTime>) {
+        let mut star_centroids = Vec::<ImageCoord>::with_capacity(
+            detect_result.star_candidates.len());
+        for sc in &detect_result.star_candidates {
+            star_centroids.push(ImageCoord{x: sc.centroid_x,
+                                           y: sc.centroid_y});
+        }
+
+        let mut plate_solution_proto: Option<PlateSolutionProto> = None;
+        let mut solve_finish_time: Option<SystemTime> = None;
+        
+        if detect_result.star_candidates.len() >= minimum_stars as usize {
+            {
+                let mut locked_state = state.lock().await;
+                // Record interval since last solve attempt.
+                let now = Instant::now();
+                if let Some(last_attempt) = locked_state.last_solve_attempt_time {
+                    let interval = now.duration_since(last_attempt).as_secs_f64();
+                    locked_state.solve_interval_stats.add_value(interval);
+                }
+                locked_state.last_solve_attempt_time = Some(now);
+                locked_state.solve_attempt_stats.add_value(1.0);
+                if let Some(recent_stats) =
+                    &locked_state.solve_latency_stats.value_stats.recent
+                {
+                    let solve_duration = Duration::from_secs_f64(recent_stats.min);
+                    locked_state.eta = Some(Instant::now() + solve_duration);
+                }
+            }
+            match Self::solve_with_solver(
+                solver.clone(),
+                &star_centroids,
+                detect_result.captured_image.image.dimensions().0 as usize, 
+                detect_result.captured_image.image.dimensions().1 as usize,
+                &solve_extension, &solve_params).await
+            {
+                Err(e) => {
+                    // Let's not spam the log with solver failures. If the
+                    // number of detected stars is low, don't bother to log,
+                    // as this is a trivial source of solve failures (e.g.
+                    // due to telescope motion).
+                    // Empirically, solutions are possible at 6 centroids,
+                    // and are ~reliable at 14 or more centroids. For logging,
+                    // we split the difference.
+                    if star_centroids.len() >= 10 {
+                        let mut locked_state = state.lock().await;
+                        // Secondly, don't log the error if we've just logged one.
+                        if !locked_state.logged_error {
+                            error!("Solver error {:?} with {} centroids",
+                                   e, star_centroids.len());
+                            locked_state.logged_error = true;
+                        }
+                    }
+                },
+                Ok(solution) => {
+                    // Re-enable logging of the next non-trivial solve failure.
+                    state.lock().await.logged_error = false;
+                    plate_solution_proto = Some(solution);
+                }
+            }
+            solve_finish_time = Some(SystemTime::now());
+        } else {
+            // Not enough stars for solve attempt - clear last attempt time
+            // so we don't include non-solving periods in interval stats.
+            let mut locked_state = state.lock().await;
+            locked_state.last_solve_attempt_time = None;
+            locked_state.solve_attempt_stats.add_value(0.0);
+        }
+
+        (plate_solution_proto, solve_finish_time)
+    }
+
+    async fn process_plate_solution_result(
+        state: Arc<tokio::sync::Mutex<SolveState>>,
+        detect_result: &DetectResult,
+        plate_solution_proto: &Option<PlateSolutionProto>,
+        solution_callback: &SolutionCallback,
+        normalize_rows: bool,
+        width: u32,
+        height: u32,
+    ) -> (Option<Vec<FovCatalogEntry>>, Option<Vec<FovCatalogEntry>>, Option<SlewRequest>, 
+          Option<GrayImage>, Option<Rect>) {
+        let mut fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
+        let mut decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
+        let mut slew_request = None;
+        let mut boresight_image: Option<GrayImage> = None;
+        let mut boresight_image_region: Option<Rect> = None;
+        
+        let (align_mode, boresight_pixel, cedar_sky) = {
+            let locked_state = state.lock().await;
+            (
+                locked_state.align_mode,
+                locked_state.boresight_pixel.clone(),
+                locked_state.cedar_sky.clone()
+            )
+        };
+
+        let image = &detect_result.captured_image.image;
+
+        if plate_solution_proto.is_none() {
+            if !align_mode {
+                solution_callback(boresight_pixel,
+                                  Some(detect_result.clone()), None);
+            }
+        } else {
+            let psp = plate_solution_proto.as_ref().unwrap();
+            let boresight_coords = if psp.target_sky_coord.is_empty() {
+                psp.image_sky_coord.as_ref().unwrap().clone()
+            } else {
+                psp.target_sky_coord[0].clone()
+            };
+            let mut rotation_matrix: [f64; 9] = [0.0; 9];
+            for (idx, &c) in psp.rotation_matrix.iter().enumerate() {
+                rotation_matrix[idx] = c;
+            }
+            state.lock().await.solve_success_stats.add_value(1.0);
+
+            if !align_mode {
+                // Let integration layer pass solution to SkySafari telescope
+                // interface and MotionEstimator. Integration layer returns current
+                // slew target coords, if any.
+                let (slew_target, sync_coord) =
+                    solution_callback(boresight_pixel.clone(),
+                                      Some(detect_result.clone()), Some(psp.clone()));
+                state.lock().await.slew_target = slew_target;
+                // If we're slewing, see if the boresight is close enough to
+                // the slew target that Cedar Aim should display an inset image
+                // of the region around the boresight.
+                if let Some(target_coords) = &state.lock().await.slew_target {
+                    (slew_request, boresight_image_region, boresight_image) =
+                        Self::handle_slew(
+                            &cedar_sky,
+                            target_coords, image, &boresight_coords,
+                            &boresight_pixel, psp,
+                            normalize_rows, width, height).await;
+                }
+                if let Some(sync_coord) = sync_coord {
+                    // SkySafari user has invoked "Sync" operation on some
+                    // sky object, indicating that this object is centered at
+                    // the telescope boresight. We update the boresight pixel
+                    // accordingly.
+                    // First, translate `sync_coord` to image coordinates.
+                    let xy = transform_to_image_coord(
+                        &[sync_coord.ra, sync_coord.dec],
+                        width as usize, height as usize,
+                        psp.fov,
+                        &rotation_matrix,
+                        psp.distortion.unwrap());
+                    let img_coord = ImageCoord{x: xy[0], y: xy[1]};
+                    state.lock().await.boresight_pixel = Some(img_coord);
+                    // Note: we should update the boresight in the saved
+                    // preferences, but we don't have access to the
+                    // cedar_server logic here. Instead, we leave it to
+                    // the cedar_server logic to notice the boresight
+                    // change and update the saved prefs.
+                }
+            }  // !align_mode
+
+            if cedar_sky.is_some() {
+                let mut catalog_entry_match =
+                    state.lock().await.catalog_entry_match.clone().unwrap();
+                catalog_entry_match.match_catalog_label = false;
+                catalog_entry_match.match_object_type_label = false;
+                if align_mode {
+                    // Replace catalog_entry_match.
+                    catalog_entry_match = CatalogEntryMatch {
+                        faintest_magnitude: Some(4),
+                        match_catalog_label: false,
+                        catalog_label: vec![],
+                        match_object_type_label: true,
+                        object_type_label: vec!["star".to_string(),
+                                                "double star".to_string(),
+                                                "nova star".to_string(),
+                                                "planet".to_string()],
+                    };
+                }
+                let result = Self::query_fov_catalog_entries(
+                    &boresight_coords,
+                    &boresight_pixel,
+                    cedar_sky.as_ref().unwrap(),
+                    &catalog_entry_match,
+                    width, height,
+                    psp.fov,
+                    psp.distortion.unwrap(),
+                    &rotation_matrix).await;
+                (fov_catalog_entries, decrowded_fov_catalog_entries) =
+                    (Some(result.0), Some(result.1));
+            }
+        }
+
+        (fov_catalog_entries, decrowded_fov_catalog_entries, slew_request, 
+         boresight_image, boresight_image_region)
+    }
+
+    async fn finalize_and_post_result(
+        state: Arc<tokio::sync::Mutex<SolveState>>,
+        detect_result: DetectResult,
+        plate_solution_proto: Option<PlateSolutionProto>,
+        fov_catalog_entries: Option<Vec<FovCatalogEntry>>,
+        decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>>,
+        slew_request: Option<SlewRequest>,
+        boresight_image: Option<GrayImage>,
+        boresight_image_region: Option<Rect>,
+        solve_finish_time: Option<SystemTime>,
+        processing_duration: std::time::Duration,
+    ) {
+        let (solve_latency_stats, solve_attempt_stats, solve_success_stats, solve_interval_stats) = {
+            let locked_state = state.lock().await;
+            (
+                locked_state.solve_latency_stats.value_stats.clone(),
+                locked_state.solve_attempt_stats.value_stats.clone(),
+                locked_state.solve_success_stats.value_stats.clone(),
+                locked_state.solve_interval_stats.value_stats.clone(),
+            )
+        };
+
+        state.lock().await.plate_solution = Some(PlateSolution{
+            detect_result,
+            plate_solution: plate_solution_proto,
+            fov_catalog_entries,
+            decrowded_fov_catalog_entries,
+            slew_request,
+            boresight_image,
+            boresight_image_region,
+            solve_finish_time,
+            processing_duration,
+            solve_latency_stats,
+            solve_attempt_stats,
+            solve_success_stats,
+            solve_interval_stats,
+        });
+    }
+
     async fn worker(
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-        solution_callback: Arc<dyn Fn(Option<ImageCoord>,
-                                      Option<DetectResult>,
-                                      Option<PlateSolutionProto>)
-                                      -> (Option<CelestialCoord>,
-                                          Option<CelestialCoord>)
-                               + Send + Sync>) {
+        solution_callback: SolutionCallback) {
         debug!("Starting solve engine");
         loop {
             let minimum_stars;
@@ -428,8 +656,8 @@ impl SolveEngine {
                 state.lock().await.eta = Some(Instant::now() + delay_est);
             }
 
-            // Don't hold detect engine lock for the entirety of the time waiting for
-            // the next result.
+            // Don't hold detect engine lock for the entirety of the time 
+            // waiting for the next result.
             let detect_result;
             loop {
                 let dr = detect_engine.lock().await.get_next_result(
@@ -455,212 +683,42 @@ impl SolveEngine {
 
             // Plate-solve using the recently detected stars.
             let process_start_time = Instant::now();
-
-            let mut star_centroids = Vec::<ImageCoord>::with_capacity(
-                detect_result.star_candidates.len());
-            for sc in &detect_result.star_candidates {
-                star_centroids.push(ImageCoord{x: sc.centroid_x,
-                                               y: sc.centroid_y});
-            }
-
-            let mut plate_solution_proto: Option<PlateSolutionProto> = None;
-            let mut solve_finish_time: Option<SystemTime> = None;
-            if detect_result.star_candidates.len() >= minimum_stars as usize {
-                {
-                    let mut locked_state = state.lock().await;
-                    // Record interval since last solve attempt
-                    let now = Instant::now();
-                    if let Some(last_attempt) = locked_state.last_solve_attempt_time {
-                        let interval = now.duration_since(last_attempt).as_secs_f64();
-                        locked_state.solve_interval_stats.add_value(interval);
-                    }
-                    locked_state.last_solve_attempt_time = Some(now);
-                    state.lock().await.solve_attempt_stats.add_value(1.0);
-                    if let Some(recent_stats) =
-                        &locked_state.solve_latency_stats.value_stats.recent
-                    {
-                        let solve_duration = Duration::from_secs_f64(recent_stats.min);
-                        locked_state.eta = Some(Instant::now() + solve_duration);
-                    }
-                }
-                match Self::solve_with_solver(
-                    solver.clone(),
-                    &star_centroids,
-                    width as usize, height as usize,
-                    &solve_extension, &solve_params).await
-                {
-                    Err(e) => {
-                        // Let's not spam the log with solver failures. If the
-                        // number of detected stars is low, don't bother to log,
-                        // as this is a trivial source of solve failures (e.g.
-                        // due to telescope motion).
-                        // Empirically, solutions are possible at 6 centroids,
-                        // and are ~reliable at 14 or more centroids. For logging,
-                        // we split the difference.
-                        if star_centroids.len() >= 10 {
-                            let mut locked_state = state.lock().await;
-                            // Secondly, don't log the error if we've just logged one.
-                            if !locked_state.logged_error {
-                                error!("Solver error {:?} with {} centroids",
-                                       e, star_centroids.len());
-                                locked_state.logged_error = true;
-                            }
-                        }
-                    },
-                    Ok(solution) => {
-                        // Re-enable logging of the next non-trivial solve failure.
-                        state.lock().await.logged_error = false;
-                        plate_solution_proto = Some(solution);
-                    }
-                }
-                solve_finish_time = Some(SystemTime::now());
-            } else {
-                // Not enough stars for solve attempt - clear last attempt time
-                // so we don't include non-solving periods in interval stats
-                let mut locked_state = state.lock().await;
-                locked_state.last_solve_attempt_time = None;
-                locked_state.solve_attempt_stats.add_value(0.0);
-            }
-
+            let (plate_solution_proto, solve_finish_time) = Self::attempt_plate_solve(
+                solver.clone(),
+                state.clone(),
+                &detect_result,
+                minimum_stars,
+                &solve_extension,
+                &solve_params,
+            ).await;
             let elapsed = process_start_time.elapsed();
-            let mut fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
-            let mut decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
-            let mut slew_request = None;
-            let mut boresight_image: Option<GrayImage> = None;
-            let mut boresight_image_region: Option<Rect> = None;
-            let align_mode;
-            let boresight_pixel;
-            let cedar_sky;
-            {
-                let locked_state = state.lock().await;
-                align_mode = locked_state.align_mode;
-                boresight_pixel = locked_state.boresight_pixel.clone();
-                cedar_sky = locked_state.cedar_sky.clone();
-            }
-            if plate_solution_proto.is_none() {
-                if !align_mode {
-                    solution_callback(boresight_pixel,
-                                      Some(detect_result.clone()), None);
-                }
-            } else {
-                let psp = plate_solution_proto.as_ref().unwrap();
-                let boresight_coords = if psp.target_sky_coord.is_empty() {
-                    psp.image_sky_coord.as_ref().unwrap().clone()
-                } else {
-                    psp.target_sky_coord[0].clone()
-                };
-                let mut rotation_matrix: [f64; 9] = [0.0; 9];
-                for (idx, c) in psp.rotation_matrix.clone().into_iter().enumerate() {
-                    rotation_matrix[idx] = c;
-                }
-                state.lock().await.solve_success_stats.add_value(1.0);
-
-                if !align_mode {
-                    // Let integration layer pass solution to SkySafari telescope
-                    // interface and MotionEstimator. Integration layer returns current
-                    // slew target coords, if any.
-                    let (slew_target, sync_coord) =
-                        solution_callback(boresight_pixel.clone(),
-                                          Some(detect_result.clone()), Some(psp.clone()));
-                    state.lock().await.slew_target = slew_target;
-                    // If we're slewing, see if the boresight is close enough to
-                    // the slew target that Cedar Aim should display an inset image
-                    // of the region around the boresight.
-                    if let Some(target_coords) = &state.lock().await.slew_target {
-                        (slew_request, boresight_image_region, boresight_image) =
-                            Self::handle_slew(
-                                &cedar_sky,
-                                target_coords, image, &boresight_coords,
-                                &boresight_pixel, psp,
-                                normalize_rows, width, height).await;
-                    }
-                    if let Some(sync_coord) = sync_coord {
-                        // SkySafari user has invoked "Sync" operation on some
-                        // sky object, indicating that this object is centered at
-                        // the telescope boresight. We update the boresight pixel
-                        // accordingly.
-                        // First, translate `sync_coord` to image coordinates.
-                        let xy = transform_to_image_coord(
-                            &[sync_coord.ra, sync_coord.dec],
-                            width as usize, height as usize,
-                            psp.fov,
-                            &rotation_matrix,
-                            psp.distortion.unwrap());
-                        let img_coord = ImageCoord{x: xy[0], y: xy[1]};
-                        state.lock().await.boresight_pixel = Some(img_coord);
-                        // Note: we should update the boresight in the saved
-                        // preferences, but we don't have access to the
-                        // cedar_server logic here. Instead, we leave it to
-                        // the cedar_server logic to notice the boresight
-                        // change and update the saved prefs.
-                    }
-                }  // !align_mode
-
-                if cedar_sky.is_some() {
-                    let mut catalog_entry_match =
-                        state.lock().await.catalog_entry_match.clone().unwrap();
-                    catalog_entry_match.match_catalog_label = false;
-                    catalog_entry_match.match_object_type_label = false;
-                    if align_mode {
-                        // Replace catalog_entry_match.
-                        catalog_entry_match = CatalogEntryMatch {
-                            faintest_magnitude: Some(4),
-                            match_catalog_label: false,
-                            catalog_label: vec![],
-                            match_object_type_label: true,
-                            object_type_label: vec!["star".to_string(),
-                                                    "double star".to_string(),
-                                                    "nova star".to_string(),
-                                                    "planet".to_string()],
-                        };
-                    }
-                    let result = Self::query_fov_catalog_entries(
-                        &boresight_coords,
-                        &boresight_pixel,
-                        cedar_sky.as_ref().unwrap(),
-                        &catalog_entry_match,
-                        width, height,
-                        psp.fov,
-                        psp.distortion.unwrap(),
-                        &rotation_matrix).await;
-                    (fov_catalog_entries, decrowded_fov_catalog_entries) =
-                        (Some(result.0), Some(result.1));
-                }
-            }
+            
+            let (fov_catalog_entries, decrowded_fov_catalog_entries, slew_request, 
+                 boresight_image, boresight_image_region) = Self::process_plate_solution_result(
+                state.clone(),
+                &detect_result,
+                &plate_solution_proto,
+                &solution_callback,
+                normalize_rows,
+                width,
+                height,
+            ).await;
             if state.lock().await.last_solve_attempt_time.is_some() {
                 state.lock().await.solve_latency_stats.add_value(elapsed.as_secs_f64());
             }
-            // Post the result.
-            let solve_latency_stats;
-            let solve_attempt_stats;
-            let solve_success_stats;
-            let solve_interval_stats;
-            {
-                let locked_state = state.lock().await;
-                solve_latency_stats =
-                    locked_state.solve_latency_stats.value_stats.clone();
-                solve_attempt_stats =
-                    locked_state.solve_attempt_stats.value_stats.clone();
-                solve_success_stats =
-                    locked_state.solve_success_stats.value_stats.clone();
-                solve_interval_stats =
-                    locked_state.solve_interval_stats.value_stats.clone();
-            }
-            state.lock().await.plate_solution = Some(PlateSolution{
+            
+            Self::finalize_and_post_result(
+                state.clone(),
                 detect_result,
-                plate_solution: plate_solution_proto,
+                plate_solution_proto,
                 fov_catalog_entries,
                 decrowded_fov_catalog_entries,
                 slew_request,
                 boresight_image,
                 boresight_image_region,
                 solve_finish_time,
-                processing_duration: elapsed,
-                solve_latency_stats,
-                solve_attempt_stats,
-                solve_success_stats,
-                solve_interval_stats,
-            });
+                elapsed,
+            ).await;
         }  // loop.
     }  // worker
 
@@ -847,8 +905,8 @@ impl SolveEngine {
         let mut answer = Vec::<FovCatalogEntry>::new();  // Decrowd survivors.
         let mut culled = Vec::<FovCatalogEntry>::new();  // Decrowd victims.
 
-        let bp = if boresight_pixel.is_some() {
-            boresight_pixel.clone().unwrap()
+        let bp = if let Some(bp) = boresight_pixel {
+            bp.clone()
         } else {
             ImageCoord{x: width as f64 / 2.0, y: height as f64 / 2.0}
         };
