@@ -72,6 +72,10 @@ struct DetectState {
     // Affects auto-exposure and turns off focus aids and star detection.
     daylight_mode: bool,
 
+    // User-designated focus point for daylight focus mode. In full resolution
+    // image coordinates. None if no point has been designated.
+    daylight_focus_point: Option<(f64, f64)>,
+
     // When running CedarDetect, this supplies the `binning` value used.
     // See "About Resolutions" in cedar_server.rs.
     binning: u32,
@@ -128,6 +132,7 @@ impl DetectEngine {
                 frame_id: None,
                 focus_mode: false,
                 daylight_mode: false,
+                daylight_focus_point: None,
                 binning: 1,
                 display_sampling: false,
                 calibrated_exposure_duration: None,
@@ -181,6 +186,11 @@ impl DetectEngine {
         locked_state.auto_exposure_duration = None;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
+    }
+
+    pub fn set_daylight_focus_point(&mut self, point: (f64, f64)) {
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.daylight_focus_point = Some(point);
     }
 
     pub fn get_detection_sigma(&self) -> f64 {
@@ -329,6 +339,7 @@ impl DetectEngine {
             let normalize_rows;
             let focus_mode: bool;
             let daylight_mode: bool;
+            let daylight_focus_point: Option<(f64, f64)>;
             let binning: u32;
             let display_sampling: bool;
             let calibrated_exposure_duration: Option<Duration>;
@@ -339,6 +350,7 @@ impl DetectEngine {
                 normalize_rows = locked_state.normalize_rows;
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
+                daylight_focus_point = locked_state.daylight_focus_point;
                 binning = locked_state.binning;
                 display_sampling = locked_state.display_sampling;
                 calibrated_exposure_duration =
@@ -530,12 +542,59 @@ impl DetectEngine {
                     scale_image_mut(
                         &mut peak_image, min_value as u8, max_value, /*gamma=*/0.7);
                     focus_aid = Some(FocusAid{
-                        center_peak_position: peak_position,
-                        center_peak_value: peak_value,
-                        peak_image,
-                        peak_image_region: peak_region,
+                        center_peak_position: Some(peak_position),
+                        center_peak_value: Some(peak_value),
+                        peak_image: Some(peak_image),
+                        peak_image_region: Some(peak_region),
+                        daylight_focus_zoom_image: None,
+                        daylight_focus_zoom_region: None,
                     });
-                }  // !daylight_mode.
+                } else {
+                    // Generate daylight focus zoom image
+                    let focus_point = daylight_focus_point.unwrap_or_else(|| {
+                        // Default to roi_region center if no point designated.
+                        (roi_region.left() as f64 + roi_region.width() as f64 / 2.0,
+                         roi_region.top() as f64 + roi_region.height() as f64 / 2.0)
+                    });
+                    
+                    // Calculate region size similar to existing focus logic.
+                    let sub_image_size = 30 * adjusted_binning as i32;
+                    let half_size = sub_image_size / 2;
+                    
+                    // Create region centered on focus point, bounded by roi_region.
+                    let desired_left = focus_point.0 as i32 - half_size;
+                    let desired_top = focus_point.1 as i32 - half_size;
+                    
+                    // Bound the region within roi_region
+                    let bounded_left = desired_left.max(roi_region.left())
+                        .min(roi_region.right() - sub_image_size);
+                    let bounded_top = desired_top.max(roi_region.top())
+                        .min(roi_region.bottom() - sub_image_size);
+                    
+                    let daylight_focus_region = Rect::at(bounded_left, bounded_top)
+                        .of_size(sub_image_size as u32, sub_image_size as u32)
+                        .intersect(roi_region).unwrap();
+                    
+                    let mut daylight_focus_image = image.view(
+                        daylight_focus_region.left() as u32,
+                        daylight_focus_region.top() as u32,
+                        daylight_focus_region.width() as u32,
+                        daylight_focus_region.height() as u32).to_image();
+                    if normalize_rows {
+                        normalize_rows_mut(&mut daylight_focus_image);
+                    }
+                    
+                    // Apply display stretching.
+                    scale_image_mut(&mut daylight_focus_image, black_level, peak_value, /*gamma=*/0.7);
+                    focus_aid = Some(FocusAid{
+                        center_peak_position: None,
+                        center_peak_value: None,
+                        peak_image: None,
+                        peak_image_region: None,
+                        daylight_focus_zoom_image: Some(daylight_focus_image),
+                        daylight_focus_zoom_region: Some(daylight_focus_region),
+                    });
+                }
             }  // focus_mode || daylight_mode
 
             let mut binned_image: Option<Arc<GrayImage>> = None;
@@ -807,16 +866,23 @@ pub struct DetectResult {
 
 #[derive(Clone)]
 pub struct FocusAid {
-    // See the corresponding field in FrameResult.
-    pub center_peak_position: (f64, f64),
+    // See the corresponding field in FrameResult. Only present in non-daylight focus mode.
+    pub center_peak_position: Option<(f64, f64)>,
 
-    // See the corresponding field in FrameResult.
-    pub center_peak_value: u8,
+    // See the corresponding field in FrameResult. Only present in non-daylight focus mode.
+    pub center_peak_value: Option<u8>,
 
     // A small crop of `captured_image` centered at `center_peak_position`.
-    // Brightness scaled to full range for visibility.
-    pub peak_image: GrayImage,
+    // Brightness scaled to full range for visibility. Only present in non-daylight focus mode.
+    pub peak_image: Option<GrayImage>,
 
-    // The location of `peak_image`.
-    pub peak_image_region: Rect,
+    // The location of `peak_image`. Only present in non-daylight focus mode.
+    pub peak_image_region: Option<Rect>,
+
+    // A small crop of `captured_image` centered at user-designated position
+    // for daylight focus mode. Only present in daylight mode.
+    pub daylight_focus_zoom_image: Option<GrayImage>,
+
+    // The location of `daylight_focus_zoom_image`. Only present in daylight mode.
+    pub daylight_focus_zoom_region: Option<Rect>,
 }

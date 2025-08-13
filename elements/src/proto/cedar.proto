@@ -93,8 +93,7 @@ message ImuState {
   double angle_rate_z = 6;
 }
 
-// Information about the WiFi access point that Cedar server puts
-// up.
+// Information about the WiFi access point that Cedar server puts up.
 message WiFiAccessPoint {
   optional string ssid = 1;
   optional string psk = 2;  // WiFi password.
@@ -333,14 +332,14 @@ message FrameRequest {
   // true.
   optional bool non_blocking = 2;
 
-  // In SETUP align mode, Cedar adjusts the returned image rotation so that the
-  // zenith is towards the top of the image. When doing so, the server needs to
-  // know the client's orientation for the displayed image.
+  // In most modes, Cedar adjusts the returned image rotation so that the zenith
+  // is towards the top of the image. When doing so, the server needs to know
+  // the client's orientation for the displayed image.
   // If omitted, LANDSCAPE is assumed.
   optional DisplayOrientation display_orientation = 3;
 }
 
-// Next tag: 37.
+// Next tag: 38.
 message FrameResult {
   // If FrameRequest.non_blocking is omitted or false, this field will be
   // absent. If FrameRequest.non_blocking is true, this field will be true
@@ -445,6 +444,12 @@ message FrameResult {
   // bright level; in other words dark == 0). Only present in
   // `focus_assist_mode`.
   optional double contrast_ratio = 36;
+
+  // A small full resolution (usually; 2x binned for color cameras) crop of
+  // `image` centered at a user-designated position (see 
+  // ActionRequest.designate_daylight_focus_region).
+  // Only present in `focus_assist_mode` with `daylight_mode`.
+  optional Image daylight_focus_zoom_image = 37;
 
   // Information returned when `operating_mode` is OPERATE.
 
@@ -840,6 +845,11 @@ message ActionRequest {
 
   // Clear all items from Preferences.dont_show_items.
   optional bool clear_dont_show_items = 10;
+
+  // In SETUP daylight focus mode, conveys which part of the image the user
+  // wants magnified for focusing. The image coordinates are in full resolution
+  // within FrameResult.image.
+  optional ImageCoord designate_daylight_focus_region = 11;
 }
 
 message ServerLogRequest {

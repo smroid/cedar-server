@@ -1759,45 +1759,78 @@ impl MyCedar {
         let disp_image_rectangle = irr.get_cropped_region(width, height);
 
         if let Some(fa) = &detect_result.focus_aid {
-            let mut ic = ImageCoord {
-                x: fa.center_peak_position.0,
-                y: fa.center_peak_position.1,
-            };
-            // Apply rotator to ic.
-            (ic.x, ic.y) = irr.transform_to_rotated(ic.x, ic.y, width, height);
+            // Handle center peak position and value (non-daylight mode).
+            if let Some(center_peak_pos) = fa.center_peak_position {
+                let mut ic = ImageCoord {
+                    x: center_peak_pos.0,
+                    y: center_peak_pos.1,
+                };
+                // Apply rotator to ic.
+                (ic.x, ic.y) = irr.transform_to_rotated(ic.x, ic.y, width, height);
 
-            *locked_state.center_peak_position.lock().unwrap() = Some(ic.clone());
-            frame_result.center_peak_position = Some(ic);
-            frame_result.center_peak_value = Some(fa.center_peak_value as i32);
-
-            // Populate `center_peak_image`.
-            let center_peak_image = &fa.peak_image;
-            let peak_image_region = &fa.peak_image_region;
-            // center_peak_image_image is taken from the camera's full
-            // resolution acquired image. If it is a color camera, we 2x2 bin it
-            // to avoid displaying the Bayer grid.
-            let binning_factor;
-            let center_peak_jpg_buf;
-            if is_color {
-                let binned_center_peak_image = bin_2x2(center_peak_image.clone());
-                binning_factor = 2;
-                center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(binned_center_peak_image));
-            } else {
-                binning_factor = 1;
-                center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(center_peak_image.clone()));
+                *locked_state.center_peak_position.lock().unwrap() = Some(ic.clone());
+                frame_result.center_peak_position = Some(ic);
+            }
+            if let Some(center_peak_val) = fa.center_peak_value {
+                frame_result.center_peak_value = Some(center_peak_val as i32);
             }
 
-            frame_result.center_peak_image = Some(Image{
-                binning_factor,
-                rotation_size_ratio: 1.0,
-                rectangle: Some(Rectangle{
-                    origin_x: peak_image_region.left(),
-                    origin_y: peak_image_region.top(),
-                    width: peak_image_region.width() as i32,
-                    height: peak_image_region.height() as i32,
-                }),
-                image_data: center_peak_jpg_buf,
-            });
+            // Populate `center_peak_image` (non-daylight mode).
+            if let (Some(center_peak_image), Some(peak_image_region)) = (&fa.peak_image, &fa.peak_image_region) {
+                // center_peak_image_image is taken from the camera's full
+                // resolution acquired image. If it is a color camera, we 2x2 bin it
+                // to avoid displaying the Bayer grid.
+                let binning_factor;
+                let center_peak_jpg_buf;
+                if is_color {
+                    let binned_center_peak_image = bin_2x2(center_peak_image.clone());
+                    binning_factor = 2;
+                    center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(binned_center_peak_image));
+                } else {
+                    binning_factor = 1;
+                    center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(center_peak_image.clone()));
+                }
+
+                frame_result.center_peak_image = Some(Image{
+                    binning_factor,
+                    rotation_size_ratio: 1.0,
+                    rectangle: Some(Rectangle{
+                        origin_x: peak_image_region.left(),
+                        origin_y: peak_image_region.top(),
+                        width: peak_image_region.width() as i32,
+                        height: peak_image_region.height() as i32,
+                    }),
+                    image_data: center_peak_jpg_buf,
+                });
+            }
+
+            // Populate `daylight_focus_zoom_image` (daylight mode).
+            if let (Some(daylight_focus_image), Some(daylight_focus_region)) =
+                (&fa.daylight_focus_zoom_image, &fa.daylight_focus_zoom_region) 
+            {
+                let binning_factor;
+                let daylight_focus_jpg_buf;
+                if is_color {
+                    let binned_daylight_focus_image = bin_2x2(daylight_focus_image.clone());
+                    binning_factor = 2;
+                    daylight_focus_jpg_buf = Self::jpeg_encode(&Arc::new(binned_daylight_focus_image));
+                } else {
+                    binning_factor = 1;
+                    daylight_focus_jpg_buf = Self::jpeg_encode(&Arc::new(daylight_focus_image.clone()));
+                }
+
+                frame_result.daylight_focus_zoom_image = Some(Image{
+                    binning_factor,
+                    rotation_size_ratio: 1.0,
+                    rectangle: Some(Rectangle{
+                        origin_x: daylight_focus_region.left(),
+                        origin_y: daylight_focus_region.top(),
+                        width: daylight_focus_region.width() as i32,
+                        height: daylight_focus_region.height() as i32,
+                    }),
+                    image_data: daylight_focus_jpg_buf,
+                });
+            }
         } else {
             *locked_state.center_peak_position.lock().unwrap() = None;
         }
