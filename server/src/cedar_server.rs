@@ -865,6 +865,19 @@ impl Cedar for MyCedar {
             // Write updated preferences to file
             Self::write_preferences_file(&self.preferences_file, &*locked_prefs);
         }
+        if let Some(mut dfr) = req.designate_daylight_focus_region {
+            let locked_state = self.state.lock().await;
+            let image_rotator = locked_state.image_rotator.clone();
+            let (width, height) = locked_state.camera.lock().await.dimensions();
+            (dfr.x, dfr.y) = image_rotator.transform_from_rotated(
+                dfr.x, dfr.y, width as u32, height as u32);
+            // Check that the point is within reasonable bounds.
+            if dfr.x < 0.0 || dfr.x >= width as f64 || dfr.y < 0.0 || dfr.y >= height as f64 {
+                return Err(tonic::Status::failed_precondition(
+                    "Focus region point out of bounds".to_string()));
+            }
+            locked_state.detect_engine.lock().await.set_daylight_focus_point((dfr.x, dfr.y));
+        }
         Ok(tonic::Response::new(EmptyMessage{}))
     }  // initiate_action().
 

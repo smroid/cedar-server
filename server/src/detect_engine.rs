@@ -584,8 +584,16 @@ impl DetectEngine {
                         normalize_rows_mut(&mut daylight_focus_image);
                     }
                     
-                    // Apply display stretching.
-                    scale_image_mut(&mut daylight_focus_image, black_level, peak_value, /*gamma=*/0.7);
+                    // Calculate display stretching values specific to the focus region
+                    // Use the original image with the daylight_focus_region coordinates to avoid margin issues
+                    let focus_summary = summarize_region_of_interest(
+                        image, &daylight_focus_region, noise_estimate, detection_sigma);
+                    let focus_histogram = focus_summary.histogram;
+                    let focus_peak_value = max(get_level_for_fraction(&focus_histogram, 0.999) as u8, 1);
+                    let focus_black_level = get_level_for_fraction(&focus_histogram, 0.001) as u8;
+                    
+                    // Apply display stretching using focus region-specific values.
+                    scale_image_mut(&mut daylight_focus_image, focus_black_level, focus_peak_value, /*gamma=*/0.7);
                     focus_aid = Some(FocusAid{
                         center_peak_position: None,
                         center_peak_value: None,
