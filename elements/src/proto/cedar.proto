@@ -146,17 +146,6 @@ message OperationSettings {
   // the brightest point in the image.
   optional bool focus_assist_mode = 14;
 
-  // The desired time interval at which Cedar should replace its current frame
-  // result. Default is zero, meaning go as fast as possible. Ignored in SETUP
-  // mode.
-  optional google.protobuf.Duration update_interval = 7;
-
-  // In OPERATE mode, when Cedar detects that the camera is dwelling
-  // (motionless) for more than some number of seconds, `dwell_update_interval`
-  // is used instead of `update_interval`. Default is 1sec. Ignored in SETUP
-  // mode.
-  optional google.protobuf.Duration dwell_update_interval = 8;
-
   // If true, when Cedar detects that the camera is dwelling (motionless) for
   // more than some number of seconds, the RA/DEC is logged. Note that if the
   // RA/DEC are changing during dwelling due to sidereal motion (non-tracked
@@ -180,7 +169,7 @@ message OperationSettings {
 
   // TODO: decrowd parameter for returned catalog entries?
 
-  reserved 3, 5, 13;
+  reserved 3, 5, 7, 8, 13;
 }
 
 enum OperatingMode {
@@ -229,11 +218,6 @@ message Preferences {
   // corresponding FixedSettings field. Note: do not update this via
   // UpdatePreferences().
   optional LatLong observer_location = 7;
-
-  // Saved dwell interval. On server startup we use this to initialize the
-  // corresponding OperationSettings field. Note: do not update this via
-  // UpdatePreferences().
-  optional google.protobuf.Duration update_interval = 9;
 
   // Saved catalog object selection criteria for FOV image decoration. On server
   // startup we use this to initialize the corresponding OperationSettings
@@ -285,7 +269,7 @@ message Preferences {
   // logic.
   repeated string dont_show_items = 32;
 
-  reserved 4, 8, 20, 24, 25, 26, 27, 28, 29, 30, 31;
+  reserved 4, 8, 9, 20, 24, 25, 26, 27, 28, 29, 30, 31;
 }
 
 enum CelestialCoordFormat {

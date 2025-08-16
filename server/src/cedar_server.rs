@@ -358,11 +358,8 @@ impl Cedar for MyCedar {
                         locked_state.detect_engine.lock().await.set_daylight_mode(false);
                         locked_state.solve_engine.lock().await.set_align_mode(false).await;
                         locked_state.solve_engine.lock().await.start().await;
-                        // Restore OPERATE mode update interval.
-                        let update_interval = locked_state.operation_settings.
-                            update_interval.clone().unwrap();
-                        let std_duration = std::time::Duration::try_from(
-                            update_interval).unwrap();
+                        // Set automatic update interval for OPERATE mode.
+                        let std_duration = Self::get_automatic_update_interval(&locked_state);
                         if let Err(x) = Self::set_update_interval(
                             &locked_state, std_duration).await
                         {
@@ -476,35 +473,6 @@ impl Cedar for MyCedar {
                     Some(new_focus_assist_mode);
             }
         }
-        if let Some(update_interval) = req.update_interval {
-            if update_interval.seconds < 0 || update_interval.nanos < 0 {
-                return Err(tonic::Status::invalid_argument(
-                    format!("Got negative update_interval: {}.", update_interval)));
-            }
-            let std_duration = std::time::Duration::try_from(
-                update_interval.clone()).unwrap();
-            {
-                let mut locked_state = self.state.lock().await;
-                if locked_state.operation_settings.operating_mode ==
-                    Some(OperatingMode::Operate as i32) ||
-                    !locked_state.operation_settings.focus_assist_mode.unwrap()
-                {
-                    if let Err(x) = Self::set_update_interval(&locked_state,
-                                                              std_duration).await {
-                        return Err(tonic_status(x));
-                    }
-                }
-                locked_state.operation_settings.update_interval =
-                    Some(update_interval.clone());
-            }
-            let preferences = Preferences{update_interval: Some(update_interval),
-                                          ..Default::default()};
-            self.update_preferences(tonic::Request::new(preferences)).await?;
-        }
-        if let Some(_dwell_update_interval) = req.dwell_update_interval {
-            return Err(tonic::Status::unimplemented(
-                "rpc UpdateOperationSettings not implemented for dwell_update_interval."));
-        }
         if let Some(_log_dwelled_positions) = req.log_dwelled_positions {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
@@ -564,16 +532,7 @@ impl Cedar for MyCedar {
             let new_camera = locked_state.camera.clone();
             let (width, height) = new_camera.lock().await.dimensions();
 
-            let update_interval = locked_state.operation_settings.
-                update_interval.clone().unwrap();
-            let mut std_duration = std::time::Duration::try_from(
-                update_interval).unwrap();
-            if locked_state.operation_settings.operating_mode ==
-                Some(OperatingMode::Setup as i32) &&
-                locked_state.operation_settings.focus_assist_mode.unwrap()
-            {
-                std_duration = Duration::ZERO;  // Fast update mode for focusing.
-            }
+            let std_duration = Self::get_automatic_update_interval(&locked_state);
             if let Err(x) = Self::set_update_interval(&locked_state,
                                                       std_duration).await {
                 return Err(tonic_status(x));
@@ -635,9 +594,6 @@ impl Cedar for MyCedar {
         }
         if let Some(observer_location) = req.observer_location {
             our_prefs.observer_location = Some(observer_location);
-        }
-        if let Some(update_interval) = req.update_interval {
-            our_prefs.update_interval = Some(update_interval);
         }
         if let Some(catalog_entry_match) = req.catalog_entry_match {
             our_prefs.catalog_entry_match = Some(catalog_entry_match);
@@ -1180,11 +1136,8 @@ impl MyCedar {
                         locked_state.detect_engine.lock().await.set_daylight_mode(false);
                         locked_state.solve_engine.lock().await.set_align_mode(false).await;
                         locked_state.solve_engine.lock().await.start().await;
-                        // Restore OPERATE mode update interval.
-                        let update_interval = locked_state.operation_settings.
-                            update_interval.clone().unwrap();
-                        let std_duration = std::time::Duration::try_from(
-                            update_interval).unwrap();
+                        // Set automatic update interval for OPERATE mode.
+                        let std_duration = Self::get_automatic_update_interval(&locked_state);
                         if let Err(x) = Self::set_update_interval(
                             &locked_state, std_duration).await
                         {
@@ -1324,6 +1277,21 @@ impl MyCedar {
             };
             fixed_settings.current_time = Some(pst);
         }
+    }
+
+    // Automatically determine the appropriate update interval based on current 
+    // mode.
+    fn get_automatic_update_interval(state: &CedarState) -> std::time::Duration {
+        // Check if we're in SETUP mode with focus assist - go as fast as 
+        // possible.
+        if state.operation_settings.operating_mode == Some(OperatingMode::Setup as i32) &&
+           state.operation_settings.focus_assist_mode.unwrap_or(false) {
+            return Duration::ZERO;  // Fast update mode for focusing.
+        }
+        // For all other cases, go as fast as possible
+        // This can be adjusted automatically in the future based on motion
+        // detection.
+        Duration::ZERO
     }
 
     async fn set_update_interval(state: &CedarState, update_interval: std::time::Duration)
@@ -2163,20 +2131,6 @@ impl MyCedar {
             hide_app_bar: Some(true),
             mount_type: Some(MountType::AltAz.into()),
             observer_location: None,
-            update_interval: match feature_level {
-                FeatureLevel::Plus => Some(
-                    // 10Hz, max.
-                    prost_types::Duration { seconds: 0, nanos: 100000000 }
-                ),
-                FeatureLevel::Basic => Some(
-                    // 3Hz (max 5Hz).
-                    prost_types::Duration { seconds: 0, nanos: 333000000 }
-                ),
-                _ => Some(
-                    // DIY: Unlimited.
-                    prost_types::Duration { seconds: 0, nanos: 0 }
-                ),
-            },
             catalog_entry_match: if cedar_sky.is_some() {
                 let mut cat_match =
                     Some(CatalogEntryMatch {
@@ -2254,9 +2208,6 @@ impl MyCedar {
                         // this.
                         preferences.catalog_entry_match = None;
                     }
-                    if file_prefs.update_interval.is_some() {
-                        preferences.update_interval = None;
-                    }
                     preferences.merge(&*file_prefs_bytes.unwrap()).unwrap();
                 },
                 Err(e) => {
@@ -2278,16 +2229,11 @@ impl MyCedar {
         }
         // Validate preferences against feature level. If someone switches the
         // camera down to the basic model, some preferences need to be adjusted.
-        let (limit_magnitude, min_interval_nanos) = match feature_level {
-            FeatureLevel::Plus => (20, 100000000),  // 100ms, or 10Hz.
-            FeatureLevel::Basic => (12, 200000000),  // 200ms, or 5Hz.
-            _ => (20, 0),  // DIY.
+        let limit_magnitude = match feature_level {
+            FeatureLevel::Plus => 20,
+            FeatureLevel::Basic => 12,
+            _ => 20,  // DIY.
         };
-        if let Some(ref ui) = preferences.update_interval {
-            if ui.seconds == 0 && ui.nanos < min_interval_nanos {
-                preferences.update_interval.as_mut().unwrap().nanos = min_interval_nanos;
-            }
-        }
         if let Some(ref cm) = preferences.catalog_entry_match {
             if cm.faintest_magnitude.unwrap() > limit_magnitude {
                 preferences.catalog_entry_match.as_mut().unwrap().faintest_magnitude =
@@ -2348,8 +2294,6 @@ impl MyCedar {
                     operating_mode: Some(OperatingMode::Setup as i32),
                     daylight_mode: Some(false),
                     focus_assist_mode: Some(true),
-                    update_interval: copied_preferences.update_interval.clone(),
-                    dwell_update_interval: None,
                     log_dwelled_positions: Some(false),
                     catalog_entry_match: copied_preferences.catalog_entry_match.clone(),
                     demo_image_filename: None,
