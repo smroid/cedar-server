@@ -3,7 +3,7 @@
 
 use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage};
 
-use std::cmp::max;
+use std::cmp::{max, min};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -380,10 +380,10 @@ impl DetectEngine {
                         }
                     };
                     if capture.is_none() {
-                        let short_delay = Duration::from_millis(10);
+                        let short_delay = Duration::from_millis(1);
                         let delay_est = camera.lock().await.estimate_delay(frame_id);
                         if let Some(delay_est) = delay_est {
-                            tokio::time::sleep(max(delay_est, short_delay)).await;
+                            tokio::time::sleep(min(delay_est, short_delay)).await;
                         } else {
                             tokio::time::sleep(short_delay).await;
                         }

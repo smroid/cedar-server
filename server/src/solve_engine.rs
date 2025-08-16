@@ -3,7 +3,7 @@
 
 use crate::detect_engine::{DetectEngine, DetectResult};
 
-use std::cmp::max;
+use std::cmp::{max, min};
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -663,11 +663,11 @@ impl SolveEngine {
                 let dr = detect_engine.lock().await.get_next_result(
                     frame_id, /*non_blocking=*/true).await;
                 if dr.is_none() {
-                    let short_delay = Duration::from_millis(10);
+                    let short_delay = Duration::from_millis(1);
                     let delay_est =
                         detect_engine.lock().await.estimate_delay(frame_id);
                     if let Some(delay_est) = delay_est {
-                        tokio::time::sleep(max(delay_est, short_delay)).await;
+                        tokio::time::sleep(min(delay_est, short_delay)).await;
                     } else {
                         tokio::time::sleep(short_delay).await;
                     }
@@ -818,8 +818,7 @@ impl SolveEngine {
             boresight_pos = ImageCoord{
                 x: width as f64 / 2.0, y: height as f64 / 2.0};
         }
-        let target_close_threshold =
-            std::cmp::min(width, height) as f64 / 16.0;
+        let target_close_threshold = min(width, height) as f64 / 16.0;
 	let target_boresight_distance =
             ((target_image_coord.x - boresight_pos.x) *
              (target_image_coord.x - boresight_pos.x) +
@@ -831,7 +830,7 @@ impl SolveEngine {
 
         let image_rect = Rect::at(0, 0).of_size(width, height);
         // Get a sub-image centered on the boresight.
-        let bs_image_size = std::cmp::min(width, height) / 6;
+        let bs_image_size = min(width, height) / 6;
         let mut boresight_image_region = Some(Rect::at(
             boresight_pos.x as i32 - bs_image_size as i32/2,
             boresight_pos.y as i32 - bs_image_size as i32/2)
