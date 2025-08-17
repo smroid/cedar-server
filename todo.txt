@@ -24,7 +24,9 @@ connection (sometimes phone reverts to cell connection).
 
 "serve engine" pipeline stage. Moves some logic out of cedar_server.rs.
 
-Update "connection lost" message for app (instead of web app).
+Multiple scopes
+* FOV
+* saved alignment
 
 Ability to access (and download) saved images in Cedar Aim.
 Maybe save them to web side in the first place?
@@ -41,12 +43,6 @@ time display:
 * moonrise/set
 * display all? selectable?
 
-Why need to disconnect/reconnect wifi? Symptom is that wifi
-icon in phone status bar disappears even though wifi still
-connected (but not providing internet)
-* Android app: control fallback to cell data.
-* User workaround: airplane mode, then enable wifi
-
 Option to unset observer location (long press?)
 
 Catalog
@@ -57,6 +53,7 @@ Catalog
   NGC 426
   NGC 0426
   N426
+  N 426
 
 visual feedback on camera errors
 visual feedback on connectivity errors
@@ -64,8 +61,8 @@ visual feedback on SkySafari connection
 
 add (tm) at appropriate places for Cedar
 
-Remove refresh rate control. Go full speed; when dwelling for more than N
-seconds drop to 5hz. Use accelerometer to quickly detect resumption of
+Refresh rate: Go full speed; when dwelling for more than N
+seconds drop to 2hz. Use accelerometer to quickly detect resumption of
 motion.
 
 Pacifier/busy indicator for capturing/downloading image
@@ -91,7 +88,6 @@ create Android app
 * option to download APK file from Cedar server for sideloading.
 * benefits (for both): access to location info; switching
   app to SkySafari? Screen wake lock.
-* control over wifi on phone?
 
 Cedar Journal
 * capture Cedar Sky goto requests (and whether target was reached)
