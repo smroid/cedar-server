@@ -93,8 +93,12 @@ impl ActivityLed {
             ConnectedOff,
         }
         let mut led_state = LedState::ReadyOff;
-        fs::write(brightness_path, off_value).unwrap();
-
+        match fs::write(brightness_path, off_value) {
+            Err(e) => {
+                log::warn!("Error writing to LED: {:?}", e);
+            },
+            Ok(()) => ()
+        }
         loop {
             sleep(delay);
             if state.lock().unwrap().stop_request {
@@ -106,23 +110,23 @@ impl ActivityLed {
             if led_state != LedState::ConnectedOff &&
                 state.lock().unwrap().received_rpc
             {
-		fs::write(brightness_path, off_value).unwrap();
+		        fs::write(brightness_path, off_value).unwrap_or(());
                 led_state = LedState::ConnectedOff;
                 continue;
             }
             match led_state {
                 LedState::ReadyOff => {
-                    fs::write(brightness_path, on_value).unwrap();
+                    fs::write(brightness_path, on_value).unwrap_or(());
                     led_state = LedState::ReadyOn;
                 },
                 LedState::ReadyOn => {
-                    fs::write(brightness_path, off_value).unwrap();
+                    fs::write(brightness_path, off_value).unwrap_or(());
                     led_state = LedState::ReadyOff;
                 },
                 LedState::ConnectedOff => {}
             };
         }
         // Revert LED back to system default state (disk activity).
-        fs::write(trigger_path, "mmc0").unwrap();
+        fs::write(trigger_path, "mmc0").unwrap_or(());
     }
 }
