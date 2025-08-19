@@ -3,7 +3,7 @@
 
 use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage};
 
-use std::cmp::{max, min};
+use std::cmp::max;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -383,7 +383,7 @@ impl DetectEngine {
                         let short_delay = Duration::from_millis(1);
                         let delay_est = camera.lock().await.estimate_delay(frame_id);
                         if let Some(delay_est) = delay_est {
-                            tokio::time::sleep(min(delay_est, short_delay)).await;
+                            tokio::time::sleep(max(delay_est, short_delay)).await;
                         } else {
                             tokio::time::sleep(short_delay).await;
                         }
@@ -556,25 +556,25 @@ impl DetectEngine {
                         (roi_region.left() as f64 + roi_region.width() as f64 / 2.0,
                          roi_region.top() as f64 + roi_region.height() as f64 / 2.0)
                     });
-                    
+
                     // Calculate region size similar to existing focus logic.
                     let sub_image_size = 30 * adjusted_binning as i32;
                     let half_size = sub_image_size / 2;
-                    
+
                     // Create region centered on focus point, bounded by roi_region.
                     let desired_left = focus_point.0 as i32 - half_size;
                     let desired_top = focus_point.1 as i32 - half_size;
-                    
+
                     // Bound the region within roi_region
                     let bounded_left = desired_left.max(roi_region.left())
                         .min(roi_region.right() - sub_image_size);
                     let bounded_top = desired_top.max(roi_region.top())
                         .min(roi_region.bottom() - sub_image_size);
-                    
+
                     let daylight_focus_region = Rect::at(bounded_left, bounded_top)
                         .of_size(sub_image_size as u32, sub_image_size as u32)
                         .intersect(roi_region).unwrap();
-                    
+
                     let mut daylight_focus_image = image.view(
                         daylight_focus_region.left() as u32,
                         daylight_focus_region.top() as u32,
@@ -583,7 +583,7 @@ impl DetectEngine {
                     if normalize_rows {
                         normalize_rows_mut(&mut daylight_focus_image);
                     }
-                    
+
                     // Calculate display stretching values specific to the focus region
                     // Use the original image with the daylight_focus_region coordinates to avoid margin issues
                     let focus_summary = summarize_region_of_interest(
@@ -591,7 +591,7 @@ impl DetectEngine {
                     let focus_histogram = focus_summary.histogram;
                     let focus_peak_value = max(get_level_for_fraction(&focus_histogram, 0.999) as u8, 1);
                     let focus_black_level = get_level_for_fraction(&focus_histogram, 0.001) as u8;
-                    
+
                     // Apply display stretching using focus region-specific values.
                     scale_image_mut(&mut daylight_focus_image, focus_black_level, focus_peak_value, /*gamma=*/0.7);
                     focus_aid = Some(FocusAid{

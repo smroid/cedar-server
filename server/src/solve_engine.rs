@@ -382,7 +382,7 @@ impl SolveEngine {
 
         let mut plate_solution_proto: Option<PlateSolutionProto> = None;
         let mut solve_finish_time: Option<SystemTime> = None;
-        
+
         if detect_result.star_candidates.len() >= minimum_stars as usize {
             {
                 let mut locked_state = state.lock().await;
@@ -404,7 +404,7 @@ impl SolveEngine {
             match Self::solve_with_solver(
                 solver.clone(),
                 &star_centroids,
-                detect_result.captured_image.image.dimensions().0 as usize, 
+                detect_result.captured_image.image.dimensions().0 as usize,
                 detect_result.captured_image.image.dimensions().1 as usize,
                 &solve_extension, &solve_params).await
             {
@@ -452,14 +452,14 @@ impl SolveEngine {
         normalize_rows: bool,
         width: u32,
         height: u32,
-    ) -> (Option<Vec<FovCatalogEntry>>, Option<Vec<FovCatalogEntry>>, Option<SlewRequest>, 
+    ) -> (Option<Vec<FovCatalogEntry>>, Option<Vec<FovCatalogEntry>>, Option<SlewRequest>,
           Option<GrayImage>, Option<Rect>) {
         let mut fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
         let mut decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
         let mut slew_request = None;
         let mut boresight_image: Option<GrayImage> = None;
         let mut boresight_image_region: Option<Rect> = None;
-        
+
         let (align_mode, boresight_pixel, cedar_sky) = {
             let locked_state = state.lock().await;
             (
@@ -562,7 +562,7 @@ impl SolveEngine {
             }
         }
 
-        (fov_catalog_entries, decrowded_fov_catalog_entries, slew_request, 
+        (fov_catalog_entries, decrowded_fov_catalog_entries, slew_request,
          boresight_image, boresight_image_region)
     }
 
@@ -656,7 +656,7 @@ impl SolveEngine {
                 state.lock().await.eta = Some(Instant::now() + delay_est);
             }
 
-            // Don't hold detect engine lock for the entirety of the time 
+            // Don't hold detect engine lock for the entirety of the time
             // waiting for the next result.
             let detect_result;
             loop {
@@ -667,7 +667,7 @@ impl SolveEngine {
                     let delay_est =
                         detect_engine.lock().await.estimate_delay(frame_id);
                     if let Some(delay_est) = delay_est {
-                        tokio::time::sleep(min(delay_est, short_delay)).await;
+                        tokio::time::sleep(max(delay_est, short_delay)).await;
                     } else {
                         tokio::time::sleep(short_delay).await;
                     }
@@ -692,21 +692,23 @@ impl SolveEngine {
                 &solve_params,
             ).await;
             let elapsed = process_start_time.elapsed();
-            
-            let (fov_catalog_entries, decrowded_fov_catalog_entries, slew_request, 
-                 boresight_image, boresight_image_region) = Self::process_plate_solution_result(
-                state.clone(),
-                &detect_result,
-                &plate_solution_proto,
-                &solution_callback,
-                normalize_rows,
-                width,
-                height,
-            ).await;
+
+            let (fov_catalog_entries, decrowded_fov_catalog_entries,
+                 slew_request, boresight_image, boresight_image_region) =
+                Self::process_plate_solution_result(
+                    state.clone(),
+                    &detect_result,
+                    &plate_solution_proto,
+                    &solution_callback,
+                    normalize_rows,
+                    width,
+                    height,
+                ).await;
             if state.lock().await.last_solve_attempt_time.is_some() {
-                state.lock().await.solve_latency_stats.add_value(elapsed.as_secs_f64());
+                state.lock().await.solve_latency_stats.add_value(
+                    elapsed.as_secs_f64());
             }
-            
+
             Self::finalize_and_post_result(
                 state.clone(),
                 detect_result,
