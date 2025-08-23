@@ -420,8 +420,8 @@ impl SolveEngine {
                         let mut locked_state = state.lock().await;
                         // Secondly, don't log the error if we've just logged one.
                         if !locked_state.logged_error {
-                            error!("Solver error {:?} with {} centroids",
-                                   e, star_centroids.len());
+                            warn!("Solver error {:?} with {} centroids",
+                                  e, star_centroids.len());
                             locked_state.logged_error = true;
                         }
                     }
