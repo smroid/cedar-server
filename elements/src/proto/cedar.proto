@@ -254,7 +254,7 @@ message Preferences {
   optional string celestial_coord_choice = 22;
 
   // What value to display in the performance gauge. E.g. star count, exposure
-  // time, etc. Note that this field is used solely by the UI and are not used 
+  // time, etc. Note that this field is used solely by the UI and are not used
   // by server logic.
   optional string perf_gauge_choice = 33;
 
@@ -263,7 +263,7 @@ message Preferences {
 
   // Set of UI information items that should not be shown. Each string
   // identifies a specific piece of information (e.g., "welcome", "focus_intro",
-  // "align_intro", "too_few_stars", "bright_sky", "solver_failed", 
+  // "align_intro", "too_few_stars", "bright_sky", "solver_failed",
   // "setup_finished").
   // Note that this field is used solely by the UI and are not used by server
   // logic.
@@ -430,7 +430,7 @@ message FrameResult {
   optional double contrast_ratio = 36;
 
   // A small full resolution (usually; 2x binned for color cameras) crop of
-  // `image` centered at a user-designated position (see 
+  // `image` centered at a user-designated position (see
   // ActionRequest.designate_daylight_focus_region).
   // Only present in `focus_assist_mode` with `daylight_mode`.
   optional Image daylight_focus_zoom_image = 37;
@@ -834,6 +834,9 @@ message ActionRequest {
   // wants magnified for focusing. The image coordinates are in full resolution
   // within FrameResult.image.
   optional ImageCoord designate_daylight_focus_region = 11;
+
+  // Causes the Cedar server to panic. For testing.
+  optional bool crash_server = 12;
 }
 
 message ServerLogRequest {

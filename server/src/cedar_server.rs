@@ -817,7 +817,7 @@ impl Cedar for MyCedar {
             let locked_state = self.state.lock().await;
             let mut locked_prefs = locked_state.preferences.lock().unwrap();
             locked_prefs.dont_show_items.clear();
-            
+
             // Write updated preferences to file
             Self::write_preferences_file(&self.preferences_file, &*locked_prefs);
         }
@@ -833,6 +833,10 @@ impl Cedar for MyCedar {
                     "Focus region point out of bounds".to_string()));
             }
             locked_state.detect_engine.lock().await.set_daylight_focus_point((dfr.x, dfr.y));
+        }
+        if req.crash_server.unwrap_or(false) {
+            log::info!("Received crash_server action request.");
+            std::process::exit(1);
         }
         Ok(tonic::Response::new(EmptyMessage{}))
     }  // initiate_action().
@@ -1279,10 +1283,10 @@ impl MyCedar {
         }
     }
 
-    // Automatically determine the appropriate update interval based on current 
+    // Automatically determine the appropriate update interval based on current
     // mode.
     fn get_automatic_update_interval(state: &CedarState) -> std::time::Duration {
-        // Check if we're in SETUP mode with focus assist - go as fast as 
+        // Check if we're in SETUP mode with focus assist - go as fast as
         // possible.
         if state.operation_settings.operating_mode == Some(OperatingMode::Setup as i32) &&
            state.operation_settings.focus_assist_mode.unwrap_or(false) {
@@ -1787,7 +1791,7 @@ impl MyCedar {
 
             // Populate `daylight_focus_zoom_image` (daylight mode).
             if let (Some(daylight_focus_image), Some(daylight_focus_region)) =
-                (&fa.daylight_focus_zoom_image, &fa.daylight_focus_zoom_region) 
+                (&fa.daylight_focus_zoom_image, &fa.daylight_focus_zoom_region)
             {
                 let binning_factor;
                 let daylight_focus_jpg_buf;
