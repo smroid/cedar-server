@@ -567,15 +567,15 @@ message StarInfo {
 
 // Diagnostic information summarizing Cedar's performance.
 message ProcessingStats {
+  // How much time (in seconds) is spent acquiring the image. This is the max
+  // of the camera exposure time and the (pipelined) time taken to convert the
+  // pixel format.
+  ValueStats acquire_latency = 9;
+
   // How much time (in seconds) is spent detecting/centroiding stars.
   ValueStats detect_latency = 3;
 
   // The following items are omitted in SETUP mode.
-
-  // Elapsed time (in seconds) between acquisition of an image (end of exposure)
-  // and completion of a plate solution for it. Skipped images (i.e. solution
-  // not attempted) do not contribute to this.
-  ValueStats overall_latency = 2;
 
   // How much time (in seconds) is spent plate solving (when attempted).
   ValueStats solve_latency = 4;
@@ -589,14 +589,14 @@ message ProcessingStats {
   ValueStats solve_success_fraction = 6;
 
   // How much time (in seconds) is spent preparing the FrameResult to be
-  // returned. This includes time spent e.g. applying gamma to the display
-  // image.
+  // returned. This includes time spent binning, applying gamma, rotating, and
+  // jpg compressing the display image.
   ValueStats serve_latency = 7;
 
   // Time interval (in seconds) between successive plate solve attempts.
   ValueStats solve_interval = 8;
 
-  reserved 1;
+  reserved 1, 2;
 }
 
 message ValueStats {

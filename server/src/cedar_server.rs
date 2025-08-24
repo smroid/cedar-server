@@ -193,7 +193,6 @@ struct CedarState {
     center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
 
     serve_latency_stats: ValueStatsAccumulator,
-    overall_latency_stats: ValueStatsAccumulator,
 
     // Some command line args.
     args_binning: Option<u32>,
@@ -1310,7 +1309,6 @@ impl MyCedar {
         state.detect_engine.lock().await.reset_session_stats();
         state.solve_engine.lock().await.reset_session_stats().await;
         state.serve_latency_stats.reset_session();
-        state.overall_latency_stats.reset_session();
     }
 
     // Called when entering SETUP mode.
@@ -1504,8 +1502,6 @@ impl MyCedar {
     async fn get_next_frame(state: Arc<tokio::sync::Mutex<CedarState>>,
                             prev_frame_id: Option<i32>, non_blocking: bool,
                             landscape: bool) -> Option<FrameResult> {
-        let overall_start_time = Instant::now();
-
         let mut frame_result = FrameResult {..Default::default()};
         let mut fixed_settings;
         let operating_mode;
@@ -1530,9 +1526,9 @@ impl MyCedar {
                     fraction = 1.0;
                 }
                 frame_result.calibration_progress = Some(fraction);
-		// Return previous calibration data while calibrating.
-		frame_result.calibration_data =
-		    Some(locked_state.calibration_data.lock().await.clone());
+                // Return previous calibration data while calibrating.
+                frame_result.calibration_data =
+		            Some(locked_state.calibration_data.lock().await.clone());
 
                 if let Some(img) = &locked_state.scaled_image {
                     let (scaled_width, scaled_height) = img.dimensions();
@@ -1837,19 +1833,13 @@ impl MyCedar {
             image_data: jpg_buf,
         });
 
-        locked_state.serve_latency_stats.add_value(
-            serve_start_time.elapsed().as_secs_f64());
-        locked_state.overall_latency_stats.add_value(
-            overall_start_time.elapsed().as_secs_f64());
-
         frame_result.processing_stats =
             Some(ProcessingStats{..Default::default()});
         let stats = &mut frame_result.processing_stats.as_mut().unwrap();
+        stats.acquire_latency = Some(detect_result.acquire_latency_stats);
         stats.detect_latency = Some(detect_result.detect_latency_stats);
         stats.serve_latency =
             Some(locked_state.serve_latency_stats.value_stats.clone());
-        stats.overall_latency =
-            Some(locked_state.overall_latency_stats.value_stats.clone());
         if let Some(mut psr) = plate_solution {
             stats.solve_latency = Some(psr.solve_latency_stats.clone());
             stats.solve_attempt_fraction =
@@ -2045,9 +2035,11 @@ impl MyCedar {
             Some(locked_state.calibration_data.lock().await.clone());
         frame_result.polar_align_advice = Some(
             locked_state.polar_analyzer.lock().unwrap().get_polar_align_advice());
+        locked_state.serve_latency_stats.add_value(
+            serve_start_time.elapsed().as_secs_f64());
 
         Some(frame_result)
-    }
+    }  // get_next_frame().
 
     // MyCedar::new().
     pub async fn new(
@@ -2326,7 +2318,6 @@ impl MyCedar {
                 calibration_duration_estimate: Duration::MAX,
                 center_peak_position: Arc::new(Mutex::new(None)),
                 serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
-                overall_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 args_binning, args_display_sampling,
             }))
         };

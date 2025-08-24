@@ -95,10 +95,16 @@ struct DetectState {
     // not find a good value.
     auto_exposure_duration: Option<Duration>,
 
+    // When auto-exposing for detected star count, if there are too many stars
+    // we shorten the exposure. But we don't bother going shorter than the
+    // camera's post-capture processing time.
+    camera_processing_duration: Option<Duration>,
+
     // We update the exposure time based on the number of detected stars.
     // Because of noise, twinking, etc., use a moving average.
     star_count_moving_average: f64,
 
+    acquire_latency_stats: ValueStatsAccumulator,
     detect_latency_stats: ValueStatsAccumulator,
 
     // Estimated time at which `detect_result` will next be updated.
@@ -137,7 +143,9 @@ impl DetectEngine {
                 display_sampling: false,
                 calibrated_exposure_duration: None,
                 auto_exposure_duration: None,
+                camera_processing_duration: None,
                 star_count_moving_average: 0.0,
+                acquire_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 detect_result: None,
@@ -307,6 +315,7 @@ impl DetectEngine {
 
     pub fn reset_session_stats(&mut self) {
         let mut state = self.state.lock().unwrap();
+        state.acquire_latency_stats.reset_session();
         state.detect_latency_stats.reset_session();
     }
 
@@ -361,6 +370,7 @@ impl DetectEngine {
             }
 
             let captured_image;
+            let camera_processing_duration;
             {
                 let frame_id = state.lock().unwrap().frame_id;
                 if let Some(delay_est) = camera.lock().await.estimate_delay(frame_id) {
@@ -391,7 +401,19 @@ impl DetectEngine {
                     }
                     let (image, id) = capture.unwrap();
                     captured_image = image;
-                    state.lock().unwrap().frame_id = Some(id);
+                    let mut locked_state = state.lock().unwrap();
+                    locked_state.frame_id = Some(id);
+                    if locked_state.camera_processing_duration.is_none() {
+                        locked_state.camera_processing_duration =
+                            captured_image.processing_duration;
+                        if locked_state.camera_processing_duration.is_some() {
+                            // TEMPORARY
+                            log::info!("Camera processing time: {:?}",
+                                       locked_state.camera_processing_duration);
+                        }
+                    }
+                    camera_processing_duration =
+                        locked_state.camera_processing_duration;
                     break;
                 }
             }
@@ -411,6 +433,15 @@ impl DetectEngine {
             let noise_estimate = estimate_noise_from_image(image);
             let prev_exposure_duration_secs =
                 captured_image.capture_params.exposure_duration.as_secs_f64();
+
+            let mut acquire_duration_secs = prev_exposure_duration_secs;
+            if let Some(cpd) = camera_processing_duration {
+              acquire_duration_secs =
+                f64::max(acquire_duration_secs, cpd.as_secs_f64());
+            }
+            state.lock().unwrap().acquire_latency_stats.add_value(
+                acquire_duration_secs);
+
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
 
             let mut focus_aid: Option<FocusAid> = None;
@@ -754,6 +785,13 @@ impl DetectEngine {
                                         new_exposure_duration_secs,
                                         baseline_exposure_duration_secs * 8.0);
                                 }
+                                // Don't make camera exposure shorter than the
+                                // camera's post-readout processing time.
+                                // if let Some(cpd) = camera_processing_duration {
+                                //     if new_exposure_duration_secs < cpd.as_secs_f64() {
+                                //         new_exposure_duration_secs = cpd.as_secs_f64();
+                                //     }
+                                // }
                             } else {
                                 // Auto exposure time is good. Remember it for
                                 // use as a fallback.
@@ -808,8 +846,10 @@ impl DetectEngine {
                 focus_aid,
                 daylight_mode,
                 processing_duration: elapsed,
+                acquire_latency_stats:
+                  locked_state.acquire_latency_stats.value_stats.clone(),
                 detect_latency_stats:
-                locked_state.detect_latency_stats.value_stats.clone(),
+                  locked_state.detect_latency_stats.value_stats.clone(),
             });
         }  // loop.
     }
@@ -867,6 +907,11 @@ pub struct DetectResult {
     // Time taken to produce this DetectResult, excluding the time taken to
     // acquire the image.
     pub processing_duration: std::time::Duration,
+
+    // How much time (in seconds) is spent acquiring the image. This is the max
+    // of the camera exposure time and the (pipelined) time taken to convert the
+    // pixel format.
+    pub acquire_latency_stats: ValueStats,
 
     // Distribution of `processing_duration` values.
     pub detect_latency_stats: ValueStats,
