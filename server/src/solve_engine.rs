@@ -13,7 +13,7 @@ use canonical_error::{CanonicalError,
 use chrono::{DateTime, Local, Utc};
 use image::{GenericImageView, GrayImage};
 use imageproc::rect::Rect;
-use log::{debug, error, warn};
+use log::{debug, warn};
 
 use cedar_elements::solver_trait::{
     SolveExtension, SolveParams, SolverTrait};
