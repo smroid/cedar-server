@@ -787,11 +787,11 @@ impl DetectEngine {
                                 }
                                 // Don't make camera exposure shorter than the
                                 // camera's post-readout processing time.
-                                // if let Some(cpd) = camera_processing_duration {
-                                //     if new_exposure_duration_secs < cpd.as_secs_f64() {
-                                //         new_exposure_duration_secs = cpd.as_secs_f64();
-                                //     }
-                                // }
+                                if let Some(cpd) = camera_processing_duration {
+                                    if new_exposure_duration_secs < cpd.as_secs_f64() {
+                                        new_exposure_duration_secs = cpd.as_secs_f64();
+                                    }
+                                }
                             } else {
                                 // Auto exposure time is good. Remember it for
                                 // use as a fallback.
