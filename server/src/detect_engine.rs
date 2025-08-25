@@ -406,11 +406,6 @@ impl DetectEngine {
                     if locked_state.camera_processing_duration.is_none() {
                         locked_state.camera_processing_duration =
                             captured_image.processing_duration;
-                        if locked_state.camera_processing_duration.is_some() {
-                            // TEMPORARY
-                            log::info!("Camera processing time: {:?}",
-                                       locked_state.camera_processing_duration);
-                        }
                     }
                     camera_processing_duration =
                         locked_state.camera_processing_duration;
