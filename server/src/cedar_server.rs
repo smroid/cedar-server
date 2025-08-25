@@ -540,7 +540,9 @@ impl Cedar for MyCedar {
                 Self::compute_binning(&locked_state, width as u32, height as u32);
             locked_state.detect_engine.lock().await.set_binning(binning, display_sampling);
             locked_state.detect_engine.lock().await.replace_camera(new_camera.clone());
+            locked_state.solve_engine.lock().await.clear_plate_solution().await;
             locked_state.calibrator.lock().await.replace_camera(new_camera.clone());
+            locked_state.image_rotator = ImageRotator::new(0.0);
 
             // Validate boresight_pixel, to make sure it is still within the
             // image area.

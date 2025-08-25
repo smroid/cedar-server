@@ -238,6 +238,11 @@ impl SolveEngine {
         Ok(())
     }
 
+    pub async fn clear_plate_solution(&mut self) {
+        self.state.lock().await.plate_solution = None;
+        self.reset_session_stats().await;
+    }
+
     // Note: we don't currently provide methods to change match_radius,
     // match_threshold, or return_matches. The defaults for these should be
     // fine.

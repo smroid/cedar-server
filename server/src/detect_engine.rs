@@ -156,9 +156,15 @@ impl DetectEngine {
     }
 
     pub fn replace_camera(
-        &self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
+        &mut self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
     {
-        self.state.lock().unwrap().camera = camera.clone();
+        self.reset_session_stats();
+        let mut locked_state = self.state.lock().unwrap();
+        locked_state.camera = camera.clone();
+        locked_state.auto_exposure_duration = None;
+        locked_state.camera_processing_duration = None;
+        locked_state.star_count_moving_average = 0.0;
+        locked_state.detect_result = None;
     }
 
     pub fn set_autoexposure_enabled(&mut self, enabled: bool) {
