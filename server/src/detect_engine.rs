@@ -439,6 +439,8 @@ impl DetectEngine {
             if let Some(cpd) = camera_processing_duration {
               acquire_duration_secs =
                 f64::max(acquire_duration_secs, cpd.as_secs_f64());
+                // TEMPORARY
+                log::info!("camera_processing_duration {:?}", cpd);
             }
             state.lock().unwrap().acquire_latency_stats.add_value(
                 acquire_duration_secs);
