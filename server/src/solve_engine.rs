@@ -418,10 +418,10 @@ impl SolveEngine {
                     // number of detected stars is low, don't bother to log,
                     // as this is a trivial source of solve failures (e.g.
                     // due to telescope motion).
-                    // Empirically, solutions are possible at 8 centroids,
+                    // Empirically, solutions are possible at 12 centroids,
                     // and are ~reliable at 20 or more centroids. For logging,
                     // we split the difference.
-                    if star_centroids.len() >= 14 {
+                    if star_centroids.len() >= 16 {
                         let mut locked_state = state.lock().await;
                         // Secondly, don't log the error if we've just logged one.
                         if !locked_state.logged_error {
