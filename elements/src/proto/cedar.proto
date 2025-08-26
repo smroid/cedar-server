@@ -745,8 +745,7 @@ message SlewRequest {
   // Range: -180..180
   optional double offset_tilt_axis = 6;
 
-  // Position of the target in FrameResult.image (in full image resolution
-  // coordinates).
+  // Position of the target in FrameResult.image (in full resolution units).
   // Omitted if the target is not in the field of view or there is no valid
   // plate solution.
   optional ImageCoord image_pos = 4;
