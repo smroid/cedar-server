@@ -826,7 +826,7 @@ impl SolveEngine {
                 x: width as f64 / 2.0, y: height as f64 / 2.0};
         }
         let target_close_threshold = min(width, height) as f64 / 16.0;
-	let target_boresight_distance =
+	    let target_boresight_distance =
             ((target_image_coord.x - boresight_pos.x) *
              (target_image_coord.x - boresight_pos.x) +
              (target_image_coord.y - boresight_pos.y) *
