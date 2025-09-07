@@ -24,4 +24,4 @@ Cargo.lock
 **/cedar_log.txt
 **/cedar_ui_prefs.binpb
 
-bin/cedar-box-server
+cedar/bin/cedar-box-server
