@@ -275,6 +275,27 @@ impl Cedar for MyCedar {
         Ok(tonic::Response::new(fixed_settings))
     }
 
+    async fn clear_observer_location(
+        &self, _request: tonic::Request<EmptyMessage>)
+        -> Result<tonic::Response<EmptyMessage>, tonic::Status>
+    {
+        // Clear observer location from fixed settings.
+        let locked_state = self.state.lock().await;
+        locked_state.fixed_settings.lock().unwrap().observer_location = None;
+
+        // Also clear from preferences for persistence.
+        let mut our_prefs = locked_state.preferences.lock().unwrap().clone();
+        our_prefs.observer_location = None;
+        *locked_state.preferences.lock().unwrap() = our_prefs.clone();
+
+        // Write updated preferences to file. Note that this operation is
+        // guarded by our holding locked_state.
+        Self::write_preferences_file(&self.preferences_file, &our_prefs);
+
+        info!("Cleared observer location");
+        Ok(tonic::Response::new(EmptyMessage{}))
+    }
+
     async fn update_operation_settings(
         &self, request: tonic::Request<OperationSettings>)
         -> Result<tonic::Response<OperationSettings>, tonic::Status> {

@@ -858,6 +858,9 @@ service Cedar {
   // settings without making any changes, pass an empty FixedSettings request.
   rpc UpdateFixedSettings(FixedSettings) returns (FixedSettings);
 
+  // Reverts Cedar's observer location back to unknown.
+  rpc ClearObserverLocation(EmptyMessage) returns (EmptyMessage);
+
   // Changes zero or more of Cedar's operation settings. If a field is omitted
   // from the supplied OperationSettings, that setting is not updated. Returns
   // the OperationSettings after any updates have been applied (in most cases;
