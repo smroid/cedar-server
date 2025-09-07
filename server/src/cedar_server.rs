@@ -229,7 +229,7 @@ impl Cedar for MyCedar {
             let preferences = Preferences{observer_location: Some(observer_location.clone()),
                                           ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
-            info!("Updated observer location to {:?}", observer_location);
+            info!("Updated observer location");
         }
         if let Some(current_time) = req.current_time {
             let current_time =
