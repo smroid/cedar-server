@@ -9,7 +9,7 @@ path = "src/bin/cedar_box_server.rs"
 
 [dependencies]
 approx = "0.5.1"
-ascom-alpaca = { version = "1.0.0-beta.3", features = ["server", "telescope"] }
+ascom-alpaca = { version = "=1.0.0-beta.3", features = ["server", "telescope"] }
 async-trait = "0.1.77"
 axum = "0.6.20"
 canonical-error = "0.1.0"
