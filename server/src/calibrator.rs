@@ -2,7 +2,7 @@
 // See LICENSE file in root directory for license terms.
 
 use std::ops::Deref;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use image::GrayImage;
@@ -49,7 +49,7 @@ impl Calibrator {
 
     // Leaves camera set to the returned calibrated offset value.
     pub async fn calibrate_offset(
-        &self, cancel_calibration: Arc<Mutex<bool>>)
+        &self, cancel_calibration: Arc<tokio::sync::Mutex<bool>>)
         -> Result<Offset, CanonicalError> {
         // Goal: find the minimum camera offset setting that avoids
         // black crush (too many zero-value pixels).
@@ -60,7 +60,7 @@ impl Calibrator {
         // * Use 1ms exposures.
         // * Starting at offset=0, as long as >0.1% of pixels have zero
         //   value, increase the offset.
-        if *cancel_calibration.lock().unwrap() {
+        if *cancel_calibration.lock().await {
             return Err(aborted_error("Cancelled during calibrate_offset()."));
         }
 
@@ -78,7 +78,7 @@ impl Calibrator {
         let mut prev_frame_id: Option<i32> = None;
         let mut num_zero_pixels = 0;
         for mut offset in 0..=max_offset {
-            if *cancel_calibration.lock().unwrap() {
+            if *cancel_calibration.lock().await {
                 restore_exposure.restore().await;
                 return Err(aborted_error("Cancelled during calibrate_offset()."));
             }
@@ -139,7 +139,7 @@ impl Calibrator {
         max_exposure_duration: Duration,
         star_count_goal: i32,
         detection_binning: u32, detection_sigma: f64,
-        cancel_calibration: Arc<Mutex<bool>>)
+        cancel_calibration: Arc<tokio::sync::Mutex<bool>>)
         -> Result<Duration, ExposureCalibrationError> {
         // Goal: find the camera exposure duration that yields the desired
         // number of detected stars.
@@ -156,7 +156,7 @@ impl Calibrator {
         //     return it.
         //   * If not close to the goal, scale the exposure duration and
         //     do one more exposure/detect/scale.
-        if *cancel_calibration.lock().unwrap() {
+        if *cancel_calibration.lock().await {
             return Err(ExposureCalibrationError::Aborted);
         }
 
@@ -198,7 +198,7 @@ impl Calibrator {
         }
 
         // Iterate with the refined exposure duration.
-        if *cancel_calibration.lock().unwrap() {
+        if *cancel_calibration.lock().await {
             restore_exposure.restore().await;
             return Err(ExposureCalibrationError::Aborted);
         }
@@ -236,7 +236,7 @@ impl Calibrator {
         }
 
         // Iterate one more time.
-        if *cancel_calibration.lock().unwrap() {
+        if *cancel_calibration.lock().await {
             restore_exposure.restore().await;
             return Err(ExposureCalibrationError::Aborted);
         }
@@ -294,7 +294,7 @@ impl Calibrator {
         &self,
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         detection_binning: u32, detection_sigma: f64,
-        cancel_calibration: Arc<Mutex<bool>>)
+        cancel_calibration: Arc<tokio::sync::Mutex<bool>>)
         -> Result<(f64, f64, f64, Duration), CanonicalError> {
         // Goal: find the field of view, lens distortion, match_max_error solver
         // parameter, and representative plate solve time.
@@ -314,7 +314,7 @@ impl Calibrator {
         let (image, _, stars, _, _) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma).await?;
         let (width, height) = image.dimensions();
-        if *cancel_calibration.lock().unwrap() {
+        if *cancel_calibration.lock().await {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
         }
 
@@ -336,7 +336,7 @@ impl Calibrator {
             width as usize, height as usize,
             &solve_extension, &solve_params).await?;
 
-        if *cancel_calibration.lock().unwrap() {
+        if *cancel_calibration.lock().await {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
         }
 

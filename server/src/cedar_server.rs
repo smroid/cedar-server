@@ -83,6 +83,54 @@ use tetra3_server::tetra3_solver::Tetra3Solver;
 
 use self::multiplex_service::MultiplexService;
 
+// Helper function to acquire a tokio mutex from non-async context with retry.
+fn sync_lock_with_retry<T>(mutex: &tokio::sync::Mutex<T>) -> tokio::sync::MutexGuard<T> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return guard,
+            Err(_) => {
+                // Sleep briefly to avoid busy waiting and try again.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+}
+
+// gRPC performance monitoring threshold - log warning if methods take longer than this
+const GRPC_SLOW_THRESHOLD_MS: u64 = 50;
+
+// RAII timing guard for gRPC methods - automatically logs duration when dropped
+struct GrpcTimer {
+    method_name: &'static str,
+    start: Instant,
+    warn_threshold: Duration,
+}
+
+impl GrpcTimer {
+    fn new(method_name: &'static str) -> Self {
+        Self::with_threshold(method_name, Duration::from_millis(GRPC_SLOW_THRESHOLD_MS))
+    }
+
+    fn with_threshold(method_name: &'static str, warn_threshold: Duration) -> Self {
+        Self {
+            method_name,
+            start: Instant::now(),
+            warn_threshold,
+        }
+    }
+}
+
+impl Drop for GrpcTimer {
+    fn drop(&mut self) {
+        let duration = self.start.elapsed();
+        if duration > self.warn_threshold {
+            warn!("Slow gRPC {}: {:?}", self.method_name, duration);
+        } else {
+            debug!("gRPC {}: {:?}", self.method_name, duration);
+        }
+    }
+}
+
 fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
     tonic::Status::new(
         match canonical_error.code {
@@ -154,7 +202,7 @@ struct CedarState {
     // * a uniform gray image if none of the above are available.
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
 
-    fixed_settings: Arc<Mutex<FixedSettings>>,
+    fixed_settings: Arc<tokio::sync::Mutex<FixedSettings>>,
     calibration_data: Arc<tokio::sync::Mutex<CalibrationData>>,
     operation_settings: OperationSettings,
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
@@ -162,7 +210,7 @@ struct CedarState {
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<Mutex<TelescopePosition>>,
     polar_analyzer: Arc<Mutex<PolarAnalyzer>>,
-    activity_led: Arc<Mutex<ActivityLed>>,
+    activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
 
     // Not all builds of Cedar-server support Cedar-sky.
     cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
@@ -173,7 +221,7 @@ struct CedarState {
     // We host the user interface preferences and some operation settings here.
     // On startup we apply some of these to `operation_settings`; we reflect
     // them out to all clients and persist them to a server-side file.
-    preferences: Arc<Mutex<Preferences>>,
+    preferences: Arc<tokio::sync::Mutex<Preferences>>,
 
     // This is the most recent display image returned by get_frame().
     scaled_image: Option<Arc<GrayImage>>,
@@ -184,7 +232,7 @@ struct CedarState {
     image_rotator: ImageRotator,
 
     calibrating: bool,
-    cancel_calibration: Arc<Mutex<bool>>,
+    cancel_calibration: Arc<tokio::sync::Mutex<bool>>,
     // Relevant only if calibration is underway (`calibration_image` is present).
     calibration_start: Instant,
     calibration_duration_estimate: Duration,
@@ -205,6 +253,8 @@ impl Cedar for MyCedar {
         &self, request: tonic::Request<ServerLogRequest>)
         -> Result<tonic::Response<ServerLogResult>, tonic::Status>
     {
+        let _timer = GrpcTimer::new("get_server_log");
+
         let req: ServerLogRequest = request.into_inner();
         let tail = Self::read_log_tail(&self.log_file, req.log_request);
         if let Err(e) = tail {
@@ -222,9 +272,11 @@ impl Cedar for MyCedar {
         &self, request: tonic::Request<FixedSettings>)
         -> Result<tonic::Response<FixedSettings>, tonic::Status>
     {
+        let _timer = GrpcTimer::new("update_fixed_settings");
+
         let req: FixedSettings = request.into_inner();
         if let Some(observer_location) = req.observer_location {
-            self.state.lock().await.fixed_settings.lock().unwrap().observer_location =
+            self.state.lock().await.fixed_settings.lock().await.observer_location =
                 Some(observer_location.clone());
             let preferences = Preferences{observer_location: Some(observer_location.clone()),
                                           ..Default::default()};
@@ -269,7 +321,7 @@ impl Cedar for MyCedar {
                 "rpc UpdateFixedSettings cannot update max_exposure_time."));
         }
         let mut fixed_settings =
-            self.state.lock().await.fixed_settings.lock().unwrap().clone();
+            self.state.lock().await.fixed_settings.lock().await.clone();
         // Fill in our current time.
         Self::fill_in_time(&mut fixed_settings);
         Ok(tonic::Response::new(fixed_settings))
@@ -279,14 +331,16 @@ impl Cedar for MyCedar {
         &self, _request: tonic::Request<EmptyMessage>)
         -> Result<tonic::Response<EmptyMessage>, tonic::Status>
     {
+        let _timer = GrpcTimer::new("clear_observer_location");
+
         // Clear observer location from fixed settings.
         let locked_state = self.state.lock().await;
-        locked_state.fixed_settings.lock().unwrap().observer_location = None;
+        locked_state.fixed_settings.lock().await.observer_location = None;
 
         // Also clear from preferences for persistence.
-        let mut our_prefs = locked_state.preferences.lock().unwrap().clone();
+        let mut our_prefs = locked_state.preferences.lock().await.clone();
         our_prefs.observer_location = None;
-        *locked_state.preferences.lock().unwrap() = our_prefs.clone();
+        *locked_state.preferences.lock().await = our_prefs.clone();
 
         // Write updated preferences to file. Note that this operation is
         // guarded by our holding locked_state.
@@ -299,6 +353,8 @@ impl Cedar for MyCedar {
     async fn update_operation_settings(
         &self, request: tonic::Request<OperationSettings>)
         -> Result<tonic::Response<OperationSettings>, tonic::Status> {
+        let _timer = GrpcTimer::new("update_operation_settings");
+
         let mut req: OperationSettings = request.into_inner();
         if let Some(new_operating_mode) = req.operating_mode {
             let mut locked_state = self.state.lock().await;
@@ -569,14 +625,14 @@ impl Cedar for MyCedar {
             // image area.
             let bsp =
             {
-                locked_state.preferences.lock().unwrap().boresight_pixel.clone()
+                locked_state.preferences.lock().await.boresight_pixel.clone()
             };
             if let Some(bsp) = bsp {
                 let inset = 16;
                 if bsp.x < inset as f64 || bsp.x > (width - inset) as f64 ||
                     bsp.y < inset as f64 || bsp.y > (height - inset) as f64
                 {
-                    locked_state.preferences.lock().unwrap().boresight_pixel = None;
+                    locked_state.preferences.lock().await.boresight_pixel = None;
                     locked_state.solve_engine.lock().await.set_boresight_pixel(None).
                         await.unwrap();
                 }
@@ -589,12 +645,14 @@ impl Cedar for MyCedar {
     async fn update_preferences(
         &self, request: tonic::Request<Preferences>)
         -> Result<tonic::Response<Preferences>, tonic::Status> {
+        let _timer = GrpcTimer::new("update_preferences");
+
         let req: Preferences = request.into_inner();
         // Hold our lock across this entire operation to ensure that the file
         // update is done one at a time.
         let locked_state = self.state.lock().await;
 
-        let mut our_prefs = locked_state.preferences.lock().unwrap().clone();
+        let mut our_prefs = locked_state.preferences.lock().await.clone();
         if let Some(coord_format) = req.celestial_coord_format {
             our_prefs.celestial_coord_format = Some(coord_format);
         }
@@ -663,7 +721,7 @@ impl Cedar for MyCedar {
             existing_items.extend(req.dont_show_items.clone());
             our_prefs.dont_show_items = existing_items.into_iter().collect();
         }
-        *locked_state.preferences.lock().unwrap() = our_prefs.clone();
+        *locked_state.preferences.lock().await = our_prefs.clone();
 
         // Write updated preferences to file. Note that this operation is
         // guarded by our holding locked_state.
@@ -674,7 +732,10 @@ impl Cedar for MyCedar {
 
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
-        self.state.lock().await.activity_led.lock().unwrap().received_rpc();
+        let _timer = GrpcTimer::with_threshold(
+            "get_frame", Duration::from_millis(100));
+
+        self.state.lock().await.activity_led.lock().await.received_rpc();
         let req: FrameRequest = request.into_inner();
         let non_blocking = req.non_blocking.is_some() && req.non_blocking.unwrap();
         let landscape = req.display_orientation.is_none() ||
@@ -697,11 +758,13 @@ impl Cedar for MyCedar {
 
     async fn initiate_action(&self, request: tonic::Request<ActionRequest>)
                              -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
+        let _timer = GrpcTimer::new("initiate_action");
+
         let req: ActionRequest = request.into_inner();
         if req.cancel_calibration.unwrap_or(false) {
             let locked_state = self.state.lock().await;
             if locked_state.calibrating {
-                *locked_state.cancel_calibration.lock().unwrap() = true;
+                *locked_state.cancel_calibration.lock().await = true;
                 locked_state.solver.lock().await.cancel();
             }
         }
@@ -768,7 +831,7 @@ impl Cedar for MyCedar {
         }
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
-            self.state.lock().await.activity_led.lock().unwrap().stop();
+            self.state.lock().await.activity_led.lock().await.stop();
             let output = Command::new("sudo")
                 .arg("shutdown")
                 .arg("now")
@@ -782,7 +845,7 @@ impl Cedar for MyCedar {
         }
         if req.restart_server.unwrap_or(false) {
             info!("Restarting host system");
-            self.state.lock().await.activity_led.lock().unwrap().stop();
+            self.state.lock().await.activity_led.lock().await.stop();
             let output = Command::new("sudo")
                 .arg("reboot")
                 .arg("now")
@@ -796,9 +859,9 @@ impl Cedar for MyCedar {
         }
         if let Some(slew_coord) = req.initiate_slew {
             let locked_state = self.state.lock().await;
-            let mount_type = locked_state.preferences.lock().unwrap().mount_type;
+            let mount_type = locked_state.preferences.lock().await.mount_type;
             if mount_type == Some(MountType::AltAz.into()) &&
-                locked_state.fixed_settings.lock().unwrap().observer_location.is_none()
+                locked_state.fixed_settings.lock().await.observer_location.is_none()
             {
                 return Err(tonic::Status::failed_precondition(
                     "Need observer location for goto with alt-az mount"));
@@ -837,7 +900,7 @@ impl Cedar for MyCedar {
         }
         if req.clear_dont_show_items.unwrap_or(false) {
             let locked_state = self.state.lock().await;
-            let mut locked_prefs = locked_state.preferences.lock().unwrap();
+            let mut locked_prefs = locked_state.preferences.lock().await;
             locked_prefs.dont_show_items.clear();
 
             // Write updated preferences to file
@@ -867,6 +930,7 @@ impl Cedar for MyCedar {
         &self, request: tonic::Request<QueryCatalogRequest>)
         -> Result<tonic::Response<QueryCatalogResponse>, tonic::Status>
     {
+        let _timer = GrpcTimer::new("query_catalog_entries");
         let locked_state = self.state.lock().await;
         if locked_state.cedar_sky.is_none() {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
@@ -896,9 +960,9 @@ impl Cedar for MyCedar {
             } else {
                 None
             };
-        let fixed_settings = locked_state.fixed_settings.lock();
+        let fixed_settings = locked_state.fixed_settings.lock().await;
         let location_info =
-            if let Some(obs_loc) = &fixed_settings.unwrap().observer_location {
+            if let Some(obs_loc) = &fixed_settings.observer_location {
                 Some(LocationInfo {
                     observer_location: obs_loc.clone(),
                     observing_time: SystemTime::now(),
@@ -940,6 +1004,8 @@ impl Cedar for MyCedar {
         &self, request: tonic::Request<CatalogEntryKey>)
         -> Result<tonic::Response<CatalogEntry>, tonic::Status>
     {
+        let _timer = GrpcTimer::new("get_catalog_entry");
+
         let locked_state = self.state.lock().await;
         if locked_state.cedar_sky.is_none() {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
@@ -962,6 +1028,8 @@ impl Cedar for MyCedar {
         &self, _request: tonic::Request<EmptyMessage>)
         -> Result<tonic::Response<CatalogDescriptionResponse>, tonic::Status>
     {
+        let _timer = GrpcTimer::new("get_catalog_descriptions");
+
         let locked_state = self.state.lock().await;
         if locked_state.cedar_sky.is_none() {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
@@ -981,6 +1049,8 @@ impl Cedar for MyCedar {
         &self, _request: tonic::Request<EmptyMessage>)
         -> Result<tonic::Response<ObjectTypeResponse>, tonic::Status>
     {
+        let _timer = GrpcTimer::new("get_object_types");
+
         let locked_state = self.state.lock().await;
         if locked_state.cedar_sky.is_none() {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
@@ -1000,6 +1070,8 @@ impl Cedar for MyCedar {
         &self, _request: tonic::Request<EmptyMessage>)
         -> Result<tonic::Response<ConstellationResponse>, tonic::Status>
     {
+        let _timer = GrpcTimer::new("get_constellations");
+
         let locked_state = self.state.lock().await;
         if locked_state.cedar_sky.is_none() {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
@@ -1134,9 +1206,9 @@ impl MyCedar {
                 let mut locked_state = state.lock().await;
                 locked_state.detect_engine.lock().await.set_autoexposure_enabled(true);
                 locked_state.calibrating = false;
-                if *locked_state.cancel_calibration.lock().unwrap() || !succeeded {
+                if *locked_state.cancel_calibration.lock().await || !succeeded {
                     // Calibration failed or was cancelled. Stay in current mode.
-                    *locked_state.cancel_calibration.lock().unwrap() = false;
+                    *locked_state.cancel_calibration.lock().await = false;
                     let focus_mode =
                         locked_state.operation_settings.focus_assist_mode.unwrap();
                     let daylight_mode =
@@ -1386,7 +1458,7 @@ impl MyCedar {
             solver = locked_state.solver.clone();
             initial_exposure_duration = locked_state.initial_exposure_duration;
             max_exposure_duration = std::time::Duration::try_from(
-                locked_state.fixed_settings.lock().unwrap()
+                locked_state.fixed_settings.lock().await
                     .max_exposure_time.clone().unwrap()).unwrap();
             {
                 let locked_camera = camera.lock().await;
@@ -1532,7 +1604,7 @@ impl MyCedar {
         let daylight_mode;
         {
             let locked_state = state.lock().await;
-            fixed_settings = locked_state.fixed_settings.lock().unwrap().clone();
+            fixed_settings = locked_state.fixed_settings.lock().await.clone();
             operating_mode = locked_state.operation_settings.operating_mode.unwrap();
             focus_assist_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
             daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
@@ -1572,7 +1644,7 @@ impl MyCedar {
                     frame_result.frame_id = locked_state.scaled_image_frame_id;
                     frame_result.fixed_settings = Some(fixed_settings.clone());
                     frame_result.preferences =
-                        Some(locked_state.preferences.lock().unwrap().clone());
+                        Some(locked_state.preferences.lock().await.clone());
                     frame_result.operation_settings =
                         Some(locked_state.operation_settings.clone());
                 }
@@ -1631,7 +1703,7 @@ impl MyCedar {
             captured_image.readout_time));
         frame_result.fixed_settings = Some(fixed_settings.clone());
         frame_result.preferences =
-            Some(locked_state.preferences.lock().unwrap().clone());
+            Some(locked_state.preferences.lock().await.clone());
         frame_result.operation_settings =
             Some(locked_state.operation_settings.clone());
 
@@ -1953,7 +2025,7 @@ impl MyCedar {
 
                 let target_ra = slew_request.target.as_ref().unwrap().ra;
                 let target_dec = slew_request.target.as_ref().unwrap().dec;
-                let mount_type = locked_state.preferences.lock().unwrap().mount_type;
+                let mount_type = locked_state.preferences.lock().await.mount_type;
                 if mount_type == Some(MountType::Equatorial.into()) {
                     // Compute the movement required in RA and Dec to move boresight to
                     // target.
@@ -2072,7 +2144,7 @@ impl MyCedar {
         initial_exposure_duration: Duration,
         min_exposure_duration: Duration,
         mut max_exposure_duration: Duration,
-        activity_led: Arc<Mutex<ActivityLed>>,
+        activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
         attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         imu: Option<Arc<tokio::sync::Mutex<Mpu6050>>>,
         test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
@@ -2263,10 +2335,10 @@ impl MyCedar {
             preferences.mount_type = Some(MountType::AltAz.into());
         }
 
-        let shared_preferences = Arc::new(Mutex::new(preferences));
-        let copied_preferences = shared_preferences.lock().unwrap().clone();
+        let shared_preferences = Arc::new(tokio::sync::Mutex::new(preferences));
+        let copied_preferences = shared_preferences.lock().await.clone();
 
-        let fixed_settings = Arc::new(Mutex::new(FixedSettings {
+        let fixed_settings = Arc::new(tokio::sync::Mutex::new(FixedSettings {
             observer_location: copied_preferences.observer_location.clone(),
             current_time: None,
             session_name: None,
@@ -2336,7 +2408,7 @@ impl MyCedar {
                 scaled_image_frame_id: 0,
                 image_rotator: ImageRotator::new(0.0),
                 calibrating: false,
-                cancel_calibration: Arc::new(Mutex::new(false)),
+                cancel_calibration: Arc::new(tokio::sync::Mutex::new(false)),
                 calibration_start: Instant::now(),
                 calibration_duration_estimate: Duration::MAX,
                 center_peak_position: Arc::new(Mutex::new(None)),
@@ -2449,8 +2521,8 @@ impl MyCedar {
     fn solution_callback(boresight_pixel: Option<ImageCoord>,
                          detect_result: Option<DetectResult>,
                          plate_solution: Option<PlateSolutionProto>,
-                         fixed_settings: Arc<Mutex<FixedSettings>>,
-                         preferences: Arc<Mutex<Preferences>>,
+                         fixed_settings: Arc<tokio::sync::Mutex<FixedSettings>>,
+                         preferences: Arc<tokio::sync::Mutex<Preferences>>,
                          preferences_file: PathBuf,
                          telescope_position: Arc<Mutex<TelescopePosition>>,
                          motion_estimator: Arc<Mutex<MotionEstimator>>,
@@ -2464,7 +2536,7 @@ impl MyCedar {
         let mut prefs_to_save: Option<Preferences> = None;
         if let Some(bp) = boresight_pixel {
             let cedar_bp = ImageCoord{x: bp.x, y: bp.y};
-            let mut locked_preferences = preferences.lock().unwrap();
+            let mut locked_preferences = sync_lock_with_retry(&preferences);
             if locked_preferences.boresight_pixel.is_none() ||
                 cedar_bp != *locked_preferences.boresight_pixel.as_ref().unwrap()
             {
@@ -2507,13 +2579,13 @@ impl MyCedar {
                     latitude: locked_telescope_position.site_latitude.unwrap(),
                     longitude: locked_telescope_position.site_longitude.unwrap(),
                 };
-                fixed_settings.lock().unwrap().observer_location =
+                sync_lock_with_retry(&fixed_settings).observer_location =
                     Some(observer_location.clone());
                 info!("Alpaca updated observer location to {:?}", observer_location);
                 locked_telescope_position.site_latitude = None;
                 locked_telescope_position.site_longitude = None;
                 // Save in preferences.
-                let mut locked_preferences = preferences.lock().unwrap();
+                let mut locked_preferences = sync_lock_with_retry(&preferences);
                 locked_preferences.observer_location = Some(observer_location.clone());
                 // Flag updated preferences to write to file below.
                 prefs_to_save = Some(locked_preferences.clone());
@@ -2530,7 +2602,7 @@ impl MyCedar {
                 locked_telescope_position.sync_dec = None;
             }
 
-            let geo_location = &fixed_settings.lock().unwrap().observer_location;
+            let geo_location = &sync_lock_with_retry(&fixed_settings).observer_location;
             if let Some(geo_location) = geo_location {
                 let lat = geo_location.latitude.to_radians();
                 let long = geo_location.longitude.to_radians();
@@ -2903,7 +2975,7 @@ async fn async_main(
     let rest = Router::new().nest_service(
         "/", ServeDir::new(flutter_app_path));
 
-    let activity_led = Arc::new(Mutex::new(ActivityLed::new(got_signal.clone())));
+    let activity_led = Arc::new(tokio::sync::Mutex::new(ActivityLed::new(got_signal.clone())));
 
     // Use supplied solver, with Tetra3Solver as fallback.
     let solver = match injected_solver {
@@ -2959,7 +3031,7 @@ async fn async_main(
 
     // Function called whenever SkySafari interrogates our position.
     let async_callback = Box::new(move || {
-        activity_led.lock().unwrap().received_rpc();
+        sync_lock_with_retry(&activity_led).received_rpc();
     });
     let alpaca_server = create_alpaca_server(shared_telescope_position, async_callback);
     let alpaca_server_future = alpaca_server.start();
