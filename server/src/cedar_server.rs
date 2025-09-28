@@ -209,7 +209,7 @@ struct CedarState {
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<Mutex<TelescopePosition>>,
-    polar_analyzer: Arc<Mutex<PolarAnalyzer>>,
+    polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
     activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
 
     // Not all builds of Cedar-server support Cedar-sky.
@@ -238,7 +238,7 @@ struct CedarState {
     calibration_duration_estimate: Duration,
 
     // For focus assist.
-    center_peak_position: Arc<Mutex<Option<ImageCoord>>>,
+    center_peak_position: Arc<tokio::sync::Mutex<Option<ImageCoord>>>,
 
     serve_latency_stats: ValueStatsAccumulator,
 
@@ -1844,7 +1844,7 @@ impl MyCedar {
                 // Apply rotator to ic.
                 (ic.x, ic.y) = irr.transform_to_rotated(ic.x, ic.y, width, height);
 
-                *locked_state.center_peak_position.lock().unwrap() = Some(ic.clone());
+                *locked_state.center_peak_position.lock().await = Some(ic.clone());
                 frame_result.center_peak_position = Some(ic);
             }
             if let Some(center_peak_val) = fa.center_peak_value {
@@ -1908,7 +1908,7 @@ impl MyCedar {
                 });
             }
         } else {
-            *locked_state.center_peak_position.lock().unwrap() = None;
+            *locked_state.center_peak_position.lock().await = None;
         }
         frame_result.contrast_ratio = detect_result.contrast_ratio;
 
@@ -2129,7 +2129,7 @@ impl MyCedar {
         frame_result.calibration_data =
             Some(locked_state.calibration_data.lock().await.clone());
         frame_result.polar_align_advice = Some(
-            locked_state.polar_analyzer.lock().unwrap().get_polar_align_advice());
+            locked_state.polar_analyzer.lock().await.get_polar_align_advice());
         locked_state.serve_latency_stats.add_value(
             serve_start_time.elapsed().as_secs_f64());
 
@@ -2346,7 +2346,7 @@ impl MyCedar {
                 prost_types::Duration::try_from(max_exposure_duration).unwrap()),
         }));
 
-        let polar_analyzer = Arc::new(Mutex::new(PolarAnalyzer::new()));
+        let polar_analyzer = Arc::new(tokio::sync::Mutex::new(PolarAnalyzer::new()));
 
         // Define callback invoked from SolveEngine().
         let closure_fixed_settings = fixed_settings.clone();
@@ -2411,7 +2411,7 @@ impl MyCedar {
                 cancel_calibration: Arc::new(tokio::sync::Mutex::new(false)),
                 calibration_start: Instant::now(),
                 calibration_duration_estimate: Duration::MAX,
-                center_peak_position: Arc::new(Mutex::new(None)),
+                center_peak_position: Arc::new(tokio::sync::Mutex::new(None)),
                 serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 args_binning, args_display_sampling,
             }))
@@ -2526,7 +2526,7 @@ impl MyCedar {
                          preferences_file: PathBuf,
                          telescope_position: Arc<Mutex<TelescopePosition>>,
                          motion_estimator: Arc<Mutex<MotionEstimator>>,
-                         polar_analyzer: Arc<Mutex<PolarAnalyzer>>)
+                         polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>)
                          -> (Option<CelestialCoord>,
                              Option<CelestialCoord>)
     {
@@ -2612,7 +2612,7 @@ impl MyCedar {
                 let (_alt, _az, ha) =
                     alt_az_from_equatorial(bs_ra, bs_dec, lat, long, readout_time);
                 let motion_estimate = motion_estimator.lock().unwrap().get_estimate();
-                polar_analyzer.lock().unwrap().process_solution(
+                sync_lock_with_retry(&polar_analyzer).process_solution(
                     &coords,
                     ha.to_degrees(),
                     geo_location.latitude,
