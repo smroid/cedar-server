@@ -213,7 +213,7 @@ struct CedarState {
     activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
 
     // Not all builds of Cedar-server support Cedar-sky.
-    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
 
     // Not all builds of Cedar-server support Wifi control.
     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
@@ -305,8 +305,7 @@ impl Cedar for MyCedar {
             // Now that we know the correct date/time, initialize the solar system
             // object database.
             if let Some(cedar_sky) = &self.state.lock().await.cedar_sky {
-                cedar_sky.lock().unwrap().initialize_solar_system(
-                    SystemTime::now());
+                cedar_sky.lock().await.initialize_solar_system(SystemTime::now()).await;
             }
             info!("Updated server time to {:?}", Local::now());
             // Don't store the client time in our fixed_settings state, but
@@ -960,8 +959,8 @@ impl Cedar for MyCedar {
             } else {
                 None
             };
-        let fixed_settings = locked_state.fixed_settings.lock().await;
-        let location_info =
+        let location_info = {
+            let fixed_settings = locked_state.fixed_settings.lock().await;
             if let Some(obs_loc) = &fixed_settings.observer_location {
                 Some(LocationInfo {
                     observer_location: obs_loc.clone(),
@@ -969,23 +968,23 @@ impl Cedar for MyCedar {
                 })
             } else {
                 None
-            };
+            }
+        };
 
-        let result =
-            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().query_catalog_entries(
-                req.max_distance,
-                req.min_elevation,
-                catalog_entry_match.faintest_magnitude,
-                catalog_entry_match.match_catalog_label,
-                &catalog_entry_match.catalog_label,
-                catalog_entry_match.match_object_type_label,
-                &catalog_entry_match.object_type_label,
-                req.text_search,
-                ordering,
-                req.decrowd_distance,
-                limit_result,
-                sky_location,
-                location_info);
+        let result = locked_state.cedar_sky.as_ref().unwrap().lock().await.query_catalog_entries(
+            req.max_distance,
+            req.min_elevation,
+            catalog_entry_match.faintest_magnitude,
+            catalog_entry_match.match_catalog_label,
+            &catalog_entry_match.catalog_label,
+            catalog_entry_match.match_object_type_label,
+            &catalog_entry_match.object_type_label,
+            req.text_search,
+            ordering,
+            req.decrowd_distance,
+            limit_result,
+            sky_location,
+            location_info).await;
         if let Err(e) = result {
             return Err(tonic_status(e));
         }
@@ -1012,8 +1011,7 @@ impl Cedar for MyCedar {
         }
         let req: CatalogEntryKey = request.into_inner();
 
-        let x = locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_catalog_entry(
-            req, SystemTime::now());
+        let x = locked_state.cedar_sky.as_ref().unwrap().lock().await.get_catalog_entry(req, SystemTime::now()).await;
         match x {
             Ok(entry) => {
                 Ok(tonic::Response::new(entry))
@@ -1035,8 +1033,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
         let catalog_descriptions =
-            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap()
-            .get_catalog_descriptions();
+            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_catalog_descriptions();
         let mut response = CatalogDescriptionResponse::default();
         for cd in catalog_descriptions {
             response.catalog_descriptions.push(cd);
@@ -1056,8 +1053,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
         let object_types =
-            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_object_types();
-
+            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_object_types();
         let mut response = ObjectTypeResponse::default();
         for ot in object_types {
             response.object_types.push(ot);
@@ -1077,8 +1073,7 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
         }
         let constellations =
-            locked_state.cedar_sky.as_ref().unwrap().lock().unwrap().get_constellations();
-
+            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_constellations();
         let mut response = ConstellationResponse::default();
         for c in constellations {
             response.constellations.push(c);
@@ -2159,7 +2154,7 @@ impl MyCedar {
         product_name: &str,
         copyright: &str,
         feature_level: FeatureLevel,
-        cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+        cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
         wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>)
         -> Result<Self, CanonicalError>
     {
@@ -2719,7 +2714,7 @@ pub fn server_main(
     product_name: &str, copyright: &str,
     flutter_app_path: &str,
     get_dependencies: fn(Arguments)
-                         -> (Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+                         -> (Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
                              Option<Arc<Mutex<dyn WifiTrait + Send>>>,
                              Option<Arc<tokio::sync::Mutex<
                                      dyn SolverTrait + Send + Sync>>>)) {
@@ -2850,7 +2845,7 @@ async fn async_main(
     args: AppArgs, product_name: &str, copyright: &str,
     flutter_app_path: &str,
     got_signal: Arc<AtomicBool>,
-    cedar_sky: Option<Arc<Mutex<dyn CedarSkyTrait + Send>>>,
+    cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
     injected_solver: Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>)
 {

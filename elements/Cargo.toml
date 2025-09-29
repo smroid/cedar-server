@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 approx = "0.5.1"
+async-trait = "0.1.77"
 astro = "2.0.0"
 canonical-error = "0.1.0"
 chrono = "0.4.31"

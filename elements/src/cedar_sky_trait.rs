@@ -3,6 +3,7 @@
 
 use std::time::SystemTime;
 
+use async_trait::async_trait;
 use crate::cedar_common::CelestialCoord;
 use crate::cedar_sky::{CatalogDescription, CatalogEntryKey,
                        CatalogEntry, Constellation,
@@ -15,12 +16,13 @@ pub struct LocationInfo {
     pub observing_time: SystemTime,
 }
 
+#[async_trait]
 pub trait CedarSkyTrait {
     /// Populate solar system objects into the catalog as of the given
     /// `timestamp`. The object positions as of `timestamp` are used for
     /// `max_distance`, `min_elevation`, and `sky_location` constraint matching
     /// in `query_catalog_entries()`.
-    fn initialize_solar_system(&mut self, timestamp: SystemTime);
+    async fn initialize_solar_system(&mut self, timestamp: SystemTime);
 
     fn get_catalog_descriptions(&self) -> Vec<CatalogDescription>;
     fn get_object_types(&self) -> Vec<ObjectType>;
@@ -30,7 +32,7 @@ pub trait CedarSkyTrait {
     /// off because of `limit_result`. Returned solar system objects' current
     /// position are determined using `location_info` if provided, current time
     /// otherwise.
-    fn query_catalog_entries(&self,
+    async fn query_catalog_entries(&self,
                              max_distance: Option<f64>,
                              min_elevation: Option<f64>,
                              faintest_magnitude: Option<i32>,
@@ -48,7 +50,7 @@ pub trait CedarSkyTrait {
 
     /// Return the selected catalog entry. If it is a solar system object the
     /// current position is calculated using `timestamp`.
-    fn get_catalog_entry(&mut self,
+    async fn get_catalog_entry(&mut self,
                          entry_key: CatalogEntryKey,
                          timestamp: SystemTime)
                          -> Result<CatalogEntry, CanonicalError>;
