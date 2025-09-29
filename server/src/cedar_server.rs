@@ -276,8 +276,8 @@ impl Cedar for MyCedar {
 
         let req: FixedSettings = request.into_inner();
         if let Some(observer_location) = req.observer_location {
-            self.state.lock().await.fixed_settings.lock().await.observer_location =
-                Some(observer_location.clone());
+            let fixed_settings = self.state.lock().await.fixed_settings.clone();
+            fixed_settings.lock().await.observer_location = Some(observer_location.clone());
             let preferences = Preferences{observer_location: Some(observer_location.clone()),
                                           ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
@@ -319,8 +319,8 @@ impl Cedar for MyCedar {
             return Err(tonic::Status::unimplemented(
                 "rpc UpdateFixedSettings cannot update max_exposure_time."));
         }
-        let mut fixed_settings =
-            self.state.lock().await.fixed_settings.lock().await.clone();
+        let fixed_settings_arc = self.state.lock().await.fixed_settings.clone();
+        let mut fixed_settings = fixed_settings_arc.lock().await.clone();
         // Fill in our current time.
         Self::fill_in_time(&mut fixed_settings);
         Ok(tonic::Response::new(fixed_settings))
@@ -333,16 +333,21 @@ impl Cedar for MyCedar {
         let _timer = GrpcTimer::new("clear_observer_location");
 
         // Clear observer location from fixed settings.
-        let locked_state = self.state.lock().await;
-        locked_state.fixed_settings.lock().await.observer_location = None;
+        {
+            let fixed_settings = self.state.lock().await.fixed_settings.clone();
+            fixed_settings.lock().await.observer_location = None;
+        }
 
         // Also clear from preferences for persistence.
-        let mut our_prefs = locked_state.preferences.lock().await.clone();
-        our_prefs.observer_location = None;
-        *locked_state.preferences.lock().await = our_prefs.clone();
+        let our_prefs = {
+            let locked_state = self.state.lock().await;
+            let mut our_prefs = locked_state.preferences.lock().await.clone();
+            our_prefs.observer_location = None;
+            locked_state.preferences.lock().await.clone_from(&our_prefs);
+            our_prefs
+        };
 
-        // Write updated preferences to file. Note that this operation is
-        // guarded by our holding locked_state.
+        // Write updated preferences to file.
         Self::write_preferences_file(&self.preferences_file, &our_prefs);
 
         info!("Cleared observer location");
@@ -734,7 +739,8 @@ impl Cedar for MyCedar {
         let _timer = GrpcTimer::with_threshold(
             "get_frame", Duration::from_millis(100));
 
-        self.state.lock().await.activity_led.lock().await.received_rpc();
+        let activity_led = self.state.lock().await.activity_led.clone();
+        activity_led.lock().await.received_rpc();
         let req: FrameRequest = request.into_inner();
         let non_blocking = req.non_blocking.is_some() && req.non_blocking.unwrap();
         let landscape = req.display_orientation.is_none() ||
@@ -818,9 +824,8 @@ impl Cedar for MyCedar {
                     "Too far from center".to_string()));
             }
 
-            if let Err(x) = self.state.lock().await.solve_engine.lock().await.
-                set_boresight_pixel(Some(bsp.clone())).await
-            {
+            let solve_engine = self.state.lock().await.solve_engine.clone();
+            if let Err(x) = solve_engine.lock().await.set_boresight_pixel(Some(bsp.clone())).await {
                 return Err(tonic_status(x));
             };
             let preferences = Preferences{
@@ -830,7 +835,8 @@ impl Cedar for MyCedar {
         }
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
-            self.state.lock().await.activity_led.lock().await.stop();
+            let activity_led = self.state.lock().await.activity_led.clone();
+            activity_led.lock().await.stop();
             let output = Command::new("sudo")
                 .arg("shutdown")
                 .arg("now")
@@ -844,7 +850,8 @@ impl Cedar for MyCedar {
         }
         if req.restart_server.unwrap_or(false) {
             info!("Restarting host system");
-            self.state.lock().await.activity_led.lock().await.stop();
+            let activity_led = self.state.lock().await.activity_led.clone();
+            activity_led.lock().await.stop();
             let output = Command::new("sudo")
                 .arg("reboot")
                 .arg("now")
@@ -875,10 +882,9 @@ impl Cedar for MyCedar {
             locked_state.telescope_position.lock().await.slew_active = false;
         }
         if req.save_image.unwrap_or(false) {
-            let locked_state = self.state.lock().await;
-            let solve_engine = &mut locked_state.solve_engine.lock().await;
-            // TODO: don't hold our state.lock() for this.
-            if let Err(x) = solve_engine.save_image().await {
+            let solve_engine = self.state.lock().await.solve_engine.clone();
+            let result = solve_engine.lock().await.save_image().await;
+            if let Err(x) = result {
                 return Err(tonic_status(x));
             }
         }
@@ -898,17 +904,23 @@ impl Cedar for MyCedar {
             }
         }
         if req.clear_dont_show_items.unwrap_or(false) {
-            let locked_state = self.state.lock().await;
-            let mut locked_prefs = locked_state.preferences.lock().await;
-            locked_prefs.dont_show_items.clear();
-
-            // Write updated preferences to file
-            Self::write_preferences_file(&self.preferences_file, &*locked_prefs);
+            let prefs_to_write = {
+                let locked_state = self.state.lock().await;
+                let mut locked_prefs = locked_state.preferences.lock().await;
+                locked_prefs.dont_show_items.clear();
+                locked_prefs.clone()
+            };
+            // Write updated preferences to file.
+            Self::write_preferences_file(&self.preferences_file, &prefs_to_write);
         }
         if let Some(mut dfr) = req.designate_daylight_focus_region {
-            let locked_state = self.state.lock().await;
-            let image_rotator = locked_state.image_rotator.clone();
-            let (width, height) = locked_state.camera.lock().await.dimensions();
+            let (image_rotator, camera, detect_engine) = {
+                let locked_state = self.state.lock().await;
+                (locked_state.image_rotator.clone(),
+                 locked_state.camera.clone(),
+                 locked_state.detect_engine.clone())
+            };
+            let (width, height) = camera.lock().await.dimensions();
             (dfr.x, dfr.y) = image_rotator.transform_from_rotated(
                 dfr.x, dfr.y, width as u32, height as u32);
             // Check that the point is within reasonable bounds.
@@ -916,7 +928,7 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::failed_precondition(
                     "Focus region point out of bounds".to_string()));
             }
-            locked_state.detect_engine.lock().await.set_daylight_focus_point((dfr.x, dfr.y));
+            detect_engine.lock().await.set_daylight_focus_point((dfr.x, dfr.y));
         }
         if req.crash_server.unwrap_or(false) {
             log::info!("Received crash_server action request.");
@@ -1597,58 +1609,89 @@ impl MyCedar {
         let operating_mode;
         let focus_assist_mode;
         let daylight_mode;
-        {
+        // Extract all data we need first, then release state lock
+        let (calibrating, calibration_data_arc, preferences_arc,
+             calibration_start, calibration_duration_estimate,
+             scaled_image_data, operation_settings) = {
             let locked_state = state.lock().await;
-            fixed_settings = locked_state.fixed_settings.lock().await.clone();
+
+            // Get basic settings.
+            let fixed_settings_arc = locked_state.fixed_settings.clone();
+            fixed_settings = fixed_settings_arc.lock().await.clone();
             operating_mode = locked_state.operation_settings.operating_mode.unwrap();
             focus_assist_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
             daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
-            // Fill in our current time.
-            Self::fill_in_time(&mut fixed_settings);
 
-            if locked_state.calibrating {
-                frame_result.calibrating = true;
-                let time_spent_calibrating = locked_state.calibration_start.elapsed();
-                let mut fraction =
-                    time_spent_calibrating.as_secs_f64() /
-                    locked_state.calibration_duration_estimate.as_secs_f64();
-                if fraction > 1.0 {
-                    fraction = 1.0;
-                }
-                frame_result.calibration_progress = Some(fraction);
-                // Return previous calibration data while calibrating.
-                frame_result.calibration_data =
-		            Some(locked_state.calibration_data.lock().await.clone());
+            // Extract calibration and image data.
+            let calibrating = locked_state.calibrating;
+            let calibration_data_arc = locked_state.calibration_data.clone();
+            let preferences_arc = locked_state.preferences.clone();
+            let calibration_start = locked_state.calibration_start;
+            let calibration_duration_estimate = locked_state.calibration_duration_estimate;
+            let operation_settings = locked_state.operation_settings.clone();
 
-                if let Some(img) = &locked_state.scaled_image {
+            // Clone image data if it exists (cheap Arc clone).
+            let scaled_image_data = if calibrating && locked_state.scaled_image.is_some() {
+                Some((
+                    locked_state.scaled_image.clone(),
+                    locked_state.scaled_image_binning_factor,
+                    locked_state.scaled_image_frame_id
+                ))
+            } else {
+                None
+            };
+
+            (calibrating, calibration_data_arc, preferences_arc,
+             calibration_start, calibration_duration_estimate,
+             scaled_image_data, operation_settings)
+        };  // State lock released here!
+
+        // Fill in our current time (outside lock).
+        Self::fill_in_time(&mut fixed_settings);
+
+        if calibrating {
+            frame_result.calibrating = true;
+            let time_spent_calibrating = calibration_start.elapsed();
+            let mut fraction =
+                time_spent_calibrating.as_secs_f64() /
+                calibration_duration_estimate.as_secs_f64();
+            if fraction > 1.0 {
+                fraction = 1.0;
+            }
+            frame_result.calibration_progress = Some(fraction);
+
+            // Get calibration data (outside state lock).
+            frame_result.calibration_data = Some(calibration_data_arc.lock().await.clone());
+
+            if let Some((scaled_image_opt, binning_factor, frame_id)) = scaled_image_data {
+                if let Some(img) = scaled_image_opt {
                     let (scaled_width, scaled_height) = img.dimensions();
-                    let jpg_buf = Self::jpeg_encode(img);
-                    let binning_factor = locked_state.scaled_image_binning_factor as i32;
+                    // JPEG encoding now happens outside the state lock!
+                    let jpg_buf = Self::jpeg_encode(&img);
                     let image_rectangle = Rectangle{
                         origin_x: 0, origin_y: 0,
-                        width: scaled_width as i32 * binning_factor,
-                        height: scaled_height as i32 * binning_factor,
+                        width: scaled_width as i32 * binning_factor as i32,
+                        height: scaled_height as i32 * binning_factor as i32,
                     };
                     frame_result.image = Some(Image{
-                        binning_factor,
+                        binning_factor: binning_factor as i32,
                         rotation_size_ratio: 1.0,
                         // Rectangle is always in full resolution coordinates.
                         rectangle: Some(image_rectangle),
                         image_data: jpg_buf,
                     });
-                    frame_result.frame_id = locked_state.scaled_image_frame_id;
+                    frame_result.frame_id = frame_id;
                     frame_result.fixed_settings = Some(fixed_settings.clone());
-                    frame_result.preferences =
-                        Some(locked_state.preferences.lock().await.clone());
-                    frame_result.operation_settings =
-                        Some(locked_state.operation_settings.clone());
+                    // Get preferences (outside state lock)
+                    frame_result.preferences = Some(preferences_arc.lock().await.clone());
+                    frame_result.operation_settings = Some(operation_settings);
                 }
-                if non_blocking {
-                    frame_result.has_result = Some(true);
-                }
-                return Some(frame_result);
-            }  // Calibrating.
-        }  // locked_state.
+            }
+            if non_blocking {
+                frame_result.has_result = Some(true);
+            }
+            return Some(frame_result);
+        }  // Calibrating.
 
         // TODO: move most of this into a (new) ServeEngine, another pipeline phase.
 
@@ -1661,21 +1704,16 @@ impl MyCedar {
             if operating_mode == OperatingMode::Setup as i32 &&
             (focus_assist_mode || daylight_mode)
         {
-            // TODO: don't hold state.lock() across a blocking call to
-            // get_next_result(). Poll it non-blocking. Not urgent, as our
-            // calls are currently non-blocking.
-            let dr = state.lock().await.detect_engine.lock().await.
+            let detect_engine = state.lock().await.detect_engine.clone();
+            let dr = detect_engine.lock().await.
                 get_next_result(prev_frame_id, non_blocking).await;
             if dr.is_none() {
                 return None;
             }
-
             dr.unwrap()
         } else {
-            // TODO: don't hold state.lock() across a blocking call to
-            // get_next_result(). Poll it non-blocking. Not urgent, as our
-            // calls are currently non-blocking.
-            plate_solution = state.lock().await.solve_engine.lock().await.
+            let solve_engine = state.lock().await.solve_engine.clone();
+            plate_solution = solve_engine.lock().await.
                 get_next_result(prev_frame_id, non_blocking).await;
             if plate_solution.is_none() {
                 return None;
