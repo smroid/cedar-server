@@ -32,7 +32,7 @@ use cedar_elements::astro_util::{
     angular_separation, position_angle, transform_to_image_coord};
 
 type SolutionCallback = Arc<dyn Fn(Option<ImageCoord>, Option<DetectResult>, Option<PlateSolutionProto>)
-                           -> (Option<CelestialCoord>, Option<CelestialCoord>) + Send + Sync>;
+                           -> std::pin::Pin<Box<dyn std::future::Future<Output = (Option<CelestialCoord>, Option<CelestialCoord>)> + Send>> + Send + Sync>;
 
 pub struct SolveEngine {
     // The plate solver we are using.
@@ -479,7 +479,7 @@ impl SolveEngine {
         if plate_solution_proto.is_none() {
             if !align_mode {
                 solution_callback(boresight_pixel,
-                                  Some(detect_result.clone()), None);
+                                  Some(detect_result.clone()), None).await;
             }
         } else {
             let psp = plate_solution_proto.as_ref().unwrap();
@@ -500,7 +500,7 @@ impl SolveEngine {
                 // slew target coords, if any.
                 let (slew_target, sync_coord) =
                     solution_callback(boresight_pixel.clone(),
-                                      Some(detect_result.clone()), Some(psp.clone()));
+                                      Some(detect_result.clone()), Some(psp.clone())).await;
                 state.lock().await.slew_target = slew_target;
                 // If we're slewing, see if the boresight is close enough to
                 // the slew target that Cedar Aim should display an inset image

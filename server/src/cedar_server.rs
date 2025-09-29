@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -208,7 +208,7 @@ struct CedarState {
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
-    telescope_position: Arc<Mutex<TelescopePosition>>,
+    telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
     polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
     activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
 
@@ -216,7 +216,7 @@ struct CedarState {
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
 
     // Not all builds of Cedar-server support Wifi control.
-    wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
+    wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
 
     // We host the user interface preferences and some operation settings here.
     // On startup we apply some of these to `operation_settings`; we reflect
@@ -407,7 +407,7 @@ impl Cedar for MyCedar {
                             locked_detect_engine.set_calibrated_exposure_duration(None);
                         }
                     }
-                    locked_state.telescope_position.lock().unwrap().slew_active = false;
+                    locked_state.telescope_position.lock().await.slew_active = false;
                 } else if new_operating_mode == OperatingMode::Operate as i32 {
                     // Transition: SETUP -> OPERATE mode.
                     if focus_mode || daylight_mode {
@@ -865,14 +865,14 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::failed_precondition(
                     "Need observer location for goto with alt-az mount"));
             }
-            let mut telescope = locked_state.telescope_position.lock().unwrap();
+            let mut telescope = locked_state.telescope_position.lock().await;
             telescope.slew_target_ra = slew_coord.ra;
             telescope.slew_target_dec = slew_coord.dec;
             telescope.slew_active = true;
         }
         if req.stop_slew.unwrap_or(false) {
             let locked_state = self.state.lock().await;
-            locked_state.telescope_position.lock().unwrap().slew_active = false;
+            locked_state.telescope_position.lock().await.slew_active = false;
         }
         if req.save_image.unwrap_or(false) {
             let locked_state = self.state.lock().await;
@@ -888,7 +888,7 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::unimplemented(
                     format!("{} does not include WiFi control.", self.product_name)));
 	    }
-            let mut locked_wifi = wifi.as_ref().unwrap().lock().unwrap();
+            let mut locked_wifi = wifi.as_ref().unwrap().lock().await;
             if let Err(x) = locked_wifi.update_access_point(
                 update_ap.channel,
                 update_ap.ssid.as_deref(),
@@ -1349,7 +1349,7 @@ impl MyCedar {
     async fn update_server_information(state: &CedarState,
                                        server_info: &mut ServerInformation) {
         if let Some(wifi) = &state.wifi {
-            let locked_wifi = wifi.lock().unwrap();
+            let locked_wifi = wifi.lock().await;
             server_info.wifi_access_point = Some(WiFiAccessPoint{
                 ssid: Some(locked_wifi.ssid()),
                 psk: Some(locked_wifi.psk()),
@@ -2144,7 +2144,7 @@ impl MyCedar {
         imu: Option<Arc<tokio::sync::Mutex<Mpu6050>>>,
         test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-        telescope_position: Arc<Mutex<TelescopePosition>>,
+        telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         base_star_count_goal: i32,
         base_detection_sigma: f64,
         min_detection_sigma: f64,
@@ -2155,7 +2155,7 @@ impl MyCedar {
         copyright: &str,
         feature_level: FeatureLevel,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-        wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>)
+        wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>)
         -> Result<Self, CanonicalError>
     {
         let cedar_version = env!("CARGO_PKG_VERSION");
@@ -2348,15 +2348,16 @@ impl MyCedar {
         let closure_preferences = shared_preferences.clone();
         let closure_preferences_file = preferences_file.clone();
         let closure_telescope_position = telescope_position.clone();
-        let motion_estimator = Arc::new(Mutex::new(MotionEstimator::new(
+        let motion_estimator = Arc::new(tokio::sync::Mutex::new(MotionEstimator::new(
             /*gap_tolerance=*/Duration::from_secs(3),
             /*bump_tolerance=*/Duration::from_secs_f64(2.0))));
         let closure_polar_analyzer = polar_analyzer.clone();
         let closure = Arc::new(move |boresight_pixel: Option<ImageCoord>,
                                      detect_result: Option<DetectResult>,
                                      plate_solution: Option<PlateSolutionProto>|
+                                     -> std::pin::Pin<Box<dyn std::future::Future<Output = (Option<CelestialCoord>, Option<CelestialCoord>)> + Send>>
         {
-            Self::solution_callback(
+            Box::pin(Self::solution_callback(
                 boresight_pixel,
                 detect_result,
                 plate_solution,
@@ -2365,7 +2366,7 @@ impl MyCedar {
                 closure_preferences_file.clone(),
                 closure_telescope_position.clone(),
                 motion_estimator.clone(),
-                closure_polar_analyzer.clone())
+                closure_polar_analyzer.clone()))
         });
         let state =
         {
@@ -2513,14 +2514,14 @@ impl MyCedar {
         Ok(content)
     }
 
-    fn solution_callback(boresight_pixel: Option<ImageCoord>,
+    async fn solution_callback(boresight_pixel: Option<ImageCoord>,
                          detect_result: Option<DetectResult>,
                          plate_solution: Option<PlateSolutionProto>,
                          fixed_settings: Arc<tokio::sync::Mutex<FixedSettings>>,
                          preferences: Arc<tokio::sync::Mutex<Preferences>>,
                          preferences_file: PathBuf,
-                         telescope_position: Arc<Mutex<TelescopePosition>>,
-                         motion_estimator: Arc<Mutex<MotionEstimator>>,
+                         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
+                         motion_estimator: Arc<tokio::sync::Mutex<MotionEstimator>>,
                          polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>)
                          -> (Option<CelestialCoord>,
                              Option<CelestialCoord>)
@@ -2543,9 +2544,9 @@ impl MyCedar {
         }
         let mut sync_coord: Option<CelestialCoord> = None;
         if plate_solution.is_none() {
-            telescope_position.lock().unwrap().boresight_valid = false;
+            telescope_position.lock().await.boresight_valid = false;
             if let Some(detect_result) = detect_result {
-                motion_estimator.lock().unwrap().add(
+                motion_estimator.lock().await.add(
                     detect_result.captured_image.readout_time,
                     None, None);
             }
@@ -2558,12 +2559,12 @@ impl MyCedar {
                 } else {
                     plate_solution.target_sky_coord[0].clone()
                 };
-            let mut locked_telescope_position = telescope_position.lock().unwrap();
+            let mut locked_telescope_position = telescope_position.lock().await;
             locked_telescope_position.boresight_ra = coords.ra;
             locked_telescope_position.boresight_dec = coords.dec;
             locked_telescope_position.boresight_valid = true;
             let readout_time = detect_result.unwrap().captured_image.readout_time;
-            motion_estimator.lock().unwrap().add(
+            motion_estimator.lock().await.add(
                 readout_time, Some(coords.clone()), Some(plate_solution.rmse));
 
             // Has SkySafari reported the site geolocation?
@@ -2606,7 +2607,7 @@ impl MyCedar {
                 // alt/az of boresight. Also boresight hour angle.
                 let (_alt, _az, ha) =
                     alt_az_from_equatorial(bs_ra, bs_dec, lat, long, readout_time);
-                let motion_estimate = motion_estimator.lock().unwrap().get_estimate();
+                let motion_estimate = motion_estimator.lock().await.get_estimate();
                 sync_lock_with_retry(&polar_analyzer).process_solution(
                     &coords,
                     ha.to_degrees(),
@@ -2618,7 +2619,7 @@ impl MyCedar {
             // Write updated preferences to file.
             Self::write_preferences_file(&preferences_file, &prefs);
         }
-        let locked_telescope_position = telescope_position.lock().unwrap();
+        let locked_telescope_position = telescope_position.lock().await;
         if locked_telescope_position.slew_active {
             (Some(CelestialCoord{
                 ra: locked_telescope_position.slew_target_ra,
@@ -2715,7 +2716,7 @@ pub fn server_main(
     flutter_app_path: &str,
     get_dependencies: fn(Arguments)
                          -> (Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-                             Option<Arc<Mutex<dyn WifiTrait + Send>>>,
+                             Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
                              Option<Arc<tokio::sync::Mutex<
                                      dyn SolverTrait + Send + Sync>>>)) {
     const HELP: &str = "\
@@ -2846,7 +2847,7 @@ async fn async_main(
     flutter_app_path: &str,
     got_signal: Arc<AtomicBool>,
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-    wifi: Option<Arc<Mutex<dyn WifiTrait + Send>>>,
+    wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
     injected_solver: Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>)
 {
     // If any thread panics, bail out.
@@ -2934,7 +2935,7 @@ async fn async_main(
               locked_camera.dimensions().1);
     }
 
-    let shared_telescope_position = Arc::new(Mutex::new(TelescopePosition::new()));
+    let shared_telescope_position = Arc::new(tokio::sync::Mutex::new(TelescopePosition::new()));
 
     // Apparently when a client cancels a gRPC request (e.g. timeout), the
     // corresponding server-side tokio task is cancelled. Per
