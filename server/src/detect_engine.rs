@@ -466,7 +466,7 @@ impl DetectEngine {
                     if daylight_mode {
                         get_level_for_fraction(&roi_histogram, 0.001) as u8
                     } else {
-                        get_level_for_fraction(&roi_histogram, 0.6) as u8
+                        get_level_for_fraction(&roi_histogram, 0.8) as u8
                     };
 
                 // For contrast ratio, use a smaller central crop. Do a 2x2
