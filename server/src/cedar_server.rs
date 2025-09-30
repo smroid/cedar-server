@@ -1279,12 +1279,21 @@ impl MyCedar {
     }
 
     async fn get_server_information(&self) -> ServerInformation {
-        let locked_state = self.state.lock().await;
-        let camera =
-            if let Some(demo_image) =
-            &locked_state.operation_settings.demo_image_filename
-        {
-            let locked_camera = locked_state.camera.lock().await;
+        // Extract all data we need first, then release state lock.
+        let (demo_image, camera_arc, attached_camera_arc, imu_arc, wifi_arc) = {
+            let locked_state = self.state.lock().await;
+            (
+                locked_state.operation_settings.demo_image_filename.clone(),
+                locked_state.camera.clone(),
+                locked_state.attached_camera.clone(),
+                locked_state.imu.clone(),
+                locked_state.wifi.clone()
+            )
+        }; // State lock released here!
+
+        // Process camera info (outside state lock).
+        let camera = if let Some(demo_image) = &demo_image {
+            let locked_camera = camera_arc.lock().await;
             Some(CameraModel{
                 model: demo_image.to_string(),
                 model_detail: None,
@@ -1299,7 +1308,7 @@ impl MyCedar {
                 image_width: locked_camera.dimensions().0,
                 image_height: locked_camera.dimensions().1,
             })
-        } else if let Some(attached_camera) = &locked_state.attached_camera {
+        } else if let Some(attached_camera) = &attached_camera_arc {
             let locked_camera = attached_camera.lock().await;
             Some(CameraModel{
                 model: locked_camera.model(),
@@ -1311,8 +1320,9 @@ impl MyCedar {
             None
         };
 
+        // Process IMU info (outside state lock).
         let mut imu_state: Option<ImuState> = None;
-        if let Some(imu) = &locked_state.imu {
+        if let Some(imu) = &imu_arc {
             let accel: Option<AccelData> = match imu.lock().await.get_acceleration() {
                 Ok(a) => Some(a),
                 Err(e) => {
@@ -1354,24 +1364,23 @@ impl MyCedar {
             wifi_access_point: None,
             demo_image_names: self.demo_images.clone(),
         };
-        Self::update_server_information(&locked_state, &mut server_info).await;
-        server_info
-    }
 
-    async fn update_server_information(state: &CedarState,
-                                       server_info: &mut ServerInformation) {
-        if let Some(wifi) = &state.wifi {
+        // Process wifi info (outside state lock).
+        if let Some(wifi) = &wifi_arc {
             let locked_wifi = wifi.lock().await;
             server_info.wifi_access_point = Some(WiFiAccessPoint{
                 ssid: Some(locked_wifi.ssid()),
                 psk: Some(locked_wifi.psk()),
-                channel: Some(locked_wifi.channel())});
+                channel: Some(locked_wifi.channel())
+            });
         }
-        let temp_str =
-            fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").unwrap();
+
+        // Get system info (file I/O outside locks).
+        let temp_str = fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").unwrap();
         server_info.cpu_temperature = temp_str.trim().parse::<f32>().unwrap() / 1000.0;
-        server_info.server_time =
-            Some(prost_types::Timestamp::from(SystemTime::now()));
+        server_info.server_time = Some(prost_types::Timestamp::from(SystemTime::now()));
+
+        server_info
     }
 
     fn fill_in_time(fixed_settings: &mut FixedSettings) {
