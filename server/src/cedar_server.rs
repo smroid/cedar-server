@@ -83,21 +83,9 @@ use tetra3_server::tetra3_solver::Tetra3Solver;
 
 use self::multiplex_service::MultiplexService;
 
-// Helper function to acquire a tokio mutex from non-async context with retry.
-fn sync_lock_with_retry<T>(mutex: &tokio::sync::Mutex<T>) -> tokio::sync::MutexGuard<T> {
-    loop {
-        match mutex.try_lock() {
-            Ok(guard) => return guard,
-            Err(_) => {
-                // Sleep briefly to avoid busy waiting and try again.
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-        }
-    }
-}
-
-// gRPC performance monitoring threshold - log warning if methods take longer than this
-const GRPC_SLOW_THRESHOLD_MS: u64 = 50;
+// gRPC performance monitoring threshold - log warning if methods take longer
+// than this.
+const GRPC_SLOW_THRESHOLD_MS: u64 = 100;
 
 // RAII timing guard for gRPC methods - automatically logs duration when dropped
 struct GrpcTimer {
@@ -339,13 +327,10 @@ impl Cedar for MyCedar {
         }
 
         // Also clear from preferences for persistence.
-        let our_prefs = {
-            let locked_state = self.state.lock().await;
-            let mut our_prefs = locked_state.preferences.lock().await.clone();
-            our_prefs.observer_location = None;
-            locked_state.preferences.lock().await.clone_from(&our_prefs);
-            our_prefs
-        };
+        let preferences_arc = self.state.lock().await.preferences.clone();
+        let mut our_prefs = preferences_arc.lock().await.clone();
+        our_prefs.observer_location = None;
+        *preferences_arc.lock().await = our_prefs.clone();
 
         // Write updated preferences to file.
         Self::write_preferences_file(&self.preferences_file, &our_prefs);
@@ -361,15 +346,27 @@ impl Cedar for MyCedar {
 
         let mut req: OperationSettings = request.into_inner();
         if let Some(new_operating_mode) = req.operating_mode {
-            let mut locked_state = self.state.lock().await;
+            // Extract current state and component references first.
+            let (current_operating_mode, calibrating, focus_mode, daylight_mode,
+                 solve_engine_arc, detect_engine_arc, telescope_position_arc) = {
+                let locked_state = self.state.lock().await;
+                (
+                    locked_state.operation_settings.operating_mode.unwrap(),
+                    locked_state.calibrating,
+                    locked_state.operation_settings.focus_assist_mode.unwrap(),
+                    locked_state.operation_settings.daylight_mode.unwrap(),
+                    locked_state.solve_engine.clone(),
+                    locked_state.detect_engine.clone(),
+                    locked_state.telescope_position.clone()
+                )
+            }; // State lock released here!
+
             // Only do something if operating mode is changing.
-            if new_operating_mode != locked_state.operation_settings.operating_mode.unwrap() {
-                if locked_state.calibrating {
+            if new_operating_mode != current_operating_mode {
+                if calibrating {
                     return Err(tonic::Status::failed_precondition(
                         "Cannot change operating mode while calibrating"));
                 }
-                let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
-                let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
                 let mut final_focus_mode = focus_mode;
                 if let Some(req_focus_assist_mode) = req.focus_assist_mode {
                     final_focus_mode = req_focus_assist_mode;
@@ -386,33 +383,38 @@ impl Cedar for MyCedar {
                 let mut calibrating = false;
                 if new_operating_mode == OperatingMode::Setup as i32 {
                     // Transition: OPERATE -> SETUP mode. We are already calibrated.
-                    Self::set_gain(&mut locked_state, final_daylight_mode).await;
-                    if final_focus_mode {
-                        // In SETUP focus assist mode we run at full speed with
-                        // pre-calibrate settings.
-                        if let Err(x) = Self::set_update_interval(
-                            &locked_state, Duration::ZERO).await
-                        {
-                            return Err(tonic_status(x));
-                        }
-                        if let Err(x) = Self::set_pre_calibration_defaults(
-                            &mut locked_state).await
-                        {
-                            return Err(tonic_status(x));
-                        }
-                    }
-                    locked_state.solve_engine.lock().await.set_align_mode(true).await;
-                    Self::reset_session_stats(locked_state.deref_mut()).await;
+                    // Set gain (requires state access)
                     {
-                        let mut locked_detect_engine =
-                            locked_state.detect_engine.lock().await;
-                        locked_detect_engine.set_focus_mode(final_focus_mode);
-                        locked_detect_engine.set_daylight_mode(final_daylight_mode);
+                        let mut locked_state = self.state.lock().await;
+                        Self::set_gain(&mut locked_state, final_daylight_mode).await;
                         if final_focus_mode {
-                            locked_detect_engine.set_calibrated_exposure_duration(None);
+                            // In SETUP focus assist mode we run at full speed with
+                            // pre-calibrate settings.
+                            if let Err(x) = Self::set_update_interval(
+                                &locked_state, Duration::ZERO).await
+                            {
+                                return Err(tonic_status(x));
+                            }
+                            if let Err(x) = Self::set_pre_calibration_defaults(
+                                &mut locked_state).await
+                            {
+                                return Err(tonic_status(x));
+                            }
+                        }
+                        Self::reset_session_stats(locked_state.deref_mut()).await;
+                    } // State lock released here!
+
+                    // Configure engines (outside state lock).
+                    solve_engine_arc.lock().await.set_align_mode(true).await;
+                    {
+                        let mut locked_detect_engine = detect_engine_arc.lock().await;
+                        locked_detect_engine.set_focus_mode(final_focus_mode).await;
+                        locked_detect_engine.set_daylight_mode(final_daylight_mode).await;
+                        if final_focus_mode {
+                            locked_detect_engine.set_calibrated_exposure_duration(None).await;
                         }
                     }
-                    locked_state.telescope_position.lock().await.slew_active = false;
+                    telescope_position_arc.lock().await.slew_active = false;
                 } else if new_operating_mode == OperatingMode::Operate as i32 {
                     // Transition: SETUP -> OPERATE mode.
                     if focus_mode || daylight_mode {
@@ -434,23 +436,28 @@ impl Cedar for MyCedar {
                     } else {
                         // Transition into Operate mode from SETUP align mode. Already
                         // calibrated.
-                        Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
-                        locked_state.detect_engine.lock().await.set_daylight_mode(false);
-                        locked_state.solve_engine.lock().await.set_align_mode(false).await;
-                        locked_state.solve_engine.lock().await.start().await;
-                        // Set automatic update interval for OPERATE mode.
-                        let std_duration = Self::get_automatic_update_interval(&locked_state);
-                        if let Err(x) = Self::set_update_interval(
-                            &locked_state, std_duration).await
                         {
-                            return Err(tonic_status(x));
-                        }
+                            let mut locked_state = self.state.lock().await;
+                            Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
+                            let std_duration = Self::get_automatic_update_interval(&locked_state);
+                            if let Err(x) = Self::set_update_interval(
+                                &locked_state, std_duration).await
+                            {
+                                return Err(tonic_status(x));
+                            }
+                        } // State lock released here!
+
+                        // Configure engines (outside state lock).
+                        detect_engine_arc.lock().await.set_daylight_mode(false).await;
+                        solve_engine_arc.lock().await.set_align_mode(false).await;
+                        solve_engine_arc.lock().await.start().await;
                     }
                 } else {
                     return Err(tonic::Status::invalid_argument(
                         format!("Got invalid operating_mode: {}.", new_operating_mode)));
                 }
                 if !calibrating {
+                    let mut locked_state = self.state.lock().await;
                     locked_state.operation_settings.operating_mode =
                         Some(new_operating_mode);
                     locked_state.operation_settings.daylight_mode =
@@ -461,95 +468,105 @@ impl Cedar for MyCedar {
             }  // Operating mode is changing.
         }  // Update operating_mode.
         if let Some(new_daylight_mode) = req.daylight_mode {
-            let mut locked_state = self.state.lock().await;
-            let mut calibrating = false;
-            if locked_state.operation_settings.daylight_mode.unwrap()
-                != new_daylight_mode
-            {
-                if locked_state.calibrating {
-                    return Err(tonic::Status::failed_precondition(
-                        "Cannot change daylight mode while calibrating"));
-                }
-                let mut final_focus_mode =
-                    locked_state.operation_settings.focus_assist_mode.unwrap();
-                if let Some(req_focus_assist_mode) = req.focus_assist_mode {
-                    final_focus_mode = req_focus_assist_mode;
-                    // We're handling this here, so don't also handle it below.
-                    req.focus_assist_mode = None;
-                }
-                if locked_state.operation_settings.operating_mode ==
-                    Some(OperatingMode::Setup as i32)
+            let (detect_engine_arc, calibrating) = {
+                let mut locked_state = self.state.lock().await;
+                let mut calibrating = false;
+                if locked_state.operation_settings.daylight_mode.unwrap()
+                    != new_daylight_mode
                 {
-                    // In SETUP align mode?
-                    if !locked_state.operation_settings.focus_assist_mode.unwrap()
-                        && !new_daylight_mode
+                    if locked_state.calibrating {
+                        return Err(tonic::Status::failed_precondition(
+                            "Cannot change daylight mode while calibrating"));
+                    }
+                    let mut final_focus_mode =
+                        locked_state.operation_settings.focus_assist_mode.unwrap();
+                    if let Some(req_focus_assist_mode) = req.focus_assist_mode {
+                        final_focus_mode = req_focus_assist_mode;
+                        // We're handling this here, so don't also handle it below.
+                        req.focus_assist_mode = None;
+                    }
+                    if locked_state.operation_settings.operating_mode ==
+                        Some(OperatingMode::Setup as i32)
                     {
-                        // Turning off daylight_mode in SETUP align mode;
-                        // need calibration, which can take several seconds.
-                        // If the gRPC client aborts the RPC (e.g. due to
-                        // timeout), we want the calibration and state
-                        // updates (i.e. detect engine's focus_mode, our
-                        // operating_mode) to be completed properly.
-                        Self::spawn_calibration(self.state.clone(),
-                                                /*new_operate_mode=*/false,
-                                                final_focus_mode,
-                                                new_daylight_mode);
-                        calibrating = true;
-                    } else {
-                        Self::set_gain(&mut locked_state, new_daylight_mode).await;
+                        // In SETUP align mode?
+                        if !locked_state.operation_settings.focus_assist_mode.unwrap()
+                            && !new_daylight_mode
+                        {
+                            // Turning off daylight_mode in SETUP align mode;
+                            // need calibration, which can take several seconds.
+                            // If the gRPC client aborts the RPC (e.g. due to
+                            // timeout), we want the calibration and state
+                            // updates (i.e. detect engine's focus_mode, our
+                            // operating_mode) to be completed properly.
+                            Self::spawn_calibration(self.state.clone(),
+                                                    /*new_operate_mode=*/false,
+                                                    final_focus_mode,
+                                                    new_daylight_mode);
+                            calibrating = true;
+                        } else {
+                            Self::set_gain(&mut locked_state, new_daylight_mode).await;
+                        }
                     }
                 }
-            }
+                (locked_state.detect_engine.clone(), calibrating)
+            }; // State lock released here!
+
             if !calibrating {
-                locked_state.detect_engine.lock().await.set_daylight_mode(
-                    new_daylight_mode);
-                locked_state.operation_settings.daylight_mode = Some(new_daylight_mode);
+                detect_engine_arc.lock().await.set_daylight_mode(
+                    new_daylight_mode).await;
+                self.state.lock().await.operation_settings.daylight_mode =
+                    Some(new_daylight_mode);
             }
         }
         if let Some(new_focus_assist_mode) = req.focus_assist_mode {
-            let mut locked_state = self.state.lock().await;
-            let mut calibrating = false;
-            if locked_state.operation_settings.operating_mode ==
-                Some(OperatingMode::Setup as i32) &&
-                locked_state.operation_settings.focus_assist_mode.unwrap()
-                != new_focus_assist_mode
-            {
-                if locked_state.calibrating {
-                    return Err(tonic::Status::failed_precondition(
-                        "Cannot change focus assist mode while calibrating"));
-                }
-                let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
-                if new_focus_assist_mode {
-                    // Entering focus assist mode.
-                    // Run at full speed for focus assist.
-                    if let Err(x) = Self::set_update_interval(
-                        &locked_state, Duration::ZERO).await
-                    {
-                        return Err(tonic_status(x));
+            let (detect_engine_arc, calibrating) = {
+                let mut locked_state = self.state.lock().await;
+                let mut calibrating = false;
+                if locked_state.operation_settings.operating_mode ==
+                    Some(OperatingMode::Setup as i32) &&
+                    locked_state.operation_settings.focus_assist_mode.unwrap()
+                    != new_focus_assist_mode
+                {
+                    if locked_state.calibrating {
+                        return Err(tonic::Status::failed_precondition(
+                            "Cannot change focus assist mode while calibrating"));
                     }
-                    if let Err(x) = Self::set_pre_calibration_defaults(
-                        &mut locked_state).await
-                    {
-                        return Err(tonic_status(x));
+                    let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
+                    if new_focus_assist_mode {
+                        // Entering focus assist mode.
+                        // Run at full speed for focus assist.
+                        if let Err(x) = Self::set_update_interval(
+                            &locked_state, Duration::ZERO).await
+                        {
+                            return Err(tonic_status(x));
+                        }
+                        if let Err(x) = Self::set_pre_calibration_defaults(
+                            &mut locked_state).await
+                        {
+                            return Err(tonic_status(x));
+                        }
+                        Self::set_gain(&mut locked_state, daylight_mode).await;
+                    } else if !daylight_mode {
+                        // Exiting focus assist mode, without daylight mode active.
+                        // Trigger a calibration, which can take several seconds. If
+                        // the gRPC client aborts the RPC (e.g. due to timeout), we
+                        // want the calibration and state updates (i.e. detect
+                        // engine's focus_mode, our operating_mode) to be completed
+                        // properly.
+                        Self::spawn_calibration(self.state.clone(),
+                                                /*new_operate_mode=*/false,
+                                                new_focus_assist_mode,
+                                                daylight_mode);
+                        calibrating = true;
                     }
-                    Self::set_gain(&mut locked_state, daylight_mode).await;
-                } else if !daylight_mode {
-                    // Exiting focus assist mode, without daylight mode active.
-                    // Trigger a calibration, which can take several seconds. If
-                    // the gRPC client aborts the RPC (e.g. due to timeout), we
-                    // want the calibration and state updates (i.e. detect
-                    // engine's focus_mode, our operating_mode) to be completed
-                    // properly.
-                    Self::spawn_calibration(self.state.clone(),
-                                            /*new_operate_mode=*/false,
-                                            new_focus_assist_mode,
-                                            daylight_mode);
-                    calibrating = true;
                 }
-            }
+                (locked_state.detect_engine.clone(), calibrating)
+            }; // State lock released here!
+
             if !calibrating {
-                locked_state.detect_engine.lock().await.set_focus_mode(new_focus_assist_mode);
-                locked_state.operation_settings.focus_assist_mode =
+                detect_engine_arc.lock().await.set_focus_mode(
+                    new_focus_assist_mode).await;
+                self.state.lock().await.operation_settings.focus_assist_mode =
                     Some(new_focus_assist_mode);
             }
         }
@@ -558,7 +575,7 @@ impl Cedar for MyCedar {
                 "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
         }
         if let Some(catalog_entry_match) = req.catalog_entry_match {
-            {
+            let solve_engine_arc = {
                 let mut locked_state = self.state.lock().await;
                 if locked_state.cedar_sky.is_none() {
                     return Err(tonic::Status::unimplemented(
@@ -566,79 +583,87 @@ impl Cedar for MyCedar {
                 }
                 locked_state.operation_settings.catalog_entry_match =
                     Some(catalog_entry_match.clone());
-                locked_state.solve_engine.lock().await.set_catalog_entry_match(
-                    Some(catalog_entry_match.clone())).await;
-            }
+                locked_state.solve_engine.clone()
+            }; // State lock released here!
+
+            solve_engine_arc.lock().await.set_catalog_entry_match(
+                Some(catalog_entry_match.clone())).await;
             let preferences = Preferences{
                 catalog_entry_match: Some(catalog_entry_match),
                 ..Default::default()};
             self.update_preferences(tonic::Request::new(preferences)).await?;
         }
         if let Some(demo_image_filename) = req.demo_image_filename {
-            let mut locked_state = self.state.lock().await;
-            if demo_image_filename.is_empty() {
-                // Go back to using our configured camera.
-                locked_state.camera = get_camera(&locked_state.attached_camera,
-                                                 &self.test_image_camera);
-                locked_state.operation_settings.demo_image_filename = None;
-                info!("Using camera {}", locked_state.camera.lock().await.model());
-            } else {
-                let input_path = PathBuf::from("./demo_images").join(
-                    demo_image_filename.clone());
-                let img_file = match ImageReader::open(&input_path) {
-                    Err(x) => {
-                        return Err(tonic::Status::failed_precondition(
-                            format!("Error opening image file {:?}: {:?}.",
-                                    input_path, x)));
-                    },
-                    Ok(img_file) => img_file
-                };
-                let img = match img_file.decode() {
-                    Err(x) => {
-                        return Err(tonic::Status::failed_precondition(
-                            format!("Error decoding image file {:?}: {:?}.",
-                                    input_path, x)));
-                    },
-                    Ok(img) => img
-                };
-                let img_u8 = img.to_luma8();
-                locked_state.camera =
-                    Arc::new(tokio::sync::Mutex::new(
-                        Box::new(ImageCamera::new(img_u8).unwrap())));
-                info!("Using demo image {}", demo_image_filename);
-                locked_state.operation_settings.demo_image_filename =
-                    Some(demo_image_filename);
-            }
-            let new_camera = locked_state.camera.clone();
-            let (width, height) = new_camera.lock().await.dimensions();
+            let (new_camera, width, height, binning, display_sampling, detect_engine_arc,
+                 solve_engine_arc, calibrator_arc, preferences_arc) = {
+                let mut locked_state = self.state.lock().await;
+                if demo_image_filename.is_empty() {
+                    // Go back to using our configured camera.
+                    locked_state.camera = get_camera(&locked_state.attached_camera,
+                                                     &self.test_image_camera);
+                    locked_state.operation_settings.demo_image_filename = None;
+                    info!("Using camera {}", locked_state.camera.lock().await.model());
+                } else {
+                    let input_path = PathBuf::from("./demo_images").join(
+                        demo_image_filename.clone());
+                    let img_file = match ImageReader::open(&input_path) {
+                        Err(x) => {
+                            return Err(tonic::Status::failed_precondition(
+                                format!("Error opening image file {:?}: {:?}.",
+                                        input_path, x)));
+                        },
+                        Ok(img_file) => img_file
+                    };
+                    let img = match img_file.decode() {
+                        Err(x) => {
+                            return Err(tonic::Status::failed_precondition(
+                                format!("Error decoding image file {:?}: {:?}.",
+                                        input_path, x)));
+                        },
+                        Ok(img) => img
+                    };
+                    let img_u8 = img.to_luma8();
+                    locked_state.camera =
+                        Arc::new(tokio::sync::Mutex::new(
+                            Box::new(ImageCamera::new(img_u8).unwrap())));
+                    info!("Using demo image {}", demo_image_filename);
+                    locked_state.operation_settings.demo_image_filename =
+                        Some(demo_image_filename);
+                }
+                let new_camera = locked_state.camera.clone();
+                let (width, height) = new_camera.lock().await.dimensions();
 
-            let std_duration = Self::get_automatic_update_interval(&locked_state);
-            if let Err(x) = Self::set_update_interval(&locked_state,
-                                                      std_duration).await {
-                return Err(tonic_status(x));
-            }
-            let (binning, display_sampling) =
-                Self::compute_binning(&locked_state, width as u32, height as u32);
-            locked_state.detect_engine.lock().await.set_binning(binning, display_sampling);
-            locked_state.detect_engine.lock().await.replace_camera(new_camera.clone());
-            locked_state.solve_engine.lock().await.clear_plate_solution().await;
-            locked_state.calibrator.lock().await.replace_camera(new_camera.clone());
-            locked_state.image_rotator = ImageRotator::new(0.0);
+                let std_duration = Self::get_automatic_update_interval(&locked_state);
+                if let Err(x) = Self::set_update_interval(&locked_state,
+                                                          std_duration).await {
+                    return Err(tonic_status(x));
+                }
+                let (binning, display_sampling) =
+                    Self::compute_binning(&locked_state, width as u32, height as u32);
 
-            // Validate boresight_pixel, to make sure it is still within the
-            // image area.
-            let bsp =
+                locked_state.image_rotator = ImageRotator::new(0.0);
+
+                (new_camera, width, height, binning, display_sampling,
+                 locked_state.detect_engine.clone(), locked_state.solve_engine.clone(),
+                 locked_state.calibrator.clone(), locked_state.preferences.clone())
+            }; // State lock released here!
+
+            // Configure engines outside state lock
+            detect_engine_arc.lock().await.set_binning(binning, display_sampling).await;
+            detect_engine_arc.lock().await.replace_camera(new_camera.clone()).await;
+            solve_engine_arc.lock().await.clear_plate_solution().await;
+            calibrator_arc.lock().await.replace_camera(new_camera.clone());
+
+            // Validate boresight_pixel, to make sure it is still within the image area
+            if let Some(bsp) =
+                preferences_arc.lock().await.boresight_pixel.clone()
             {
-                locked_state.preferences.lock().await.boresight_pixel.clone()
-            };
-            if let Some(bsp) = bsp {
                 let inset = 16;
                 if bsp.x < inset as f64 || bsp.x > (width - inset) as f64 ||
                     bsp.y < inset as f64 || bsp.y > (height - inset) as f64
                 {
-                    locked_state.preferences.lock().await.boresight_pixel = None;
-                    locked_state.solve_engine.lock().await.set_boresight_pixel(None).
-                        await.unwrap();
+                    preferences_arc.lock().await.boresight_pixel = None;
+                    solve_engine_arc.lock().await.set_boresight_pixel(None).await.unwrap();
                 }
             };
         }
@@ -737,10 +762,10 @@ impl Cedar for MyCedar {
     async fn get_frame(&self, request: tonic::Request<FrameRequest>)
                        -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let _timer = GrpcTimer::with_threshold(
-            "get_frame", Duration::from_millis(100));
+            "get_frame", Duration::from_millis(200));
 
         let activity_led = self.state.lock().await.activity_led.clone();
-        activity_led.lock().await.received_rpc();
+        activity_led.lock().await.received_rpc().await;
         let req: FrameRequest = request.into_inner();
         let non_blocking = req.non_blocking.is_some() && req.non_blocking.unwrap();
         let landscape = req.display_orientation.is_none() ||
@@ -767,10 +792,14 @@ impl Cedar for MyCedar {
 
         let req: ActionRequest = request.into_inner();
         if req.cancel_calibration.unwrap_or(false) {
-            let locked_state = self.state.lock().await;
-            if locked_state.calibrating {
-                *locked_state.cancel_calibration.lock().await = true;
-                locked_state.solver.lock().await.cancel();
+            let (cancel_calibration_arc, solver_arc, calibrating) = {
+                let locked_state = self.state.lock().await;
+                (locked_state.cancel_calibration.clone(), locked_state.solver.clone(),
+                 locked_state.calibrating)
+            }; // State lock released here!
+            if calibrating {
+                *cancel_calibration_arc.lock().await = true;
+                solver_arc.lock().await.cancel();
             }
         }
         if req.capture_boresight.unwrap_or(false) {
@@ -784,12 +813,13 @@ impl Cedar for MyCedar {
                         "Capture boresight not valid in setup mode."));
                 }
                 // Operate mode.
-                let locked_state = self.state.lock().await;
-                let plate_solution = locked_state.solve_engine.lock().await.
+                let solve_engine_arc =
+                    self.state.lock().await.solve_engine.clone();
+                let plate_solution = solve_engine_arc.lock().await.
                     get_next_result(None, /*non_blocking=*/false).await.unwrap();
                 if let Some(slew_request) = plate_solution.slew_request {
                     let bsp = slew_request.image_pos.unwrap();
-                    if let Err(x) = locked_state.solve_engine.lock().await.
+                    if let Err(x) = solve_engine_arc.lock().await.
                         set_boresight_pixel(Some(bsp.clone())).await
                     {
                         return Err(tonic_status(x));
@@ -836,7 +866,7 @@ impl Cedar for MyCedar {
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
             let activity_led = self.state.lock().await.activity_led.clone();
-            activity_led.lock().await.stop();
+            activity_led.lock().await.stop().await;
             let output = Command::new("sudo")
                 .arg("shutdown")
                 .arg("now")
@@ -851,7 +881,7 @@ impl Cedar for MyCedar {
         if req.restart_server.unwrap_or(false) {
             info!("Restarting host system");
             let activity_led = self.state.lock().await.activity_led.clone();
-            activity_led.lock().await.stop();
+            activity_led.lock().await.stop().await;
             let output = Command::new("sudo")
                 .arg("reboot")
                 .arg("now")
@@ -864,22 +894,28 @@ impl Cedar for MyCedar {
             }
         }
         if let Some(slew_coord) = req.initiate_slew {
-            let locked_state = self.state.lock().await;
-            let mount_type = locked_state.preferences.lock().await.mount_type;
+            let (preferences_arc, fixed_settings_arc, telescope_position_arc) = {
+                let locked_state = self.state.lock().await;
+                (locked_state.preferences.clone(), locked_state.fixed_settings.clone(),
+                 locked_state.telescope_position.clone())
+            }; // State lock released here!
+
+            let mount_type = preferences_arc.lock().await.mount_type;
             if mount_type == Some(MountType::AltAz.into()) &&
-                locked_state.fixed_settings.lock().await.observer_location.is_none()
+                fixed_settings_arc.lock().await.observer_location.is_none()
             {
                 return Err(tonic::Status::failed_precondition(
                     "Need observer location for goto with alt-az mount"));
             }
-            let mut telescope = locked_state.telescope_position.lock().await;
+            let mut telescope = telescope_position_arc.lock().await;
             telescope.slew_target_ra = slew_coord.ra;
             telescope.slew_target_dec = slew_coord.dec;
             telescope.slew_active = true;
         }
         if req.stop_slew.unwrap_or(false) {
-            let locked_state = self.state.lock().await;
-            locked_state.telescope_position.lock().await.slew_active = false;
+            let telescope_position_arc =
+                self.state.lock().await.telescope_position.clone();
+            telescope_position_arc.lock().await.slew_active = false;
         }
         if req.save_image.unwrap_or(false) {
             let solve_engine = self.state.lock().await.solve_engine.clone();
@@ -905,8 +941,9 @@ impl Cedar for MyCedar {
         }
         if req.clear_dont_show_items.unwrap_or(false) {
             let prefs_to_write = {
-                let locked_state = self.state.lock().await;
-                let mut locked_prefs = locked_state.preferences.lock().await;
+                let preferences_arc =
+                    self.state.lock().await.preferences.clone();
+                let mut locked_prefs = preferences_arc.lock().await;
                 locked_prefs.dont_show_items.clear();
                 locked_prefs.clone()
             };
@@ -928,7 +965,7 @@ impl Cedar for MyCedar {
                 return Err(tonic::Status::failed_precondition(
                     "Focus region point out of bounds".to_string()));
             }
-            detect_engine.lock().await.set_daylight_focus_point((dfr.x, dfr.y));
+            detect_engine.lock().await.set_daylight_focus_point((dfr.x, dfr.y)).await;
         }
         if req.crash_server.unwrap_or(false) {
             log::info!("Received crash_server action request.");
@@ -942,10 +979,15 @@ impl Cedar for MyCedar {
         -> Result<tonic::Response<QueryCatalogResponse>, tonic::Status>
     {
         let _timer = GrpcTimer::new("query_catalog_entries");
-        let locked_state = self.state.lock().await;
-        if locked_state.cedar_sky.is_none() {
-            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
-        }
+        let (solve_engine_arc, fixed_settings_arc, cedar_sky_arc) = {
+            let locked_state = self.state.lock().await;
+            if locked_state.cedar_sky.is_none() {
+                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+            }
+            (locked_state.solve_engine.clone(), locked_state.fixed_settings.clone(),
+             locked_state.cedar_sky.clone())
+        }; // State lock released here!
+
         let req: QueryCatalogRequest = request.into_inner();
         let limit_result = match req.limit_result {
             Some(l) => Some(l as usize),
@@ -959,7 +1001,7 @@ impl Cedar for MyCedar {
         };
         let catalog_entry_match = req.catalog_entry_match.as_ref().unwrap();
 
-        let plate_solution = locked_state.solve_engine.lock().await.
+        let plate_solution = solve_engine_arc.lock().await.
             get_next_result(None, /*non_blocking=*/false).await.unwrap();
         let sky_location =
             if let Some(psp) = plate_solution.plate_solution.as_ref() {
@@ -972,7 +1014,7 @@ impl Cedar for MyCedar {
                 None
             };
         let location_info = {
-            let fixed_settings = locked_state.fixed_settings.lock().await;
+            let fixed_settings = fixed_settings_arc.lock().await;
             if let Some(obs_loc) = &fixed_settings.observer_location {
                 Some(LocationInfo {
                     observer_location: obs_loc.clone(),
@@ -983,7 +1025,7 @@ impl Cedar for MyCedar {
             }
         };
 
-        let result = locked_state.cedar_sky.as_ref().unwrap().lock().await.query_catalog_entries(
+        let result = cedar_sky_arc.as_ref().unwrap().lock().await.query_catalog_entries(
             req.max_distance,
             req.min_elevation,
             catalog_entry_match.faintest_magnitude,
@@ -1017,13 +1059,16 @@ impl Cedar for MyCedar {
     {
         let _timer = GrpcTimer::new("get_catalog_entry");
 
-        let locked_state = self.state.lock().await;
-        if locked_state.cedar_sky.is_none() {
-            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
-        }
-        let req: CatalogEntryKey = request.into_inner();
+        let cedar_sky_arc = {
+            let locked_state = self.state.lock().await;
+            if locked_state.cedar_sky.is_none() {
+                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+            }
+            locked_state.cedar_sky.clone()
+        }; // State lock released here!
 
-        let x = locked_state.cedar_sky.as_ref().unwrap().lock().await.get_catalog_entry(req, SystemTime::now()).await;
+        let req: CatalogEntryKey = request.into_inner();
+        let x = cedar_sky_arc.as_ref().unwrap().lock().await.get_catalog_entry(req, SystemTime::now()).await;
         match x {
             Ok(entry) => {
                 Ok(tonic::Response::new(entry))
@@ -1040,12 +1085,15 @@ impl Cedar for MyCedar {
     {
         let _timer = GrpcTimer::new("get_catalog_descriptions");
 
-        let locked_state = self.state.lock().await;
-        if locked_state.cedar_sky.is_none() {
-            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
-        }
-        let catalog_descriptions =
-            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_catalog_descriptions();
+        let cedar_sky_arc = {
+            let locked_state = self.state.lock().await;
+            if locked_state.cedar_sky.is_none() {
+                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+            }
+            locked_state.cedar_sky.clone()
+        }; // State lock released here!
+
+        let catalog_descriptions = cedar_sky_arc.as_ref().unwrap().lock().await.get_catalog_descriptions();
         let mut response = CatalogDescriptionResponse::default();
         for cd in catalog_descriptions {
             response.catalog_descriptions.push(cd);
@@ -1060,12 +1108,15 @@ impl Cedar for MyCedar {
     {
         let _timer = GrpcTimer::new("get_object_types");
 
-        let locked_state = self.state.lock().await;
-        if locked_state.cedar_sky.is_none() {
-            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
-        }
-        let object_types =
-            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_object_types();
+        let cedar_sky_arc = {
+            let locked_state = self.state.lock().await;
+            if locked_state.cedar_sky.is_none() {
+                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+            }
+            locked_state.cedar_sky.clone()
+        }; // State lock released here!
+
+        let object_types = cedar_sky_arc.as_ref().unwrap().lock().await.get_object_types();
         let mut response = ObjectTypeResponse::default();
         for ot in object_types {
             response.object_types.push(ot);
@@ -1080,12 +1131,15 @@ impl Cedar for MyCedar {
     {
         let _timer = GrpcTimer::new("get_constellations");
 
-        let locked_state = self.state.lock().await;
-        if locked_state.cedar_sky.is_none() {
-            return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
-        }
-        let constellations =
-            locked_state.cedar_sky.as_ref().unwrap().lock().await.get_constellations();
+        let cedar_sky_arc = {
+            let locked_state = self.state.lock().await;
+            if locked_state.cedar_sky.is_none() {
+                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+            }
+            locked_state.cedar_sky.clone()
+        }; // State lock released here!
+
+        let constellations = cedar_sky_arc.as_ref().unwrap().lock().await.get_constellations();
         let mut response = ConstellationResponse::default();
         for c in constellations {
             response.constellations.push(c);
@@ -1182,23 +1236,29 @@ impl MyCedar {
         let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
             tokio::task::spawn(async move {
                 {
-                    let mut locked_state = state.lock().await;
-                    if locked_state.calibrating {
-                        return Ok(());  // Already in flight.
-                    }
-                    let calibration_solve_timeout =
-                        locked_state.solver.lock().await.default_timeout();
+                    let (solver_arc, calibration_data_arc, detect_engine_arc) = {
+                        let locked_state = state.lock().await;
+                        if locked_state.calibrating {
+                            return Ok(());  // Already in flight.
+                        }
+                        (locked_state.solver.clone(), locked_state.calibration_data.clone(),
+                         locked_state.detect_engine.clone())
+                    }; // State lock released here!
 
-                    Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
-                    locked_state.calibrating = true;
-                    locked_state.calibration_start = Instant::now();
-                    locked_state.calibration_duration_estimate =
-                        Duration::from_secs(5) + calibration_solve_timeout;
-                    locked_state.calibration_data.lock().await
-                        .calibration_time =
+                    let calibration_solve_timeout =
+                        solver_arc.lock().await.default_timeout();
+                    {
+                        let mut locked_state = state.lock().await;
+                        Self::set_gain(&mut locked_state, /*daylight_mode=*/false).await;
+                        locked_state.calibrating = true;
+                        locked_state.calibration_start = Instant::now();
+                        locked_state.calibration_duration_estimate =
+                            Duration::from_secs(5) + calibration_solve_timeout;
+                    } // State lock released here!
+
+                    calibration_data_arc.lock().await.calibration_time =
                         Some(prost_types::Timestamp::from(SystemTime::now()));
-                    locked_state.detect_engine.lock().await
-                        .set_autoexposure_enabled(false);
+                    detect_engine_arc.lock().await.set_autoexposure_enabled(false).await;
                 }
                 // No locks held.
                 let succeeded = match Self::calibrate(state.clone()).await {
@@ -1210,46 +1270,60 @@ impl MyCedar {
                     },
                 };
 
-                let mut locked_state = state.lock().await;
-                locked_state.detect_engine.lock().await.set_autoexposure_enabled(true);
-                locked_state.calibrating = false;
-                if *locked_state.cancel_calibration.lock().await || !succeeded {
+                let (detect_engine_arc, cancel_calibration_arc, solve_engine_arc, focus_mode, daylight_mode) = {
+                    let mut locked_state = state.lock().await;
+                    locked_state.calibrating = false;
+                    let focus_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
+                    let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
+
+                    (locked_state.detect_engine.clone(), locked_state.cancel_calibration.clone(),
+                     locked_state.solve_engine.clone(), focus_mode, daylight_mode)
+                }; // State lock released here!
+
+                let cancelled_or_failed = *cancel_calibration_arc.lock().await || !succeeded;
+
+                detect_engine_arc.lock().await.set_autoexposure_enabled(true).await;
+
+                if cancelled_or_failed {
                     // Calibration failed or was cancelled. Stay in current mode.
-                    *locked_state.cancel_calibration.lock().await = false;
-                    let focus_mode =
-                        locked_state.operation_settings.focus_assist_mode.unwrap();
-                    let daylight_mode =
-                        locked_state.operation_settings.daylight_mode.unwrap();
-                    Self::set_gain(&mut locked_state, daylight_mode).await;
-                    let mut locked_detect_engine =
-                        locked_state.detect_engine.lock().await;
-                    locked_detect_engine.set_focus_mode(focus_mode);
-                    locked_detect_engine.set_daylight_mode(daylight_mode);
+                    *cancel_calibration_arc.lock().await = false;
+                    {
+                        let mut locked_state = state.lock().await;
+                        Self::set_gain(&mut locked_state, daylight_mode).await;
+                    }
+                    let mut locked_detect_engine = detect_engine_arc.lock().await;
+                    locked_detect_engine.set_focus_mode(focus_mode).await;
+                    locked_detect_engine.set_daylight_mode(daylight_mode).await;
                 } else {
                     // Calibration completed.
-                    Self::set_gain(&mut locked_state, new_daylight_mode).await;
-                    locked_state.detect_engine.lock().await
-                        .set_daylight_mode(new_daylight_mode);
-                    locked_state.operation_settings.daylight_mode =
-                        Some(new_daylight_mode);
-                    locked_state.detect_engine.lock().await.set_focus_mode(new_focus_mode);
-                    locked_state.operation_settings.focus_assist_mode =
-                        Some(new_focus_mode);
+                    {
+                        let mut locked_state = state.lock().await;
+                        Self::set_gain(&mut locked_state, new_daylight_mode).await;
+                        locked_state.operation_settings.daylight_mode = Some(new_daylight_mode);
+                        locked_state.operation_settings.focus_assist_mode = Some(new_focus_mode);
+                    }
+
+                    detect_engine_arc.lock().await.set_daylight_mode(new_daylight_mode).await;
+                    detect_engine_arc.lock().await.set_focus_mode(new_focus_mode).await;
+
                     if new_operate_mode {
                         // Transition into Operate mode.
-                        locked_state.detect_engine.lock().await.set_focus_mode(false);
-                        locked_state.detect_engine.lock().await.set_daylight_mode(false);
-                        locked_state.solve_engine.lock().await.set_align_mode(false).await;
-                        locked_state.solve_engine.lock().await.start().await;
+                        detect_engine_arc.lock().await.set_focus_mode(false).await;
+                        detect_engine_arc.lock().await.set_daylight_mode(false).await;
+                        solve_engine_arc.lock().await.set_align_mode(false).await;
+                        solve_engine_arc.lock().await.start().await;
                         // Set automatic update interval for OPERATE mode.
-                        let std_duration = Self::get_automatic_update_interval(&locked_state);
-                        if let Err(x) = Self::set_update_interval(
-                            &locked_state, std_duration).await
                         {
-                            return Err(tonic_status(x));
+                            let mut locked_state = state.lock().await;
+                            let std_duration = Self::get_automatic_update_interval(&locked_state);
+                            if let Err(x) = Self::set_update_interval(
+                                &locked_state, std_duration).await
+                            {
+                                return Err(tonic_status(x));
+                            }
+                            locked_state.operation_settings.operating_mode =
+                                Some(OperatingMode::Operate as i32);
                         }
-                        locked_state.operation_settings.operating_mode =
-                            Some(OperatingMode::Operate as i32);
                     }
                 }
                 Ok(())
@@ -1417,7 +1491,7 @@ impl MyCedar {
     }
 
     async fn reset_session_stats(state: &mut CedarState) {
-        state.detect_engine.lock().await.reset_session_stats();
+        state.detect_engine.lock().await.reset_session_stats().await;
         state.solve_engine.lock().await.reset_session_stats().await;
         state.serve_latency_stats.reset_session();
     }
@@ -1463,7 +1537,7 @@ impl MyCedar {
         let solver;
         let width;
         let height;
-        {
+        let fixed_settings_arc = {
             let locked_state = state.lock().await;
             camera = locked_state.camera.clone();
             calibrator = locked_state.calibrator.clone();
@@ -1473,15 +1547,19 @@ impl MyCedar {
             solve_engine = locked_state.solve_engine.clone();
             solver = locked_state.solver.clone();
             initial_exposure_duration = locked_state.initial_exposure_duration;
-            max_exposure_duration = std::time::Duration::try_from(
-                locked_state.fixed_settings.lock().await
-                    .max_exposure_time.clone().unwrap()).unwrap();
+            locked_state.fixed_settings.clone()
+        }; // State lock released here!
+
+        max_exposure_duration = std::time::Duration::try_from(
+            fixed_settings_arc.lock().await.max_exposure_time.clone().unwrap()).unwrap();
+
+        {
             {
                 let locked_camera = camera.lock().await;
                 (width, height) = locked_camera.dimensions();
                 let _display_sampling;
                 (binning, _display_sampling) =
-                    Self::compute_binning(&locked_state, width as u32, height as u32);
+                    Self::compute_binning(&*state.lock().await, width as u32, height as u32);
             }
 
             // For calibrations, use statically configured sigma value.
@@ -1536,7 +1614,7 @@ impl MyCedar {
         };
         calibration_data.lock().await.target_exposure_time =
             Some(prost_types::Duration::try_from(exp_duration).unwrap());
-        detect_engine.lock().await.set_calibrated_exposure_duration(Some(exp_duration));
+        detect_engine.lock().await.set_calibrated_exposure_duration(Some(exp_duration)).await;
 
         match calibrator.lock().await.calibrate_optical(
             solver.clone(), binning, detection_sigma,
@@ -1621,12 +1699,10 @@ impl MyCedar {
         // Extract all data we need first, then release state lock
         let (calibrating, calibration_data_arc, preferences_arc,
              calibration_start, calibration_duration_estimate,
-             scaled_image_data, operation_settings) = {
+             scaled_image_data, operation_settings, fixed_settings_arc) = {
             let locked_state = state.lock().await;
 
             // Get basic settings.
-            let fixed_settings_arc = locked_state.fixed_settings.clone();
-            fixed_settings = fixed_settings_arc.lock().await.clone();
             operating_mode = locked_state.operation_settings.operating_mode.unwrap();
             focus_assist_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
             daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
@@ -1652,8 +1728,11 @@ impl MyCedar {
 
             (calibrating, calibration_data_arc, preferences_arc,
              calibration_start, calibration_duration_estimate,
-             scaled_image_data, operation_settings)
+             scaled_image_data, operation_settings, locked_state.fixed_settings.clone())
         };  // State lock released here!
+
+        // Access fixed_settings outside the state lock
+        fixed_settings = fixed_settings_arc.lock().await.clone();
 
         // Fill in our current time (outside lock).
         Self::fill_in_time(&mut fixed_settings);
@@ -1734,7 +1813,12 @@ impl MyCedar {
         };
         let serve_start_time = Instant::now();
         let mut locked_state = state.lock().await;
-        let is_color = locked_state.camera.lock().await.is_color();
+
+        // Extract Arc references to avoid nested locks
+        let camera_arc = locked_state.camera.clone();
+        let preferences_arc = locked_state.preferences.clone();
+
+        let is_color = camera_arc.lock().await.is_color();
 
         frame_result.frame_id = detect_result.frame_id;
         let captured_image = &detect_result.captured_image;
@@ -1744,8 +1828,7 @@ impl MyCedar {
         frame_result.capture_time = Some(prost_types::Timestamp::from(
             captured_image.readout_time));
         frame_result.fixed_settings = Some(fixed_settings.clone());
-        frame_result.preferences =
-            Some(locked_state.preferences.lock().await.clone());
+        frame_result.preferences = Some(preferences_arc.lock().await.clone());
         frame_result.operation_settings =
             Some(locked_state.operation_settings.clone());
 
@@ -2495,11 +2578,11 @@ impl MyCedar {
             warn!("Could not set default settings on camera {:?}", x);
         }
 
-        locked_state.detect_engine.lock().await.set_binning(binning, display_sampling);
+        locked_state.detect_engine.lock().await.set_binning(binning, display_sampling).await;
         locked_state.detect_engine.lock().await.set_focus_mode(
-            locked_state.operation_settings.focus_assist_mode.unwrap());
+            locked_state.operation_settings.focus_assist_mode.unwrap()).await;
         locked_state.detect_engine.lock().await.set_daylight_mode(
-            locked_state.operation_settings.daylight_mode.unwrap());
+            locked_state.operation_settings.daylight_mode.unwrap()).await;
         locked_state.solve_engine.lock().await.set_catalog_entry_match(
             copied_preferences.catalog_entry_match.clone()).await;
         locked_state.solve_engine.lock().await.set_align_mode(true).await;
@@ -2579,7 +2662,7 @@ impl MyCedar {
         let mut prefs_to_save: Option<Preferences> = None;
         if let Some(bp) = boresight_pixel {
             let cedar_bp = ImageCoord{x: bp.x, y: bp.y};
-            let mut locked_preferences = sync_lock_with_retry(&preferences);
+            let mut locked_preferences = preferences.lock().await;
             if locked_preferences.boresight_pixel.is_none() ||
                 cedar_bp != *locked_preferences.boresight_pixel.as_ref().unwrap()
             {
@@ -2622,13 +2705,13 @@ impl MyCedar {
                     latitude: locked_telescope_position.site_latitude.unwrap(),
                     longitude: locked_telescope_position.site_longitude.unwrap(),
                 };
-                sync_lock_with_retry(&fixed_settings).observer_location =
+                fixed_settings.lock().await.observer_location =
                     Some(observer_location.clone());
                 info!("Alpaca updated observer location to {:?}", observer_location);
                 locked_telescope_position.site_latitude = None;
                 locked_telescope_position.site_longitude = None;
                 // Save in preferences.
-                let mut locked_preferences = sync_lock_with_retry(&preferences);
+                let mut locked_preferences = preferences.lock().await;
                 locked_preferences.observer_location = Some(observer_location.clone());
                 // Flag updated preferences to write to file below.
                 prefs_to_save = Some(locked_preferences.clone());
@@ -2645,7 +2728,7 @@ impl MyCedar {
                 locked_telescope_position.sync_dec = None;
             }
 
-            let geo_location = &sync_lock_with_retry(&fixed_settings).observer_location;
+            let geo_location = &fixed_settings.lock().await.observer_location;
             if let Some(geo_location) = geo_location {
                 let lat = geo_location.latitude.to_radians();
                 let long = geo_location.longitude.to_radians();
@@ -2655,7 +2738,7 @@ impl MyCedar {
                 let (_alt, _az, ha) =
                     alt_az_from_equatorial(bs_ra, bs_dec, lat, long, readout_time);
                 let motion_estimate = motion_estimator.lock().await.get_estimate();
-                sync_lock_with_retry(&polar_analyzer).process_solution(
+                polar_analyzer.lock().await.process_solution(
                     &coords,
                     ha.to_degrees(),
                     geo_location.latitude,
@@ -3074,7 +3157,11 @@ async fn async_main(
 
     // Function called whenever SkySafari interrogates our position.
     let async_callback = Box::new(move || {
-        sync_lock_with_retry(&activity_led).received_rpc();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                activity_led.lock().await.received_rpc().await;
+            });
+        });
     });
     let alpaca_server = create_alpaca_server(shared_telescope_position, async_callback);
     let alpaca_server_future = alpaca_server.start();

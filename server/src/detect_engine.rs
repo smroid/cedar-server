@@ -4,7 +4,7 @@
 use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage};
 
 use std::cmp::max;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -44,7 +44,7 @@ pub struct DetectEngine {
     star_count_goal: i32,
 
     // Our state, shared between DetectEngine methods and the worker thread.
-    state: Arc<Mutex<DetectState>>,
+    state: Arc<tokio::sync::Mutex<DetectState>>,
 
     // Executes worker().
     worker_thread: Option<std::thread::JoinHandle<()>>,
@@ -131,7 +131,7 @@ impl DetectEngine {
             detection_min_sigma,
             detection_sigma,
             star_count_goal,
-            state: Arc::new(Mutex::new(DetectState{
+            state: Arc::new(tokio::sync::Mutex::new(DetectState{
                 camera: camera.clone(),
                 autoexposure_enabled: true,
                 normalize_rows,
@@ -155,11 +155,11 @@ impl DetectEngine {
         }
     }
 
-    pub fn replace_camera(
+    pub async fn replace_camera(
         &mut self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
     {
-        self.reset_session_stats();
-        let mut locked_state = self.state.lock().unwrap();
+        self.reset_session_stats().await;
+        let mut locked_state = self.state.lock().await;
         locked_state.camera = camera.clone();
         locked_state.auto_exposure_duration = None;
         locked_state.camera_processing_duration = None;
@@ -167,22 +167,22 @@ impl DetectEngine {
         locked_state.detect_result = None;
     }
 
-    pub fn set_autoexposure_enabled(&mut self, enabled: bool) {
-        let mut locked_state = self.state.lock().unwrap();
+    pub async fn set_autoexposure_enabled(&mut self, enabled: bool) {
+        let mut locked_state = self.state.lock().await;
         locked_state.autoexposure_enabled = enabled;
         locked_state.auto_exposure_duration = None;
     }
 
-    pub fn set_binning(&mut self, binning: u32, display_sampling: bool) {
-        let mut locked_state = self.state.lock().unwrap();
+    pub async fn set_binning(&mut self, binning: u32, display_sampling: bool) {
+        let mut locked_state = self.state.lock().await;
         locked_state.binning = binning;
         locked_state.display_sampling = display_sampling;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
 
-    pub fn set_focus_mode(&mut self, enabled: bool) {
-        let mut locked_state = self.state.lock().unwrap();
+    pub async fn set_focus_mode(&mut self, enabled: bool) {
+        let mut locked_state = self.state.lock().await;
         locked_state.focus_mode = enabled;
         if !enabled {
             locked_state.star_count_moving_average = 0.0;
@@ -191,8 +191,8 @@ impl DetectEngine {
         // it finishes the current interval.
     }
 
-    pub fn set_daylight_mode(&mut self, enabled: bool) {
-        let mut locked_state = self.state.lock().unwrap();
+    pub async fn set_daylight_mode(&mut self, enabled: bool) {
+        let mut locked_state = self.state.lock().await;
         locked_state.daylight_mode = enabled;
         if !enabled {
             locked_state.star_count_moving_average = 0.0;
@@ -202,8 +202,8 @@ impl DetectEngine {
         // it finishes the current interval.
     }
 
-    pub fn set_daylight_focus_point(&mut self, point: (f64, f64)) {
-        let mut locked_state = self.state.lock().unwrap();
+    pub async fn set_daylight_focus_point(&mut self, point: (f64, f64)) {
+        let mut locked_state = self.state.lock().await;
         locked_state.daylight_focus_point = Some(point);
     }
 
@@ -215,9 +215,9 @@ impl DetectEngine {
         self.star_count_goal
     }
 
-    pub fn set_calibrated_exposure_duration(
+    pub async fn set_calibrated_exposure_duration(
         &mut self, calibrated_exposure_duration: Option<Duration>) {
-        let mut locked_state = self.state.lock().unwrap();
+        let mut locked_state = self.state.lock().await;
         locked_state.calibrated_exposure_duration = calibrated_exposure_duration;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
@@ -295,7 +295,7 @@ impl DetectEngine {
         loop {
             let mut sleep_duration = Duration::from_millis(1);
             {
-                let locked_state = self.state.lock().unwrap();
+                let locked_state = self.state.lock().await;
                 if locked_state.detect_result.is_some() &&
                     (prev_frame_id.is_none() ||
                      prev_frame_id.unwrap() !=
@@ -319,14 +319,14 @@ impl DetectEngine {
         }
     }
 
-    pub fn reset_session_stats(&mut self) {
-        let mut state = self.state.lock().unwrap();
+    pub async fn reset_session_stats(&mut self) {
+        let mut state = self.state.lock().await;
         state.acquire_latency_stats.reset_session();
         state.detect_latency_stats.reset_session();
     }
 
-    pub fn estimate_delay(&self, prev_frame_id: Option<i32>) -> Option<Duration> {
-        let locked_state = self.state.lock().unwrap();
+    pub async fn estimate_delay(&self, prev_frame_id: Option<i32>) -> Option<Duration> {
+        let locked_state = self.state.lock().await;
         if locked_state.detect_result.is_some() &&
             (prev_frame_id.is_none() ||
              prev_frame_id.unwrap() !=
@@ -346,7 +346,7 @@ impl DetectEngine {
                     detection_min_sigma: f64,
                     detection_sigma: f64,
                     star_count_goal: i32,
-                    state: Arc<Mutex<DetectState>>,
+                    state: Arc<tokio::sync::Mutex<DetectState>>,
                     done: Arc<AtomicBool>) {
         debug!("Starting detect engine");
         loop {
@@ -360,7 +360,7 @@ impl DetectEngine {
             let calibrated_exposure_duration: Option<Duration>;
             let auto_exposure_duration: Option<Duration>;
             {
-                let mut locked_state = state.lock().unwrap();
+                let mut locked_state = state.lock().await;
                 camera = locked_state.camera.clone();
                 normalize_rows = locked_state.normalize_rows;
                 focus_mode = locked_state.focus_mode;
@@ -378,9 +378,9 @@ impl DetectEngine {
             let captured_image;
             let camera_processing_duration;
             {
-                let frame_id = state.lock().unwrap().frame_id;
+                let frame_id = state.lock().await.frame_id;
                 if let Some(delay_est) = camera.lock().await.estimate_delay(frame_id) {
-                    state.lock().unwrap().eta = Some(Instant::now() + delay_est);
+                    state.lock().await.eta = Some(Instant::now() + delay_est);
                 }
                 // Don't hold camera lock for the entirety of the time waiting for
                 // the next image.
@@ -407,7 +407,7 @@ impl DetectEngine {
                     }
                     let (image, id) = capture.unwrap();
                     captured_image = image;
-                    let mut locked_state = state.lock().unwrap();
+                    let mut locked_state = state.lock().await;
                     locked_state.frame_id = Some(id);
                     if locked_state.camera_processing_duration.is_none() {
                         locked_state.camera_processing_duration =
@@ -440,7 +440,7 @@ impl DetectEngine {
               acquire_duration_secs =
                 f64::max(acquire_duration_secs, cpd.as_secs_f64());
             }
-            state.lock().unwrap().acquire_latency_stats.add_value(
+            state.lock().await.acquire_latency_stats.add_value(
                 acquire_duration_secs);
 
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
@@ -648,7 +648,7 @@ impl DetectEngine {
             if !daylight_mode && !focus_mode {
                 // Run CedarDetect on the image.
                 {
-                    let mut locked_state = state.lock().unwrap();
+                    let mut locked_state = state.lock().await;
                     if let Some(recent_stats) =
                         &locked_state.detect_latency_stats.value_stats.recent
                     {
@@ -732,8 +732,11 @@ impl DetectEngine {
                     // Force update even if image is catching up to camera settings.
                     update_exposure = true;
                 } else if captured_image.params_accurate {
-                    let moving_average = Self::update_star_count_moving_average(
-                        &mut state.lock().unwrap(), num_stars_detected);
+                    let moving_average = {
+                        let mut locked_state = state.lock().await;
+                        Self::update_star_count_moving_average(
+                            &mut locked_state, num_stars_detected)
+                    };
                     if moving_average < 4.0 {
                         // This shouldn't happen because we don't update the moving
                         // average with num_stars_detected<4. But just in case do
@@ -796,7 +799,7 @@ impl DetectEngine {
                             } else {
                                 // Auto exposure time is good. Remember it for
                                 // use as a fallback.
-                                state.lock().unwrap().auto_exposure_duration =
+                                state.lock().await.auto_exposure_duration =
                                     Some(Duration::from_secs_f64(
                                         prev_exposure_duration_secs));
                             }
@@ -805,7 +808,7 @@ impl DetectEngine {
                 }
             }  // !daylight_mode && !focus_mode
             let elapsed = process_start_time.elapsed();
-            state.lock().unwrap().detect_latency_stats.add_value(elapsed.as_secs_f64());
+            state.lock().await.detect_latency_stats.add_value(elapsed.as_secs_f64());
 
             // Update camera exposure time if auto-exposure calls for an
             // adjustment.
@@ -814,7 +817,7 @@ impl DetectEngine {
                                                   min_exposure_duration.as_secs_f64());
             new_exposure_duration_secs = f64::min(new_exposure_duration_secs,
                                                   max_exposure_duration.as_secs_f64());
-            if update_exposure && state.lock().unwrap().autoexposure_enabled &&
+            if update_exposure && state.lock().await.autoexposure_enabled &&
                 prev_exposure_duration_secs != new_exposure_duration_secs
             {
                 debug!("Setting new exposure duration {}s",
@@ -832,7 +835,7 @@ impl DetectEngine {
             }
 
             // Post the result.
-            let mut locked_state = state.lock().unwrap();
+            let mut locked_state = state.lock().await;
             locked_state.detect_result = Some(DetectResult{
                 frame_id: locked_state.frame_id.unwrap(),
                 captured_image,

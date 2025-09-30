@@ -2,14 +2,14 @@
 // See LICENSE file in root directory for license terms.
 
 use std::fs;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{JoinHandle, sleep, spawn};
 use std::time::Duration;
 
 pub struct ActivityLed {
     // Our state, shared between ActivityLed methods and the worker thread.
-    state: Arc<Mutex<SharedState>>,
+    state: Arc<tokio::sync::Mutex<SharedState>>,
 
     // Executes worker().
     worker_thread: Option<JoinHandle<()>>,
@@ -42,7 +42,7 @@ impl ActivityLed {
     // Initiates the activity LED to blinking at 1hz.
     pub fn new(got_signal: Arc<AtomicBool>) -> Self {
         let mut activity_led = ActivityLed{
-            state: Arc::new(Mutex::new(
+            state: Arc::new(tokio::sync::Mutex::new(
                 SharedState{
                     stop_request: false,
                     received_rpc: false,
@@ -60,18 +60,18 @@ impl ActivityLed {
 
     // Indicates that Cedar has received an RPC from a client. We turn the
     // activity LED off.
-    pub fn received_rpc(&self) {
-        self.state.lock().unwrap().received_rpc = true;
+    pub async fn received_rpc(&self) {
+        self.state.lock().await.received_rpc = true;
     }
 
     // Releases the activity LED back to its OS-defined "disk" activity
     // indicator.
-    pub fn stop(&mut self) {
-        self.state.lock().unwrap().stop_request = true;
+    pub async fn stop(&mut self) {
+        self.state.lock().await.stop_request = true;
         self.worker_thread.take().unwrap().join().unwrap();
     }
 
-    fn worker(state: Arc<Mutex<SharedState>>, got_signal: Arc<AtomicBool>) {
+    fn worker(state: Arc<tokio::sync::Mutex<SharedState>>, got_signal: Arc<AtomicBool>) {
 	// Raspberry Pi 5 reverses the control signal to the ACT led.
         let processor_model =
             fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap()
@@ -101,14 +101,14 @@ impl ActivityLed {
         }
         loop {
             sleep(delay);
-            if state.lock().unwrap().stop_request {
+            if state.blocking_lock().stop_request {
                 break;
             }
             if got_signal.load(Ordering::Relaxed) {
                 break;
             }
             if led_state != LedState::ConnectedOff &&
-                state.lock().unwrap().received_rpc
+                state.blocking_lock().received_rpc
             {
 		        fs::write(brightness_path, off_value).unwrap_or(());
                 led_state = LedState::ConnectedOff;

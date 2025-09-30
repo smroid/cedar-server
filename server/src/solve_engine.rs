@@ -656,7 +656,7 @@ impl SolveEngine {
             }
             // Get the most recent star detection result.
             if let Some(delay_est) =
-                detect_engine.lock().await.estimate_delay(frame_id)
+                detect_engine.lock().await.estimate_delay(frame_id).await
             {
                 state.lock().await.eta = Some(Instant::now() + delay_est);
             }
@@ -670,7 +670,7 @@ impl SolveEngine {
                 if dr.is_none() {
                     let short_delay = Duration::from_millis(1);
                     let delay_est =
-                        detect_engine.lock().await.estimate_delay(frame_id);
+                        detect_engine.lock().await.estimate_delay(frame_id).await;
                     if let Some(delay_est) = delay_est {
                         tokio::time::sleep(max(delay_est, short_delay)).await;
                     } else {
