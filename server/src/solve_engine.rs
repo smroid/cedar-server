@@ -454,7 +454,6 @@ impl SolveEngine {
         detect_result: &DetectResult,
         plate_solution_proto: &Option<PlateSolutionProto>,
         solution_callback: &SolutionCallback,
-        normalize_rows: bool,
         width: u32,
         height: u32,
     ) -> (Option<Vec<FovCatalogEntry>>, Option<Vec<FovCatalogEntry>>, Option<SlewRequest>,
@@ -506,6 +505,7 @@ impl SolveEngine {
                 // the slew target that Cedar Aim should display an inset image
                 // of the region around the boresight.
                 if let Some(target_coords) = &state.lock().await.slew_target {
+                    let normalize_rows = state.lock().await.normalize_rows;
                     (slew_request, boresight_image_region, boresight_image) =
                         Self::handle_slew(
                             &cedar_sky,
@@ -619,7 +619,6 @@ impl SolveEngine {
         loop {
             let minimum_stars;
             let frame_id;
-            let normalize_rows;
             let mut solve_extension = SolveExtension::default();
             let mut solve_params = SolveParams::default();
             {
@@ -628,7 +627,6 @@ impl SolveEngine {
 
                 minimum_stars = locked_state.minimum_stars;
                 frame_id = locked_state.frame_id;
-                normalize_rows = locked_state.normalize_rows;
 
                 // Set up solve arguments.
                 if let Some(fov) = locked_state.fov_estimate {
@@ -705,7 +703,6 @@ impl SolveEngine {
                     &detect_result,
                     &plate_solution_proto,
                     &solution_callback,
-                    normalize_rows,
                     width,
                     height,
                 ).await;
