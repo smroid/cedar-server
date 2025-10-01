@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2025 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
 use std::fs;
@@ -6,17 +6,18 @@ use std::fs::metadata;
 use std::io;
 use std::io::{BufRead, BufReader, Cursor, ErrorKind, Read, Seek, SeekFrom};
 use std::net::SocketAddr;
-use std::ops::{Deref, DerefMut};
+use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime};
 
-use cedar_camera::abstract_camera::{AbstractCamera, Gain, Offset,
-                                    bin_2x2, sample_2x2};
+use cedar_camera::abstract_camera::{AbstractCamera, Gain, Offset};
 use cedar_camera::select_camera::{CameraInterface, select_camera};
 use cedar_camera::image_camera::ImageCamera;
+
+use cedar_detect::image_funcs::bin_and_histogram_2x2;
 
 use canonical_error::{CanonicalError, CanonicalErrorCode, aborted_error};
 use chrono::offset::Local;
@@ -175,6 +176,9 @@ struct CedarState {
 
     // The hardware camera that was detected, if any.
     attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
+
+    // Determines whether rows should be normalized to have the same dark level.
+    normalize_rows: bool,
 
     // Detected IMU, if any.
     imu: Option<Arc<tokio::sync::Mutex<Mpu6050>>>,
@@ -1675,7 +1679,11 @@ impl MyCedar {
         Ok(true)
     }
 
-    fn jpeg_encode(img: &Arc<GrayImage>) -> Vec::<u8> {
+    fn bin_2x2(image: &GrayImage) -> GrayImage {
+        bin_and_histogram_2x2(image, /*normalize_rows=*/false).binned
+    }
+
+    fn jpeg_encode(img: &GrayImage) -> Vec::<u8> {
         let (width, height) = img.dimensions();
         let mut jpg_buf = Vec::<u8>::with_capacity((width * height) as usize);
         let mut buffer = Cursor::new(&mut jpg_buf);
@@ -1684,7 +1692,7 @@ impl MyCedar {
         // 95: 13x compression, almost no artifacts.
         let mut jpeg_encoder = JpegEncoder::new_with_quality(
             &mut buffer, /*jpeg_quality=*/95);
-        jpeg_encoder.encode_image(img.deref()).unwrap();
+        jpeg_encoder.encode_image(img).unwrap();
         jpg_buf
     }
 
@@ -1696,6 +1704,7 @@ impl MyCedar {
         let operating_mode;
         let focus_assist_mode;
         let daylight_mode;
+        let normalize_rows;
         // Extract all data we need first, then release state lock
         let (calibrating, calibration_data_arc, preferences_arc,
              calibration_start, calibration_duration_estimate,
@@ -1706,6 +1715,7 @@ impl MyCedar {
             operating_mode = locked_state.operation_settings.operating_mode.unwrap();
             focus_assist_mode = locked_state.operation_settings.focus_assist_mode.unwrap();
             daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
+            normalize_rows = locked_state.normalize_rows;
 
             // Extract calibration and image data.
             let calibrating = locked_state.calibrating;
@@ -1865,18 +1875,22 @@ impl MyCedar {
             disp_image = detect_result.binned_image.as_ref().unwrap();
             resized_disp_image = disp_image;
         } else if binning > 1 {
-            // This can happen when we're transitioning away from daylight
-            // mode, wherein detect engine is skipping Cedar detect and
-            // thus not creating a binned image.
-            resize_result = Arc::new(sample_2x2(disp_image.deref().clone()));
+            // This can happen in focus mode, wherein detect engine is skipping
+            // Cedar detect and thus not creating a binned image.
+            resize_result = Arc::new(
+                bin_and_histogram_2x2(&disp_image, normalize_rows).binned);
             resized_disp_image = &resize_result;
             if binning == 4 {
-                resize_result = Arc::new(sample_2x2(resize_result.deref().clone()));
+                resize_result = Arc::new(
+                    bin_and_histogram_2x2(&resize_result,
+                                          /*normalize_rows=*/false).binned);
                 resized_disp_image = &resize_result;
             }
         }
         if display_sampling {
-            resize_result = Arc::new(sample_2x2(resized_disp_image.deref().clone()));
+            resize_result = Arc::new(
+                bin_and_histogram_2x2(&resized_disp_image,
+                                      /*normalize_rows=*/false).binned);
             resized_disp_image = &resize_result;
             // Adjust peak_value, binning can make point sources dimmer in the
             // result.
@@ -1984,12 +1998,14 @@ impl MyCedar {
                 let binning_factor;
                 let center_peak_jpg_buf;
                 if is_color {
-                    let binned_center_peak_image = bin_2x2(center_peak_image.clone());
+                    let binned_center_peak_image =
+                        Self::bin_2x2(&center_peak_image);
                     binning_factor = 2;
-                    center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(binned_center_peak_image));
+                    center_peak_jpg_buf =
+                        Self::jpeg_encode(&binned_center_peak_image);
                 } else {
                     binning_factor = 1;
-                    center_peak_jpg_buf = Self::jpeg_encode(&Arc::new(center_peak_image.clone()));
+                    center_peak_jpg_buf = Self::jpeg_encode(&center_peak_image);
                 }
 
                 frame_result.center_peak_image = Some(Image{
@@ -2012,12 +2028,15 @@ impl MyCedar {
                 let binning_factor;
                 let daylight_focus_jpg_buf;
                 if is_color {
-                    let binned_daylight_focus_image = bin_2x2(daylight_focus_image.clone());
+                    let binned_daylight_focus_image =
+                        Self::bin_2x2(&daylight_focus_image);
                     binning_factor = 2;
-                    daylight_focus_jpg_buf = Self::jpeg_encode(&Arc::new(binned_daylight_focus_image));
+                    daylight_focus_jpg_buf =
+                        Self::jpeg_encode(&binned_daylight_focus_image);
                 } else {
                     binning_factor = 1;
-                    daylight_focus_jpg_buf = Self::jpeg_encode(&Arc::new(daylight_focus_image.clone()));
+                    daylight_focus_jpg_buf =
+                        Self::jpeg_encode(&daylight_focus_image);
                 }
 
                 frame_result.daylight_focus_zoom_image = Some(Image{
@@ -2041,9 +2060,9 @@ impl MyCedar {
         let scaled_image = scale_image(
             resized_disp_image, black_level, peak_value, gamma);
         // Save most recent display image.
-        locked_state.scaled_image = Some(Arc::new(scaled_image.clone()));
-        let jpg_buf = Self::jpeg_encode(&Arc::new(scaled_image.clone()));
-
+        locked_state.scaled_image = Some(Arc::new(scaled_image));
+        let jpg_buf =
+            Self::jpeg_encode(&locked_state.scaled_image.as_ref().unwrap());
         locked_state.scaled_image_frame_id = frame_result.frame_id;
         frame_result.image = Some(Image{
             binning_factor: binning_factor as i32,
@@ -2075,7 +2094,7 @@ impl MyCedar {
                 // Bayer grid.
                 let (binning_factor, resized_boresight_image) =
                     if is_color {
-                        (2, bin_2x2(boresight_image.clone()))
+                        (2, Self::bin_2x2(&boresight_image))
                     } else {
                         (1, boresight_image.clone())
                     };
@@ -2083,7 +2102,7 @@ impl MyCedar {
                 let rotated_boresight_image =
                     irr.rotate_image_and_crop(&resized_boresight_image);
                 let jpg_buf =
-                    Self::jpeg_encode(&Arc::new(rotated_boresight_image.clone()));
+                    Self::jpeg_encode(&rotated_boresight_image);
 
                 let bsi_rect = psr.boresight_image_region.unwrap();
                 frame_result.boresight_image = Some(Image{
@@ -2503,6 +2522,7 @@ impl MyCedar {
             Arc::new(tokio::sync::Mutex::new(CedarState {
                 solver: solver.clone(),
                 attached_camera: attached_camera.clone(),
+                normalize_rows,
                 imu: imu.clone(),
                 camera: camera.clone(),
                 initial_exposure_duration,
