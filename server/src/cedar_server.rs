@@ -2727,7 +2727,7 @@ impl MyCedar {
                 };
                 fixed_settings.lock().await.observer_location =
                     Some(observer_location.clone());
-                info!("Alpaca updated observer location to {:?}", observer_location);
+                info!("Alpaca updated observer location");
                 locked_telescope_position.site_latitude = None;
                 locked_telescope_position.site_longitude = None;
                 // Save in preferences.
