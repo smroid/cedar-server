@@ -50,10 +50,9 @@ impl ActivityLed {
             worker_thread: None,
         };
         let cloned_state = activity_led.state.clone();
-        let cloned_got_signal = got_signal.clone();
         activity_led.worker_thread =
-            Some(spawn(|| {
-                ActivityLed::worker(cloned_state, cloned_got_signal);
+            Some(spawn(move || {
+                ActivityLed::worker(cloned_state, got_signal);
             }));
         activity_led
     }
@@ -93,11 +92,8 @@ impl ActivityLed {
             ConnectedOff,
         }
         let mut led_state = LedState::ReadyOff;
-        match fs::write(brightness_path, off_value) {
-            Err(e) => {
-                log::warn!("Error writing to LED: {:?}", e);
-            },
-            Ok(()) => ()
+        if let Err(e) = fs::write(brightness_path, off_value) {
+            log::warn!("Error writing to LED: {:?}", e);
         }
         loop {
             sleep(delay);

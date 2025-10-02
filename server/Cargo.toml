@@ -42,3 +42,11 @@ tracing-appender = "0.2.3"
 
 [lints.clippy]
 await_holding_lock = "warn"
+large_futures = "warn"
+unused_async = "warn"
+significant_drop_in_scrutinee = "warn"
+# Performance
+large_stack_arrays = "warn"
+# Code quality
+cloned_instead_of_copied = "warn"
+redundant_clone = "warn"

@@ -454,7 +454,7 @@ impl Cedar for MyCedar {
                         // Configure engines (outside state lock).
                         detect_engine_arc.lock().await.set_daylight_mode(false).await;
                         solve_engine_arc.lock().await.set_align_mode(false).await;
-                        solve_engine_arc.lock().await.start().await;
+                        solve_engine_arc.lock().await.start();
                     }
                 } else {
                     return Err(tonic::Status::invalid_argument(
@@ -659,9 +659,8 @@ impl Cedar for MyCedar {
             calibrator_arc.lock().await.replace_camera(new_camera.clone());
 
             // Validate boresight_pixel, to make sure it is still within the image area
-            if let Some(bsp) =
-                preferences_arc.lock().await.boresight_pixel.clone()
-            {
+            let boresight_pixel_value = preferences_arc.lock().await.boresight_pixel.clone();
+            if let Some(bsp) = boresight_pixel_value {
                 let inset = 16;
                 if bsp.x < inset as f64 || bsp.x > (width - inset) as f64 ||
                     bsp.y < inset as f64 || bsp.y > (height - inset) as f64
@@ -993,10 +992,7 @@ impl Cedar for MyCedar {
         }; // State lock released here!
 
         let req: QueryCatalogRequest = request.into_inner();
-        let limit_result = match req.limit_result {
-            Some(l) => Some(l as usize),
-            None => None,
-        };
+        let limit_result = req.limit_result.map(|l| l as usize);
         let ordering = match req.ordering {
             Some(1) => Some(Ordering::Brightness),
             Some(2) => Some(Ordering::SkyLocation),
@@ -1019,14 +1015,10 @@ impl Cedar for MyCedar {
             };
         let location_info = {
             let fixed_settings = fixed_settings_arc.lock().await;
-            if let Some(obs_loc) = &fixed_settings.observer_location {
-                Some(LocationInfo {
-                    observer_location: obs_loc.clone(),
-                    observing_time: SystemTime::now(),
-                })
-            } else {
-                None
-            }
+            fixed_settings.observer_location.as_ref().map(|obs_loc| LocationInfo {
+                observer_location: obs_loc.clone(),
+                observing_time: SystemTime::now(),
+            })
         };
 
         let result = cedar_sky_arc.as_ref().unwrap().lock().await.query_catalog_entries(
@@ -1315,7 +1307,7 @@ impl MyCedar {
                         detect_engine_arc.lock().await.set_focus_mode(false).await;
                         detect_engine_arc.lock().await.set_daylight_mode(false).await;
                         solve_engine_arc.lock().await.set_align_mode(false).await;
-                        solve_engine_arc.lock().await.start().await;
+                        solve_engine_arc.lock().await.start();
                         // Set automatic update interval for OPERATE mode.
                         {
                             let mut locked_state = state.lock().await;
@@ -1401,28 +1393,30 @@ impl MyCedar {
         // Process IMU info (outside state lock).
         let mut imu_state: Option<ImuState> = None;
         if let Some(imu) = &imu_arc {
-            let accel: Option<AccelData> = match imu.lock().await.get_acceleration() {
+            let accel_result = imu.lock().await.get_acceleration();
+            let accel: Option<AccelData> = match accel_result {
                 Ok(a) => Some(a),
                 Err(e) => {
                     warn!{"Error getting acceleration: {:?}", e};
                     None
                 },
             };
-            let angles: Option<GyroData> = match imu.lock().await.get_angular_velocity() {
+            let gyro_result = imu.lock().await.get_angular_velocity();
+            let angles: Option<GyroData> = match gyro_result {
                 Ok(g) => Some(g),
                 Err(e) => {
                     warn!{"Error getting angle rates: {:?}", e};
                     None
                 },
             };
-            if accel.is_some() && angles.is_some() {
+            if let (Some(a), Some(g)) = (accel, angles) {
                 imu_state = Some(ImuState{
-                    accel_x: accel.unwrap().x,
-                    accel_y: accel.unwrap().y,
-                    accel_z: accel.unwrap().z,
-                    angle_rate_x: angles.unwrap().x,
-                    angle_rate_y: angles.unwrap().y,
-                    angle_rate_z: angles.unwrap().z,
+                    accel_x: a.x,
+                    accel_y: a.y,
+                    accel_z: a.z,
+                    angle_rate_x: g.x,
+                    angle_rate_y: g.y,
+                    angle_rate_z: g.z,
                 });
             }
         }
@@ -2541,7 +2535,7 @@ impl MyCedar {
                 solve_engine: Arc::new(tokio::sync::Mutex::new(SolveEngine::new(
                     normalize_rows,
                     solver.clone(), cedar_sky.clone(), detect_engine.clone(),
-                    stats_capacity, closure).await.unwrap())),
+                    stats_capacity, closure).unwrap())),
                 calibrator: Arc::new(tokio::sync::Mutex::new(
                     Calibrator::new(camera.clone(), normalize_rows))),
                 telescope_position,

@@ -379,7 +379,8 @@ impl DetectEngine {
             let camera_processing_duration;
             {
                 let frame_id = state.lock().await.frame_id;
-                if let Some(delay_est) = camera.lock().await.estimate_delay(frame_id) {
+                let delay_est = camera.lock().await.estimate_delay(frame_id);
+                if let Some(delay_est) = delay_est {
                     state.lock().await.eta = Some(Instant::now() + delay_est);
                 }
                 // Don't hold camera lock for the entirety of the time waiting for
@@ -666,11 +667,7 @@ impl DetectEngine {
                         /*detect_hot_pixels=*/true,
                         /*return_binned_image=*/binning != 1);
                 let stats = stats_for_histogram(&histogram);
-                binned_image = if let Some(bi) = detect_binned_image {
-                    Some(Arc::new(bi))
-                } else {
-                    None
-                };
+                binned_image = detect_binned_image.map(Arc::new);
 
                 // Average the peak pixels of the N brightest stars.
                 let mut sum_peak: i32 = 0;
@@ -716,12 +713,11 @@ impl DetectEngine {
                 };
                 let baseline_exposure_duration_secs =
                     baseline_exposure_duration.as_secs_f64();
-                let fallback_exposure_duration_secs =
-                    if auto_exposure_duration.is_some() {
-                        auto_exposure_duration.unwrap().as_secs_f64()
-                    } else {
-                        baseline_exposure_duration_secs
-                    };
+                let fallback_exposure_duration_secs = if let Some(d) = auto_exposure_duration {
+                    d.as_secs_f64()
+                } else {
+                    baseline_exposure_duration_secs
+                };
 
                 let num_stars_detected = stars.len();
                 if num_stars_detected < 4 {
@@ -822,8 +818,9 @@ impl DetectEngine {
             {
                 debug!("Setting new exposure duration {}s",
                        new_exposure_duration_secs);
-                match camera.lock().await.set_exposure_duration(
-                    Duration::from_secs_f64(new_exposure_duration_secs)) {
+                let result = camera.lock().await.set_exposure_duration(
+                    Duration::from_secs_f64(new_exposure_duration_secs));
+                match result {
                     Ok(()) => (),
                     Err(e) => {
                         error!("Error updating exposure duration: {}",

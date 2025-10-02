@@ -103,7 +103,7 @@ struct SolveState {
 }
 
 impl SolveEngine {
-    pub async fn new(
+    pub fn new(
         normalize_rows: bool,
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
@@ -263,7 +263,7 @@ impl SolveEngine {
         non_blocking: bool) -> Option<PlateSolution>
     {
         // Start worker thread if terminated or not yet started.
-        self.start().await;
+        self.start();
 
         // Get the most recently posted result; wait if there is none yet or the
         // currently posted result is the same as the one the caller has already
@@ -343,7 +343,7 @@ impl SolveEngine {
             star_centroids, width, height, extension, params).await
     }
 
-    pub async fn start(&mut self) {
+    pub fn start(&mut self) {
         // Has the worker terminated for some reason?
         if self.worker_thread.is_some() &&
             self.worker_thread.as_ref().unwrap().is_finished()
@@ -535,7 +535,7 @@ impl SolveEngine {
                 }
             }  // !align_mode
 
-            if cedar_sky.is_some() {
+            if let Some(sky) = &cedar_sky {
                 let mut catalog_entry_match =
                     state.lock().await.catalog_entry_match.clone().unwrap();
                 catalog_entry_match.match_catalog_label = false;
@@ -556,7 +556,7 @@ impl SolveEngine {
                 let result = Self::query_fov_catalog_entries(
                     &boresight_coords,
                     &boresight_pixel,
-                    cedar_sky.as_ref().unwrap(),
+                    sky,
                     &catalog_entry_match,
                     width, height,
                     psp.fov,

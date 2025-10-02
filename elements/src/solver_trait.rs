@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use canonical_error::CanonicalError;
-use tonic::async_trait;
+use async_trait::async_trait;
 
 use crate::cedar_common::CelestialCoord;
 use crate::cedar::{ImageCoord, PlateSolution};
