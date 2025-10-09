@@ -121,26 +121,38 @@ impl Drop for GrpcTimer {
 }
 
 fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
-    tonic::Status::new(
-        match canonical_error.code {
-            CanonicalErrorCode::Unknown => tonic::Code::Unknown,
-            CanonicalErrorCode::InvalidArgument => tonic::Code::InvalidArgument,
-            CanonicalErrorCode::DeadlineExceeded => tonic::Code::DeadlineExceeded,
-            CanonicalErrorCode::NotFound => tonic::Code::NotFound,
-            CanonicalErrorCode::AlreadyExists => tonic::Code::AlreadyExists,
-            CanonicalErrorCode::PermissionDenied => tonic::Code::PermissionDenied,
-            CanonicalErrorCode::Unauthenticated => tonic::Code::Unauthenticated,
-            CanonicalErrorCode::ResourceExhausted => tonic::Code::ResourceExhausted,
-            CanonicalErrorCode::FailedPrecondition => tonic::Code::FailedPrecondition,
-            CanonicalErrorCode::Aborted => tonic::Code::Aborted,
-            CanonicalErrorCode::OutOfRange => tonic::Code::OutOfRange,
-            CanonicalErrorCode::Unimplemented => tonic::Code::Unimplemented,
-            CanonicalErrorCode::Internal => tonic::Code::Internal,
-            CanonicalErrorCode::Unavailable => tonic::Code::Unavailable,
-            CanonicalErrorCode::DataLoss => tonic::Code::DataLoss,
-            // canonical_error module does not model Ok or Cancelled.
-        },
-        canonical_error.message)
+    let code = match canonical_error.code {
+        CanonicalErrorCode::Unknown => tonic::Code::Unknown,
+        CanonicalErrorCode::InvalidArgument => tonic::Code::InvalidArgument,
+        CanonicalErrorCode::DeadlineExceeded => tonic::Code::DeadlineExceeded,
+        CanonicalErrorCode::NotFound => tonic::Code::NotFound,
+        CanonicalErrorCode::AlreadyExists => tonic::Code::AlreadyExists,
+        CanonicalErrorCode::PermissionDenied => tonic::Code::PermissionDenied,
+        CanonicalErrorCode::Unauthenticated => tonic::Code::Unauthenticated,
+        CanonicalErrorCode::ResourceExhausted => tonic::Code::ResourceExhausted,
+        CanonicalErrorCode::FailedPrecondition => tonic::Code::FailedPrecondition,
+        CanonicalErrorCode::Aborted => tonic::Code::Aborted,
+        CanonicalErrorCode::OutOfRange => tonic::Code::OutOfRange,
+        CanonicalErrorCode::Unimplemented => tonic::Code::Unimplemented,
+        CanonicalErrorCode::Internal => tonic::Code::Internal,
+        CanonicalErrorCode::Unavailable => tonic::Code::Unavailable,
+        CanonicalErrorCode::DataLoss => tonic::Code::DataLoss,
+        // canonical_error module does not model Ok or Cancelled.
+    };
+
+    // Log RPC errors for monitoring and debugging
+    warn!("RPC error: code={:?}, message={}", code, canonical_error.message);
+
+    tonic::Status::new(code, canonical_error.message)
+}
+
+// Helper macro to create and log tonic::Status errors
+macro_rules! logged_status {
+    ($code:ident, $msg:expr) => {{
+        let message = $msg;
+        warn!("RPC error: code={:?}, message={}", stringify!($code), message);
+        tonic::Status::$code(message)
+    }};
 }
 
 struct MyCedar {
@@ -250,7 +262,7 @@ impl Cedar for MyCedar {
         let req: ServerLogRequest = request.into_inner();
         let tail = Self::read_log_tail(&self.log_file, req.log_request);
         if let Err(e) = tail {
-            return Err(tonic::Status::failed_precondition(
+            return Err(logged_status!(failed_precondition,
                 format!("Error reading log file {:?}: {:?}.", self.log_file, e)));
         }
         let response = cedar_elements::cedar::ServerLogResult{
@@ -291,7 +303,7 @@ impl Cedar for MyCedar {
                 // Either way, return an error to the client.
                 // Note: the cedar-server binary needs CAP_SYS_TIME capability:
                 // sudo setcap cap_sys_time+ep <path to cedar-server>
-                return Err(tonic::Status::permission_denied(
+                return Err(logged_status!(permission_denied,
                     format!("Error updating server time: {:?}", e)));
             }
             // Now that we know the correct date/time, initialize the solar system
@@ -304,11 +316,11 @@ impl Cedar for MyCedar {
             // arrange to return our current time.
         }
         if let Some(_session_name) = req.session_name {
-            return Err(tonic::Status::unimplemented(
+            return Err(logged_status!(unimplemented,
                 "rpc UpdateFixedSettings not implemented for session_name."));
         }
         if let Some(_max_exposure_time) = req.max_exposure_time {
-            return Err(tonic::Status::unimplemented(
+            return Err(logged_status!(unimplemented,
                 "rpc UpdateFixedSettings cannot update max_exposure_time."));
         }
         let fixed_settings_arc = self.state.lock().await.fixed_settings.clone();
@@ -368,7 +380,7 @@ impl Cedar for MyCedar {
             // Only do something if operating mode is changing.
             if new_operating_mode != current_operating_mode {
                 if calibrating {
-                    return Err(tonic::Status::failed_precondition(
+                    return Err(logged_status!(failed_precondition,
                         "Cannot change operating mode while calibrating"));
                 }
                 let mut final_focus_mode = focus_mode;
@@ -457,7 +469,7 @@ impl Cedar for MyCedar {
                         solve_engine_arc.lock().await.start();
                     }
                 } else {
-                    return Err(tonic::Status::invalid_argument(
+                    return Err(logged_status!(invalid_argument,
                         format!("Got invalid operating_mode: {}.", new_operating_mode)));
                 }
                 if !calibrating {
@@ -479,7 +491,7 @@ impl Cedar for MyCedar {
                     != new_daylight_mode
                 {
                     if locked_state.calibrating {
-                        return Err(tonic::Status::failed_precondition(
+                        return Err(logged_status!(failed_precondition,
                             "Cannot change daylight mode while calibrating"));
                     }
                     let mut final_focus_mode =
@@ -532,7 +544,7 @@ impl Cedar for MyCedar {
                     != new_focus_assist_mode
                 {
                     if locked_state.calibrating {
-                        return Err(tonic::Status::failed_precondition(
+                        return Err(logged_status!(failed_precondition,
                             "Cannot change focus assist mode while calibrating"));
                     }
                     let daylight_mode = locked_state.operation_settings.daylight_mode.unwrap();
@@ -575,14 +587,14 @@ impl Cedar for MyCedar {
             }
         }
         if let Some(_log_dwelled_positions) = req.log_dwelled_positions {
-            return Err(tonic::Status::unimplemented(
+            return Err(logged_status!(unimplemented,
                 "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
         }
         if let Some(catalog_entry_match) = req.catalog_entry_match {
             let solve_engine_arc = {
                 let mut locked_state = self.state.lock().await;
                 if locked_state.cedar_sky.is_none() {
-                    return Err(tonic::Status::unimplemented(
+                    return Err(logged_status!(unimplemented,
                         format!("{} does not include Cedar Sky.", self.product_name)));
                 }
                 locked_state.operation_settings.catalog_entry_match =
@@ -612,7 +624,7 @@ impl Cedar for MyCedar {
                         demo_image_filename.clone());
                     let img_file = match ImageReader::open(&input_path) {
                         Err(x) => {
-                            return Err(tonic::Status::failed_precondition(
+                            return Err(logged_status!(failed_precondition,
                                 format!("Error opening image file {:?}: {:?}.",
                                         input_path, x)));
                         },
@@ -620,7 +632,7 @@ impl Cedar for MyCedar {
                     };
                     let img = match img_file.decode() {
                         Err(x) => {
-                            return Err(tonic::Status::failed_precondition(
+                            return Err(logged_status!(failed_precondition,
                                 format!("Error decoding image file {:?}: {:?}.",
                                         input_path, x)));
                         },
@@ -699,7 +711,7 @@ impl Cedar for MyCedar {
         }
         if let Some(mount_type) = req.mount_type {
             if self.feature_level == FeatureLevel::Basic {
-                return Err(tonic::Status::invalid_argument(
+                return Err(logged_status!(invalid_argument,
                     "Cannot set mount type at Basic feature level"));
             }
             our_prefs.mount_type = Some(mount_type);
@@ -812,7 +824,7 @@ impl Cedar for MyCedar {
                     self.state.lock().await.operation_settings.operating_mode
                     .unwrap_or(OperatingMode::Setup as i32);
                 if operating_mode == OperatingMode::Setup as i32 {
-                    return Err(tonic::Status::failed_precondition(
+                    return Err(logged_status!(failed_precondition,
                         "Capture boresight not valid in setup mode."));
                 }
                 // Operate mode.
@@ -831,7 +843,7 @@ impl Cedar for MyCedar {
                         boresight_pixel: Some(bsp.clone()),
                         ..Default::default()};
                 } else {
-                    return Err(tonic::Status::failed_precondition(
+                    return Err(logged_status!(failed_precondition,
                         "No slew request active".to_string()));
                 }
             }
@@ -853,7 +865,7 @@ impl Cedar for MyCedar {
                 ((width as f64 / 2.0 - bsp.x) * (width as f64  / 2.0 - bsp.x) +
                  (height as f64 / 2.0 - bsp.y) * (height as f64  / 2.0 - bsp.y)).sqrt();
             if distance_from_center > height as f64 / 2.0 {
-                return Err(tonic::Status::failed_precondition(
+                return Err(logged_status!(failed_precondition,
                     "Too far from center".to_string()));
             }
 
@@ -877,7 +889,7 @@ impl Cedar for MyCedar {
                 .expect("Failed to execute 'sudo shutdown now' command");
             if !output.status.success() {
                 let error_str = String::from_utf8_lossy(&output.stderr);
-                    return Err(tonic::Status::failed_precondition(
+                    return Err(logged_status!(failed_precondition,
                         format!("sudo shutdown error: {:?}.", error_str)));
             }
         }
@@ -892,7 +904,7 @@ impl Cedar for MyCedar {
                 .expect("Failed to execute 'sudo reboot now' command");
             if !output.status.success() {
                 let error_str = String::from_utf8_lossy(&output.stderr);
-                    return Err(tonic::Status::failed_precondition(
+                    return Err(logged_status!(failed_precondition,
                         format!("sudo reboot error: {:?}.", error_str)));
             }
         }
@@ -907,7 +919,7 @@ impl Cedar for MyCedar {
             if mount_type == Some(MountType::AltAz.into()) &&
                 fixed_settings_arc.lock().await.observer_location.is_none()
             {
-                return Err(tonic::Status::failed_precondition(
+                return Err(logged_status!(failed_precondition,
                     "Need observer location for goto with alt-az mount"));
             }
             let mut telescope = telescope_position_arc.lock().await;
@@ -928,11 +940,11 @@ impl Cedar for MyCedar {
             }
         }
         if let Some(update_ap) = req.update_wifi_access_point {
-	    let wifi = self.state.lock().await.wifi.clone();
-	    if wifi.is_none() {
-                return Err(tonic::Status::unimplemented(
+            let wifi = self.state.lock().await.wifi.clone();
+            if wifi.is_none() {
+                return Err(logged_status!(unimplemented,
                     format!("{} does not include WiFi control.", self.product_name)));
-	    }
+            }
             let mut locked_wifi = wifi.as_ref().unwrap().lock().await;
             if let Err(x) = locked_wifi.update_access_point(
                 update_ap.channel,
@@ -965,7 +977,7 @@ impl Cedar for MyCedar {
                 dfr.x, dfr.y, width as u32, height as u32);
             // Check that the point is within reasonable bounds.
             if dfr.x < 0.0 || dfr.x >= width as f64 || dfr.y < 0.0 || dfr.y >= height as f64 {
-                return Err(tonic::Status::failed_precondition(
+                return Err(logged_status!(failed_precondition,
                     "Focus region point out of bounds".to_string()));
             }
             detect_engine.lock().await.set_daylight_focus_point((dfr.x, dfr.y)).await;
@@ -985,7 +997,7 @@ impl Cedar for MyCedar {
         let (solve_engine_arc, fixed_settings_arc, cedar_sky_arc) = {
             let locked_state = self.state.lock().await;
             if locked_state.cedar_sky.is_none() {
-                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+                return Err(logged_status!(unimplemented, "Cedar Sky is not present"));
             }
             (locked_state.solve_engine.clone(), locked_state.fixed_settings.clone(),
              locked_state.cedar_sky.clone())
@@ -1058,7 +1070,7 @@ impl Cedar for MyCedar {
         let cedar_sky_arc = {
             let locked_state = self.state.lock().await;
             if locked_state.cedar_sky.is_none() {
-                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+                return Err(logged_status!(unimplemented, "Cedar Sky is not present"));
             }
             locked_state.cedar_sky.clone()
         }; // State lock released here!
@@ -1084,7 +1096,7 @@ impl Cedar for MyCedar {
         let cedar_sky_arc = {
             let locked_state = self.state.lock().await;
             if locked_state.cedar_sky.is_none() {
-                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+                return Err(logged_status!(unimplemented, "Cedar Sky is not present"));
             }
             locked_state.cedar_sky.clone()
         }; // State lock released here!
@@ -1107,7 +1119,7 @@ impl Cedar for MyCedar {
         let cedar_sky_arc = {
             let locked_state = self.state.lock().await;
             if locked_state.cedar_sky.is_none() {
-                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+                return Err(logged_status!(unimplemented, "Cedar Sky is not present"));
             }
             locked_state.cedar_sky.clone()
         }; // State lock released here!
@@ -1130,7 +1142,7 @@ impl Cedar for MyCedar {
         let cedar_sky_arc = {
             let locked_state = self.state.lock().await;
             if locked_state.cedar_sky.is_none() {
-                return Err(tonic::Status::unimplemented("Cedar Sky is not present"));
+                return Err(logged_status!(unimplemented, "Cedar Sky is not present"));
             }
             locked_state.cedar_sky.clone()
         }; // State lock released here!
@@ -1149,11 +1161,11 @@ impl MyCedar {
     fn get_demo_images() -> Result<Vec<String>, tonic::Status> {
         let dir = Path::new("./demo_images");
         if !dir.exists() {
-            return Err(tonic::Status::failed_precondition(
+            return Err(logged_status!(failed_precondition,
                 format!("The path {:?} is not found", dir)));
         }
         if !dir.is_dir() {
-            return Err(tonic::Status::failed_precondition(
+            return Err(logged_status!(failed_precondition,
                 format!("The path {:?} is not a directory", dir)));
         }
         let mut response = Vec::<String>::new();
