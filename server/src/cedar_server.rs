@@ -63,7 +63,7 @@ use cedar_elements::cedar::{
     CelestialCoordFormat,
     DisplayOrientation, EmptyMessage, FeatureLevel,
     FixedSettings, FovCatalogEntry, FrameRequest, FrameResult,
-    Image, ImageCoord, ImuState, LatLong, LocationBasedInfo, MountType,
+    Image, ImageCoord, LatLong, LocationBasedInfo, MountType,
     OperatingMode, OperationSettings, PlateSolution as PlateSolutionProto,
     ProcessingStats, Rectangle, StarCentroid, Preferences,
     ServerLogRequest, ServerLogResult, ServerInformation,
@@ -72,7 +72,6 @@ use cedar_elements::cedar::{
 use crate::activity_led::ActivityLed;
 use crate::calibrator::{Calibrator, ExposureCalibrationError};
 use crate::detect_engine::{DetectEngine, DetectResult};
-use crate::imu6050::{AccelData, GyroData, Mpu6050};
 use crate::motion_estimator::MotionEstimator;
 use crate::polar_analyzer::PolarAnalyzer;
 use crate::position_reporter::{TelescopePosition, create_alpaca_server};
@@ -191,9 +190,6 @@ struct CedarState {
 
     // Determines whether rows should be normalized to have the same dark level.
     normalize_rows: bool,
-
-    // Detected IMU, if any.
-    imu: Option<Arc<tokio::sync::Mutex<Mpu6050>>>,
 
     // An exposure duration which is a good starting point for `attached_camera`.
     initial_exposure_duration: Duration,
@@ -1362,13 +1358,12 @@ impl MyCedar {
 
     async fn get_server_information(&self) -> ServerInformation {
         // Extract all data we need first, then release state lock.
-        let (demo_image, camera_arc, attached_camera_arc, imu_arc, wifi_arc) = {
+        let (demo_image, camera_arc, attached_camera_arc, wifi_arc) = {
             let locked_state = self.state.lock().await;
             (
                 locked_state.operation_settings.demo_image_filename.clone(),
                 locked_state.camera.clone(),
                 locked_state.attached_camera.clone(),
-                locked_state.imu.clone(),
                 locked_state.wifi.clone()
             )
         }; // State lock released here!
@@ -1402,37 +1397,6 @@ impl MyCedar {
             None
         };
 
-        // Process IMU info (outside state lock).
-        let mut imu_state: Option<ImuState> = None;
-        if let Some(imu) = &imu_arc {
-            let accel_result = imu.lock().await.get_acceleration();
-            let accel: Option<AccelData> = match accel_result {
-                Ok(a) => Some(a),
-                Err(e) => {
-                    warn!{"Error getting acceleration: {:?}", e};
-                    None
-                },
-            };
-            let gyro_result = imu.lock().await.get_angular_velocity();
-            let angles: Option<GyroData> = match gyro_result {
-                Ok(g) => Some(g),
-                Err(e) => {
-                    warn!{"Error getting angle rates: {:?}", e};
-                    None
-                },
-            };
-            if let (Some(a), Some(g)) = (accel, angles) {
-                imu_state = Some(ImuState{
-                    accel_x: a.x,
-                    accel_y: a.y,
-                    accel_z: a.z,
-                    angle_rate_x: g.x,
-                    angle_rate_y: g.y,
-                    angle_rate_z: g.z,
-                });
-            }
-        }
-
         let mut server_info = ServerInformation {
             product_name: self.product_name.clone(),
             copyright: self.copyright.clone(),
@@ -1444,7 +1408,7 @@ impl MyCedar {
             cpu_temperature: 0.0,
             server_time: None,
             camera,
-            imu: imu_state,
+            imu: None,
             wifi_access_point: None,
             demo_image_names: self.demo_images.clone(),
         };
@@ -2296,7 +2260,6 @@ impl MyCedar {
         mut max_exposure_duration: Duration,
         activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
         attached_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
-        imu: Option<Arc<tokio::sync::Mutex<Mpu6050>>>,
         test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
@@ -2529,7 +2492,6 @@ impl MyCedar {
                 solver: solver.clone(),
                 attached_camera: attached_camera.clone(),
                 normalize_rows,
-                imu: imu.clone(),
                 camera: camera.clone(),
                 initial_exposure_duration,
                 fixed_settings,
@@ -3034,16 +2996,6 @@ async fn async_main(
         }
     };
 
-    let imu = match Mpu6050::new() {
-        Ok(i) => {
-            Some(Arc::new(tokio::sync::Mutex::new(i)))
-        },
-        Err(e) => {
-            warn!("Did not find IMU: {:?}", e);
-            None
-        }
-    };
-
     let test_image_camera: Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>> =
         match &args.test_image
     {
@@ -3147,7 +3099,7 @@ async fn async_main(
         /*initial_exposure_duration=*/Duration::from_millis(100),
         args.min_exposure, args.max_exposure,
         activity_led.clone(),
-        attached_camera, imu, test_image_camera, camera,
+        attached_camera, test_image_camera, camera,
         shared_telescope_position.clone(),
         args.star_count_goal, args.sigma, args.min_sigma,
         // TODO: arg for this?
