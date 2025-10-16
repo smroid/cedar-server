@@ -5,6 +5,24 @@ use std::time::SystemTime;
 
 use canonical_error::CanonicalError;
 
+// Acceleration data from IMU.
+#[derive(Debug, Clone, Copy)]
+pub struct AccelData {
+    // m/s².
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+// Angular velocity data from IMU.
+#[derive(Debug, Clone, Copy)]
+pub struct GyroData {
+    // Degrees/second.
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
 // Describes the pointing orientation of a camera.
 pub struct HorizonCoordinates {
     // The position angle of the zenith direction in the camera field of view.
@@ -20,12 +38,17 @@ pub struct HorizonCoordinates {
     pub azimuth: f64,
 }
 
-pub struct TimeInterval {
-    pub begin_time: SystemTime,
-    pub end_time: SystemTime,
+#[derive(Debug, Clone, Copy)]
+pub struct ImuState {
+    pub timestamp: SystemTime,
+    pub accel: AccelData,
+    pub gyro: GyroData,
 }
 
 pub trait ImuTrait {
+    // For all report_xxx() functions, the timestamp must be strictly non
+    // decreasing for successive calls.
+
     // Conveys information obtained from plate solving to the IMU fusion
     // algorithms.
     fn report_true_camera_pointing(
@@ -38,23 +61,37 @@ pub trait ImuTrait {
     // to visual obstruction (clouds, etc) or platform motion.
     fn report_camera_pointing_lost(&self, timestamp: &SystemTime);
 
-    // The platform is known to be motionless at or before the given timestamp.
+    // The platform is discerned to be motionless at or before the given
+    // timestamp. The caller makes this determination based on successive
+    // plate solves.
     fn report_motionless(&self, timestamp: &SystemTime);
 
     // The platform started moving an unknown (but small) time prior to
-    // timestamp.
-    fn report_moving(&self, timestamp: &SystemTime);
+    // timestamp. The caller determines this based on successive plate solves
+    // or on the reported jerk magnitude.
+    fn report_not_motionless(&self, timestamp: &SystemTime);
 
-    // IMU-derived estimate of current camera pointing.
+    // IMU-derived estimate of camera pointing as of the given time.
     fn get_estimated_camera_pointing(
         &self,
         timestamp: &SystemTime,
     ) -> Result<HorizonCoordinates, CanonicalError>;
 
-    // Returns the maximum jerk magnitude (m/s³) seen during the given time
-    // interval.
-    fn get_max_jerk_magnitude(
+    // Returns the IMU reading at the given timestamp. If the timestamp is
+    // omitted the most recent sampled state is returned.
+    fn get_state(
         &self,
-        interval: &TimeInterval,
+        timestamp: &Option<SystemTime>,
+    ) -> Result<ImuState, CanonicalError>;
+
+    // Returns the jerk magnitude (m/s³) seen in the few samples leading up to
+    // the given timestamp. If the timestamp is omitted the most recent sampled
+    // time is used.
+    fn get_jerk_magnitude(
+        &self,
+        timestamp: &Option<SystemTime>,
     ) -> Result<f64, CanonicalError>;
+
+    // Returns the IMU's model.
+    fn get_model(&self) -> String;
 }

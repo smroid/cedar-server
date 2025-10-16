@@ -4,6 +4,7 @@
 pub mod astro_util;
 pub mod cedar_sky_trait;
 pub mod image_utils;
+pub mod imu_trait;
 pub mod reservoir_sampler;
 pub mod solver_trait;
 pub mod value_stats;
