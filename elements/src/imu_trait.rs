@@ -3,6 +3,7 @@
 
 use std::time::SystemTime;
 
+use async_trait::async_trait;
 use canonical_error::CanonicalError;
 
 // Acceleration data from IMU.
@@ -24,6 +25,7 @@ pub struct GyroData {
 }
 
 // Describes the pointing orientation of a camera.
+#[derive(Debug, Clone, Copy)]
 pub struct HorizonCoordinates {
     // The position angle of the zenith direction in the camera field of view.
     // Angle is measured in degrees, with zero being the image's "up" direction
@@ -45,13 +47,14 @@ pub struct ImuState {
     pub gyro: GyroData,
 }
 
+#[async_trait]
 pub trait ImuTrait {
     // For all report_xxx() functions, the timestamp must be strictly non
     // decreasing for successive calls.
 
     // Conveys information obtained from plate solving to the IMU fusion
     // algorithms.
-    fn report_true_camera_pointing(
+    async fn report_true_camera_pointing(
         &self,
         camera_pointing: &HorizonCoordinates,
         timestamp: &SystemTime,
@@ -59,38 +62,40 @@ pub trait ImuTrait {
 
     // No plate solution is available at the given timestamp. This is either due
     // to visual obstruction (clouds, etc) or platform motion.
-    fn report_camera_pointing_lost(&self, timestamp: &SystemTime);
+    async fn report_camera_pointing_lost(&self, timestamp: &SystemTime);
 
     // The platform is discerned to be motionless at or before the given
     // timestamp. The caller makes this determination based on successive
     // plate solves.
-    fn report_motionless(&self, timestamp: &SystemTime);
+    async fn report_motionless(&self, timestamp: &SystemTime);
 
     // The platform started moving an unknown (but small) time prior to
     // timestamp. The caller determines this based on successive plate solves
-    // or on the reported jerk magnitude.
-    fn report_not_motionless(&self, timestamp: &SystemTime);
+    // or on the reported jerk magnitude or on the reported angular acceleration
+    // magnitude.
+    async fn report_not_motionless(&self, timestamp: &SystemTime);
 
     // IMU-derived estimate of camera pointing as of the given time.
-    fn get_estimated_camera_pointing(
+    async fn get_estimated_camera_pointing(
         &self,
         timestamp: &SystemTime,
     ) -> Result<HorizonCoordinates, CanonicalError>;
 
     // Returns the IMU reading at the given timestamp. If the timestamp is
     // omitted the most recent sampled state is returned.
-    fn get_state(
+    async fn get_state(
         &self,
         timestamp: &Option<SystemTime>,
     ) -> Result<ImuState, CanonicalError>;
 
-    // Returns the jerk magnitude (m/s³) seen in the few samples leading up to
-    // the given timestamp. If the timestamp is omitted the most recent sampled
-    // time is used.
-    fn get_jerk_magnitude(
+    // Returns the jerk magnitude (m/s³) seen in the most recent samples.
+    async fn get_jerk_magnitude(&self) -> Result<(f64, SystemTime), CanonicalError>;
+
+    // Returns the angular velocity magnitude (degrees/s) seen in the most
+    // recent samples.
+    async fn get_angular_velocity_magnitude(
         &self,
-        timestamp: &Option<SystemTime>,
-    ) -> Result<f64, CanonicalError>;
+    ) -> Result<(f64, SystemTime), CanonicalError>;
 
     // Returns the IMU's model.
     fn get_model(&self) -> String;
