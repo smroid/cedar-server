@@ -81,12 +81,10 @@ pub trait ImuTrait {
         timestamp: &SystemTime,
     ) -> Result<HorizonCoordinates, CanonicalError>;
 
-    // Returns the IMU reading at the given timestamp. If the timestamp is
-    // omitted the most recent sampled state is returned.
+    // Returns the most recent IMU reading.
     async fn get_state(
         &self,
-        timestamp: &Option<SystemTime>,
-    ) -> Result<ImuState, CanonicalError>;
+    ) -> Result<(ImuState, SystemTime), CanonicalError>;
 
     // Returns the jerk magnitude (m/s³) seen in the most recent samples.
     async fn get_jerk_magnitude(&self) -> Result<(f64, SystemTime), CanonicalError>;
