@@ -75,7 +75,9 @@ pub trait ImuTrait {
     // magnitude.
     async fn report_not_motionless(&self, timestamp: &SystemTime);
 
-    // IMU-derived estimate of camera pointing as of the given time.
+    // IMU-derived estimate of camera pointing as of the given time. The
+    // timestamp must not precede the timestamp of the most recent
+    // report_true_camera_pointing() call.
     async fn get_estimated_camera_pointing(
         &self,
         timestamp: &SystemTime,
