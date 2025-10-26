@@ -33,6 +33,7 @@ use cedar_elements::cedar_sky::{
     ConstellationResponse, ObjectTypeResponse, Ordering,
     QueryCatalogRequest, QueryCatalogResponse};
 use cedar_elements::cedar_sky_trait::{CedarSkyTrait, LocationInfo};
+use cedar_elements::imu_trait::ImuTrait;
 use cedar_elements::solver_trait::SolverTrait;
 use cedar_elements::wifi_trait::WifiTrait;
 
@@ -217,6 +218,9 @@ struct CedarState {
 
     // Not all builds of Cedar-server support Wifi control.
     wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+
+    // Not all builds of Cedar-server support IMU fusion.
+    imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
 
     // We host the user interface preferences and some operation settings here.
     // On startup we apply some of these to `operation_settings`; we reflect
@@ -2273,7 +2277,8 @@ impl MyCedar {
         copyright: &str,
         feature_level: FeatureLevel,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-        wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>)
+        wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+        imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>)
         -> Result<Self, CanonicalError>
     {
         let cedar_version = env!("CARGO_PKG_VERSION");
@@ -2515,7 +2520,7 @@ impl MyCedar {
                 telescope_position,
                 polar_analyzer,
                 activity_led,
-                cedar_sky, wifi,
+                cedar_sky, wifi, imu_tracker,
                 preferences: shared_preferences.clone(),
                 scaled_image: None,
                 scaled_image_binning_factor: 1,
@@ -2825,9 +2830,10 @@ fn parse_duration(arg: &str)
     Ok(std::time::Duration::from_secs_f64(seconds))
 }
 
-// `get_dependencies` Is called to obtain the CedarSkyTrait and WifiTrait
-//     implementations, if any. This function is called after logging has been
-//     set up and `server_main()`s command line arguments have been consumed.
+// `get_dependencies` Is called to obtain the CedarSkyTrait, WifiTrait,
+//     ImuTrait, and SolverTrait implementations, if any. This function is
+//     called after logging has been set up and `server_main()`s command line
+//     arguments have been consumed.
 //     The AtomicBool is set to true if control-c occurs.
 pub fn server_main(
     product_name: &str, copyright: &str,
@@ -2835,6 +2841,7 @@ pub fn server_main(
     get_dependencies: fn(Arguments)
                          -> (Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
                              Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+                             Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
                              Option<Arc<tokio::sync::Mutex<
                                      dyn SolverTrait + Send + Sync>>>)) {
     const HELP: &str = "\
@@ -2925,9 +2932,10 @@ pub fn server_main(
         std::process::exit(-1);
     }).unwrap();
 
-    let (cedar_sky, wifi, solver) = get_dependencies(Arguments::from_vec(remaining));
+    let (cedar_sky, wifi, imu_tracker, solver) =
+        get_dependencies(Arguments::from_vec(remaining));
     async_main(args, product_name, copyright, flutter_app_path,
-               got_signal, cedar_sky, wifi, solver);
+               got_signal, cedar_sky, wifi, imu_tracker, solver);
 }
 
 fn get_attached_camera(camera_interface: Option<&CameraInterface>,
@@ -2966,6 +2974,7 @@ async fn async_main(
     got_signal: Arc<AtomicBool>,
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+    imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     injected_solver: Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>)
 {
     // If any thread panics, bail out.
@@ -3106,6 +3115,7 @@ async fn async_main(
         /*stats_capacity=*/100,
         PathBuf::from(args.ui_prefs),
         path, product_name, copyright, feature_level, cedar_sky, wifi,
+        imu_tracker,
     ).await.unwrap());
 
     let grpc = tonic::transport::Server::builder()

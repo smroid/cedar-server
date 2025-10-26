@@ -13,5 +13,5 @@ fn main() {
          See LICENSE.md at https://github.com/smroid/cedar-server",
         /*flutter_app_path=*/"../cedar/cedar-aim/cedar_flutter/build/web",
         /*get_dependencies=*/
-        |_pargs: Arguments| { (None, None, None) });
+        |_pargs: Arguments| { (None, None, None, None) });
 }

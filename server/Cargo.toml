@@ -1,6 +1,6 @@
 [package]
 name = "cedar-server"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2021"
 
 [[bin]] # Bin to run the Cedar Box gRPC server.
