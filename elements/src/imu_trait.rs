@@ -83,6 +83,10 @@ pub trait ImuTrait {
         timestamp: &SystemTime,
     ) -> Result<HorizonCoordinates, CanonicalError>;
 
+    // Returns the RMS error (in degrees) of the IMU calibration fit. Returns
+    // None if not yet calibrated.
+    async fn get_calibration_quality(&self) -> Option<f64>;
+
     // Returns the most recent IMU reading.
     async fn get_state(
         &self,
@@ -92,7 +96,8 @@ pub trait ImuTrait {
     async fn get_jerk_magnitude(&self) -> Result<(f64, SystemTime), CanonicalError>;
 
     // Returns the angular velocity magnitude (degrees/s) seen in the most
-    // recent samples.
+    // recent samples. Returns failed_precondition error if there is no IMU
+    // calibration.
     async fn get_angular_velocity_magnitude(
         &self,
     ) -> Result<(f64, SystemTime), CanonicalError>;
