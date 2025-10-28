@@ -557,6 +557,11 @@ message PlateSolution {
 
   // 3x3 matrix in row-major order.
   repeated double rotation_matrix = 18;
+
+  // False: solution is from plate solving.
+  // True: solution is from an IMU estimate of the camera's sky coordinate and
+  // roll angle.
+  bool solution_from_imu = 19;
 }
 
 message StarInfo {
