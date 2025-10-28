@@ -24,7 +24,7 @@ pub struct GyroData {
     pub z: f64,
 }
 
-// Describes the pointing orientation of a camera.
+// Describes the pointing orientation of a camera in horizon coordinates.
 #[derive(Debug, Clone, Copy)]
 pub struct HorizonCoordinates {
     // The position angle of the zenith direction in the camera field of view.
@@ -38,6 +38,22 @@ pub struct HorizonCoordinates {
 
     // Azimuth (degrees, positive clockwise from north) of the boresight.
     pub azimuth: f64,
+}
+
+// Describes the pointing orientation of a camera in equatorial coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct EquatorialCoordinates {
+    // The position angle of the north direction in the camera field of view.
+    // Angle is measured in degrees, with zero being the image's "up" direction
+    // (towards y=0); a positive north roll angle means north direction is
+    // counter-clockwise from image "up".
+    pub north_roll_angle: f64,
+
+    // Right ascension (degrees) of the boresight.
+    pub ra: f64,
+
+    // Declination (degrees) of the boresight.
+    pub dec: f64,
 }
 
 #[derive(Debug, Clone, Copy)]

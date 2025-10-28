@@ -11,6 +11,7 @@ use astro::{
 use chrono::{DateTime, Datelike, Timelike, Utc};
 
 use crate::cedar::{FovCatalogEntry, ImageCoord, StarCentroid};
+use crate::imu_trait::{EquatorialCoordinates, HorizonCoordinates};
 
 extern crate nalgebra as na;
 
@@ -140,31 +141,27 @@ pub fn equatorial_from_alt_az(
     (ra, dec)
 }
 
-/// Returns (alt, az, zenith_roll_angle) in radians. Returned azimuth is
-/// clockwise from north. zenith_roll_angle is the position angle of the
-/// zenith direction in the camera field of view, with zero being the image's
-/// "up" direction (towards y=0); a positive zenith roll angle means the zenith
-/// is counter-clockwise from image "up".
-/// ra: right ascension in radians.
-/// dec: declination in radians.
-/// north_roll_angle: Rotation in radians of celestial north relative to image's
-///     "up" direction (towards y=0). Zero when north and up coincide; a
-///     positive roll angle means north is counter-clockwise from image "up".
-/// lat: observer latitude in radians.
-/// long: observer longitude in radians.
+/// Converts from equatorial camera coordinates to horizon coordinates.
+/// equatorial: Camera pointing in equatorial coordinates (degrees).
+/// lat: Observer latitude in radians.
+/// long: Observer longitude in radians.
+/// time: Current time.
+/// Returns: Camera pointing in horizon coordinates.
 pub fn horizon_from_equatorial_camera(
-    ra: f64,
-    dec: f64,
-    north_roll_angle: f64,
+    equatorial: &EquatorialCoordinates,
     lat: f64,
     long: f64,
     time: SystemTime,
-) -> (f64, f64, f64) {
+) -> HorizonCoordinates {
+    let ra = equatorial.ra.to_radians();
+    let dec = equatorial.dec.to_radians();
+    let north_roll_angle = equatorial.north_roll_angle.to_radians();
+
     // First convert from equatorial to horizon coordinates.
     let (alt, az, _ha) = alt_az_from_equatorial(ra, dec, lat, long, time);
 
     // Calculate the position angle of the zenith relative to north at the
-    // target location. The zenith is at alt=90 degrees at the any azimuth.
+    // target location. The zenith is at alt=90 degrees at any azimuth.
     let zenith_ra_dec = equatorial_from_alt_az(PI / 2.0, az, lat, long, time);
     let zenith_position_angle =
         position_angle(ra, dec, zenith_ra_dec.0, zenith_ra_dec.1);
@@ -174,19 +171,29 @@ pub fn horizon_from_equatorial_camera(
     // from image "up".
     let zenith_roll_angle = north_roll_angle + zenith_position_angle;
 
-    (alt, az, zenith_roll_angle)
+    HorizonCoordinates {
+        zenith_roll_angle: zenith_roll_angle.to_degrees(),
+        altitude: alt.to_degrees(),
+        azimuth: az.to_degrees(),
+    }
 }
 
-/// Returns (ra, dec, north_roll_angle). See horizon_from_equatorial_camera()
-/// for definitions.
+/// Converts from horizon camera coordinates to equatorial coordinates.
+/// horizon: Camera pointing in horizon coordinates (degrees).
+/// lat: Observer latitude in radians.
+/// long: Observer longitude in radians.
+/// time: Current time.
+/// Returns: Camera pointing in equatorial coordinates.
 pub fn equatorial_from_horizon_camera(
-    alt: f64,
-    az: f64,
-    zenith_roll_angle: f64,
+    horizon: &HorizonCoordinates,
     lat: f64,
     long: f64,
     time: SystemTime,
-) -> (f64, f64, f64) {
+) -> EquatorialCoordinates {
+    let alt = horizon.altitude.to_radians();
+    let az = horizon.azimuth.to_radians();
+    let zenith_roll_angle = horizon.zenith_roll_angle.to_radians();
+
     // First convert from horizon to equatorial coordinates.
     let (ra, dec) = equatorial_from_alt_az(alt, az, lat, long, time);
 
@@ -201,7 +208,11 @@ pub fn equatorial_from_horizon_camera(
     // horizon_from_equatorial_camera.
     let north_roll_angle = zenith_roll_angle - zenith_position_angle;
 
-    (ra, dec, north_roll_angle)
+    EquatorialCoordinates {
+        north_roll_angle: north_roll_angle.to_degrees(),
+        ra: ra.to_degrees(),
+        dec: dec.to_degrees(),
+    }
 }
 
 fn greenwich_mean_sidereal_time_from_system_time(time: SystemTime) -> f64 {
@@ -701,9 +712,9 @@ mod tests {
     #[test]
     fn test_horizon_equatorial_camera_conversion() {
         // Test round-trip conversion between equatorial and horizon camera coordinates
-        let mizar_ra = deg_frm_hms(13, 23, 55.5).to_radians();
-        let mizar_dec = deg_frm_dms(54, 55, 31.3).to_radians();
-        let north_roll_angle = PI / 6.0; // 30 degrees
+        let mizar_ra_deg = deg_frm_hms(13, 23, 55.5);
+        let mizar_dec_deg = deg_frm_dms(54, 55, 31.3);
+        let north_roll_angle_deg = 30.0; // degrees
 
         let dt = FixedOffset::west_opt(8 * 3600)
             .unwrap()
@@ -718,24 +729,26 @@ mod tests {
         let lat = 37_f64.to_radians();
         let long = -122_f64.to_radians();
 
+        let equatorial = EquatorialCoordinates {
+            north_roll_angle: north_roll_angle_deg,
+            ra: mizar_ra_deg,
+            dec: mizar_dec_deg,
+        };
+
         // Forward conversion: equatorial -> horizon
-        let (alt, az, zenith_roll_angle) = horizon_from_equatorial_camera(
-            mizar_ra,
-            mizar_dec,
-            north_roll_angle,
-            lat,
-            long,
-            time,
-        );
+        let horizon = horizon_from_equatorial_camera(&equatorial, lat, long, time);
 
         // Reverse conversion: horizon -> equatorial
-        let (ra_out, dec_out, north_roll_angle_out) =
-            equatorial_from_horizon_camera(alt, az, zenith_roll_angle, lat, long, time);
+        let equatorial_out = equatorial_from_horizon_camera(&horizon, lat, long, time);
 
         // Verify round-trip
-        assert_abs_diff_eq!(ra_out, mizar_ra, epsilon = 0.001);
-        assert_abs_diff_eq!(dec_out, mizar_dec, epsilon = 0.001);
-        assert_abs_diff_eq!(north_roll_angle_out, north_roll_angle, epsilon = 0.001);
+        assert_abs_diff_eq!(equatorial_out.ra, mizar_ra_deg, epsilon = 0.001);
+        assert_abs_diff_eq!(equatorial_out.dec, mizar_dec_deg, epsilon = 0.001);
+        assert_abs_diff_eq!(
+            equatorial_out.north_roll_angle,
+            north_roll_angle_deg,
+            epsilon = 0.001
+        );
     }
 
     #[test]

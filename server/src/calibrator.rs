@@ -334,7 +334,7 @@ impl Calibrator {
         let plate_solution = solver.lock().await.solve_from_centroids(
             &star_centroids,
             width as usize, height as usize,
-            &solve_extension, &solve_params).await?;
+            &solve_extension, &solve_params, /*imu_estimate=*/None).await?;
 
         if *cancel_calibration.lock().await {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
@@ -358,7 +358,7 @@ impl Calibrator {
         let plate_solution2 = match solver.lock().await.solve_from_centroids(
             &star_centroids,
             width as usize, height as usize,
-            &solve_extension, &solve_params).await
+            &solve_extension, &solve_params, /*imu_estimate=*/None).await
         {
             Ok(ps) => ps,
             Err(e) => {

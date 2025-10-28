@@ -8,6 +8,7 @@ use async_trait::async_trait;
 
 use crate::cedar_common::CelestialCoord;
 use crate::cedar::{ImageCoord, PlateSolution};
+use crate::imu_trait::EquatorialCoordinates;
 
 #[derive(Debug, Default)]
 pub struct SolveExtension {
@@ -36,6 +37,8 @@ pub struct SolveParams {
 }
 
 // See tetra3.py in cedar-solve for description of args.
+// `imu_estimate` If provided, this is the IMU's current estimate of the
+//   camera's boresight and rotation.
 // If SolveResult is not returned, an error is returned:
 //   NotFound: no match was found.
 //   DeadlineExceeded: the params.solve_timeout was reached.
@@ -50,7 +53,8 @@ pub trait SolverTrait {
                                   star_centroids: &[ImageCoord],
                                   width: usize, height: usize,
                                   extension: &SolveExtension,
-                                  params: &SolveParams)
+                                  params: &SolveParams,
+                                  imu_estimate: Option<EquatorialCoordinates>)
                                   -> Result<PlateSolution, CanonicalError>;
 
     // Requests that the current solve_from_centroids() operation, if any,
