@@ -140,6 +140,70 @@ pub fn equatorial_from_alt_az(
     (ra, dec)
 }
 
+/// Returns (alt, az, zenith_roll_angle) in radians. Returned azimuth is
+/// clockwise from north. zenith_roll_angle is the position angle of the
+/// zenith direction in the camera field of view, with zero being the image's
+/// "up" direction (towards y=0); a positive zenith roll angle means the zenith
+/// is counter-clockwise from image "up".
+/// ra: right ascension in radians.
+/// dec: declination in radians.
+/// north_roll_angle: Rotation in radians of celestial north relative to image's
+///     "up" direction (towards y=0). Zero when north and up coincide; a
+///     positive roll angle means north is counter-clockwise from image "up".
+/// lat: observer latitude in radians.
+/// long: observer longitude in radians.
+pub fn horizon_from_equatorial_camera(
+    ra: f64,
+    dec: f64,
+    north_roll_angle: f64,
+    lat: f64,
+    long: f64,
+    time: SystemTime,
+) -> (f64, f64, f64) {
+    // First convert from equatorial to horizon coordinates.
+    let (alt, az, _ha) = alt_az_from_equatorial(ra, dec, lat, long, time);
+
+    // Calculate the position angle of the zenith relative to north at the
+    // target location. The zenith is at alt=90 degrees at the any azimuth.
+    let zenith_ra_dec = equatorial_from_alt_az(PI / 2.0, az, lat, long, time);
+    let zenith_position_angle =
+        position_angle(ra, dec, zenith_ra_dec.0, zenith_ra_dec.1);
+
+    // The zenith roll angle is the sum of the north roll angle and the zenith
+    // position angle. This represents how much the zenith direction is rotated
+    // from image "up".
+    let zenith_roll_angle = north_roll_angle + zenith_position_angle;
+
+    (alt, az, zenith_roll_angle)
+}
+
+/// Returns (ra, dec, north_roll_angle). See horizon_from_equatorial_camera()
+/// for definitions.
+pub fn equatorial_from_horizon_camera(
+    alt: f64,
+    az: f64,
+    zenith_roll_angle: f64,
+    lat: f64,
+    long: f64,
+    time: SystemTime,
+) -> (f64, f64, f64) {
+    // First convert from horizon to equatorial coordinates.
+    let (ra, dec) = equatorial_from_alt_az(alt, az, lat, long, time);
+
+    // Calculate the position angle of the zenith relative to the target
+    // location. The zenith is at alt=90 degrees at the same azimuth.
+    let zenith_ra_dec = equatorial_from_alt_az(PI / 2.0, az, lat, long, time);
+    let zenith_position_angle =
+        position_angle(ra, dec, zenith_ra_dec.0, zenith_ra_dec.1);
+
+    // The north roll angle is the zenith roll angle minus the position angle
+    // of zenith. This reverses the calculation from
+    // horizon_from_equatorial_camera.
+    let north_roll_angle = zenith_roll_angle - zenith_position_angle;
+
+    (ra, dec, north_roll_angle)
+}
+
 fn greenwich_mean_sidereal_time_from_system_time(time: SystemTime) -> f64 {
     let dt_utc = DateTime::<Utc>::from(time);
     let date = Date {
@@ -632,6 +696,46 @@ mod tests {
     fn test_magnitude_intensity_ratio() {
         let ratio = magnitude_intensity_ratio(2.0, 1.0);
         assert_abs_diff_eq!(ratio, 2.51, epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_horizon_equatorial_camera_conversion() {
+        // Test round-trip conversion between equatorial and horizon camera coordinates
+        let mizar_ra = deg_frm_hms(13, 23, 55.5).to_radians();
+        let mizar_dec = deg_frm_dms(54, 55, 31.3).to_radians();
+        let north_roll_angle = PI / 6.0; // 30 degrees
+
+        let dt = FixedOffset::west_opt(8 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2024, 3, 7, 23, 56, 0)
+            .unwrap();
+        let time = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs_f64(
+                dt.timestamp_millis() as f64 / 1000.0,
+            ))
+            .unwrap();
+
+        let lat = 37_f64.to_radians();
+        let long = -122_f64.to_radians();
+
+        // Forward conversion: equatorial -> horizon
+        let (alt, az, zenith_roll_angle) = horizon_from_equatorial_camera(
+            mizar_ra,
+            mizar_dec,
+            north_roll_angle,
+            lat,
+            long,
+            time,
+        );
+
+        // Reverse conversion: horizon -> equatorial
+        let (ra_out, dec_out, north_roll_angle_out) =
+            equatorial_from_horizon_camera(alt, az, zenith_roll_angle, lat, long, time);
+
+        // Verify round-trip
+        assert_abs_diff_eq!(ra_out, mizar_ra, epsilon = 0.001);
+        assert_abs_diff_eq!(dec_out, mizar_dec, epsilon = 0.001);
+        assert_abs_diff_eq!(north_roll_angle_out, north_roll_angle, epsilon = 0.001);
     }
 
     #[test]
