@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use canonical_error::CanonicalError;
 
 // Acceleration data from IMU.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct AccelData {
     // m/s².
     pub x: f64,
