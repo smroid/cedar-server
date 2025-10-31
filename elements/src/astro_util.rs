@@ -99,7 +99,7 @@ pub fn alt_az_from_equatorial(
     dec: f64,
     lat: f64,
     long: f64,
-    time: SystemTime,
+    time: &SystemTime,
 ) -> (/* alt */ f64, /* az */ f64, /* ha */ f64) {
     let gmst = greenwich_mean_sidereal_time_from_system_time(time);
 
@@ -127,7 +127,7 @@ pub fn equatorial_from_alt_az(
     az: f64,
     lat: f64,
     long: f64,
-    time: SystemTime,
+    time: &SystemTime,
 ) -> (f64, f64) {
     let meeus_az = limit_to_two_PI(az - PI);
     let gmst = greenwich_mean_sidereal_time_from_system_time(time);
@@ -151,7 +151,7 @@ pub fn horizon_from_equatorial_camera(
     equatorial: &EquatorialCoordinates,
     lat: f64,
     long: f64,
-    time: SystemTime,
+    time: &SystemTime,
 ) -> HorizonCoordinates {
     let ra = equatorial.ra.to_radians();
     let dec = equatorial.dec.to_radians();
@@ -188,7 +188,7 @@ pub fn equatorial_from_horizon_camera(
     horizon: &HorizonCoordinates,
     lat: f64,
     long: f64,
-    time: SystemTime,
+    time: &SystemTime,
 ) -> EquatorialCoordinates {
     let alt = horizon.altitude.to_radians();
     let az = horizon.azimuth.to_radians();
@@ -215,8 +215,8 @@ pub fn equatorial_from_horizon_camera(
     }
 }
 
-fn greenwich_mean_sidereal_time_from_system_time(time: SystemTime) -> f64 {
-    let dt_utc = DateTime::<Utc>::from(time);
+fn greenwich_mean_sidereal_time_from_system_time(time: &SystemTime) -> f64 {
+    let dt_utc = DateTime::<Utc>::from(*time);
     let date = Date {
         year: dt_utc.date_naive().year() as i16,
         month: dt_utc.date_naive().month() as u8,

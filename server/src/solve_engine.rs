@@ -16,7 +16,9 @@ use cedar_detect::histogram_funcs::{
 };
 use cedar_elements::{
     astro_util::{
-        angular_separation, position_angle, transform_to_image_coord,
+        angular_separation, equatorial_from_horizon_camera,
+        horizon_from_equatorial_camera, position_angle,
+        transform_to_image_coord,
     },
     cedar::{
         FovCatalogEntry, ImageCoord, LatLong,
@@ -26,7 +28,7 @@ use cedar_elements::{
     cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering},
     cedar_sky_trait::CedarSkyTrait,
     image_utils::{normalize_rows_mut, scale_image_mut},
-    imu_trait::ImuTrait,
+    imu_trait::{EquatorialCoordinates, ImuTrait},
     solver_trait::{SolveExtension, SolveParams, SolverTrait},
     value_stats::ValueStatsAccumulator,
 };
@@ -425,6 +427,7 @@ impl SolveEngine {
         height: usize,
         extension: &SolveExtension,
         params: &SolveParams,
+        imu_estimate: Option<EquatorialCoordinates>,
     ) -> Result<PlateSolutionProto, CanonicalError> {
         solver
             .lock()
@@ -435,8 +438,7 @@ impl SolveEngine {
                 height,
                 extension,
                 params,
-                // imu_estimate=
-                None,
+                imu_estimate,
             )
             .await
     }
@@ -478,6 +480,7 @@ impl SolveEngine {
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_result: &DetectResult,
+        image_time: &SystemTime,
         minimum_stars: i32,
         solve_extension: &SolveExtension,
         solve_params: &SolveParams,
@@ -492,10 +495,58 @@ impl SolveEngine {
             });
         }
 
+        // Do we have enough stars to attempt a plate solution?
+        let have_stars =
+            detect_result.star_candidates.len() >= minimum_stars as usize;
+
+        // Is IMU tracker available and usable?
+        let imu_tracker = if state.lock().await.imu_tracker.is_some()
+            && state.lock().await.observer_location.is_some()
+        {
+            state.lock().await.imu_tracker.clone()
+        } else {
+            None
+        };
+        let (lat_rad, long_rad) = if let Some(observer_location) =
+            &state.lock().await.observer_location
+        {
+            (
+                observer_location.latitude.to_radians(),
+                observer_location.longitude.to_radians(),
+            )
+        } else {
+            (0.0, 0.0)
+        };
+
+        let imu_estimate = if let Some(ref tracker) = imu_tracker {
+            match tracker
+                .lock()
+                .await
+                .get_estimated_camera_pointing(image_time)
+                .await
+            {
+                Ok(hc) => {
+                    // Convert horizon coordinates to equatorial.
+                    Some(equatorial_from_horizon_camera(
+                        &hc, lat_rad, long_rad, image_time,
+                    ))
+                }
+                Err(e) => {
+                    if !have_stars {
+                        // For now, be loud about this.
+                        warn!("No IMU estimate available: {:?}", e);
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let mut plate_solution_proto: Option<PlateSolutionProto> = None;
         let mut solve_finish_time: Option<SystemTime> = None;
 
-        if detect_result.star_candidates.len() >= minimum_stars as usize {
+        if have_stars || imu_estimate.is_some() {
             {
                 let mut locked_state = state.lock().await;
                 // Record interval since last solve attempt.
@@ -523,10 +574,18 @@ impl SolveEngine {
                 detect_result.captured_image.image.dimensions().1 as usize,
                 &solve_extension,
                 &solve_params,
+                imu_estimate,
             )
             .await
             {
                 Err(e) => {
+                    if let Some(ref tracker) = imu_tracker {
+                        tracker
+                            .lock()
+                            .await
+                            .report_camera_pointing_lost(image_time)
+                            .await;
+                    }
                     // Let's not spam the log with solver failures. If the
                     // number of detected stars is low, don't bother to log,
                     // as this is a trivial source of solve failures (e.g.
@@ -549,13 +608,35 @@ impl SolveEngine {
                     }
                 }
                 Ok(solution) => {
-                    // Re-enable logging of the next non-trivial solve failure.
-                    state.lock().await.logged_error = false;
-                    plate_solution_proto = Some(solution);
+                    // Did we get a real plate solution (not IMU fallback)?
+                    if !solution.solution_from_imu {
+                        if let Some(ref tracker) = imu_tracker {
+                            // Create HorizonCoordinates from plate solution.
+                            let sky_coord =
+                                solution.image_sky_coord.as_ref().unwrap();
+                            let ec = EquatorialCoordinates {
+                                north_roll_angle: solution.roll,
+                                ra: sky_coord.ra,
+                                dec: sky_coord.dec,
+                            };
+                            let hc = horizon_from_equatorial_camera(
+                                &ec, lat_rad, long_rad, image_time,
+                            );
+                            tracker
+                                .lock()
+                                .await
+                                .report_true_camera_pointing(&hc, image_time)
+                                .await;
+                        }
+                        // Re-enable logging of the next non-trivial solve
+                        // failure.
+                        state.lock().await.logged_error = false;
+                        plate_solution_proto = Some(solution);
+                    }
                 }
             }
             solve_finish_time = Some(SystemTime::now());
-        } else {
+        } else if !have_stars {
             // Not enough stars for solve attempt - clear last attempt time
             // so we don't include non-solving periods in interval stats.
             let mut locked_state = state.lock().await;
@@ -862,6 +943,7 @@ impl SolveEngine {
                     solver.clone(),
                     state.clone(),
                     &detect_result,
+                    &detect_result.captured_image.readout_time,
                     minimum_stars,
                     &solve_extension,
                     &solve_params,

@@ -92,12 +92,12 @@ impl MotionEstimator {
     // `position_rmse` If `position` is provided, this will be the RMS error (in
     //     arcseconds) of the plate solution. This represents the noise level
     //     associated with `position`.
-    pub fn add(&mut self, time: SystemTime, position: Option<CelestialCoord>,
+    pub fn add(&mut self, time: &SystemTime, position: Option<CelestialCoord>,
                position_rmse: Option<f64>) {
         let prev_time = self.prev_time;
         let prev_pos = self.prev_position.clone();
         if position.is_some() {
-            self.prev_time = Some(time);
+            self.prev_time = Some(*time);
             self.prev_position = position.clone();
         }
         if prev_time.is_none() {
@@ -108,10 +108,10 @@ impl MotionEstimator {
             }
             return;
         }
-        let prev_time = prev_time.unwrap();
+        let prev_time = &prev_time.unwrap();
         if time <= prev_time {
             // This can happen when the client updates the server's system time.
-            if time <= prev_time - Duration::from_secs(10) {
+            if *time <= *prev_time - Duration::from_secs(10) {
                 warn!("Time arg regressed from {:?} to {:?}", prev_time, time);
             }
             return;
@@ -122,7 +122,7 @@ impl MotionEstimator {
                 return;
             }
             // Has gap persisted for too long?
-            if time.duration_since(prev_time).unwrap() > self.gap_tolerance {
+            if time.duration_since(*prev_time).unwrap() > self.gap_tolerance {
                 self.set_state(State::Unknown);
                 self.ra_rate = None;
                 self.dec_rate = None;
@@ -206,10 +206,10 @@ impl MotionEstimator {
     }
 
     // pos_rmse: position error estimate in degrees.
-    fn is_stopped(time: SystemTime, pos: &CelestialCoord, pos_rmse: f64,
-                  prev_time: SystemTime, prev_pos: &CelestialCoord) -> bool {
+    fn is_stopped(time: &SystemTime, pos: &CelestialCoord, pos_rmse: f64,
+                  prev_time: &SystemTime, prev_pos: &CelestialCoord) -> bool {
         let elapsed_secs =
-            time.duration_since(prev_time).unwrap().as_secs_f64();
+            time.duration_since(*prev_time).unwrap().as_secs_f64();
 
         // Max movement rate below which we are considered to be stopped.
         let max_rate = f64::max(pos_rmse * 8.0, Self::SIDEREAL_RATE * 2.0);

@@ -50,9 +50,9 @@ impl RateEstimation {
     // estimation. Note that even though we retain a finite number of points,
     // the estimated `slope` continues to improve over time as the time span of
     // added values increases.
-    pub fn new(capacity: usize, time: SystemTime, value: f64) -> Self {
+    pub fn new(capacity: usize, time: &SystemTime, value: f64) -> Self {
         let mut re = RateEstimation {
-            first: time,
+            first: *time,
             last: SystemTime::UNIX_EPOCH,
             reservoir: ReservoirSampler::<DataPoint>::new(capacity),
             slope: 0.0,
@@ -63,21 +63,22 @@ impl RateEstimation {
             y_sum: 0.0,
         };
         re.add(time, value, 0.0);
+
         re
     }
 
     // Successive calls to add() must have increasing `time` arg values.
-    pub fn add(&mut self, time: SystemTime, value: f64, noise_estimate: f64) {
-        if time <= self.last {
+    pub fn add(&mut self, time: &SystemTime, value: f64, noise_estimate: f64) {
+        if *time <= self.last {
             // This can happen when the client updates the server's system time.
-            if time <= self.last - Duration::from_secs(10) {
+            if *time <= self.last - Duration::from_secs(10) {
                 warn!("Time arg regressed from {:?} to {:?}", self.last, time);
             }
-            self.last = time;
+            self.last = *time;
             return;
         }
-        self.last = time;
-        let (added, removed) = self.reservoir.add(DataPoint{x: time, y: value});
+        self.last = *time;
+        let (added, removed) = self.reservoir.add(DataPoint{x: *time, y: value});
         if let Some(removed) = removed {
             let x = removed.x.duration_since(SystemTime::UNIX_EPOCH).unwrap()
                 .as_secs_f64();
@@ -114,7 +115,7 @@ impl RateEstimation {
 
         let mut y_variance = 0.0_f64;
         for sample in self.reservoir.samples() {
-            let y_reg = self.estimate_value(sample.x);
+            let y_reg = self.estimate_value(&sample.x);
             y_variance += (sample.y - y_reg) * (sample.y - y_reg);
         }
         let adjusted_y_variance = f64::max(y_variance, noise_estimate * noise_estimate);
@@ -135,7 +136,7 @@ impl RateEstimation {
     // the model's noise.
     // `time` must not be earlier than the first add()ed data point.
     // If count() is less than 3, returns true.
-    pub fn fits_trend(&self, time: SystemTime, value: f64, sigma: f64) -> bool {
+    pub fn fits_trend(&self, time: &SystemTime, value: f64, sigma: f64) -> bool {
         if self.count() < 3 {
             return true;
         }
@@ -144,7 +145,7 @@ impl RateEstimation {
         deviation < sigma * self.y_noise
     }
 
-    fn estimate_value(&self, time: SystemTime) -> f64 {
+    fn estimate_value(&self, time: &SystemTime) -> f64 {
         let x = time.duration_since(self.first).unwrap().as_secs_f64();
         self.intercept + x * self.slope
     }

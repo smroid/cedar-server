@@ -2425,7 +2425,7 @@ impl MyCedar {
                     fixed_settings.observer_location.clone().unwrap();
                 let lat = geo_location.latitude.to_radians();
                 let long = geo_location.longitude.to_radians();
-                let time = captured_image.readout_time;
+                let time = &captured_image.readout_time;
                 // alt/az of boresight. Also boresight hour angle.
                 let (bs_alt, bs_az, bs_ha) =
                     alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
@@ -2720,7 +2720,7 @@ impl MyCedar {
                         fixed_settings.observer_location.clone().unwrap();
                     let lat = geo_location.latitude.to_radians();
                     let long = geo_location.longitude.to_radians();
-                    let time = captured_image.readout_time;
+                    let time = &captured_image.readout_time;
                     // alt/az of boresight.
                     let (bs_alt, bs_az, _bs_ha) =
                         alt_az_from_equatorial(bs_ra, bs_dec, lat, long, time);
@@ -3362,7 +3362,7 @@ impl MyCedar {
             telescope_position.lock().await.boresight_valid = false;
             if let Some(detect_result) = detect_result {
                 motion_estimator.lock().await.add(
-                    detect_result.captured_image.readout_time,
+                    &detect_result.captured_image.readout_time,
                     None,
                     None,
                 );
@@ -3380,7 +3380,7 @@ impl MyCedar {
             locked_telescope_position.boresight_dec = coords.dec;
             locked_telescope_position.boresight_valid = true;
             let readout_time =
-                detect_result.unwrap().captured_image.readout_time;
+                &detect_result.unwrap().captured_image.readout_time;
             motion_estimator.lock().await.add(
                 readout_time,
                 Some(coords.clone()),
