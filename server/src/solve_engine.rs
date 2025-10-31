@@ -90,6 +90,7 @@ struct SolveState {
     catalog_entry_match: Option<CatalogEntryMatch>,
 
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
+    use_imu_tracker: bool,
     observer_location: Option<LatLong>,
 
     frame_id: Option<i32>,
@@ -145,7 +146,8 @@ impl SolveEngine {
                 normalize_rows,
                 cedar_sky,
                 catalog_entry_match: None,
-                imu_tracker,
+                imu_tracker: imu_tracker.clone(),
+                use_imu_tracker: imu_tracker.is_some(),
                 observer_location: None,
                 frame_id: None,
                 minimum_stars: 4,
@@ -304,6 +306,23 @@ impl SolveEngine {
         locked_state.observer_location = observer_location;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
+    }
+
+    // Control whether the IMU is used (if we have one). Is set to false while
+    // a test image is being used.
+    pub async fn set_use_imu_tracker(&mut self, use_imu_tracker: bool) {
+        let imu_tracker = {
+            let mut locked_state = self.state.lock().await;
+            if locked_state.imu_tracker.is_some() {
+                locked_state.use_imu_tracker = use_imu_tracker;
+            }
+            locked_state.imu_tracker.clone()
+        };
+        if let Some(imu_tracker) = imu_tracker {
+            if !use_imu_tracker {
+                imu_tracker.lock().await.reset().await;
+            }
+        }
     }
 
     pub async fn clear_plate_solution(&mut self) {
