@@ -1,11 +1,12 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use log::{debug, warn};
 use std::time::{Duration, SystemTime};
 
-use crate::rate_estimator::RateEstimation;
 use cedar_elements::cedar_common::CelestialCoord;
+use log::{debug, warn};
+
+use crate::rate_estimator::RateEstimation;
 
 pub struct MotionEstimate {
     // Estimated rate of RA boresight movement eastward (positive) or westward
@@ -14,8 +15,8 @@ pub struct MotionEstimate {
     // Estimate of the RMS error in `ra_rate`.
     pub ra_rate_error: f64,
 
-    // Estimated rate of DEC boresight movement northward (positive) or southward
-    // (negative). Unit is degrees per second.
+    // Estimated rate of DEC boresight movement northward (positive) or
+    // southward (negative). Unit is degrees per second.
     pub dec_rate: f64,
     // Estimate of the RMS error in `ra_rate`.
     pub dec_rate_error: f64,
@@ -23,8 +24,8 @@ pub struct MotionEstimate {
 
 #[derive(Debug, PartialEq)]
 enum State {
-    // MotionEstimator is newly constructed, or too much time has passed without
-    // a position passed to add().
+    // MotionEstimator is newly constructed, or too much time has passed
+    // without a position passed to add().
     Unknown,
 
     // While Unknown, a call to add() received a position. Alternately, while
@@ -34,14 +35,14 @@ enum State {
 
     // While Moving, a call to add() received a position very similar to the
     // previous position, consistent with a fixed mount (position moving at
-    // sidereal rate) or a tracking mount (position nearly motionless in ra/dec)
-    // that is motionless (i.e. tracking the sky but not slewing).
+    // sidereal rate) or a tracking mount (position nearly motionless in
+    // ra/dec) that is motionless (i.e. tracking the sky but not slewing).
     Stopped,
 
     // From Stopped, the next add()ed position is consistent with the previous
     // point, for either a tracking or fixed mount. We continue in SteadyRate
-    // as long as newly add()ed positions are consistent with the existing rate
-    // estimates.
+    // as long as newly add()ed positions are consistent with the existing
+    // rate estimates.
     SteadyRate,
 }
 
@@ -49,8 +50,8 @@ pub struct MotionEstimator {
     // The current state of this MotionEstimator.
     state: State,
 
-    // How long we tolerate lack of position updates before reverting to Unknown
-    // state.
+    // How long we tolerate lack of position updates before reverting to
+    // Unknown state.
     gap_tolerance: Duration,
 
     // When in SteadyRate, how long we tolerate (and discard) position updates
@@ -58,13 +59,14 @@ pub struct MotionEstimator {
     // state.
     bump_tolerance: Duration,
 
-    // Time/position passed to most recent add() call. Updated only for add() calls
-    // with non-None position arg.
+    // Time/position passed to most recent add() call. Updated only for add()
+    // calls with non-None position arg.
     prev_time: Option<SystemTime>,
     prev_position: Option<CelestialCoord>,
 
-    // Tracking rate estimation, used when add()ed positions are consistent with
-    // a motionless fixed mount or tracking mount. Present only when SteadyRate.
+    // Tracking rate estimation, used when add()ed positions are consistent
+    // with a motionless fixed mount or tracking mount. Present only when
+    // SteadyRate.
     ra_rate: Option<RateEstimation>,
     dec_rate: Option<RateEstimation>,
 }
@@ -73,9 +75,10 @@ impl MotionEstimator {
     // `gap_tolerance` The amount of time add() calls can have position=None
     //     before our state reverts to Unknown.
     pub fn new(gap_tolerance: Duration, bump_tolerance: Duration) -> Self {
-        MotionEstimator{
+        MotionEstimator {
             state: State::Unknown,
-            gap_tolerance, bump_tolerance,
+            gap_tolerance,
+            bump_tolerance,
             prev_time: None,
             prev_position: None,
             ra_rate: None,
@@ -92,8 +95,12 @@ impl MotionEstimator {
     // `position_rmse` If `position` is provided, this will be the RMS error (in
     //     arcseconds) of the plate solution. This represents the noise level
     //     associated with `position`.
-    pub fn add(&mut self, time: &SystemTime, position: Option<CelestialCoord>,
-               position_rmse: Option<f64>) {
+    pub fn add(
+        &mut self,
+        time: &SystemTime,
+        position: Option<CelestialCoord>,
+        position_rmse: Option<f64>,
+    ) {
         let prev_time = self.prev_time;
         let prev_pos = self.prev_position.clone();
         if position.is_some() {
@@ -130,54 +137,84 @@ impl MotionEstimator {
             return;
         }
         let position = position.unwrap();
-        let position_rmse = position_rmse.unwrap() / 3600.0;  // arcsec->deg.
+        let position_rmse = position_rmse.unwrap() / 3600.0; // arcsec->deg.
         let prev_pos = prev_pos.unwrap();
         match self.state {
             State::Unknown => {
                 self.set_state(State::Moving);
-            },
+            }
             State::Moving => {
                 // Compare new position/time to previous position/time.
-                if Self::is_stopped(time, &position, position_rmse, prev_time, &prev_pos) {
+                if Self::is_stopped(
+                    time,
+                    &position,
+                    position_rmse,
+                    prev_time,
+                    &prev_pos,
+                ) {
                     self.set_state(State::Stopped);
                 }
-            },
+            }
             State::Stopped => {
-                // Compare new position/time to previous position/time. Are we still stopped?
-                // TODO: require a few add() calls in Stopped before advancing to SteadyRate?
-                if Self::is_stopped(time, &position, position_rmse, prev_time, &prev_pos) {
-                    // Enter SteadyRate and initialize ra/dec RateEstimation objects with the
-                    // current and previous positions/times.
+                // Compare new position/time to previous position/time. Are we
+                // still stopped? TODO: require a few add()
+                // calls in Stopped before advancing to SteadyRate?
+                if Self::is_stopped(
+                    time,
+                    &position,
+                    position_rmse,
+                    prev_time,
+                    &prev_pos,
+                ) {
+                    // Enter SteadyRate and initialize ra/dec RateEstimation
+                    // objects with the current and previous
+                    // positions/times.
                     self.set_state(State::SteadyRate);
-                    self.ra_rate = Some(RateEstimation::new(
-                        1000, prev_time, prev_pos.ra));
+                    self.ra_rate =
+                        Some(RateEstimation::new(1000, prev_time, prev_pos.ra));
                     self.ra_rate.as_mut().unwrap().add(
-                        time, position.ra, position_rmse);
+                        time,
+                        position.ra,
+                        position_rmse,
+                    );
                     self.dec_rate = Some(RateEstimation::new(
-                        1000, prev_time, prev_pos.dec));
+                        1000,
+                        prev_time,
+                        prev_pos.dec,
+                    ));
                     self.dec_rate.as_mut().unwrap().add(
-                        time, position.dec, position_rmse);
+                        time,
+                        position.dec,
+                        position_rmse,
+                    );
                 } else {
                     self.set_state(State::Moving);
                 }
-            },
+            }
             State::SteadyRate => {
                 let ra_rate = &mut self.ra_rate.as_mut().unwrap();
                 let dec_rate = &mut self.dec_rate.as_mut().unwrap();
-                if ra_rate.fits_trend(time, position.ra, /*sigma=*/10.0) &&
-                    dec_rate.fits_trend(time, position.dec, /*sigma=*/10.0)
+                if ra_rate.fits_trend(time, position.ra, /* sigma= */ 10.0)
+                    && dec_rate.fits_trend(
+                        time,
+                        position.dec,
+                        // sigma=
+                        10.0,
+                    )
                 {
                     ra_rate.add(time, position.ra, position_rmse);
                     dec_rate.add(time, position.dec, position_rmse);
                 } else {
                     // Has rate trend violation persisted for too long?
-                    if time.duration_since(ra_rate.last_time()).unwrap() > self.bump_tolerance {
+                    if time.duration_since(ra_rate.last_time()).unwrap()
+                        > self.bump_tolerance
+                    {
                         self.set_state(State::Moving);
                         self.ra_rate = None;
                         self.dec_rate = None;
                     }
                 }
-            },
+            }
         }
     }
 
@@ -197,17 +234,23 @@ impl MotionEstimator {
         if ra_rate.count() < 3 {
             None
         } else {
-            Some(MotionEstimate{ra_rate: ra_rate.slope(),
-                                ra_rate_error: ra_rate.rate_interval_bound(),
-                                dec_rate: dec_rate.slope(),
-                                dec_rate_error: dec_rate.rate_interval_bound()}
-            )
+            Some(MotionEstimate {
+                ra_rate: ra_rate.slope(),
+                ra_rate_error: ra_rate.rate_interval_bound(),
+                dec_rate: dec_rate.slope(),
+                dec_rate_error: dec_rate.rate_interval_bound(),
+            })
         }
     }
 
     // pos_rmse: position error estimate in degrees.
-    fn is_stopped(time: &SystemTime, pos: &CelestialCoord, pos_rmse: f64,
-                  prev_time: &SystemTime, prev_pos: &CelestialCoord) -> bool {
+    fn is_stopped(
+        time: &SystemTime,
+        pos: &CelestialCoord,
+        pos_rmse: f64,
+        prev_time: &SystemTime,
+        prev_pos: &CelestialCoord,
+    ) -> bool {
         let elapsed_secs =
             time.duration_since(*prev_time).unwrap().as_secs_f64();
 
@@ -222,7 +265,7 @@ impl MotionEstimator {
         ra_rate.abs() <= max_rate
     }
 
-    const SIDEREAL_RATE: f64 = 15.04 / 3600.0;  // Degrees per second.
+    const SIDEREAL_RATE: f64 = 15.04 / 3600.0; // Degrees per second.
 
     // Computes the change in declination between `prev_dec` and `cur_dec`. All
     // are in degrees.
@@ -269,5 +312,4 @@ mod tests {
         assert_eq!(MotionEstimator::ra_change(360.0, 355.0), -5.0);
         assert_eq!(MotionEstimator::ra_change(1.0, 356.0), -5.0);
     }
-
-}  // mod tests.
+} // mod tests.

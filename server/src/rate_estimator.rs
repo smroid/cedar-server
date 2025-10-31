@@ -1,10 +1,10 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use log::warn;
 use std::time::{Duration, SystemTime};
 
 use cedar_elements::reservoir_sampler::ReservoirSampler;
+use log::warn;
 
 struct DataPoint {
     x: SystemTime,
@@ -25,8 +25,8 @@ pub struct RateEstimation {
     // The retained subset of data points that have been add()ed.
     reservoir: ReservoirSampler<DataPoint>,
 
-    // The linear regression's slope. This is the rate of change in y per second
-    // of SystemTime (x) change.
+    // The linear regression's slope. This is the rate of change in y per
+    // second of SystemTime (x) change.
     slope: f64,
 
     // The linear regression's y intercept.
@@ -78,16 +78,22 @@ impl RateEstimation {
             return;
         }
         self.last = *time;
-        let (added, removed) = self.reservoir.add(DataPoint{x: *time, y: value});
+        let (added, removed) =
+            self.reservoir.add(DataPoint { x: *time, y: value });
         if let Some(removed) = removed {
-            let x = removed.x.duration_since(SystemTime::UNIX_EPOCH).unwrap()
+            let x = removed
+                .x
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
                 .as_secs_f64();
             self.x_sum -= x;
             self.y_sum -= removed.y;
         }
         if added {
-            self.x_sum +=
-                time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs_f64();
+            self.x_sum += time
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
             self.y_sum += value;
         }
         let count = self.reservoir.count();
@@ -101,16 +107,23 @@ impl RateEstimation {
         let mut num = 0.0_f64;
         let mut den = 0.0_f64;
         for sample in self.reservoir.samples() {
-            let x = sample.x.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs_f64();
+            let x = sample
+                .x
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
             num += (x - x_mean) * (sample.y - y_mean);
             den += (x - x_mean) * (x - x_mean);
         }
-        // `den` will be non-zero because we require the `time` arg to be non-stationary.
+        // `den` will be non-zero because we require the `time` arg to be
+        // non-stationary.
         assert!(den > 0.0);
         self.slope = num / den;
-        let first_x =
-            self.first.duration_since(SystemTime::UNIX_EPOCH).unwrap()
-                .as_secs_f64();
+        let first_x = self
+            .first
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
         self.intercept = y_mean - self.slope * (x_mean - first_x);
 
         let mut y_variance = 0.0_f64;
@@ -118,9 +131,11 @@ impl RateEstimation {
             let y_reg = self.estimate_value(&sample.x);
             y_variance += (sample.y - y_reg) * (sample.y - y_reg);
         }
-        let adjusted_y_variance = f64::max(y_variance, noise_estimate * noise_estimate);
+        let adjusted_y_variance =
+            f64::max(y_variance, noise_estimate * noise_estimate);
         self.y_noise = (adjusted_y_variance / count).sqrt();
-        self.slope_noise = ((1.0 / (count - 2.0)) * adjusted_y_variance / den).sqrt();
+        self.slope_noise =
+            ((1.0 / (count - 2.0)) * adjusted_y_variance / den).sqrt();
     }
 
     pub fn count(&self) -> usize {
@@ -132,11 +147,16 @@ impl RateEstimation {
         self.last
     }
 
-    // Determines if the given data point is on-trend, within `sigma` multiple of
-    // the model's noise.
+    // Determines if the given data point is on-trend, within `sigma` multiple
+    // of the model's noise.
     // `time` must not be earlier than the first add()ed data point.
     // If count() is less than 3, returns true.
-    pub fn fits_trend(&self, time: &SystemTime, value: f64, sigma: f64) -> bool {
+    pub fn fits_trend(
+        &self,
+        time: &SystemTime,
+        value: f64,
+        sigma: f64,
+    ) -> bool {
         if self.count() < 3 {
             return true;
         }
@@ -169,6 +189,7 @@ impl RateEstimation {
 mod tests {
     extern crate approx;
     use approx::assert_abs_diff_eq;
+
     use super::*;
 
     #[test]
@@ -180,14 +201,14 @@ mod tests {
 
         // Add a second point, one second later and 0.1 higher.
         time += Duration::from_secs(1);
-        assert!(re.fits_trend(time, 1.1, /*sigma=*/1.0));
+        assert!(re.fits_trend(time, 1.1, /* sigma= */ 1.0));
         re.add(time, 1.1, 0.1);
         assert_eq!(re.count(), 2);
         assert_abs_diff_eq!(re.slope(), 0.1, epsilon = 0.001);
 
         // Add a third point, slightly displaced from the trend.
         time += Duration::from_secs(1);
-        assert!(re.fits_trend(time, 1.22, /*sigma=*/1.0));
+        assert!(re.fits_trend(time, 1.22, /* sigma= */ 1.0));
         re.add(time, 1.22, 0.1);
         assert_eq!(re.count(), 3);
         assert_abs_diff_eq!(re.slope(), 0.11, epsilon = 0.001);
@@ -195,8 +216,7 @@ mod tests {
 
         // Fourth point.
         time += Duration::from_secs(1);
-        assert!(!re.fits_trend(time, 1.25, /*sigma=*/1.0));
-        assert!(re.fits_trend(time, 1.31, /*sigma=*/1.0));
+        assert!(!re.fits_trend(time, 1.25, /* sigma= */ 1.0));
+        assert!(re.fits_trend(time, 1.31, /* sigma= */ 1.0));
     }
-
-}  // mod tests.
+} // mod tests.
