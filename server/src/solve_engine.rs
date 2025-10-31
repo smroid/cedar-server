@@ -24,6 +24,7 @@ use cedar_elements::cedar::{
     SlewRequest, ValueStats};
 use cedar_elements::cedar_sky_trait::CedarSkyTrait;
 use cedar_elements::cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering};
+use cedar_elements::imu_trait::ImuTrait;
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram};
@@ -66,6 +67,8 @@ struct SolveState {
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     catalog_entry_match: Option<CatalogEntryMatch>,
 
+    imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
+
     frame_id: Option<i32>,
 
     // Required number of detected stars, below which we don't attempt a plate
@@ -107,6 +110,7 @@ impl SolveEngine {
         normalize_rows: bool,
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+        imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         stats_capacity: usize,
         solution_callback: SolutionCallback)
@@ -119,6 +123,7 @@ impl SolveEngine {
                 normalize_rows,
                 cedar_sky,
                 catalog_entry_match: None,
+                imu_tracker,
                 frame_id: None,
                 minimum_stars: 4,
                 fov_estimate: None,

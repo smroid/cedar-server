@@ -3146,6 +3146,7 @@ impl MyCedar {
                         normalize_rows,
                         solver.clone(),
                         cedar_sky.clone(),
+                        imu_tracker.clone(),
                         detect_engine.clone(),
                         stats_capacity,
                         closure,
