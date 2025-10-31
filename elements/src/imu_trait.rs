@@ -77,7 +77,8 @@ pub trait ImuTrait {
     );
 
     // No plate solution is available at the given timestamp. This is either due
-    // to visual obstruction (clouds, etc) or platform motion.
+    // to visual obstruction (clouds, etc) or platform motion preventing star
+    // detection.
     async fn report_camera_pointing_lost(&self, timestamp: &SystemTime);
 
     // The platform is discerned to be motionless at or before the given
@@ -90,6 +91,10 @@ pub trait ImuTrait {
     // or on the reported jerk magnitude or on the reported angular acceleration
     // magnitude.
     async fn report_not_motionless(&self, timestamp: &SystemTime);
+
+    // Force get_estimated_camera_pointing() to return an error until
+    // report_true_camera_pointing() is called again.
+    async fn reset(&self);
 
     // IMU-derived estimate of camera pointing as of the given time. The
     // timestamp must not precede the timestamp of the most recent
