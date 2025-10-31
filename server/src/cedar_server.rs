@@ -301,6 +301,12 @@ impl Cedar for MyCedar {
             let fixed_settings = self.state.lock().await.fixed_settings.clone();
             fixed_settings.lock().await.observer_location =
                 Some(observer_location.clone());
+            let solve_engine = self.state.lock().await.solve_engine.clone();
+            solve_engine
+                .lock()
+                .await
+                .set_observer_location(Some(observer_location.clone()))
+                .await;
             let preferences = Preferences {
                 observer_location: Some(observer_location.clone()),
                 ..Default::default()
@@ -370,10 +376,10 @@ impl Cedar for MyCedar {
         let _timer = GrpcTimer::new("clear_observer_location");
 
         // Clear observer location from fixed settings.
-        {
-            let fixed_settings = self.state.lock().await.fixed_settings.clone();
-            fixed_settings.lock().await.observer_location = None;
-        }
+        let fixed_settings = self.state.lock().await.fixed_settings.clone();
+        fixed_settings.lock().await.observer_location = None;
+        let solve_engine = self.state.lock().await.solve_engine.clone();
+        solve_engine.lock().await.set_observer_location(None).await;
 
         // Also clear from preferences for persistence.
         let preferences_arc = self.state.lock().await.preferences.clone();

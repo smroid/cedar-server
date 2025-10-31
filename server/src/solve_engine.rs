@@ -19,8 +19,8 @@ use cedar_elements::{
         angular_separation, position_angle, transform_to_image_coord,
     },
     cedar::{
-        FovCatalogEntry, ImageCoord, PlateSolution as PlateSolutionProto,
-        SlewRequest, ValueStats,
+        FovCatalogEntry, ImageCoord, LatLong,
+        PlateSolution as PlateSolutionProto, SlewRequest, ValueStats,
     },
     cedar_common::CelestialCoord,
     cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering},
@@ -88,6 +88,7 @@ struct SolveState {
     catalog_entry_match: Option<CatalogEntryMatch>,
 
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
+    observer_location: Option<LatLong>,
 
     frame_id: Option<i32>,
 
@@ -143,6 +144,7 @@ impl SolveEngine {
                 cedar_sky,
                 catalog_entry_match: None,
                 imu_tracker,
+                observer_location: None,
                 frame_id: None,
                 minimum_stars: 4,
                 fov_estimate: None,
@@ -290,6 +292,16 @@ impl SolveEngine {
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
         Ok(())
+    }
+
+    pub async fn set_observer_location(
+        &mut self,
+        observer_location: Option<LatLong>,
+    ) {
+        let mut locked_state = self.state.lock().await;
+        locked_state.observer_location = observer_location;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
     }
 
     pub async fn clear_plate_solution(&mut self) {
