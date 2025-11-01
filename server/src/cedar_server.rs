@@ -750,6 +750,7 @@ impl Cedar for MyCedar {
             self.update_preferences(tonic::Request::new(preferences))
                 .await?;
         }
+        // TODO: enable/disable IMU when using demo image.
         if let Some(demo_image_filename) = req.demo_image_filename {
             let (
                 new_camera,
