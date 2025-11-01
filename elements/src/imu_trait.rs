@@ -81,17 +81,6 @@ pub trait ImuTrait {
     // detection.
     async fn report_camera_pointing_lost(&self, timestamp: &SystemTime);
 
-    // The platform is discerned to be motionless at or before the given
-    // timestamp. The caller makes this determination based on successive
-    // plate solves.
-    async fn report_motionless(&self, timestamp: &SystemTime);
-
-    // The platform started moving an unknown (but small) time prior to
-    // timestamp. The caller determines this based on successive plate solves
-    // or on the reported jerk magnitude or on the reported angular acceleration
-    // magnitude.
-    async fn report_not_motionless(&self, timestamp: &SystemTime);
-
     // Force get_estimated_camera_pointing() to return an error until
     // report_true_camera_pointing() is called again.
     async fn reset(&self);
