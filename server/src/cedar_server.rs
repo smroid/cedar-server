@@ -771,6 +771,11 @@ impl Cedar for MyCedar {
                         &self.test_image_camera,
                     );
                     locked_state.operation_settings.demo_image_filename = None;
+                    locked_state
+                        .solve_engine
+                        .lock()
+                        .await
+                        .set_use_imu_tracker(true).await;
                     info!(
                         "Using camera {}",
                         locked_state.camera.lock().await.model()
@@ -806,6 +811,11 @@ impl Cedar for MyCedar {
                     locked_state.camera = Arc::new(tokio::sync::Mutex::new(
                         Box::new(ImageCamera::new(img_u8).unwrap()),
                     ));
+                    locked_state
+                        .solve_engine
+                        .lock()
+                        .await
+                        .set_use_imu_tracker(false).await;
                     info!("Using demo image {}", demo_image_filename);
                     locked_state.operation_settings.demo_image_filename =
                         Some(demo_image_filename);
