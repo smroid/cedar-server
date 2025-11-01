@@ -519,7 +519,7 @@ impl SolveEngine {
             detect_result.star_candidates.len() >= minimum_stars as usize;
 
         // Is IMU tracker available and usable?
-        let imu_tracker = if state.lock().await.imu_tracker.is_some()
+        let imu_tracker = if state.lock().await.use_imu_tracker
             && state.lock().await.observer_location.is_some()
         {
             state.lock().await.imu_tracker.clone()
