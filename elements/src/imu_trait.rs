@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use canonical_error::CanonicalError;
@@ -63,6 +63,14 @@ pub struct ImuState {
     pub gyro: GyroData,
 }
 
+/// State for IMU tracker logic.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackerState {
+    Motionless,
+    Moving,
+    Lost,
+}
+
 #[async_trait]
 pub trait ImuTrait {
     // For all report_xxx() functions, the timestamp must be strictly non
@@ -93,17 +101,25 @@ pub trait ImuTrait {
         timestamp: &SystemTime,
     ) -> Result<HorizonCoordinates, CanonicalError>;
 
-    // Returns the RMS error (in degrees) of the IMU calibration fit. Returns
-    // None if not yet calibrated.
-    async fn get_calibration_quality(&self) -> Option<f64>;
+    // Returns the current state of the IMU tracker logic.
+    async fn get_tracker_state(&self) -> TrackerState;
+
+    // Returns the RMS error (in degrees) of the IMU transform calibration fit.
+    // Returns None if not yet calibrated.
+    async fn get_transform_calibration_quality(&self) -> Option<f64>;
+
+    // Returns the baseline over which the IMU's zero offset was calibrated.
+    // Returns None if not yet calibrated.
+    async fn get_zero_calibration_duration(&self) -> Option<Duration>;
 
     // Returns the most recent IMU reading.
-    async fn get_state(
-        &self,
-    ) -> Result<(ImuState, SystemTime), CanonicalError>;
+    async fn get_state(&self)
+        -> Result<(ImuState, SystemTime), CanonicalError>;
 
     // Returns the jerk magnitude (m/s³) seen in the most recent samples.
-    async fn get_jerk_magnitude(&self) -> Result<(f64, SystemTime), CanonicalError>;
+    async fn get_jerk_magnitude(
+        &self,
+    ) -> Result<(f64, SystemTime), CanonicalError>;
 
     // Returns the angular velocity magnitude (degrees/s) seen in the most
     // recent samples. Returns failed_precondition error if there is no IMU
