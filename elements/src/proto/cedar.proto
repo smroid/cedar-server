@@ -63,7 +63,13 @@ message ServerInformation {
   optional CameraModel camera = 9;
 
   // Omitted if no IMU detected.
+  optional string imu_model = 14;
+
+  // The most recent IMU reading. Omitted if no IMU detected.
   optional ImuState imu = 13;
+
+  // The current state of the IMU tracking logic. Omitted if no IMU detected.
+  optional ImuTrackerState imu_tracker_state = 15;
 
   // Network info.
   optional WiFiAccessPoint wifi_access_point = 10;
@@ -79,6 +85,13 @@ message CameraModel {
   optional string model_detail = 4;
   int32 image_width = 2;
   int32 image_height = 3;
+}
+
+enum ImuTrackerState {
+  TRACKER_STATE_UNKNOWN = 0;
+  MOTIONLESS = 1;
+  MOVING = 2;
+  LOST = 3;
 }
 
 message ImuState {
@@ -166,6 +179,10 @@ message OperationSettings {
   // UpdateOperationSettings(), set this field to empty string to cancel
   // demo mode.
   optional string demo_image_filename = 12;
+
+  // Controls whether the IMU, if present, is used to estimate camera pointing
+  // when plate solutions are unavailable.
+  optional bool use_imu = 15;
 
   // TODO: decrowd parameter for returned catalog entries?
 
@@ -668,6 +685,14 @@ message CalibrationData {
   // pixel/angle scale to vary as you move away from the center.
   // Omitted if a sky/camera calibration has not succeeded.
   optional double pixel_angular_size = 7;
+
+  // Returns the RMS error (in degrees) of the IMU transform calibration fit.
+  // Omitted if not yet calibrated.
+  optional double imu_transform_calibration_quality = 13;
+
+  // Returns the baseline over which the IMU's zero offset was calibrated.
+  // Omitted if not yet calibrated.
+  optional google.protobuf.Duration imu_zero_calibration_quality = 14;
 
   reserved 9, 10;
 }

@@ -35,10 +35,11 @@ use cedar_elements::{
         ActionRequest, CalibrationData, CalibrationFailureReason, CameraModel,
         CelestialCoordFormat, DisplayOrientation, EmptyMessage, FeatureLevel,
         FixedSettings, FovCatalogEntry, FrameRequest, FrameResult, Image,
-        ImageCoord, LatLong, LocationBasedInfo, MountType, OperatingMode,
-        OperationSettings, PlateSolution as PlateSolutionProto, Preferences,
-        ProcessingStats, Rectangle, ServerInformation, ServerLogRequest,
-        ServerLogResult, StarCentroid, WiFiAccessPoint,
+        ImageCoord, ImuState, ImuTrackerState, LatLong, LocationBasedInfo,
+        MountType, OperatingMode, OperationSettings,
+        PlateSolution as PlateSolutionProto, Preferences, ProcessingStats,
+        Rectangle, ServerInformation, ServerLogRequest, ServerLogResult,
+        StarCentroid, WiFiAccessPoint,
     },
     cedar_common::CelestialCoord,
     cedar_sky::{
@@ -750,7 +751,6 @@ impl Cedar for MyCedar {
             self.update_preferences(tonic::Request::new(preferences))
                 .await?;
         }
-        // TODO: enable/disable IMU when using demo image.
         if let Some(demo_image_filename) = req.demo_image_filename {
             let (
                 new_camera,
@@ -775,7 +775,8 @@ impl Cedar for MyCedar {
                         .solve_engine
                         .lock()
                         .await
-                        .set_use_imu_tracker(true).await;
+                        .set_use_imu_tracker(true)
+                        .await;
                     info!(
                         "Using camera {}",
                         locked_state.camera.lock().await.model()
@@ -815,7 +816,8 @@ impl Cedar for MyCedar {
                         .solve_engine
                         .lock()
                         .await
-                        .set_use_imu_tracker(false).await;
+                        .set_use_imu_tracker(false)
+                        .await;
                     info!("Using demo image {}", demo_image_filename);
                     locked_state.operation_settings.demo_image_filename =
                         Some(demo_image_filename);
@@ -888,6 +890,27 @@ impl Cedar for MyCedar {
                         .unwrap();
                 }
             };
+        }
+        if let Some(use_imu) = req.use_imu {
+            let solve_engine_arc = {
+                let mut locked_state = self.state.lock().await;
+                if locked_state.imu_tracker.is_none() {
+                    return Err(logged_status!(
+                        failed_precondition,
+                        "IMU not available on this system"
+                    ));
+                }
+                locked_state.operation_settings.use_imu = Some(use_imu);
+
+                locked_state.solve_engine.clone()
+            }; // State lock released here!
+
+            // Configure solver to use/not use IMU (outside state lock).
+            solve_engine_arc
+                .lock()
+                .await
+                .set_use_imu_tracker(use_imu)
+                .await;
         }
 
         Ok(tonic::Response::new(
@@ -1787,13 +1810,20 @@ impl MyCedar {
 
     async fn get_server_information(&self) -> ServerInformation {
         // Extract all data we need first, then release state lock.
-        let (demo_image, camera_arc, attached_camera_arc, wifi_arc) = {
+        let (
+            demo_image,
+            camera_arc,
+            attached_camera_arc,
+            wifi_arc,
+            imu_tracker_arc,
+        ) = {
             let locked_state = self.state.lock().await;
             (
                 locked_state.operation_settings.demo_image_filename.clone(),
                 locked_state.camera.clone(),
                 locked_state.attached_camera.clone(),
                 locked_state.wifi.clone(),
+                locked_state.imu_tracker.clone(),
             )
         }; // State lock released here!
 
@@ -1838,9 +1868,42 @@ impl MyCedar {
             server_time: None,
             camera,
             imu: None,
+            imu_model: None,
+            imu_tracker_state: None,
             wifi_access_point: None,
             demo_image_names: self.demo_images.clone(),
         };
+
+        // Process IMU info (outside state lock).
+        if let Some(imu_tracker) = &imu_tracker_arc {
+            let locked_imu = imu_tracker.lock().await;
+            // Get IMU model and tracker state.
+            server_info.imu_model = Some(locked_imu.get_model());
+            let tracker_state = locked_imu.get_tracker_state().await;
+            server_info.imu_tracker_state = Some(match tracker_state {
+                cedar_elements::imu_trait::TrackerState::Motionless => {
+                    ImuTrackerState::Motionless as i32
+                }
+                cedar_elements::imu_trait::TrackerState::Moving => {
+                    ImuTrackerState::Moving as i32
+                }
+                cedar_elements::imu_trait::TrackerState::Lost => {
+                    ImuTrackerState::Lost as i32
+                }
+            });
+
+            // Get the most recent IMU state.
+            if let Ok((imu_state, _)) = locked_imu.get_state().await {
+                server_info.imu = Some(ImuState {
+                    accel_x: imu_state.accel.x,
+                    accel_y: imu_state.accel.y,
+                    accel_z: imu_state.accel.z,
+                    angle_rate_x: imu_state.gyro.x,
+                    angle_rate_y: imu_state.gyro.y,
+                    angle_rate_z: imu_state.gyro.z,
+                });
+            }
+        }
 
         // Process wifi info (outside state lock).
         if let Some(wifi) = &wifi_arc {
@@ -2829,6 +2892,27 @@ impl MyCedar {
 
         frame_result.calibration_data =
             Some(locked_state.calibration_data.lock().await.clone());
+
+        // Populate IMU calibration quality fields in CalibrationData if IMU is
+        // available.
+        if let Some(imu_tracker) = &locked_state.imu_tracker {
+            let locked_imu = imu_tracker.lock().await;
+            let cal_data = frame_result.calibration_data.as_mut().unwrap();
+            if let Some(transform_quality) =
+                locked_imu.get_transform_calibration_quality().await
+            {
+                cal_data.imu_transform_calibration_quality =
+                    Some(transform_quality);
+            }
+            if let Some(zero_cal_duration) =
+                locked_imu.get_zero_calibration_duration().await
+            {
+                cal_data.imu_zero_calibration_quality = Some(
+                    prost_types::Duration::try_from(zero_cal_duration).unwrap(),
+                );
+            }
+        }
+
         frame_result.polar_align_advice = Some(
             locked_state
                 .polar_analyzer
@@ -3151,6 +3235,7 @@ impl MyCedar {
                         .catalog_entry_match
                         .clone(),
                     demo_image_filename: None,
+                    use_imu: Some(imu_tracker.is_some()),
                 },
                 calibration_data: Arc::new(tokio::sync::Mutex::new(
                     CalibrationData {
