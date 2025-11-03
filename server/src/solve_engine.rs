@@ -552,8 +552,7 @@ impl SolveEngine {
                 }
                 Err(e) => {
                     if !have_stars {
-                        // For now, be loud about this.
-                        warn!("No IMU estimate available: {:?}", e);
+                        debug!("No IMU estimate available: {:?}", e);
                     }
                     None
                 }
@@ -650,8 +649,8 @@ impl SolveEngine {
                         // Re-enable logging of the next non-trivial solve
                         // failure.
                         state.lock().await.logged_error = false;
-                        plate_solution_proto = Some(solution);
                     }
+                    plate_solution_proto = Some(solution);
                 }
             }
             solve_finish_time = Some(SystemTime::now());
