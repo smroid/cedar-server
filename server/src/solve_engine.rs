@@ -519,23 +519,29 @@ impl SolveEngine {
             detect_result.star_candidates.len() >= minimum_stars as usize;
 
         // Is IMU tracker available and usable?
-        let imu_tracker = if state.lock().await.use_imu_tracker
-            && state.lock().await.observer_location.is_some()
+        let imu_tracker;
+        let lat_rad;
+        let long_rad;
         {
-            state.lock().await.imu_tracker.clone()
-        } else {
-            None
-        };
-        let (lat_rad, long_rad) = if let Some(observer_location) =
-            &state.lock().await.observer_location
-        {
-            (
-                observer_location.latitude.to_radians(),
-                observer_location.longitude.to_radians(),
-            )
-        } else {
-            (0.0, 0.0)
-        };
+            let locked_state = state.lock().await;
+            imu_tracker = if locked_state.use_imu_tracker
+                && locked_state.observer_location.is_some()
+            {
+                locked_state.imu_tracker.clone()
+            } else {
+                None
+            };
+            (lat_rad, long_rad) = if let Some(observer_location) =
+                &locked_state.observer_location
+            {
+                (
+                    observer_location.latitude.to_radians(),
+                    observer_location.longitude.to_radians(),
+                )
+            } else {
+                (0.0, 0.0)
+            };
+        }
 
         let imu_estimate = if let Some(ref tracker) = imu_tracker {
             match tracker
@@ -563,6 +569,7 @@ impl SolveEngine {
 
         let mut plate_solution_proto: Option<PlateSolutionProto> = None;
         let mut solve_finish_time: Option<SystemTime> = None;
+        let mut got_plate_solution_from_stars = false;
 
         if have_stars || imu_estimate.is_some() {
             {
@@ -597,13 +604,6 @@ impl SolveEngine {
             .await
             {
                 Err(e) => {
-                    if let Some(ref tracker) = imu_tracker {
-                        tracker
-                            .lock()
-                            .await
-                            .report_camera_pointing_lost(image_time)
-                            .await;
-                    }
                     // Let's not spam the log with solver failures. If the
                     // number of detected stars is low, don't bother to log,
                     // as this is a trivial source of solve failures (e.g.
@@ -628,6 +628,7 @@ impl SolveEngine {
                 Ok(solution) => {
                     // Did we get a real plate solution (not IMU fallback)?
                     if !solution.solution_from_imu {
+                        got_plate_solution_from_stars = true;
                         if let Some(ref tracker) = imu_tracker {
                             // Create HorizonCoordinates from plate solution.
                             let sky_coord =
@@ -660,6 +661,16 @@ impl SolveEngine {
             let mut locked_state = state.lock().await;
             locked_state.last_solve_attempt_time = None;
             locked_state.solve_attempt_stats.add_value(0.0);
+        }
+
+        if !got_plate_solution_from_stars {
+            if let Some(ref tracker) = imu_tracker {
+                tracker
+                    .lock()
+                    .await
+                    .report_camera_pointing_lost(image_time)
+                    .await;
+            }
         }
 
         (plate_solution_proto, solve_finish_time)
