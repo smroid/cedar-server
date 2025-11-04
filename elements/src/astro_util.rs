@@ -631,7 +631,7 @@ mod tests {
         let long = -122_f64.to_radians();
 
         let (alt, az, ha) =
-            alt_az_from_equatorial(mizar_ra, mizar_dec, lat, long, time);
+            alt_az_from_equatorial(mizar_ra, mizar_dec, lat, long, &time);
 
         // Expected values obtained from SkySafari.
         assert_abs_diff_eq!(
@@ -651,7 +651,7 @@ mod tests {
         );
 
         // Now go the other way.
-        let (ra, dec) = equatorial_from_alt_az(alt, az, lat, long, time);
+        let (ra, dec) = equatorial_from_alt_az(alt, az, lat, long, &time);
         assert_abs_diff_eq!(ra, mizar_ra, epsilon = 0.01);
         assert_abs_diff_eq!(dec, mizar_dec, epsilon = 0.01);
     }
@@ -736,10 +736,10 @@ mod tests {
         };
 
         // Forward conversion: equatorial -> horizon
-        let horizon = horizon_from_equatorial_camera(&equatorial, lat, long, time);
+        let horizon = horizon_from_equatorial_camera(&equatorial, lat, long, &time);
 
         // Reverse conversion: horizon -> equatorial
-        let equatorial_out = equatorial_from_horizon_camera(&horizon, lat, long, time);
+        let equatorial_out = equatorial_from_horizon_camera(&horizon, lat, long, &time);
 
         // Verify round-trip
         assert_abs_diff_eq!(equatorial_out.ra, mizar_ra_deg, epsilon = 0.001);
