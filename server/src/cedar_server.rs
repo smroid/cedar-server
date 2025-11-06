@@ -86,6 +86,7 @@ use crate::{
     polar_analyzer::PolarAnalyzer,
     position_reporter::{create_alpaca_server, TelescopePosition},
     solve_engine::{PlateSolution, SolveEngine},
+    lx200::{lx200_create, lx200_start},
 };
 
 // gRPC performance monitoring threshold - log warning if methods take longer
@@ -4018,12 +4019,19 @@ async fn async_main(
             });
         });
     });
+
+    // Add lx200 code
+    let lx200_shared_telescope_position = Arc::clone(&shared_telescope_position);
+    let lx200_server = lx200_create("0.0.0.0:7878");
+    let lx200_server_future = lx200_start(lx200_server.await, &lx200_shared_telescope_position);
+    // end lx200 server code
+
     let alpaca_server =
         create_alpaca_server(shared_telescope_position, async_callback);
     let alpaca_server_future = alpaca_server.start();
 
-    let (service_result, service_result8080, alpaca_result) =
-        join!(service_future, service_future8080, alpaca_server_future);
+    let (service_result, service_result8080, alpaca_result, lx200_server_result) =
+        join!(service_future, service_future8080, alpaca_server_future, lx200_server_future);
     service_result.unwrap();
     service_result8080.unwrap();
     alpaca_result.unwrap();
