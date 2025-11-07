@@ -2989,13 +2989,8 @@ impl MyCedar {
         let mut normalize_rows = false;
         if let Some(attached_camera) = &attached_camera {
             let locked_camera = attached_camera.lock().await;
-            // The 37.125 mhz variant of the imx290 that we are using has row
-            // noise.
             if (locked_camera.model() == "imx296"
-                || (locked_camera.model() == "imx290"
-                    && locked_camera.model_detail()
-                        == Some("clock-frequency=37125000".to_string())))
-                && processor_model.contains("Raspberry Pi Zero 2 W")
+                && processor_model.contains("Raspberry Pi Zero 2 W"))
             {
                 normalize_rows = true;
                 info!("Normalizing camera rows for {}", locked_camera.model());
