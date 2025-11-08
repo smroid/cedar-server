@@ -91,6 +91,7 @@ pub trait ImuTrait {
 
     // Force get_estimated_camera_pointing() to return an error until
     // report_true_camera_pointing() is called again.
+    // TODO: also discard calibration state?
     async fn reset(&self);
 
     // IMU-derived estimate of camera pointing as of the given time. The
@@ -110,6 +111,7 @@ pub trait ImuTrait {
 
     // Returns the baseline over which the IMU's zero offset was calibrated.
     // Returns None if not yet calibrated.
+    // TODO: return zero bias gyro magnitude instead?
     async fn get_zero_calibration_duration(&self) -> Option<Duration>;
 
     // Returns the most recent IMU reading.
