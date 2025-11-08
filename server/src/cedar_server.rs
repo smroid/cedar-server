@@ -2989,8 +2989,8 @@ impl MyCedar {
         let mut normalize_rows = false;
         if let Some(attached_camera) = &attached_camera {
             let locked_camera = attached_camera.lock().await;
-            if (locked_camera.model() == "imx296"
-                && processor_model.contains("Raspberry Pi Zero 2 W"))
+            if locked_camera.model() == "imx296"
+                && processor_model.contains("Raspberry Pi Zero 2 W")
             {
                 normalize_rows = true;
                 info!("Normalizing camera rows for {}", locked_camera.model());
