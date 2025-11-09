@@ -10,8 +10,10 @@ use astro::{
 };
 use chrono::{DateTime, Datelike, Timelike, Utc};
 
-use crate::cedar::{FovCatalogEntry, ImageCoord, StarCentroid};
-use crate::imu_trait::{EquatorialCoordinates, HorizonCoordinates};
+use crate::{
+    cedar::{FovCatalogEntry, ImageCoord, StarCentroid},
+    imu_trait::{EquatorialCoordinates, HorizonCoordinates},
+};
 
 extern crate nalgebra as na;
 
@@ -20,8 +22,8 @@ pub fn to_unit_vector(ra: f64, dec: f64) -> [f64; 3] {
     [
         (ra.cos() * dec.cos()), // x
         (ra.sin() * dec.cos()), // y
-        dec.sin(),
-    ] // z
+        dec.sin(),              // z
+    ]
 }
 
 /// Convert x/y/z on unitsphere to ra/dec (radians).
@@ -711,7 +713,8 @@ mod tests {
 
     #[test]
     fn test_horizon_equatorial_camera_conversion() {
-        // Test round-trip conversion between equatorial and horizon camera coordinates
+        // Test round-trip conversion between equatorial and horizon camera
+        // coordinates
         let mizar_ra_deg = deg_frm_hms(13, 23, 55.5);
         let mizar_dec_deg = deg_frm_dms(54, 55, 31.3);
         let north_roll_angle_deg = 30.0; // degrees
@@ -736,10 +739,12 @@ mod tests {
         };
 
         // Forward conversion: equatorial -> horizon
-        let horizon = horizon_from_equatorial_camera(&equatorial, lat, long, &time);
+        let horizon =
+            horizon_from_equatorial_camera(&equatorial, lat, long, &time);
 
         // Reverse conversion: horizon -> equatorial
-        let equatorial_out = equatorial_from_horizon_camera(&horizon, lat, long, &time);
+        let equatorial_out =
+            equatorial_from_horizon_camera(&horizon, lat, long, &time);
 
         // Verify round-trip
         assert_abs_diff_eq!(equatorial_out.ra, mizar_ra_deg, epsilon = 0.001);
