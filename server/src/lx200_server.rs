@@ -135,7 +135,6 @@ impl Lx200Telescope {
     async fn handle_slew(&mut self) {
         // Check if there is a pending position set. SkySafari will issue an Sr command, followed
         // by an Sd command, followed by MS to initiate the movement. This applies to GoTo mode.
-        // SkySafari also issues slew commands upon initial connection which should be ignored.
         if let (Some(ra), Some(dec)) = (self.target_ra.take(), self.target_dec.take()) {
             let mut locked_position = self.telescope_position.lock().await;
             locked_position.slew_target_ra = ra;
@@ -144,7 +143,7 @@ impl Lx200Telescope {
         }
     }
 
-    async fn handle_sync(&mut self) {
+    async fn handle_sync(&mut self, stream: &TcpStream) {
         // Check if there is a pending position set. SkySafari will issue an Sr command, followed
         // by an Sd command, followed by CM to sync/align. This applies to both GoTo and PushTo
         // modes.
@@ -153,6 +152,8 @@ impl Lx200Telescope {
             locked_position.sync_ra = Some(ra);
             locked_position.sync_dec = Some(dec);
         }
+        // AutoStar always responds with this, so we'll do the same
+        Self::write(&stream, " M31 EX GAL MAG 3.5 SZ178.0'#");
     }
 
     async fn handle_abort(&mut self) {
@@ -225,9 +226,7 @@ impl Lx200Telescope {
                     match Self::extract_command(&in_data).as_deref() {
                         Some("CM") => {
                             info!("Received sync command");
-                            self.handle_sync().await;
-                            // AutoStar always responds with this, so we'll do the same
-                            Self::write(&stream, " M31 EX GAL MAG 3.5 SZ178.0'#");
+                            self.handle_sync(&stream).await;
                         }
                         Some("GD") => {
                             debug!("Received get declination command");
@@ -238,12 +237,13 @@ impl Lx200Telescope {
                             self.handle_get_ra(&stream).await;
                         }
                         Some("RS") => {
+                            // SkySafari issues slew commands upon initial connection which should
+                            // be ignored.
                             info!("Received slew command");
-                            self.handle_slew().await;
                         }
                         Some("MS") => {
                             info!("Received slew to object command");
-                            Self::write(&stream, "0");
+                            self.handle_slew().await;
                         }
                         Some("Sd") => {
                             info!("Received set declination command");
