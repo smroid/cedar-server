@@ -146,7 +146,7 @@ Now that you have the Flutter SDK, it's time to build the Cedar-aim web app.
 First:
 
 ```
-dart pub global activate protoc_plugin
+dart pub global activate protoc_plugin 22.5.0
 ```
 
 Add `/home/cedar/.pub-cache/bin` to your `PATH` environment variable.
