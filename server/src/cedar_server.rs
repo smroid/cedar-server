@@ -82,6 +82,7 @@ use crate::{
     activity_led::ActivityLed,
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
+    lx200_server::create_lx200_server,
     motion_estimator::MotionEstimator,
     polar_analyzer::PolarAnalyzer,
     position_reporter::{create_alpaca_server, TelescopePosition},
@@ -4014,8 +4015,17 @@ async fn async_main(
         });
     });
     let alpaca_server =
-        create_alpaca_server(shared_telescope_position, async_callback);
+        create_alpaca_server(shared_telescope_position.clone(), async_callback.clone());
     let alpaca_server_future = alpaca_server.start();
+
+    let mut lx200_server =
+        create_lx200_server(shared_telescope_position);
+    let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move 
+            {
+                lx200_server.start().await;
+                Ok(())
+            });
 
     let (service_result, service_result8080, alpaca_result) =
         join!(service_future, service_future8080, alpaca_server_future);
