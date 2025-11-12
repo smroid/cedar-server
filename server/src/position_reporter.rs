@@ -22,7 +22,7 @@ pub struct TelescopePosition {
     // SkySafari calls right_ascension() followed by declination(). The
     // right_ascension() call saves the Dec corresponding to the RA it returns,
     // so the subsequent call to declination() will return a consistent value.
-    snapshot_dec: Option<f64>,
+    pub snapshot_dec: Option<f64>,
 
     // A slew is initiated by SkySafari. The slew can be terminated either by
     // SkySafari or Cedar.
@@ -56,7 +56,7 @@ impl TelescopePosition {
     }
 }
 
-struct Callback(Box<dyn Fn() + Send + Sync>);
+pub struct Callback(pub Box<dyn Fn() + Send + Sync>);
 
 impl std::fmt::Debug for Callback {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
