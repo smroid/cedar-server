@@ -20,6 +20,8 @@ pub struct Lx200Telescope {
     // Pending target coordinates for sync/slew
     target_ra: Option<f64>,
     target_dec: Option<f64>,
+    // Pending timezone
+    timezone: Option<f64>,
 }
 
 impl Lx200Telescope {
@@ -28,7 +30,8 @@ impl Lx200Telescope {
         Lx200Telescope{ telescope_position,
                         callback: Some(Callback(cb)),
                         target_ra: None,
-                        target_dec: None, }
+                        target_dec: None,
+                        timezone: None, }
     }
 
     fn extract_command(s: &str) -> Option<String> {
@@ -53,6 +56,10 @@ impl Lx200Telescope {
         if let Err(e) = stream.write_all(s.as_bytes()) {
             warn!("Failed to send data to client: {}", e);
         }
+    }
+
+    fn write_status(stream: &TcpStream, success: bool) {
+        Self::write(stream, if success { "1" } else { "0" });
     }
 
     async fn handle_get_ra(&self, stream: &TcpStream) {
@@ -90,32 +97,30 @@ impl Lx200Telescope {
         // The command is expected to be ":SrHH:MM:SS#"
         if cmd.len() < 12 {
             warn!("Unexpected ra length");
-            // 0 indicates failure
-            Self::write(&stream, "0");
+            Self::write_status(stream, false);
             return;
         }
         let degrees = Self::parse_coordinates(&cmd[3..5], &cmd[6..8], &cmd[9..11]);
         match degrees {
             Some(n) => {
-                info!("Set target ra to {}", n * 15.0);
                 // Convert hours to 360-degree format
-                self.target_ra = Some(n * 15.0);
-                Self::write(&stream, "1");
+                let ra = n * 15.0;
+                info!("Set target ra to {}", ra);
+                self.target_ra = Some(ra);
+                Self::write_status(stream, true);
             }
             None => {
-                // 0 indicates failure
-                Self::write(&stream, "0");
+                Self::write_status(stream, false);
             }
         }
     }
 
     async fn handle_set_dec(&mut self, stream: &TcpStream, cmd: &str) {
         info!("Set dec command: {}", cmd);
-        // The command is expected to be ":Sd+HH:MM:SS#" or ":Sd-HH:MM:SS#"
+        // The command is expected to be ":SdsHH*MM:SS#" where s is +/-
         if cmd.len() < 13 {
             warn!("Unexpected dec length");
-            // 0 indicates failure
-            Self::write(&stream, "0");
+            Self::write_status(stream, false);
             return;
         }
         let degrees = Self::parse_coordinates(&cmd[3..6], &cmd[7..9], &cmd[10..12]);
@@ -123,11 +128,10 @@ impl Lx200Telescope {
             Some(n) => {
                 info!("Set target dec to {}", n);
                 self.target_dec = Some(n);
-                Self::write(&stream, "1");
+                Self::write_status(stream, true);
             }
             None => {
-                // 0 indicates failure
-                Self::write(&stream, "0");
+                Self::write_status(stream, false);
             }
         }
     }
@@ -153,13 +157,82 @@ impl Lx200Telescope {
             locked_position.sync_dec = Some(dec);
         }
         // AutoStar always responds with this, so we'll do the same
-        Self::write(&stream, " M31 EX GAL MAG 3.5 SZ178.0'#");
+        Self::write(stream, " M31 EX GAL MAG 3.5 SZ178.0'#");
     }
 
     async fn handle_abort(&mut self) {
         let mut locked_position = self.telescope_position.lock().await;
         locked_position.slew_active = false;
     }
+
+    async fn handle_set_latitude(&mut self, stream: &TcpStream, cmd: &str) {
+        info!("Set latitude command: {}", cmd);
+        // The command is expected to be ":StsDD:MM#" where s is +/-
+        if cmd.len() < 10 {
+            warn!("Unexpected lat length");
+            Self::write_status(stream, false);
+            return;
+        }
+        let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
+        match location {
+            Some(n) => {
+                info!("Set latitude {}", n);
+                let mut locked_position = self.telescope_position.lock().await;
+                locked_position.site_latitude = Some(n);
+                Self::write_status(stream, true);
+            }
+            None => {
+                Self::write_status(stream, false);
+            }
+        }
+    }
+
+    async fn handle_set_longitude(&mut self, stream: &TcpStream, cmd: &str) {
+        info!("Set longitude command: {}", cmd);
+        // The command is expected to be ":StDDD:MM#"
+        if cmd.len() < 10 {
+            warn!("Unexpected lon length");
+            Self::write_status(stream, false);
+            return;
+        }
+        let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
+        match location {
+            Some(n) => {
+                // Cedar expects -180..180. SkySafari will give 0..360, with East being > 180
+                let longitude = if n > 180.0 { 360.0 - n } else { -n };
+                info!("Set longitude {}", longitude);
+                let mut locked_position = self.telescope_position.lock().await;
+                locked_position.site_latitude = Some(longitude);
+                Self::write_status(stream, true);
+            }
+            None => {
+                Self::write_status(stream, false);
+            }
+        }
+    }
+
+    async fn handle_set_timezone(&mut self, stream: &TcpStream, cmd: &str) {
+        info!("Set timezone command: {}", cmd);
+        // The command is expected to be ":SGsXX.X#" where s is +/-
+        if cmd.len() < 9 {
+            warn!("Unexpected tz length");
+            Self::write_status(stream, false);
+            return;
+        }
+        let timezone: Result<f64, _> = cmd[3..8].parse();
+        match timezone {
+            Err(e) => {
+                warn!("Error parsing hours: {}", e);
+                Self::write_status(stream, false);
+                return;
+            }
+            Ok(tz) => {
+                info!("Setting timezone to: {}", tz);
+                self.timezone = Some(tz);
+                Self::write_status(stream, true);
+            }
+        }
+    }   
 
     fn to_coordinates(prefix: &str, n: f64) -> String {
         let hours = n.trunc() as i64;
@@ -200,6 +273,10 @@ impl Lx200Telescope {
         Some(hours.unwrap() as f64 + minutes.unwrap() as f64 / 60.0 + seconds.unwrap() as f64 / 3600.0)
     }
 
+    fn parse_location(deg: &str, min: &str) -> Option<f64> {
+        return Self::parse_coordinates(deg, min, "0");
+    }
+
     pub async fn start(&mut self) {
         let listener = TcpListener::bind("0.0.0.0:4030").unwrap();
         info!("Running LX200 server on: {}", listener.local_addr().unwrap());
@@ -236,29 +313,49 @@ impl Lx200Telescope {
                             debug!("Received get ra command");
                             self.handle_get_ra(&stream).await;
                         }
-                        Some("RS") => {
-                            // SkySafari issues slew commands upon initial connection which should
-                            // be ignored.
-                            info!("Received slew command");
-                        }
                         Some("MS") => {
                             info!("Received slew to object command");
                             self.handle_slew().await;
-                        }
-                        Some("Sd") => {
-                            info!("Received set declination command");
-                            self.handle_set_dec(&stream, &in_data).await;
-                        }
-                        Some("Sr") => {
-                            info!("Received set ra command");
-                            self.handle_set_ra(&stream, &in_data).await;
                         }
                         Some("Q") => {
                             info!("Received abort command");
                             self.handle_abort().await
                         }
-                        Some(command) => {
-                            info!("Unknown command: {}", command);
+                        Some("RS") => {
+                            // SkySafari issues slew commands upon initial connection which should
+                            // be ignored.
+                            info!("Received slew command");
+                        }
+                        Some("SC") => {
+                            info!("Received set date command: {}", in_data);
+                            Self::write_status(&stream, true);
+                        }
+                        Some("SG") => {
+                            info!("Received set timezone command: {}", in_data);
+                            self.handle_set_timezone(&stream, &in_data).await;
+                        }
+                        Some("SL") => {
+                            info!("Received set time command: {}", in_data);
+                            Self::write_status(&stream, true);
+                        }
+                        Some("Sd") => {
+                            info!("Received set declination command");
+                            self.handle_set_dec(&stream, &in_data).await;
+                        }
+                        Some("Sg") => {
+                            info!("Received set longitude command");
+                            self.handle_set_longitude(&stream, &in_data).await;
+                        }
+                        Some("Sr") => {
+                            info!("Received set ra command");
+                            self.handle_set_ra(&stream, &in_data).await;
+                        }
+                        Some("St") => {
+                            info!("Received set latitude command");
+                            self.handle_set_latitude(&stream, &in_data).await;
+                        }
+                        Some(_) => {
+                            info!("Unknown command: {}", in_data);
                         }
                         None => {}
                     }
