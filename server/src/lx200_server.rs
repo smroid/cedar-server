@@ -1,12 +1,14 @@
 // Copyright (c) 2025 Omair Kamil
 // See LICENSE file in root directory for license terms.
 
-use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write};
-
-use std::sync::Arc;
+use chrono::{DateTime, FixedOffset};
 
 use log::{debug, info, warn};
+
+use std::net::{TcpListener, TcpStream};
+use std::io::{Read, Write};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use crate::{
     position_reporter::{Callback, TelescopePosition},
@@ -20,8 +22,9 @@ pub struct Lx200Telescope {
     // Pending target coordinates for sync/slew
     target_ra: Option<f64>,
     target_dec: Option<f64>,
-    // Pending timezone
-    timezone: Option<f64>,
+    // Pending time
+    timezone: Option<String>,
+    time: Option<String>,
 }
 
 impl Lx200Telescope {
@@ -31,7 +34,8 @@ impl Lx200Telescope {
                         callback: Some(Callback(cb)),
                         target_ra: None,
                         target_dec: None,
-                        timezone: None, }
+                        timezone: None,
+                        time: None, }
     }
 
     fn extract_command(s: &str) -> Option<String> {
@@ -219,20 +223,59 @@ impl Lx200Telescope {
             Self::write_status(stream, false);
             return;
         }
-        let timezone: Result<f64, _> = cmd[3..8].parse();
-        match timezone {
-            Err(e) => {
-                warn!("Error parsing hours: {}", e);
+        let mut timezone = cmd[3..6].to_string();
+        match &cmd[6..8] {
+            ".0" => timezone.push_str("00"),
+            ".2" => timezone.push_str("15"),
+            ".5" => timezone.push_str("30"),
+            ".8" => timezone.push_str("45"),
+            _ => {
+                warn!("Error parsing timezone: {}", &cmd[3..8]);
                 Self::write_status(stream, false);
                 return;
             }
-            Ok(tz) => {
-                info!("Setting timezone to: {}", tz);
-                self.timezone = Some(tz);
-                Self::write_status(stream, true);
+        }
+        self.timezone = Some(timezone);
+        Self::write_status(stream, true);
+    }
+
+    async fn handle_set_time(&mut self, stream: &TcpStream, cmd: &str) {
+        info!("Set time command: {}", cmd);
+        // The command is expected to be ":SLHH:MM:SS#"
+        if cmd.len() < 12 {
+            warn!("Unexpected time length");
+            Self::write_status(stream, false);
+            return;
+        }
+        self.time = Some(cmd[3..11].to_string());
+        Self::write_status(stream, true);
+    }
+
+    async fn handle_set_date(&mut self, stream: &TcpStream, cmd: &str) {
+        info!("Set date command: {}", cmd);
+        // The command is expected to be ":SCMM/DD/YY#"
+        if cmd.len() < 12 {
+            warn!("Unexpected time length");
+            Self::write_status(stream, false);
+            return;
+        }
+        if let (Some(timezone), Some(time)) = (self.timezone.take(), self.time.take()) {
+            const FMT: &str = "%z%H:%M:%S%D";
+            let dtstr = timezone + &time + &cmd[3..11];
+            let datetime: Result<DateTime<FixedOffset>, _> = DateTime::parse_from_str(&dtstr, FMT);
+            match datetime {
+                Ok(dt) => {
+                    info!("Set date/time to {}", dt);
+                    let mut locked_position = self.telescope_position.lock().await;
+                    locked_position.utc_date = Some(SystemTime::from(dt));
+                }
+                Err(e) => {
+                    warn!("Error parsing date/time: {}", e);
+                }
             }
         }
-    }   
+        Self::write_status(stream, true);
+    }
 
     fn to_coordinates(prefix: &str, n: f64) -> String {
         let hours = n.trunc() as i64;
@@ -328,7 +371,7 @@ impl Lx200Telescope {
                         }
                         Some("SC") => {
                             info!("Received set date command: {}", in_data);
-                            Self::write_status(&stream, true);
+                            self.handle_set_date(&stream, &in_data).await;
                         }
                         Some("SG") => {
                             info!("Received set timezone command: {}", in_data);
@@ -336,7 +379,7 @@ impl Lx200Telescope {
                         }
                         Some("SL") => {
                             info!("Received set time command: {}", in_data);
-                            Self::write_status(&stream, true);
+                            self.handle_set_time(&stream, &in_data).await;
                         }
                         Some("Sd") => {
                             info!("Received set declination command");
