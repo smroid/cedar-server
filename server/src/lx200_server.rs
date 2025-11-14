@@ -2,104 +2,31 @@
 // See LICENSE file in root directory for license terms.
 
 use std::{
-    ffi::CStr,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::Arc,
     time::SystemTime,
 };
 
-use chrono::{DateTime, FixedOffset};
+use cedar_elements::astro_util::precess;
+use chrono::{DateTime, Datelike, FixedOffset, Utc};
 use log::{debug, info, warn};
-use pyo3::{prelude::*, types::PyModule};
-use pyo3_ffi::c_str;
 
 use crate::position_reporter::{Callback, TelescopePosition};
 
-const PYTHON_HELPER_CODE: &CStr = c_str!(
-    "
-from skyfield.api import load
-from skyfield.positionlib import position_of_radec
-
-_ts = load.timescale()
-
-def _convert_epoch(ra_deg, dec, in_epoch, out_epoch):
-  p = position_of_radec(ra_hours=ra_deg/15, dec_degrees=dec, epoch=in_epoch)
-  ra_h, dec_d, _ = p.radec(epoch=out_epoch)
-  return (ra_h._degrees, dec_d.degrees)
-
-def to_j2000(ra_deg, dec):
-  return _convert_epoch(ra_deg, dec, _ts.now(), _ts.J2000)
-
-def to_jnow(ra_deg, dec):
-  return _convert_epoch(ra_deg, dec, _ts.J2000, _ts.now())
-
-"
-);
-
-#[derive(Debug)]
-struct PositionConverter {
-    to_j2000: Py<PyAny>,
-    to_jnow: Py<PyAny>,
-}
-
-impl PositionConverter {
-    fn new() -> PyResult<PositionConverter> {
-        Python::attach(|py| -> PyResult<PositionConverter> {
-            let module = PyModule::from_code(
-                py,
-                PYTHON_HELPER_CODE,
-                c_str!("position_converter.py"),
-                c_str!("position_converter"),
-            )?;
-            let j2000_func: Py<PyAny> = module.getattr("to_j2000")?.into();
-            let jnow_func: Py<PyAny> = module.getattr("to_jnow")?.into();
-            Ok(PositionConverter {
-                to_j2000: j2000_func,
-                to_jnow: jnow_func,
-            })
-        })
-    }
-
-    fn convert_coord(func: &Py<PyAny>, ra_deg: f64, dec: f64) -> (f64, f64) {
-        Python::attach(|py| -> (f64, f64) {
-            let result = func.call1(py, (ra_deg, dec));
-            match result {
-                Ok(res) => {
-                    let val = res.extract(py);
-                    match val {
-                        Ok(v) => return v,
-                        Err(e) => warn!("Unable to convert to J2000: {}", e),
-                    }
-                }
-                Err(e) => warn!("Unable to convert to J2000: {}", e),
-            }
-            (ra_deg, dec)
-        })
-    }
-
-    fn convert_to_j2000(&self, ra_deg: f64, dec: f64) -> (f64, f64) {
-        Self::convert_coord(&self.to_j2000, ra_deg, dec)
-    }
-
-    fn convert_to_jnow(&self, ra_deg: f64, dec: f64) -> (f64, f64) {
-        Self::convert_coord(&self.to_jnow, ra_deg, dec)
-    }
-}
-
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct Lx200Telescope {
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
     // Called whenever SkySafari obtains our right ascension
     callback: Option<Callback>,
-    // Helper to convert coordinates
-    position_converter: PositionConverter,
     // Pending target coordinates for sync/slew
     target_ra: Option<f64>,
     target_dec: Option<f64>,
     // Pending time
     timezone: Option<String>,
     time: Option<String>,
+    // Current epoch to the closest tenth of a year
+    epoch: f64,
 }
 
 impl Lx200Telescope {
@@ -107,15 +34,19 @@ impl Lx200Telescope {
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         cb: Box<dyn Fn() + Send + Sync>,
     ) -> Self {
-        let converter = PositionConverter::new().unwrap();
+        let dt = Utc::now();
+        let jnow = ((dt.year() as f64 + dt.ordinal0() as f64 / 365.0) * 10.0)
+            .round()
+            / 10.0;
+        info!("Using now epoch: {}", jnow);
         Lx200Telescope {
             telescope_position,
             callback: Some(Callback(cb)),
-            position_converter: converter,
             target_ra: None,
             target_dec: None,
             timezone: None,
             time: None,
+            epoch: jnow,
         }
     }
 
@@ -151,12 +82,24 @@ impl Lx200Telescope {
         Self::write(stream, if success { "1" } else { "0" });
     }
 
+    fn convert_to_j2000(&self, ra: f64, dec: f64) -> (f64, f64) {
+        let (ra_rad, dec_rad) =
+            precess(ra.to_radians(), dec.to_radians(), self.epoch, 2000.0);
+        (ra_rad.to_degrees(), dec_rad.to_degrees())
+    }
+
+    fn convert_to_jnow(&self, ra: f64, dec: f64) -> (f64, f64) {
+        let (ra_rad, dec_rad) =
+            precess(ra.to_radians(), dec.to_radians(), 2000.0, self.epoch);
+        (ra_rad.to_degrees(), dec_rad.to_degrees())
+    }
+
     async fn handle_get_ra(&self, stream: &TcpStream) {
         if let Some(ref cb) = self.callback {
             cb.0();
         }
         let mut locked_position = self.telescope_position.lock().await;
-        let (ra, dec) = self.position_converter.convert_to_jnow(
+        let (ra, dec) = self.convert_to_jnow(
             locked_position.boresight_ra,
             locked_position.boresight_dec,
         );
@@ -174,7 +117,7 @@ impl Lx200Telescope {
         let mut dec = if snapshot_dec.is_some() {
             snapshot_dec.unwrap()
         } else {
-            let (_, dec) = self.position_converter.convert_to_jnow(
+            let (_, dec) = self.convert_to_jnow(
                 locked_position.boresight_ra,
                 locked_position.boresight_dec,
             );
@@ -241,8 +184,7 @@ impl Lx200Telescope {
         if let (Some(ra), Some(dec)) =
             (self.target_ra.take(), self.target_dec.take())
         {
-            let (j2000_ra, j2000_dec) =
-                self.position_converter.convert_to_j2000(ra, dec);
+            let (j2000_ra, j2000_dec) = self.convert_to_j2000(ra, dec);
             info!("Slewing to {}, {}", j2000_ra, j2000_dec);
             let mut locked_position = self.telescope_position.lock().await;
             locked_position.sync_ra = Some(j2000_ra);
@@ -257,8 +199,7 @@ impl Lx200Telescope {
         if let (Some(ra), Some(dec)) =
             (self.target_ra.take(), self.target_dec.take())
         {
-            let (j2000_ra, j2000_dec) =
-                self.position_converter.convert_to_j2000(ra, dec);
+            let (j2000_ra, j2000_dec) = self.convert_to_j2000(ra, dec);
             info!("Syncing to {}, {}", j2000_ra, j2000_dec);
             let mut locked_position = self.telescope_position.lock().await;
             locked_position.sync_ra = Some(j2000_ra);
