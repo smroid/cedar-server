@@ -1,24 +1,99 @@
 // Copyright (c) 2025 Omair Kamil
 // See LICENSE file in root directory for license terms.
 
-use chrono::{DateTime, FixedOffset};
-
-use log::{debug, info, warn};
-
-use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write};
-use std::sync::Arc;
-use std::time::SystemTime;
-
-use crate::{
-    position_reporter::{Callback, TelescopePosition},
+use std::{
+    ffi::CStr,
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    sync::Arc,
+    time::SystemTime,
 };
 
-#[derive(Default, Debug)]
+use chrono::{DateTime, FixedOffset};
+use log::{debug, info, warn};
+use pyo3::{prelude::*, types::PyModule};
+use pyo3_ffi::c_str;
+
+use crate::position_reporter::{Callback, TelescopePosition};
+
+const PYTHON_HELPER_CODE: &CStr = c_str!(
+    "
+from skyfield.api import load
+from skyfield.positionlib import position_of_radec
+
+_ts = load.timescale()
+
+def _convert_epoch(ra_deg, dec, in_epoch, out_epoch):
+  p = position_of_radec(ra_hours=ra_deg/15, dec_degrees=dec, epoch=in_epoch)
+  ra_h, dec_d, _ = p.radec(epoch=out_epoch)
+  return (ra_h._degrees, dec_d.degrees)
+
+def to_j2000(ra_deg, dec):
+  return _convert_epoch(ra_deg, dec, _ts.now(), _ts.J2000)
+
+def to_jnow(ra_deg, dec):
+  return _convert_epoch(ra_deg, dec, _ts.J2000, _ts.now())
+
+"
+);
+
+#[derive(Debug)]
+struct PositionConverter {
+    to_j2000: Py<PyAny>,
+    to_jnow: Py<PyAny>,
+}
+
+impl PositionConverter {
+    fn new() -> PyResult<PositionConverter> {
+        Python::attach(|py| -> PyResult<PositionConverter> {
+            let module = PyModule::from_code(
+                py,
+                PYTHON_HELPER_CODE,
+                c_str!("position_converter.py"),
+                c_str!("position_converter"),
+            )?;
+            let j2000_func: Py<PyAny> = module.getattr("to_j2000")?.into();
+            let jnow_func: Py<PyAny> = module.getattr("to_jnow")?.into();
+            Ok(PositionConverter {
+                to_j2000: j2000_func,
+                to_jnow: jnow_func,
+            })
+        })
+    }
+
+    fn convert_coord(func: &Py<PyAny>, ra_deg: f64, dec: f64) -> (f64, f64) {
+        Python::attach(|py| -> (f64, f64) {
+            let result = func.call1(py, (ra_deg, dec));
+            match result {
+                Ok(res) => {
+                    let val = res.extract(py);
+                    match val {
+                        Ok(v) => return v,
+                        Err(e) => warn!("Unable to convert to J2000: {}", e),
+                    }
+                }
+                Err(e) => warn!("Unable to convert to J2000: {}", e),
+            }
+            (ra_deg, dec)
+        })
+    }
+
+    fn convert_to_j2000(&self, ra_deg: f64, dec: f64) -> (f64, f64) {
+        Self::convert_coord(&self.to_j2000, ra_deg, dec)
+    }
+
+    fn convert_to_jnow(&self, ra_deg: f64, dec: f64) -> (f64, f64) {
+        Self::convert_coord(&self.to_jnow, ra_deg, dec)
+    }
+}
+
+#[derive(Debug)]
 pub struct Lx200Telescope {
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
     // Called whenever SkySafari obtains our right ascension
     callback: Option<Callback>,
+    // Helper to convert coordinates
+    position_converter: PositionConverter,
     // Pending target coordinates for sync/slew
     target_ra: Option<f64>,
     target_dec: Option<f64>,
@@ -28,26 +103,36 @@ pub struct Lx200Telescope {
 }
 
 impl Lx200Telescope {
-    pub fn new(telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
-               cb: Box<dyn Fn() + Send + Sync>) -> Self {
-        Lx200Telescope{ telescope_position,
-                        callback: Some(Callback(cb)),
-                        target_ra: None,
-                        target_dec: None,
-                        timezone: None,
-                        time: None, }
+    pub fn new(
+        telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
+        cb: Box<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        let converter = PositionConverter::new().unwrap();
+        Lx200Telescope {
+            telescope_position,
+            callback: Some(Callback(cb)),
+            position_converter: converter,
+            target_ra: None,
+            target_dec: None,
+            timezone: None,
+            time: None,
+        }
     }
 
     fn extract_command(s: &str) -> Option<String> {
-        // We expect LX200 commands to be in the format ":[Command][Payload]#". The command is
-        // is composed of one or two letters. Commands to set RA or Declination have a payload
-        // consisting of coordinates in HH:MM:SS format, with Dec including a leading sign.
-        let colon_index = s.find(':')?; 
+        // We expect LX200 commands to be in the format ":[Command][Payload]#".
+        // The command is is composed of one or two letters. Commands to
+        // set RA or Declination have a payload consisting of
+        // coordinates in HH:MM:SS format, with Dec including a leading sign.
+        let colon_index = s.find(':')?;
         if colon_index + 1 >= s.len() {
             return None;
         }
 
-        let command: String = s[colon_index+1..].chars().take_while(|c| c.is_alphabetic()).collect();
+        let command: String = s[colon_index + 1..]
+            .chars()
+            .take_while(|c| c.is_alphabetic())
+            .collect();
         if command.is_empty() {
             None
         } else {
@@ -71,10 +156,15 @@ impl Lx200Telescope {
             cb.0();
         }
         let mut locked_position = self.telescope_position.lock().await;
+        let (ra, dec) = self.position_converter.convert_to_jnow(
+            locked_position.boresight_ra,
+            locked_position.boresight_dec,
+        );
         // Keep a snapshot of the current dec for the next retrieval
-        locked_position.snapshot_dec = Some(locked_position.boresight_dec);
-        // RA degrees need to be converted to hours before the conversion to HH:MM:SS
-        Self::write(stream, Self::to_coordinates("", locked_position.boresight_ra / 15.0).as_str());
+        locked_position.snapshot_dec = Some(dec);
+        // RA degrees need to be converted to hours before the conversion to
+        // HH:MM:SS
+        Self::write(stream, Self::to_coordinates("", ra / 15.0).as_str());
     }
 
     async fn handle_get_dec(&self, stream: &TcpStream) {
@@ -84,7 +174,11 @@ impl Lx200Telescope {
         let mut dec = if snapshot_dec.is_some() {
             snapshot_dec.unwrap()
         } else {
-            locked_position.boresight_dec
+            let (_, dec) = self.position_converter.convert_to_jnow(
+                locked_position.boresight_ra,
+                locked_position.boresight_dec,
+            );
+            dec
         };
 
         let sign = if dec < 0.0 {
@@ -97,19 +191,19 @@ impl Lx200Telescope {
     }
 
     async fn handle_set_ra(&mut self, stream: &TcpStream, cmd: &str) {
-        info!("Set ra command: {}", cmd);
         // The command is expected to be ":SrHH:MM:SS#"
         if cmd.len() < 12 {
             warn!("Unexpected ra length");
             Self::write_status(stream, false);
             return;
         }
-        let degrees = Self::parse_coordinates(&cmd[3..5], &cmd[6..8], &cmd[9..11]);
+        let degrees =
+            Self::parse_coordinates(&cmd[3..5], &cmd[6..8], &cmd[9..11]);
         match degrees {
             Some(n) => {
                 // Convert hours to 360-degree format
                 let ra = n * 15.0;
-                info!("Set target ra to {}", ra);
+                debug!("Set target ra to {}", ra);
                 self.target_ra = Some(ra);
                 Self::write_status(stream, true);
             }
@@ -120,17 +214,17 @@ impl Lx200Telescope {
     }
 
     async fn handle_set_dec(&mut self, stream: &TcpStream, cmd: &str) {
-        info!("Set dec command: {}", cmd);
         // The command is expected to be ":SdsHH*MM:SS#" where s is +/-
         if cmd.len() < 13 {
             warn!("Unexpected dec length");
             Self::write_status(stream, false);
             return;
         }
-        let degrees = Self::parse_coordinates(&cmd[3..6], &cmd[7..9], &cmd[10..12]);
+        let degrees =
+            Self::parse_coordinates(&cmd[3..6], &cmd[7..9], &cmd[10..12]);
         match degrees {
             Some(n) => {
-                info!("Set target dec to {}", n);
+                debug!("Set target dec to {}", n);
                 self.target_dec = Some(n);
                 Self::write_status(stream, true);
             }
@@ -141,24 +235,34 @@ impl Lx200Telescope {
     }
 
     async fn handle_slew(&mut self) {
-        // Check if there is a pending position set. SkySafari will issue an Sr command, followed
-        // by an Sd command, followed by MS to initiate the movement. This applies to GoTo mode.
-        if let (Some(ra), Some(dec)) = (self.target_ra.take(), self.target_dec.take()) {
+        // Check if there is a pending position set. SkySafari will issue an Sr
+        // command, followed by an Sd command, followed by MS to
+        // initiate the movement. This applies to GoTo mode.
+        if let (Some(ra), Some(dec)) =
+            (self.target_ra.take(), self.target_dec.take())
+        {
+            let (j2000_ra, j2000_dec) =
+                self.position_converter.convert_to_j2000(ra, dec);
+            info!("Slewing to {}, {}", j2000_ra, j2000_dec);
             let mut locked_position = self.telescope_position.lock().await;
-            locked_position.slew_target_ra = ra;
-            locked_position.slew_target_dec = dec;
-            locked_position.slew_active = true;
+            locked_position.sync_ra = Some(j2000_ra);
+            locked_position.sync_dec = Some(j2000_dec);
         }
     }
 
     async fn handle_sync(&mut self, stream: &TcpStream) {
-        // Check if there is a pending position set. SkySafari will issue an Sr command, followed
-        // by an Sd command, followed by CM to sync/align. This applies to both GoTo and PushTo
-        // modes.
-        if let (Some(ra), Some(dec)) = (self.target_ra.take(), self.target_dec.take()) {
+        // Check if there is a pending position set. SkySafari will issue an Sr
+        // command, followed by an Sd command, followed by CM to
+        // sync/align. This applies to both GoTo and PushTo modes.
+        if let (Some(ra), Some(dec)) =
+            (self.target_ra.take(), self.target_dec.take())
+        {
+            let (j2000_ra, j2000_dec) =
+                self.position_converter.convert_to_j2000(ra, dec);
+            info!("Syncing to {}, {}", j2000_ra, j2000_dec);
             let mut locked_position = self.telescope_position.lock().await;
-            locked_position.sync_ra = Some(ra);
-            locked_position.sync_dec = Some(dec);
+            locked_position.sync_ra = Some(j2000_ra);
+            locked_position.sync_dec = Some(j2000_dec);
         }
         // AutoStar always responds with this, so we'll do the same
         Self::write(stream, " M31 EX GAL MAG 3.5 SZ178.0'#");
@@ -170,7 +274,6 @@ impl Lx200Telescope {
     }
 
     async fn handle_set_latitude(&mut self, stream: &TcpStream, cmd: &str) {
-        info!("Set latitude command: {}", cmd);
         // The command is expected to be ":StsDD:MM#" where s is +/-
         if cmd.len() < 10 {
             warn!("Unexpected lat length");
@@ -180,7 +283,7 @@ impl Lx200Telescope {
         let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
         match location {
             Some(n) => {
-                info!("Set latitude {}", n);
+                debug!("Set latitude {}", n);
                 let mut locked_position = self.telescope_position.lock().await;
                 locked_position.site_latitude = Some(n);
                 Self::write_status(stream, true);
@@ -192,7 +295,6 @@ impl Lx200Telescope {
     }
 
     async fn handle_set_longitude(&mut self, stream: &TcpStream, cmd: &str) {
-        info!("Set longitude command: {}", cmd);
         // The command is expected to be ":StDDD:MM#"
         if cmd.len() < 10 {
             warn!("Unexpected lon length");
@@ -202,9 +304,10 @@ impl Lx200Telescope {
         let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
         match location {
             Some(n) => {
-                // Cedar expects -180..180. SkySafari will give 0..360, with East being > 180
+                // Cedar expects -180..180. SkySafari will give 0..360, with
+                // East being > 180
                 let longitude = if n > 180.0 { 360.0 - n } else { -n };
-                info!("Set longitude {}", longitude);
+                debug!("Set longitude {}", longitude);
                 let mut locked_position = self.telescope_position.lock().await;
                 locked_position.site_latitude = Some(longitude);
                 Self::write_status(stream, true);
@@ -216,7 +319,6 @@ impl Lx200Telescope {
     }
 
     async fn handle_set_timezone(&mut self, stream: &TcpStream, cmd: &str) {
-        info!("Set timezone command: {}", cmd);
         // The command is expected to be ":SGsXX.X#" where s is +/-
         if cmd.len() < 9 {
             warn!("Unexpected tz length");
@@ -240,7 +342,6 @@ impl Lx200Telescope {
     }
 
     async fn handle_set_time(&mut self, stream: &TcpStream, cmd: &str) {
-        info!("Set time command: {}", cmd);
         // The command is expected to be ":SLHH:MM:SS#"
         if cmd.len() < 12 {
             warn!("Unexpected time length");
@@ -252,21 +353,24 @@ impl Lx200Telescope {
     }
 
     async fn handle_set_date(&mut self, stream: &TcpStream, cmd: &str) {
-        info!("Set date command: {}", cmd);
         // The command is expected to be ":SCMM/DD/YY#"
         if cmd.len() < 12 {
             warn!("Unexpected time length");
             Self::write_status(stream, false);
             return;
         }
-        if let (Some(timezone), Some(time)) = (self.timezone.take(), self.time.take()) {
+        if let (Some(timezone), Some(time)) =
+            (self.timezone.take(), self.time.take())
+        {
             const FMT: &str = "%z%H:%M:%S%D";
             let dtstr = timezone + &time + &cmd[3..11];
-            let datetime: Result<DateTime<FixedOffset>, _> = DateTime::parse_from_str(&dtstr, FMT);
+            let datetime: Result<DateTime<FixedOffset>, _> =
+                DateTime::parse_from_str(&dtstr, FMT);
             match datetime {
                 Ok(dt) => {
                     info!("Set date/time to {}", dt);
-                    let mut locked_position = self.telescope_position.lock().await;
+                    let mut locked_position =
+                        self.telescope_position.lock().await;
                     locked_position.utc_date = Some(SystemTime::from(dt));
                 }
                 Err(e) => {
@@ -279,7 +383,7 @@ impl Lx200Telescope {
 
     fn to_coordinates(prefix: &str, n: f64) -> String {
         let hours = n.trunc() as i64;
-    
+
         let minutes_float = (n - hours as f64) * 60.0;
         let minutes = minutes_float.trunc() as i64;
 
@@ -313,7 +417,11 @@ impl Lx200Telescope {
             }
             Ok(_) => {}
         }
-        Some(hours.unwrap() as f64 + minutes.unwrap() as f64 / 60.0 + seconds.unwrap() as f64 / 3600.0)
+        Some(
+            hours.unwrap() as f64
+                + minutes.unwrap() as f64 / 60.0
+                + seconds.unwrap() as f64 / 3600.0,
+        )
     }
 
     fn parse_location(deg: &str, min: &str) -> Option<f64> {
@@ -323,6 +431,7 @@ impl Lx200Telescope {
     pub async fn start(&mut self) {
         let listener = TcpListener::bind("0.0.0.0:4030").unwrap();
         info!("Running LX200 server on: {}", listener.local_addr().unwrap());
+        _ = PositionConverter::new();
 
         for stream in listener.incoming() {
             let stream = stream.unwrap();
@@ -345,7 +454,7 @@ impl Lx200Telescope {
 
                     match Self::extract_command(&in_data).as_deref() {
                         Some("CM") => {
-                            info!("Received sync command");
+                            debug!("Received sync command");
                             self.handle_sync(&stream).await;
                         }
                         Some("GD") => {
@@ -357,44 +466,48 @@ impl Lx200Telescope {
                             self.handle_get_ra(&stream).await;
                         }
                         Some("MS") => {
-                            info!("Received slew to object command");
+                            debug!("Received slew to object command");
                             self.handle_slew().await;
                         }
                         Some("Q") => {
-                            info!("Received abort command");
+                            debug!("Received abort command");
                             self.handle_abort().await
                         }
                         Some("RS") => {
-                            // SkySafari issues slew commands upon initial connection which should
+                            // SkySafari issues slew commands upon initial
+                            // connection which should
                             // be ignored.
-                            info!("Received slew command");
+                            debug!("Received slew command");
                         }
                         Some("SC") => {
-                            info!("Received set date command: {}", in_data);
+                            debug!("Received set date command: {}", in_data);
                             self.handle_set_date(&stream, &in_data).await;
                         }
                         Some("SG") => {
-                            info!("Received set timezone command: {}", in_data);
+                            debug!(
+                                "Received set timezone command: {}",
+                                in_data
+                            );
                             self.handle_set_timezone(&stream, &in_data).await;
                         }
                         Some("SL") => {
-                            info!("Received set time command: {}", in_data);
+                            debug!("Received set time command: {}", in_data);
                             self.handle_set_time(&stream, &in_data).await;
                         }
                         Some("Sd") => {
-                            info!("Received set declination command");
+                            debug!("Received set declination command");
                             self.handle_set_dec(&stream, &in_data).await;
                         }
                         Some("Sg") => {
-                            info!("Received set longitude command");
+                            debug!("Received set longitude command");
                             self.handle_set_longitude(&stream, &in_data).await;
                         }
                         Some("Sr") => {
-                            info!("Received set ra command");
+                            debug!("Received set ra command");
                             self.handle_set_ra(&stream, &in_data).await;
                         }
                         Some("St") => {
-                            info!("Received set latitude command");
+                            debug!("Received set latitude command");
                             self.handle_set_latitude(&stream, &in_data).await;
                         }
                         Some(_) => {
@@ -417,7 +530,9 @@ impl Lx200Telescope {
     }
 }
 
-pub fn create_lx200_server(telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
-                           cb: Box<dyn Fn() + Send + Sync>) -> Lx200Telescope {
+pub fn create_lx200_server(
+    telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
+    cb: Box<dyn Fn() + Send + Sync>,
+) -> Lx200Telescope {
     Lx200Telescope::new(telescope_position, cb)
 }
