@@ -17,14 +17,21 @@ use crate::position_reporter::{Callback, TelescopePosition};
 #[derive(Default, Debug)]
 pub struct Lx200Telescope {
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
+
+    // Animate the reported ra/dec position when it is invalid.    
+    update_while_invalid: tokio::sync::Mutex<bool>,
+
     // Called whenever SkySafari obtains our right ascension
     callback: Option<Callback>,
+
     // Pending target coordinates for sync/slew
     target_ra: Option<f64>,
     target_dec: Option<f64>,
+
     // Pending time
     timezone: Option<String>,
     time: Option<String>,
+
     // Current epoch to the closest tenth of a year
     epoch: f64,
 }
@@ -41,6 +48,7 @@ impl Lx200Telescope {
         info!("Using now epoch: {}", jnow);
         Lx200Telescope {
             telescope_position,
+            update_while_invalid: tokio::sync::Mutex::new(false),
             callback: Some(Callback(cb)),
             target_ra: None,
             target_dec: None,
@@ -130,6 +138,16 @@ impl Lx200Telescope {
         } else {
             "+"
         };
+
+        if !locked_position.boresight_valid {
+            // Wiggle the position to indicate that it's invalid
+            let mut locked_update = self.update_while_invalid.lock().await;
+            *locked_update = !*locked_update;
+            if *locked_update {
+                dec += if dec > 0.0 { 0.1 } else { -0.1 };
+            }
+        }
+
         Self::write(stream, Self::to_coordinates(sign, dec).as_str());
     }
 
