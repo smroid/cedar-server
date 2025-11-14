@@ -431,7 +431,6 @@ impl Lx200Telescope {
     pub async fn start(&mut self) {
         let listener = TcpListener::bind("0.0.0.0:4030").unwrap();
         info!("Running LX200 server on: {}", listener.local_addr().unwrap());
-        _ = PositionConverter::new();
 
         for stream in listener.incoming() {
             let stream = stream.unwrap();
