@@ -4014,18 +4014,19 @@ async fn async_main(
             });
         });
     });
-    let alpaca_server =
-        create_alpaca_server(shared_telescope_position.clone(), async_callback.clone());
+    let alpaca_server = create_alpaca_server(
+        shared_telescope_position.clone(),
+        async_callback.clone(),
+    );
     let alpaca_server_future = alpaca_server.start();
 
     let mut lx200_server =
-        create_lx200_server(shared_telescope_position);
+        create_lx200_server(shared_telescope_position, async_callback);
     let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
-        tokio::task::spawn(async move 
-            {
-                lx200_server.start().await;
-                Ok(())
-            });
+        tokio::task::spawn(async move {
+            lx200_server.start().await;
+            Ok(())
+        });
 
     let (service_result, service_result8080, alpaca_result) =
         join!(service_future, service_future8080, alpaca_server_future);
