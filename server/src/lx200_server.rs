@@ -97,9 +97,12 @@ struct Lx200BtTelescope {
 
 #[async_trait]
 impl Lx200Telescope for Lx200BtTelescope {
+    // TODO: SkySafari on Android requires a bond, handle that here with either
+    //       just works pairing or a canned PIN code
     async fn start(&mut self) {
         let session = Session::new().await.unwrap();
         let adapter = session.default_adapter().await.unwrap();
+        // TODO: Handle the results from these calls
         adapter.set_powered(true).await;
         adapter.set_discoverable(true).await;
 
@@ -594,6 +597,7 @@ impl Lx200Controller {
         // Stellarium provides a leading #
         let start = if buffer[0] == b'#' { 1 } else { 0 };
         let in_data = String::from_utf8_lossy(&buffer[start..]);
+        // SkySafari in Bluetooth mode sometimes sends more than 1 command
         for cmd in in_data.split("#") {
             match Self::extract_command(&cmd).as_deref() {
                 Some("\x06") => {
