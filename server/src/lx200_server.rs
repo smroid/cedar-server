@@ -620,10 +620,6 @@ impl Lx200Controller {
         // SkySafari in Bluetooth mode sometimes sends more than 1 command
         for cmd in in_data.split("#") {
             match Self::extract_command(&cmd).as_deref() {
-                Some("\x06") => {
-                    info!("Received ack command");
-                    result.push_str("A");
-                }
                 Some("CM") => {
                     debug!("Received sync command");
                     result.push_str(&self.sync().await);
@@ -725,7 +721,13 @@ impl Lx200Controller {
                 Some(_) => {
                     info!("Unknown command: {}", in_data);
                 }
-                None => {}
+                None => {
+                    // Special case for ack command not prefixed by ":"
+                    if in_data == "\x06" {
+                        info!("Received ack command");
+                        result.push_str("A");
+                    }
+                }
             }
         }
         if result.is_empty() {
