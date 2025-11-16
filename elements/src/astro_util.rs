@@ -398,6 +398,76 @@ pub fn magnitude_intensity_ratio(m1: f64, m2: f64) -> f64 {
     2.512f64.powf(m1 - m2)
 }
 
+/// Precess celestial coordinates from one epoch to another.
+/// Uses the IAU 1976 precession model.
+///
+/// Args:
+///   ra: Right ascension at the epoch_from epoch in radians
+///   dec: Declination at the epoch_from epoch in radians
+///   epoch_from: Source epoch (e.g., 2000.0 for J2000.0)
+///   epoch_to: Target epoch (e.g., 2025.0 for J2025)
+///
+/// Returns: (ra, dec) at the target epoch in radians.
+pub fn precess(
+    ra: f64,
+    dec: f64,
+    epoch_from: f64,
+    epoch_to: f64,
+) -> (f64, f64) {
+    if (epoch_from - epoch_to).abs() < 1e-10 {
+        return (ra, dec); // No precession needed.
+    }
+
+    // Time in Julian centuries from J2000.0 for both epochs.
+    let t0 = (epoch_from - 2000.0) / 100.0;
+    let t = (epoch_to - 2000.0) / 100.0;
+    let dt = t - t0;
+
+    // Precession angles (in arcseconds) from Meeus formulae.
+    // These are the IAU 1976 precession constants.
+    let zeta_a =
+        2306.2181 * dt + 1.39656 * dt * t0 - 0.018185 * dt * t0.powi(2);
+    let z_a = 2306.2181 * dt + 1.39656 * dt * t0 + 0.018185 * dt * t0.powi(2);
+    let theta_a =
+        2004.3109 * dt - 0.42665 * dt * t0 - 0.041833 * dt * t0.powi(2);
+
+    let zeta = (zeta_a / 3600.0).to_radians();
+    let z = (z_a / 3600.0).to_radians();
+    let theta = (theta_a / 3600.0).to_radians();
+
+    let [x, y, z_vec] = to_unit_vector(ra, dec);
+
+    // Apply precession matrix P = R₃(-z) × R₂(θ) × R₃(-ζ).
+    // Compute the product of three rotation matrices.
+    let cos_zeta = zeta.cos();
+    let sin_zeta = zeta.sin();
+    let cos_z = z.cos();
+    let sin_z = z.sin();
+    let cos_theta = theta.cos();
+    let sin_theta = theta.sin();
+
+    // The resulting precession matrix elements.
+    let p11 = cos_zeta * cos_z * cos_theta - sin_zeta * sin_z;
+    let p12 = -sin_zeta * cos_z * cos_theta - cos_zeta * sin_z;
+    let p13 = -sin_theta * cos_z;
+
+    let p21 = cos_zeta * sin_z * cos_theta + sin_zeta * cos_z;
+    let p22 = -sin_zeta * sin_z * cos_theta + cos_zeta * cos_z;
+    let p23 = -sin_theta * sin_z;
+
+    let p31 = cos_zeta * sin_theta;
+    let p32 = -sin_zeta * sin_theta;
+    let p33 = cos_theta;
+
+    // Apply the precession matrix.
+    let x_new = p11 * x + p12 * y + p13 * z_vec;
+    let y_new = p21 * x + p22 * y + p23 * z_vec;
+    let z_new = p31 * x + p32 * y + p33 * z_vec;
+
+    // Convert back to ra/dec.
+    from_unit_vector(&[x_new, y_new, z_new])
+}
+
 /// When exposing for plate solving, we increase exposure until a desired
 /// number of stars (typically 20) are detected. In so doing, a very bright
 /// star (or planet) in the FOV might be overexposed and due to blooming
@@ -754,6 +824,42 @@ mod tests {
             north_roll_angle_deg,
             epsilon = 0.001
         );
+    }
+
+    #[test]
+    fn test_precess() {
+        // Test precession with a known star.
+        // Using Sirius: RA 6h45m08.92s, Dec -16°42'58.04" (J2000.0).
+        let sirius_ra_j2000 = deg_frm_hms(6, 45, 8.92).to_radians();
+        let sirius_dec_j2000 = -deg_frm_dms(16, 42, 58.04).to_radians();
+
+        // Precess to J2025.
+        let (ra_j2025, dec_j2025) =
+            precess(sirius_ra_j2000, sirius_dec_j2000, 2000.0, 2025.0);
+
+        // Values obtained using https://cxc.harvard.edu/toolkit/precess.jsp.
+        let sirius_ra_j2025_expected = deg_frm_hms(6, 46, 15.96).to_radians();
+        let sirius_dec_j2025_expected =
+            -deg_frm_dms(16, 44, 37.31).to_radians();
+
+        // 1e-6 tolerance applied to full circle is around an arcsec.
+        assert_abs_diff_eq!(ra_j2025, sirius_ra_j2025_expected, epsilon = 1e-6);
+        assert_abs_diff_eq!(
+            dec_j2025,
+            sirius_dec_j2025_expected,
+            epsilon = 1e-7
+        );
+
+        // Test round-trip: precess forward then back.
+        let (ra_back, dec_back) = precess(ra_j2025, dec_j2025, 2025.0, 2000.0);
+        assert_abs_diff_eq!(ra_back, sirius_ra_j2000, epsilon = 1e-6);
+        assert_abs_diff_eq!(dec_back, sirius_dec_j2000, epsilon = 1e-6);
+
+        // Test that no precession is needed for same epoch.
+        let (ra_same, dec_same) =
+            precess(sirius_ra_j2000, sirius_dec_j2000, 2000.0, 2000.0);
+        assert_eq!(ra_same, sirius_ra_j2000);
+        assert_eq!(dec_same, sirius_dec_j2000);
     }
 
     #[test]
