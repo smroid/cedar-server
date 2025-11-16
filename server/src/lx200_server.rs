@@ -578,13 +578,13 @@ impl Lx200Controller {
 
     fn parse_coordinates(h: &str, m: &str, s: &str) -> Option<f64> {
         let hours: Result<i32, _> = h.parse();
-        match hours {
+        let is_negative = match hours {
             Err(e) => {
                 warn!("Error parsing hours: {}", e);
                 return None;
             }
-            Ok(_) => {}
-        }
+            Ok(h) => h < 0,
+        };
         let minutes: Result<i32, _> = m.parse();
         match minutes {
             Err(e) => {
@@ -601,11 +601,10 @@ impl Lx200Controller {
             }
             Ok(_) => {}
         }
-        Some(
-            hours.unwrap() as f64
-                + minutes.unwrap() as f64 / 60.0
-                + seconds.unwrap() as f64 / 3600.0,
-        )
+        let deg = hours.unwrap().abs() as f64
+            + minutes.unwrap() as f64 / 60.0
+            + seconds.unwrap() as f64 / 3600.00;
+        Some(if is_negative { -deg } else { deg })
     }
 
     fn parse_location(deg: &str, min: &str) -> Option<f64> {
@@ -747,5 +746,89 @@ pub fn create_lx200_server(
         Box::new(Lx200BtTelescope::new(telescope_position, cb))
     } else {
         Box::new(Lx200WifiTelescope::new(telescope_position, cb))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate approx;
+
+    use approx::assert_abs_diff_eq;
+
+    use super::*;
+
+    fn approx_eq(a: Option<f64>, b: Option<f64>) {
+        match (a, b) {
+            (Some(x), Some(y)) => assert_abs_diff_eq!(x, y, epsilon = 0.0001),
+            _ => panic!("Expected values"),
+        }
+    }
+
+    // --- Utility Function Tests ---
+
+    #[test]
+    fn test_extract_command() {
+        assert_eq!(
+            Lx200Controller::extract_command(":GR#").as_deref(),
+            Some("GR")
+        );
+        assert_eq!(
+            Lx200Controller::extract_command(":RS#:GR#").as_deref(),
+            Some("RS")
+        );
+        assert_eq!(
+            Lx200Controller::extract_command(":Sd+00*00:00#").as_deref(),
+            Some("Sd")
+        );
+        assert_eq!(
+            Lx200Controller::extract_command(":Sr00:00:00#").as_deref(),
+            Some("Sr")
+        );
+        // Stellarium format
+        assert_eq!(
+            Lx200Controller::extract_command("#:GR#").as_deref(),
+            Some("GR")
+        );
+        // Invalid cases - commands start with : and contain letters
+        assert_eq!(Lx200Controller::extract_command(":123#"), None);
+        assert_eq!(Lx200Controller::extract_command(":#"), None);
+        assert_eq!(Lx200Controller::extract_command(":"), None);
+        assert_eq!(Lx200Controller::extract_command("GR#"), None);
+    }
+
+    #[test]
+    fn test_to_hms() {
+        assert_eq!(Lx200Controller::to_hms(0.0), (0, 0, 0));
+        assert_eq!(Lx200Controller::to_hms(1.5), (1, 30, 0));
+        assert_eq!(Lx200Controller::to_hms(10.5083), (10, 30, 30));
+        assert_eq!(Lx200Controller::to_hms(23.999722222), (23, 59, 59));
+    }
+
+    #[test]
+    fn test_parse_coordinates() {
+        assert_eq!(
+            Lx200Controller::parse_coordinates("01", "30", "00"),
+            Some(1.5)
+        );
+        approx_eq(
+            Lx200Controller::parse_coordinates("10", "30", "30"),
+            Some(10.5083),
+        );
+        assert_eq!(
+            Lx200Controller::parse_coordinates("-15", "30", "45"),
+            Some(-15.5125)
+        );
+        // Invalid
+        assert_eq!(Lx200Controller::parse_coordinates("xx", "30", "00"), None);
+        assert_eq!(Lx200Controller::parse_coordinates("01", "xx", "00"), None);
+        assert_eq!(Lx200Controller::parse_coordinates("01", "30", "xx"), None);
+    }
+
+    #[test]
+    fn test_parse_location() {
+        assert_eq!(Lx200Controller::parse_location("01", "30"), Some(1.5));
+        approx_eq(Lx200Controller::parse_location("+37", "46"), Some(37.7667));
+        assert_eq!(Lx200Controller::parse_location("-90", "30"), Some(-90.5));
+        assert_eq!(Lx200Controller::parse_location("a0", "00"), None);
     }
 }
