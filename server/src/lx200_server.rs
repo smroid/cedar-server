@@ -9,9 +9,15 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bluer::{
+    rfcomm::{Profile, Role, Stream},
+    Session, Uuid,
+};
 use cedar_elements::astro_util::precess;
 use chrono::{DateTime, Datelike, FixedOffset, Local};
+use futures::StreamExt;
 use log::{debug, info, warn};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::position_reporter::{Callback, TelescopePosition};
 
@@ -77,6 +83,99 @@ impl Lx200WifiTelescope {
                 Err(e) => {
                     // An actual network error occurred
                     debug!("Error reading from stream: {}", e);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default, Debug)]
+struct Lx200BtTelescope {
+    controller: Lx200Controller,
+}
+
+#[async_trait]
+impl Lx200Telescope for Lx200BtTelescope {
+    async fn start(&mut self) {
+        let session = Session::new().await.unwrap();
+        let adapter = session.default_adapter().await.unwrap();
+        adapter.set_powered(true).await;
+        adapter.set_discoverable(true).await;
+
+        let profile = Profile {
+            uuid: Uuid::parse_str("00001101-0000-1000-8000-00805F9B34FB")
+                .unwrap(),
+            name: Some("Serial Port Profile".to_string()),
+            role: Some(Role::Server),
+            require_authentication: Some(false),
+            require_authorization: Some(false),
+            auto_connect: Some(false),
+            ..Default::default()
+        };
+
+        let mut profile_handle =
+            session.register_profile(profile).await.unwrap();
+        info!(
+            "Running LX200 server using SPP: {}",
+            adapter.address().await.unwrap()
+        );
+
+        while let Some(req) = profile_handle.next().await {
+            match req.accept() {
+                Ok(stream) => {
+                    self.handle_connection(stream).await;
+                }
+                Err(e) => {
+                    warn!("Failed to accept connection: {}", e);
+                }
+            }
+        }
+    }
+}
+
+impl Lx200BtTelescope {
+    pub fn new(
+        telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
+        cb: Box<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Lx200BtTelescope {
+            controller: Lx200Controller::new(telescope_position, cb),
+        }
+    }
+
+    async fn handle_connection(&mut self, mut stream: Stream) {
+        let mut buffer = [0; 1024];
+
+        info!("Starting to read from LX200 connection");
+        loop {
+            info!("Waiting for data from stream");
+            match stream.read(&mut buffer).await {
+                Ok(0) => {
+                    info!("Client closed connection");
+                    break;
+                }
+                Ok(n) => {
+                    match self.controller.process_input(&buffer[..n]).await {
+                        Some(result) => {
+                            debug!("Writing to client: {}", result);
+                            if let Err(e) =
+                                stream.write_all(result.as_bytes()).await
+                            {
+                                warn!("Failed to send data to client: {}", e);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    // Interruption is recoverable, try reading again
+                    info!("Interrupted: {}", e);
+                    continue;
+                }
+                Err(e) => {
+                    // An actual network error occurred
+                    info!("Error reading from stream: {}", e);
                     break;
                 }
             }
@@ -229,8 +328,8 @@ impl Lx200Controller {
     }
 
     fn set_ra(&mut self, cmd: &str) -> String {
-        // The command is expected to be ":SrHH:MM:SS#"
-        if cmd.len() < 12 {
+        // The command is expected to be ":SrHH:MM:SS"
+        if cmd.len() < 11 {
             warn!("Unexpected ra length");
             return Self::get_failure();
         }
@@ -249,8 +348,8 @@ impl Lx200Controller {
     }
 
     fn set_dec(&mut self, cmd: &str) -> String {
-        // The command is expected to be ":SdsHH*MM:SS#" where s is +/-
-        if cmd.len() < 13 {
+        // The command is expected to be ":SdsHH*MM:SS" where s is +/-
+        if cmd.len() < 12 {
             warn!("Unexpected dec length");
             return Self::get_failure();
         }
@@ -308,8 +407,8 @@ impl Lx200Controller {
     }
 
     async fn set_latitude(&mut self, cmd: &str) -> String {
-        // The command is expected to be ":StsDD:MM#" where s is +/-
-        if cmd.len() < 10 {
+        // The command is expected to be ":StsDD:MM" where s is +/-
+        if cmd.len() < 9 {
             warn!("Unexpected lat length");
             return Self::get_failure();
         }
@@ -327,8 +426,8 @@ impl Lx200Controller {
     }
 
     async fn set_longitude(&mut self, cmd: &str) -> String {
-        // The command is expected to be ":StDDD:MM#"
-        if cmd.len() < 10 {
+        // The command is expected to be ":StDDD:MM"
+        if cmd.len() < 9 {
             warn!("Unexpected lon length");
             return Self::get_failure();
         }
@@ -349,8 +448,8 @@ impl Lx200Controller {
     }
 
     fn set_timezone(&mut self, cmd: &str) -> String {
-        // The command is expected to be ":SGsXX.X#" where s is +/-
-        if cmd.len() < 9 {
+        // The command is expected to be ":SGsXX.X" where s is +/-
+        if cmd.len() < 8 {
             warn!("Unexpected tz length");
             return Self::get_failure();
         }
@@ -370,8 +469,8 @@ impl Lx200Controller {
     }
 
     fn set_time(&mut self, cmd: &str) -> String {
-        // The command is expected to be ":SLHH:MM:SS#"
-        if cmd.len() < 12 {
+        // The command is expected to be ":SLHH:MM:SS"
+        if cmd.len() < 11 {
             warn!("Unexpected time length");
             return Self::get_failure();
         }
@@ -380,8 +479,8 @@ impl Lx200Controller {
     }
 
     async fn set_date(&mut self, cmd: &str) -> String {
-        // The command is expected to be ":SCMM/DD/YY#"
-        if cmd.len() < 12 {
+        // The command is expected to be ":SCMM/DD/YY"
+        if cmd.len() < 11 {
             warn!("Unexpected time length");
             return Self::get_failure();
         }
@@ -440,7 +539,7 @@ impl Lx200Controller {
     async fn get_distance_bars(&self) -> String {
         let locked_position = self.telescope_position.lock().await;
         if locked_position.slew_active {
-            String::from_utf8(vec![0x7f, b'#']).unwrap()
+            "\x7f#".to_string()
         } else {
             "#".to_string()
         }
@@ -491,124 +590,124 @@ impl Lx200Controller {
     }
 
     async fn process_input(&mut self, buffer: &[u8]) -> Option<String> {
+        let mut result = String::new();
         // Stellarium provides a leading #
         let start = if buffer[0] == b'#' { 1 } else { 0 };
         let in_data = String::from_utf8_lossy(&buffer[start..]);
-        match Self::extract_command(&in_data).as_deref() {
-            Some("CM") => {
-                debug!("Received sync command");
-                Some(self.sync().await)
-            }
-            Some("D") => {
-                debug!("Received distance bars command");
-                Some(self.get_distance_bars().await)
-            }
-            Some("GC") => {
-                debug!("Received get date command");
-                Some(self.get_date())
-            }
-            Some("GD") => {
-                debug!("Received get declination command");
-                Some(self.get_dec().await)
-            }
-            Some("GG") => {
-                debug!("Received get timezone command");
-                Some(self.get_timezone())
-            }
-            Some("GL") => {
-                debug!("Received get time command");
-                Some(self.get_time())
-            }
-            Some("GR") => {
-                debug!("Received get ra command");
-                Some(self.get_ra().await)
-            }
-            Some("GVD") => {
-                debug!("Received get firmware date command");
-                Some("Nov 14 2025#".to_string())
-            }
-            Some("GVN") => {
-                debug!("Received get firmware version command");
-                Some("01.0#".to_string())
-            }
-            Some("GVP") => {
-                debug!("Received get product command");
-                Some("Cedar#".to_string())
-            }
-            Some("GVT") => {
-                debug!("Received get firmware time command");
-                Some("23:00:00#".to_string())
-            }
-            Some("GW") => {
-                debug!("Received get status command");
-                Some("AT1".to_string())
-            }
-            Some("Gg") => {
-                debug!("Received get longitude command");
-                Some(self.get_longitude())
-            }
-            Some("Gt") => {
-                debug!("Received get latitude command");
-                Some(self.get_latitude())
-            }
-            Some("MS") => {
-                debug!("Received slew to object command");
-                Some(self.slew().await)
-            }
-            Some("Q") => {
-                debug!("Received abort command");
-                self.abort().await;
-                None
-            }
-            Some("RS") => {
-                debug!("Received set rate to slew command");
-                None
-            }
-            Some("SC") => {
-                debug!("Received set date command: {}", in_data);
-                Some(self.set_date(&in_data).await)
-            }
-            Some("SG") => {
-                debug!("Received set timezone command: {}", in_data);
-                Some(self.set_timezone(&in_data))
-            }
-            Some("SL") => {
-                debug!("Received set time command: {}", in_data);
-                Some(self.set_time(&in_data))
-            }
-            Some("Sd") => {
-                debug!("Received set declination command: {}", in_data);
-                Some(self.set_dec(&in_data))
-            }
-            Some("Sg") => {
-                debug!("Received set longitude command: {}", in_data);
-                Some(self.set_longitude(&in_data).await)
-            }
-            Some("Sr") => {
-                debug!("Received set ra command: {}", in_data);
-                Some(self.set_ra(&in_data))
-            }
-            Some("St") => {
-                debug!("Received set latitude command: {}", in_data);
-                Some(self.set_latitude(&in_data).await)
-            }
-            Some("U") => {
-                debug!("Received precision toggle command");
-                None
-            }
-            Some(_) => {
-                info!("Unknown command: {}", in_data);
-                None
-            }
-            None => {
-                // Special case to handle ack command - ASCII ack
-                if &buffer[start..] == [0x6] {
+        for cmd in in_data.split("#") {
+            match Self::extract_command(&cmd).as_deref() {
+                Some("\x06") => {
                     info!("Received ack command");
-                    Some("A".to_string())
-                } else {
-                    None
+                    result.push_str("A");
                 }
+                Some("CM") => {
+                    debug!("Received sync command");
+                    result.push_str(&self.sync().await);
+                }
+                Some("D") => {
+                    debug!("Received distance bars command");
+                    result.push_str(&self.get_distance_bars().await);
+                }
+                Some("GC") => {
+                    debug!("Received get date command");
+                    result.push_str(&self.get_date());
+                }
+                Some("GD") => {
+                    debug!("Received get declination command");
+                    result.push_str(&self.get_dec().await);
+                }
+                Some("GG") => {
+                    debug!("Received get timezone command");
+                    result.push_str(&self.get_timezone());
+                }
+                Some("GL") => {
+                    debug!("Received get time command");
+                    result.push_str(&self.get_time());
+                }
+                Some("GR") => {
+                    debug!("Received get ra command");
+                    result.push_str(&self.get_ra().await);
+                }
+                Some("GVD") => {
+                    debug!("Received get firmware date command");
+                    result.push_str("Nov 14 2025#");
+                }
+                Some("GVN") => {
+                    debug!("Received get firmware version command");
+                    result.push_str("01.0#");
+                }
+                Some("GVP") => {
+                    debug!("Received get product command");
+                    result.push_str("Cedar#");
+                }
+                Some("GVT") => {
+                    debug!("Received get firmware time command");
+                    result.push_str("23:00:00#");
+                }
+                Some("GW") => {
+                    debug!("Received get status command");
+                    result.push_str("AT1");
+                }
+                Some("Gg") => {
+                    debug!("Received get longitude command");
+                    result.push_str(&self.get_longitude());
+                }
+                Some("Gt") => {
+                    debug!("Received get latitude command");
+                    result.push_str(&self.get_latitude());
+                }
+                Some("MS") => {
+                    debug!("Received slew to object command");
+                    result.push_str(&self.slew().await);
+                }
+                Some("Q") => {
+                    debug!("Received abort command");
+                    self.abort().await;
+                }
+                Some("RS") => {
+                    debug!("Received set rate to slew command");
+                }
+                Some("SC") => {
+                    debug!("Received set date command: {}", in_data);
+                    result.push_str(&self.set_date(&in_data).await);
+                }
+                Some("SG") => {
+                    debug!("Received set timezone command: {}", in_data);
+                    result.push_str(&self.set_timezone(&in_data));
+                }
+                Some("SL") => {
+                    debug!("Received set time command: {}", in_data);
+                    result.push_str(&self.set_time(&in_data));
+                }
+                Some("Sd") => {
+                    debug!("Received set declination command: {}", in_data);
+                    result.push_str(&self.set_dec(&in_data));
+                }
+                Some("Sg") => {
+                    debug!("Received set longitude command: {}", in_data);
+                    result.push_str(&self.set_longitude(&in_data).await);
+                }
+                Some("Sr") => {
+                    debug!("Received set ra command: {}", in_data);
+                    result.push_str(&self.set_ra(&in_data));
+                }
+                Some("St") => {
+                    debug!("Received set latitude command: {}", in_data);
+                    result.push_str(&self.set_latitude(&in_data).await);
+                }
+                Some("U") => {
+                    debug!("Received precision toggle command");
+                }
+                Some(_) => {
+                    info!("Unknown command: {}", in_data);
+                }
+                None => {}
             }
+        }
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
         }
     }
 }
@@ -616,6 +715,11 @@ impl Lx200Controller {
 pub fn create_lx200_server(
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
     cb: Box<dyn Fn() + Send + Sync>,
+    use_bluetooth: bool,
 ) -> Box<dyn Lx200Telescope + Send> {
-    Box::new(Lx200WifiTelescope::new(telescope_position, cb))
+    if use_bluetooth {
+        Box::new(Lx200BtTelescope::new(telescope_position, cb))
+    } else {
+        Box::new(Lx200WifiTelescope::new(telescope_position, cb))
+    }
 }

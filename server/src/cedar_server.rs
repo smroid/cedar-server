@@ -4021,7 +4021,7 @@ async fn async_main(
     let alpaca_server_future = alpaca_server.start();
 
     let mut lx200_server =
-        create_lx200_server(shared_telescope_position, async_callback);
+        create_lx200_server(shared_telescope_position, async_callback, false);
     let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
             lx200_server.start().await;
