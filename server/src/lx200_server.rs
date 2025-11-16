@@ -574,11 +574,19 @@ impl Lx200Controller {
         }
     }
 
+    fn get_approx_and_remainder(n: f64) -> (i64, f64) {
+        if (n - n.round()).abs() < 0.0001 {
+            (n.round() as i64, 0.0)
+        } else {
+            let whole = n.trunc();
+            (whole as i64, n - whole)
+        }
+    }
+
     fn to_hms(n: f64) -> (i64, i64, i64) {
-        let hours = n.trunc() as i64;
-        let minutes_float = (n - hours as f64) * 60.0;
-        let minutes = minutes_float.trunc() as i64;
-        let seconds = ((minutes_float - minutes as f64) * 60.0).round() as i64;
+        let (hours, h_rem) = Self::get_approx_and_remainder(n);
+        let (minutes, m_rem) = Self::get_approx_and_remainder(h_rem * 60.0);
+        let seconds = (m_rem * 60.0).round() as i64;
         (hours, minutes, seconds)
     }
 
@@ -760,10 +768,22 @@ mod tests {
     extern crate approx;
 
     use approx::assert_abs_diff_eq;
+    use tokio::sync::Mutex;
 
     use super::*;
 
-    fn approx_eq(a: Option<f64>, b: Option<f64>) {
+    async fn setup_controller(
+    ) -> (Lx200Controller, Arc<Mutex<TelescopePosition>>) {
+        let telescope_position =
+            Arc::new(Mutex::new(TelescopePosition::default()));
+        let controller = Lx200Controller::new(
+            telescope_position.clone(),
+            Box::new(move || {}),
+        );
+        (controller, telescope_position)
+    }
+
+    fn assert_approx_eq(a: Option<f64>, b: Option<f64>) {
         match (a, b) {
             (Some(x), Some(y)) => assert_abs_diff_eq!(x, y, epsilon = 0.0001),
             _ => panic!("Expected values"),
@@ -803,11 +823,37 @@ mod tests {
     }
 
     #[test]
+    fn test_get_approximate_and_remainder() {
+        let (mut whole, mut rem) =
+            Lx200Controller::get_approx_and_remainder(3.7);
+        assert_eq!(whole, 3);
+        assert_approx_eq(Some(rem), Some(0.7));
+
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.99995);
+        assert_eq!(whole, 4);
+        assert_approx_eq(Some(rem), Some(0.0));
+
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.9995);
+        assert_eq!(whole, 3);
+        assert_approx_eq(Some(rem), Some(0.9995));
+
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.00001);
+        assert_eq!(whole, 3);
+        assert_approx_eq(Some(rem), Some(0.0));
+
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.0001);
+        assert_eq!(whole, 3);
+        assert_approx_eq(Some(rem), Some(0.0001));
+    }
+
+    #[test]
     fn test_to_hms() {
         assert_eq!(Lx200Controller::to_hms(0.0), (0, 0, 0));
         assert_eq!(Lx200Controller::to_hms(1.5), (1, 30, 0));
         assert_eq!(Lx200Controller::to_hms(10.5083), (10, 30, 30));
         assert_eq!(Lx200Controller::to_hms(23.999722222), (23, 59, 59));
+        // Floating point math is hard
+        assert_eq!(Lx200Controller::to_hms(10.1), (10, 6, 0));
     }
 
     #[test]
@@ -816,7 +862,7 @@ mod tests {
             Lx200Controller::parse_coordinates("01", "30", "00"),
             Some(1.5)
         );
-        approx_eq(
+        assert_approx_eq(
             Lx200Controller::parse_coordinates("10", "30", "30"),
             Some(10.5083),
         );
@@ -833,8 +879,83 @@ mod tests {
     #[test]
     fn test_parse_location() {
         assert_eq!(Lx200Controller::parse_location("01", "30"), Some(1.5));
-        approx_eq(Lx200Controller::parse_location("+37", "46"), Some(37.7667));
+        assert_approx_eq(
+            Lx200Controller::parse_location("+37", "46"),
+            Some(37.7667),
+        );
         assert_eq!(Lx200Controller::parse_location("-90", "30"), Some(-90.5));
         assert_eq!(Lx200Controller::parse_location("a0", "00"), None);
+    }
+
+    // --- Get Command Tests ---
+
+    #[tokio::test]
+    async fn test_get_ra_and_dec() {
+        let (mut controller, position_arc) = setup_controller().await;
+        // Set epoch to J2000 for no change
+        controller.epoch = 2000.0;
+
+        let ra_j2000 = 1.5 * 15.0;
+        let dec_j2000 = 30.5;
+
+        // Set position in a block to release the lock at the end
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_ra = ra_j2000;
+            locked_position.boresight_dec = dec_j2000;
+            locked_position.boresight_valid = true;
+        }
+
+        let result_ra = controller.process_input(b":GR#").await;
+        assert_eq!(result_ra.as_deref(), Some("01:30:00#"));
+
+        // Dec snapshot should be set
+        {
+            let mut locked_position = position_arc.lock().await;
+            assert_eq!(locked_position.snapshot_dec, Some(30.5));
+            // Update the boresight dec to check the snapshot is used later
+            locked_position.boresight_dec = 40.0;
+        }
+
+        let result_dec = controller.process_input(b":GD#").await;
+        assert_eq!(result_dec.as_deref(), Some("+30*30'00#"));
+
+        let locked_position = position_arc.lock().await;
+        // Snapshot should be consumed
+        assert!(locked_position.snapshot_dec.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_dec_invalid_wiggles() {
+        let (mut controller, position_arc) = setup_controller().await;
+        controller.epoch = 2000.0;
+
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_dec = 10.0;
+            locked_position.boresight_valid = false;
+        }
+
+        let is_wiggled = controller.animate_while_invalid;
+        // Also checks that boresight dec is used when there is no snapshot
+        let dec1 = controller.process_input(b":GD#").await;
+        assert_ne!(is_wiggled, controller.animate_while_invalid);
+        let dec2 = controller.process_input(b":GD#").await;
+
+        // We don't care about the order, just that it wiggled by 0.1
+        let mut results = [dec1.unwrap(), dec2.unwrap()];
+        results.sort();
+        assert_eq!(results, ["+10*00'00#", "+10*06'00#"]);
+
+        // Now check that we don't wiggle when valid
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_valid = true;
+        }
+
+        let dec3 = controller.process_input(b":GD#").await;
+        assert_eq!(dec3.as_deref(), Some("+10*00'00#"));
+        let dec4 = controller.process_input(b":GD#").await;
+        assert_eq!(dec4.as_deref(), Some("+10*00'00#"));
     }
 }
