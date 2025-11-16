@@ -104,8 +104,6 @@ impl Lx200Telescope for Lx200BtTelescope {
         let session = Session::new().await?;
         let adapter = session.default_adapter().await?;
         adapter.set_powered(true).await?;
-        adapter.set_discoverable(true).await?;
-        adapter.set_discoverable_timeout(0).await?;
 
         // Start pairing, accepting any requests. Ideally we would be able to
         // show confirmation in the UI for better security.
@@ -133,6 +131,8 @@ impl Lx200Telescope for Lx200BtTelescope {
         info!("Running LX200 server using SPP: {}", adapter.address().await?);
 
         loop {
+            adapter.set_discoverable(true).await?;
+            adapter.set_discoverable_timeout(0).await?;
             adapter.set_pairable(true).await?;
             info!("Accepting pairings");
             let req = profile_handle.next().await;
@@ -142,6 +142,7 @@ impl Lx200Telescope for Lx200BtTelescope {
             match req.unwrap().accept() {
                 Ok(stream) => {
                     adapter.set_pairable(false).await?;
+                    adapter.set_discoverable(false).await?;
                     info!("Stopped accepting pairings");
                     self.handle_connection(stream).await;
                 }
@@ -518,6 +519,11 @@ impl Lx200Controller {
                 Ok(dt) => {
                     info!("Set date/time to {}", dt);
                     self.datetime = dt;
+                    self.epoch = ((dt.year() as f64
+                        + dt.ordinal0() as f64 / 365.0)
+                        * 10.0)
+                        .round()
+                        / 10.0;
                     let mut locked_position =
                         self.telescope_position.lock().await;
                     locked_position.utc_date = Some(SystemTime::from(dt));
