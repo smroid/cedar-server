@@ -4024,7 +4024,7 @@ async fn async_main(
         create_lx200_server(shared_telescope_position, async_callback, false);
     let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
-            lx200_server.start().await;
+            let _status = lx200_server.start().await;
             Ok(())
         });
 
