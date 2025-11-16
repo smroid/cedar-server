@@ -2,6 +2,7 @@
 // See LICENSE file in root directory for license terms.
 
 use std::{
+    error::Error,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::Arc,
@@ -10,6 +11,7 @@ use std::{
 
 use async_trait::async_trait;
 use bluer::{
+    agent::{Agent, ReqResult, RequestConfirmation},
     rfcomm::{Profile, Role, Stream},
     Session, Uuid,
 };
@@ -23,7 +25,7 @@ use crate::position_reporter::{Callback, TelescopePosition};
 
 #[async_trait]
 pub trait Lx200Telescope {
-    async fn start(&mut self);
+    async fn start(&mut self) -> Result<(), Box<dyn Error + 'static>>;
 }
 
 #[derive(Default, Debug)]
@@ -33,7 +35,7 @@ struct Lx200WifiTelescope {
 
 #[async_trait]
 impl Lx200Telescope for Lx200WifiTelescope {
-    async fn start(&mut self) {
+    async fn start(&mut self) -> Result<(), Box<dyn Error + 'static>> {
         let listener = TcpListener::bind("0.0.0.0:4030").unwrap();
         info!("Running LX200 server on: {}", listener.local_addr().unwrap());
 
@@ -41,6 +43,7 @@ impl Lx200Telescope for Lx200WifiTelescope {
             let stream = stream.unwrap();
             self.handle_connection(stream).await;
         }
+        Ok(())
     }
 }
 
@@ -97,14 +100,23 @@ struct Lx200BtTelescope {
 
 #[async_trait]
 impl Lx200Telescope for Lx200BtTelescope {
-    // TODO: SkySafari on Android requires a bond, handle that here with either
-    //       just works pairing or a canned PIN code
-    async fn start(&mut self) {
-        let session = Session::new().await.unwrap();
-        let adapter = session.default_adapter().await.unwrap();
-        // TODO: Handle the results from these calls
-        adapter.set_powered(true).await;
-        adapter.set_discoverable(true).await;
+    async fn start(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+        let session = Session::new().await?;
+        let adapter = session.default_adapter().await?;
+        adapter.set_powered(true).await?;
+        adapter.set_discoverable(true).await?;
+        adapter.set_discoverable_timeout(0).await?;
+
+        // Start pairing, accepting any requests. Ideally we would be able to
+        // show confirmation in the UI for better security.
+        let agent = Agent {
+            request_default: true,
+            request_confirmation: Some(Box::new(|req| {
+                Box::pin(Self::request_confirmation(req))
+            })),
+            ..Default::default()
+        };
+        let _handle = session.register_agent(agent).await?;
 
         let profile = Profile {
             uuid: Uuid::parse_str("00001101-0000-1000-8000-00805F9B34FB")
@@ -117,16 +129,20 @@ impl Lx200Telescope for Lx200BtTelescope {
             ..Default::default()
         };
 
-        let mut profile_handle =
-            session.register_profile(profile).await.unwrap();
-        info!(
-            "Running LX200 server using SPP: {}",
-            adapter.address().await.unwrap()
-        );
+        let mut profile_handle = session.register_profile(profile).await?;
+        info!("Running LX200 server using SPP: {}", adapter.address().await?);
 
-        while let Some(req) = profile_handle.next().await {
-            match req.accept() {
+        loop {
+            adapter.set_pairable(true).await?;
+            info!("Accepting pairings");
+            let req = profile_handle.next().await;
+            if req.is_none() {
+                return Ok(());
+            }
+            match req.unwrap().accept() {
                 Ok(stream) => {
+                    adapter.set_pairable(false).await?;
+                    info!("Stopped accepting pairings");
                     self.handle_connection(stream).await;
                 }
                 Err(e) => {
@@ -147,12 +163,19 @@ impl Lx200BtTelescope {
         }
     }
 
+    async fn request_confirmation(req: RequestConfirmation) -> ReqResult<()> {
+        info!(
+            "Confirming request from {} with key {}",
+            req.device, req.passkey
+        );
+        Ok(())
+    }
+
     async fn handle_connection(&mut self, mut stream: Stream) {
         let mut buffer = [0; 1024];
 
         info!("Starting to read from LX200 connection");
         loop {
-            info!("Waiting for data from stream");
             match stream.read(&mut buffer).await {
                 Ok(0) => {
                     info!("Client closed connection");
@@ -227,17 +250,13 @@ impl Lx200Controller {
         info!("Using now epoch: {}", jnow);
         Lx200Controller {
             telescope_position,
-            animate_while_invalid: false,
             callback: Some(Callback(cb)),
-            target_ra: None,
-            target_dec: None,
-            timezone: None,
-            time: None,
             datetime: dt.with_timezone(dt.offset()),
             // Ideally these should be the current location in Cedar's settings
             latitude: "+00:00".to_string(),
             longitude: "000:00".to_string(),
             epoch: jnow,
+            ..Default::default()
         }
     }
 
@@ -407,6 +426,7 @@ impl Lx200Controller {
     async fn abort(&mut self) {
         let mut locked_position = self.telescope_position.lock().await;
         locked_position.slew_active = false;
+        info!("Stopping slew");
     }
 
     async fn set_latitude(&mut self, cmd: &str) -> String {
