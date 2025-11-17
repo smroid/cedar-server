@@ -769,6 +769,7 @@ mod tests {
     extern crate approx;
 
     use approx::assert_abs_diff_eq;
+    use chrono::TimeZone;
     use tokio::sync::Mutex;
 
     use super::*;
@@ -1090,6 +1091,55 @@ mod tests {
         assert_eq!(get_lat_result.as_deref(), Some("-37:46#"));
         let get_lon_result = controller.process_input(b":Gg#").await;
         assert_eq!(get_lon_result.as_deref(), Some("300:00#"));
+    }
+
+    #[tokio::test]
+    async fn test_set_get_date_time_timezone() {
+        let (mut controller, position_arc) = setup_controller().await;
+
+        let set_tz = controller.process_input(b":SG-08.0#").await;
+        assert_eq!(set_tz.as_deref(), Some("1"));
+        assert_eq!(controller.timezone, Some("-0800".to_string()));
+
+        let set_time = controller.process_input(b":SL10:30:00#").await;
+        assert_eq!(set_time.as_deref(), Some("1"));
+        assert_eq!(controller.time, Some("10:30:00".to_string()));
+
+        let set_date = controller.process_input(b":SC11/15/25#").await;
+        assert_eq!(set_date.as_deref(), Some("1Updating Planetary Data# #"));
+
+        // Pending time and timezone should be consumed
+        assert!(controller.timezone.is_none());
+        assert!(controller.time.is_none());
+
+        // Check the controller's time
+        let expected_dt = FixedOffset::west_opt(8 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2025, 11, 15, 10, 30, 0)
+            .unwrap();
+        assert_eq!(controller.datetime, expected_dt);
+
+        // Check the TelescopePosition's time
+        {
+            let locked_position = position_arc.lock().await;
+            assert_eq!(
+                locked_position.utc_date,
+                Some(SystemTime::from(expected_dt))
+            );
+        }
+
+        assert_eq!(
+            controller.process_input(b":GL#").await.as_deref(),
+            Some("10:30:00#")
+        );
+        assert_eq!(
+            controller.process_input(b":GC#").await.as_deref(),
+            Some("11/15/25#")
+        );
+        assert_eq!(
+            controller.process_input(b":GG#").await.as_deref(),
+            Some("-08.0#")
+        );
     }
 
     // --- Tests for Remaining Get Commands ---
