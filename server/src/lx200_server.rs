@@ -784,11 +784,8 @@ mod tests {
         (controller, telescope_position)
     }
 
-    fn assert_approx_eq(a: Option<f64>, b: Option<f64>) {
-        match (a, b) {
-            (Some(x), Some(y)) => assert_abs_diff_eq!(x, y, epsilon = 0.0001),
-            _ => panic!("Expected values"),
-        }
+    fn assert_approx_eq(x: f64, y: f64) {
+        assert_abs_diff_eq!(x, y, epsilon = 0.0001);
     }
 
     // --- Utility Function Tests ---
@@ -828,27 +825,27 @@ mod tests {
         let (mut whole, mut rem) =
             Lx200Controller::get_approx_and_remainder(3.7);
         assert_eq!(whole, 3);
-        assert_approx_eq(Some(rem), Some(0.7));
+        assert_approx_eq(rem, 0.7);
 
         (whole, rem) = Lx200Controller::get_approx_and_remainder(3.99995);
         assert_eq!(whole, 4);
-        assert_approx_eq(Some(rem), Some(0.0));
+        assert_approx_eq(rem, 0.0);
 
         (whole, rem) = Lx200Controller::get_approx_and_remainder(-3.99995);
         assert_eq!(whole, -4);
-        assert_approx_eq(Some(rem), Some(0.0));
+        assert_approx_eq(rem, 0.0);
 
         (whole, rem) = Lx200Controller::get_approx_and_remainder(3.9995);
         assert_eq!(whole, 3);
-        assert_approx_eq(Some(rem), Some(0.9995));
+        assert_approx_eq(rem, 0.9995);
 
         (whole, rem) = Lx200Controller::get_approx_and_remainder(3.00001);
         assert_eq!(whole, 3);
-        assert_approx_eq(Some(rem), Some(0.0));
+        assert_approx_eq(rem, 0.0);
 
         (whole, rem) = Lx200Controller::get_approx_and_remainder(3.0001);
         assert_eq!(whole, 3);
-        assert_approx_eq(Some(rem), Some(0.0001));
+        assert_approx_eq(rem, 0.0001);
     }
 
     #[test]
@@ -866,17 +863,17 @@ mod tests {
 
     #[test]
     fn test_parse_coordinates() {
-        assert_eq!(
-            Lx200Controller::parse_coordinates("01", "30", "00"),
-            Some(1.5)
+        assert_approx_eq(
+            Lx200Controller::parse_coordinates("01", "30", "00").unwrap(),
+            1.5,
         );
         assert_approx_eq(
-            Lx200Controller::parse_coordinates("10", "30", "30"),
-            Some(10.5083),
+            Lx200Controller::parse_coordinates("10", "30", "30").unwrap(),
+            10.5083,
         );
-        assert_eq!(
-            Lx200Controller::parse_coordinates("-15", "30", "45"),
-            Some(-15.5125)
+        assert_approx_eq(
+            Lx200Controller::parse_coordinates("-15", "30", "45").unwrap(),
+            -15.5125,
         );
         // Invalid
         assert_eq!(Lx200Controller::parse_coordinates("xx", "30", "00"), None);
@@ -888,14 +885,17 @@ mod tests {
     fn test_parse_location() {
         assert_eq!(Lx200Controller::parse_location("01", "30"), Some(1.5));
         assert_approx_eq(
-            Lx200Controller::parse_location("+37", "46"),
-            Some(37.7667),
+            Lx200Controller::parse_location("+37", "46").unwrap(),
+            37.7667,
         );
-        assert_eq!(Lx200Controller::parse_location("-90", "30"), Some(-90.5));
+        assert_approx_eq(
+            Lx200Controller::parse_location("-90", "30").unwrap(),
+            -90.5,
+        );
         assert_eq!(Lx200Controller::parse_location("a0", "00"), None);
     }
 
-    // --- Get Command Tests ---
+    // --- Get RA/Dec Command Tests ---
 
     #[tokio::test]
     async fn test_get_ra_and_dec() {
@@ -983,5 +983,74 @@ mod tests {
         assert_eq!(dec3.as_deref(), Some("+10*00'00#"));
         let dec4 = controller.process_input(b":GD#").await;
         assert_eq!(dec4.as_deref(), Some("+10*00'00#"));
+    }
+
+    // --- Sync/Slew Flow Tests ---
+
+    #[tokio::test]
+    async fn test_set_ra_dec_slew_abort() {
+        let (mut controller, position_arc) = setup_controller().await;
+        controller.epoch = 2000.0;
+
+        let set_ra = controller.process_input(b":Sr10:30:00#").await;
+        assert_eq!(set_ra.as_deref(), Some("1"));
+        assert_approx_eq(controller.target_ra.unwrap(), 157.5);
+        assert!(controller.target_dec.is_none());
+
+        let set_dec = controller.process_input(b":Sd-15*30:00#").await;
+        assert_eq!(set_dec.as_deref(), Some("1"));
+        assert_approx_eq(controller.target_dec.unwrap(), -15.5);
+
+        let slew_result = controller.process_input(b":MS#").await;
+        // 0 is success for slew
+        assert_eq!(slew_result.as_deref(), Some("0"));
+
+        // Ensure target coordinates are consumed
+        assert!(controller.target_ra.is_none());
+        assert!(controller.target_dec.is_none());
+
+        // Check telescope position state
+        {
+            let locked_position = position_arc.lock().await;
+            assert_approx_eq(locked_position.slew_target_ra, 157.5);
+            assert_approx_eq(locked_position.slew_target_dec, -15.5);
+            assert!(locked_position.slew_active);
+        }
+
+        let abort = controller.process_input(b":Q#").await;
+        assert_eq!(abort, None);
+
+        {
+            let locked_position = position_arc.lock().await;
+            assert!(!locked_position.slew_active);
+        }
+
+        // Slew should fail if no target
+        let slew_fail_result = controller.process_input(b":MS#").await;
+        assert_eq!(slew_fail_result.as_deref(), Some("1No object#"));
+    }
+
+    #[tokio::test]
+    async fn test_set_ra_dec_sync() {
+        let (mut controller, position_arc) = setup_controller().await;
+        controller.epoch = 2000.0;
+
+        // Even with no target we should still return canned result
+        let mut sync = controller.process_input(b":CM#").await;
+        assert_eq!(sync.as_deref(), Some(" M31 EX GAL MAG 3.5 SZ178.0'#"));
+
+        controller.process_input(b":Sr01:00:00#").await;
+        controller.process_input(b":Sd+20*00:00#").await;
+
+        sync = controller.process_input(b":CM#").await;
+        assert_eq!(sync.as_deref(), Some(" M31 EX GAL MAG 3.5 SZ178.0'#"));
+
+        assert!(controller.target_ra.is_none());
+        assert!(controller.target_dec.is_none());
+
+        // Check telescope position state
+        let locked_position = position_arc.lock().await;
+        assert_approx_eq(locked_position.sync_ra.unwrap(), 15.0);
+        assert_approx_eq(locked_position.sync_dec.unwrap(), 20.0);
     }
 }
