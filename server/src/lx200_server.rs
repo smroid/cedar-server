@@ -1054,6 +1054,44 @@ mod tests {
         assert_approx_eq(locked_position.sync_dec.unwrap(), 20.0);
     }
 
+    // --- Location and Date Tests ---
+    #[tokio::test]
+    async fn test_set_get_location() {
+        let (mut controller, position_arc) = setup_controller().await;
+
+        let set_lat_n = controller.process_input(b":St+37:46#").await;
+        assert_eq!(set_lat_n.as_deref(), Some("1"));
+        assert_eq!(controller.latitude, "+37:46");
+        let lat_n = position_arc.lock().await.site_latitude.unwrap();
+        assert_approx_eq(lat_n, 37.7667);
+
+        let set_lat_s = controller.process_input(b":St-37:46#").await;
+        assert_eq!(set_lat_s.as_deref(), Some("1"));
+        assert_eq!(controller.latitude, "-37:46");
+        let lat_s = position_arc.lock().await.site_latitude.unwrap();
+        assert_approx_eq(lat_s, -37.7667);
+
+        // Less than 180 is West for longitude
+        let set_lon_w = controller.process_input(b":Sg122:25#").await;
+        assert_eq!(set_lon_w.as_deref(), Some("1"));
+        assert_eq!(controller.longitude, "122:25");
+        let lon_w = position_arc.lock().await.site_latitude.unwrap();
+        assert_approx_eq(lon_w, -122.4167);
+
+        // Longitude values are > 180 for East
+        let set_lon_e = controller.process_input(b":Sg300:00#").await;
+        assert_eq!(set_lon_e.as_deref(), Some("1"));
+        assert_eq!(controller.longitude, "300:00");
+        let lon_e = position_arc.lock().await.site_latitude.unwrap();
+        // 360 - 300 = 60.0
+        assert_approx_eq(lon_e, 60.0);
+
+        let get_lat_result = controller.process_input(b":Gt#").await;
+        assert_eq!(get_lat_result.as_deref(), Some("-37:46#"));
+        let get_lon_result = controller.process_input(b":Gg#").await;
+        assert_eq!(get_lon_result.as_deref(), Some("300:00#"));
+    }
+
     // --- Tests for Remaining Get Commands ---
 
     #[tokio::test]
