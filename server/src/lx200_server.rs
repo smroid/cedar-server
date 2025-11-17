@@ -331,13 +331,6 @@ impl Lx200Controller {
             dec
         };
 
-        let sign = if dec < 0.0 {
-            dec = dec.abs();
-            "-"
-        } else {
-            "+"
-        };
-
         if !locked_position.boresight_valid {
             // Wiggle the position to indicate that it's invalid
             self.animate_while_invalid = !self.animate_while_invalid;
@@ -345,6 +338,13 @@ impl Lx200Controller {
                 dec += if dec > 0.0 { 0.1 } else { -0.1 };
             }
         }
+
+        let sign = if dec < 0.0 {
+            dec = dec.abs();
+            "-"
+        } else {
+            "+"
+        };
 
         let (h, m, s) = Self::to_hms(dec);
         format!("{sign}{h:02}*{m:02}'{s:02}#")
@@ -1052,5 +1052,90 @@ mod tests {
         let locked_position = position_arc.lock().await;
         assert_approx_eq(locked_position.sync_ra.unwrap(), 15.0);
         assert_approx_eq(locked_position.sync_dec.unwrap(), 20.0);
+    }
+
+    // --- Tests for Remaining Get Commands ---
+
+    #[tokio::test]
+    async fn test_canned_get_commands() {
+        let (mut controller, _) = setup_controller().await;
+
+        // Firmware date should be something like "Nov 14 2025#"
+        assert_eq!(controller.process_input(b":GVD#").await.unwrap().len(), 12);
+        // Firmware version should be something like "01.0#"
+        assert_eq!(controller.process_input(b":GVN#").await.unwrap().len(), 5);
+        // Model shouldn't change
+        assert_eq!(
+            controller.process_input(b":GVP#").await.as_deref(),
+            Some("Cedar#")
+        );
+        // Firmware time should be something like "23:00:00#"
+        assert_eq!(controller.process_input(b":GVT#").await.unwrap().len(), 9);
+        // Status command indicates A for Alt-Az, T for tracking state, and 1
+        // for 1-star aligned
+        assert_eq!(
+            controller.process_input(b":GW#").await.as_deref(),
+            Some("AT1")
+        );
+        // Ack command is unterminated should result in A for Alt-Az mode
+        assert_eq!(
+            controller.process_input(b"\x06").await.as_deref(),
+            Some("A")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_distance_bars() {
+        let (mut controller, position_arc) = setup_controller().await;
+
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.slew_active = false;
+        }
+        assert_eq!(
+            controller.process_input(b":D#").await.as_deref(),
+            Some("#")
+        );
+
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.slew_active = true;
+        }
+        assert_eq!(
+            controller.process_input(b":D#").await.as_deref(),
+            Some("\x7f#")
+        );
+    }
+
+    // --- Special Case Tests ---
+
+    #[tokio::test]
+    async fn test_process_input_leading_hash() {
+        let (mut controller, _) = setup_controller().await;
+        controller.epoch = 2000.0;
+
+        // Stellarium sends a leading #
+        let result = controller.process_input(b"#:GR#").await;
+        assert_eq!(result.as_deref(), Some("00:00:00#"));
+    }
+
+    #[tokio::test]
+    async fn test_process_input_multiple_commands() {
+        let (mut controller, position_arc) = setup_controller().await;
+        controller.epoch = 2000.0;
+
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_valid = true;
+        }
+
+        // SkySafari in Bluetooth mode sets slew rate and gets RA together
+        let result = controller.process_input(b":RS#:GR#").await;
+        assert_eq!(result.as_deref(), Some("00:00:00#"));
+
+        // Make sure 2 commands that need responses get a concatenated response
+        // although no client does this
+        let result2 = controller.process_input(b":GR#:GD#").await;
+        assert_eq!(result2.as_deref(), Some("00:00:00#+00*00'00#"));
     }
 }
