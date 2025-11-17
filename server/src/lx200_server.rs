@@ -575,7 +575,8 @@ impl Lx200Controller {
     }
 
     fn get_approx_and_remainder(n: f64) -> (i64, f64) {
-        if (n - n.round()).abs() < 0.0001 {
+        // 1 second is 0.000278 degrees
+        if (n - n.round()).abs() < 0.00014 {
             (n.round() as i64, 0.0)
         } else {
             let whole = n.trunc();
@@ -855,9 +856,12 @@ mod tests {
         assert_eq!(Lx200Controller::to_hms(0.0), (0, 0, 0));
         assert_eq!(Lx200Controller::to_hms(1.5), (1, 30, 0));
         assert_eq!(Lx200Controller::to_hms(10.5083), (10, 30, 30));
-        assert_eq!(Lx200Controller::to_hms(23.999722222), (23, 59, 59));
+        assert_eq!(Lx200Controller::to_hms(23.99972), (23, 59, 59));
         // Floating point math is hard
         assert_eq!(Lx200Controller::to_hms(10.1), (10, 6, 0));
+        // Make sure we don't end up with 60 minutes or seconds
+        assert_eq!(Lx200Controller::to_hms(23.999859), (23, 59, 59));
+        assert_eq!(Lx200Controller::to_hms(23.999861), (24, 0, 0));
     }
 
     #[test]
