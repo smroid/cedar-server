@@ -833,6 +833,10 @@ mod tests {
         assert_eq!(whole, 4);
         assert_approx_eq(Some(rem), Some(0.0));
 
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(-3.99995);
+        assert_eq!(whole, -4);
+        assert_approx_eq(Some(rem), Some(0.0));
+
         (whole, rem) = Lx200Controller::get_approx_and_remainder(3.9995);
         assert_eq!(whole, 3);
         assert_approx_eq(Some(rem), Some(0.9995));
@@ -906,7 +910,7 @@ mod tests {
             locked_position.boresight_valid = true;
         }
 
-        let result_ra = controller.process_input(b":GR#").await;
+        let mut result_ra = controller.process_input(b":GR#").await;
         assert_eq!(result_ra.as_deref(), Some("01:30:00#"));
 
         // Dec snapshot should be set
@@ -917,12 +921,30 @@ mod tests {
             locked_position.boresight_dec = 40.0;
         }
 
-        let result_dec = controller.process_input(b":GD#").await;
+        let mut result_dec = controller.process_input(b":GD#").await;
         assert_eq!(result_dec.as_deref(), Some("+30*30'00#"));
 
-        let locked_position = position_arc.lock().await;
-        // Snapshot should be consumed
-        assert!(locked_position.snapshot_dec.is_none());
+        {
+            let locked_position = position_arc.lock().await;
+            // Snapshot should be consumed
+            assert!(locked_position.snapshot_dec.is_none());
+        }
+
+        // Set epoch to J2025.9 and test with known object (M31)
+        controller.epoch = 2025.9;
+        // M31 is actually at (00:44:09, +41*24'40) - conversion is not exact
+        let (ra_j2025_9, dec_j2025_9) = ("00:44:10#", "+41*24'39#");
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_ra = 0.7123056 * 15.0;
+            locked_position.boresight_dec = 41.2691667;
+            locked_position.boresight_valid = true;
+        }
+
+        result_ra = controller.process_input(b":GR#").await;
+        result_dec = controller.process_input(b":GD#").await;
+        assert_eq!(result_ra.as_deref(), Some(ra_j2025_9));
+        assert_eq!(result_dec.as_deref(), Some(dec_j2025_9));
     }
 
     #[tokio::test]
