@@ -574,9 +574,8 @@ impl Lx200Controller {
         }
     }
 
-    fn get_approx_and_remainder(n: f64) -> (i64, f64) {
-        // 1 second is 0.000278 degrees
-        if (n - n.round()).abs() < 0.00014 {
+    fn get_approx_and_remainder(n: f64, epsilon: f64) -> (i64, f64) {
+        if (n - n.round()).abs() < epsilon {
             (n.round() as i64, 0.0)
         } else {
             let whole = n.trunc();
@@ -585,8 +584,11 @@ impl Lx200Controller {
     }
 
     fn to_hms(n: f64) -> (i64, i64, i64) {
-        let (hours, h_rem) = Self::get_approx_and_remainder(n);
-        let (minutes, m_rem) = Self::get_approx_and_remainder(h_rem * 60.0);
+        // 1 second is 0.000278 hours
+        let (hours, h_rem) = Self::get_approx_and_remainder(n, 0.00014);
+        // 1 second is 0.016667 minutes
+        let (minutes, m_rem) =
+            Self::get_approx_and_remainder(h_rem * 60.0, 0.00834);
         let seconds = (m_rem * 60.0).round() as i64;
         (hours, minutes, seconds)
     }
@@ -823,28 +825,29 @@ mod tests {
 
     #[test]
     fn test_get_approximate_and_remainder() {
+        let e = 0.00014;
         let (mut whole, mut rem) =
-            Lx200Controller::get_approx_and_remainder(3.7);
+            Lx200Controller::get_approx_and_remainder(3.7, e);
         assert_eq!(whole, 3);
         assert_approx_eq(rem, 0.7);
 
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.99995);
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.99995, e);
         assert_eq!(whole, 4);
         assert_approx_eq(rem, 0.0);
 
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(-3.99995);
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(-3.99995, e);
         assert_eq!(whole, -4);
         assert_approx_eq(rem, 0.0);
 
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.9995);
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.9995, e);
         assert_eq!(whole, 3);
         assert_approx_eq(rem, 0.9995);
 
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.00001);
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.00001, e);
         assert_eq!(whole, 3);
         assert_approx_eq(rem, 0.0);
 
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.0001);
+        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.0001, e);
         assert_eq!(whole, 3);
         assert_approx_eq(rem, 0.0001);
     }
@@ -859,6 +862,9 @@ mod tests {
         assert_eq!(Lx200Controller::to_hms(10.1), (10, 6, 0));
         // Make sure we don't end up with 60 minutes or seconds
         assert_eq!(Lx200Controller::to_hms(23.999859), (23, 59, 59));
+        // Checking 2 possible values due to floating point imprecision
+        let v = Lx200Controller::to_hms(23.999860);
+        assert!(v == (23, 59, 59) || v == (24, 0, 0), "Incorrect: {:?}", v);
         assert_eq!(Lx200Controller::to_hms(23.999861), (24, 0, 0));
     }
 
