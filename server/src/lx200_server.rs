@@ -696,9 +696,15 @@ impl Lx200Controller {
                     debug!("Received slew to object command");
                     result.push_str(&self.slew().await);
                 }
+                Some("Me") | Some("Mn") | Some("Ms") | Some("Mw") => {
+                    debug!("Received movement command");
+                }
                 Some("Q") => {
                     debug!("Received abort command");
                     self.abort().await;
+                }
+                Some("Qe") | Some("Qn") | Some("Qs") | Some("Qw") => {
+                    debug!("Received stop movement command");
                 }
                 Some("RS") => {
                     debug!("Received set rate to slew command");
