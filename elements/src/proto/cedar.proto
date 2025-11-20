@@ -693,8 +693,12 @@ message CalibrationData {
   optional double gyro_zero_bias_z = 17;
 
   // Gyro transform fit quality. Absent if no IMU or if calibration not yet
-  // performed.
-  optional double gyro_transform_rms = 18;  // Degrees.
+  // performed. This is the RMS residual angle distance divided by the angle
+  // distance between the points from which the transform estimate was formed.
+  // If this value is 0.05 (a decent fit), then during a slew of 100 degrees the
+  // expected error in the IMU estimate will be 0.05 * 100 degrees or 5
+  // degrees.
+  optional double gyro_transform_error_fraction = 18;
   optional string camera_view_gyro_axis = 19;  // +X, -X, +Y, -Y, +Z, -Z.
   optional double camera_view_misalignment = 20;  // Degrees.
   optional string camera_up_gyro_axis = 21;  // +X, -X, +Y, -Y, +Z, -Z.

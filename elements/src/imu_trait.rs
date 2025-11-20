@@ -85,7 +85,12 @@ pub struct ZeroBias {
 pub struct TransformCalibration {
     // Gives the fit quality of the current estimate of the camera-to-gyro
     // rotation transform.
-    pub transform_rms: f64, // RMS residual in degrees.
+    // This is the RMS residual angle distance divided by the angle distance
+    // between the points from which the transform estimate was formed. If this
+    // value is 0.05 (a decent fit), then during a slew of 100 degrees the
+    // expected error in the IMU estimate will be 0.05 * 100 degrees or 5
+    // degrees.
+    pub transform_error_fraction: f64,
 
     // Identifies which gyro axis is parallel to the camera view axis, and the
     // degree of misalignment.
