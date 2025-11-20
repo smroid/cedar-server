@@ -740,16 +740,19 @@ impl SolveEngine {
                     Some(psp.clone()),
                 )
                 .await;
-                state.lock().await.slew_target = slew_target;
+                let normalize_rows = {
+                    let mut state = state.lock().await;
+                    state.slew_target = slew_target.clone();
+                    state.normalize_rows
+                };
                 // If we're slewing, see if the boresight is close enough to
                 // the slew target that Cedar Aim should display an inset image
                 // of the region around the boresight.
-                if let Some(target_coords) = &state.lock().await.slew_target {
-                    let normalize_rows = state.lock().await.normalize_rows;
+                if let Some(target_coords) = slew_target {
                     (slew_request, boresight_image_region, boresight_image) =
                         Self::handle_slew(
                             &cedar_sky,
-                            target_coords,
+                            &target_coords,
                             image,
                             &boresight_coords,
                             &boresight_pixel,
