@@ -2907,7 +2907,7 @@ impl MyCedar {
                 cal_data.gyro_zero_bias_z = Some(zb.z);
             }
             if let Some(tc) = transform_calibration {
-                cal_data.gyro_transform_rms = Some(tc.transform_rms);
+                cal_data.gyro_transform_error_fraction = Some(tc.transform_error_fraction);
                 cal_data.camera_view_gyro_axis = Some(tc.camera_view_gyro_axis);
                 cal_data.camera_view_misalignment = Some(tc.camera_view_misalignment);
                 cal_data.camera_up_gyro_axis = Some(tc.camera_up_gyro_axis);
