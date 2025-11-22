@@ -558,7 +558,7 @@ impl SolveEngine {
                 }
                 Err(e) => {
                     if !have_stars {
-                        warn!("No IMU estimate available: {:?}", e);
+                        debug!("No IMU estimate available: {:?}", e);
                     }
                     None
                 }
