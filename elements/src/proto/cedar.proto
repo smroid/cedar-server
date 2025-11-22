@@ -286,6 +286,12 @@ message Preferences {
   // logic.
   repeated string dont_show_items = 32;
 
+  // Allow LX200 control over WiFi.
+  optional bool use_lx200_wifi = 34;
+
+  // Allow LX200 control over Bluetooth.
+  optional bool use_lx200_bt = 35;
+
   reserved 4, 8, 9, 20, 24, 25, 26, 27, 28, 29, 30, 31;
 }
 
