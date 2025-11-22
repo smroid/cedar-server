@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use canonical_error::CanonicalError;
@@ -63,12 +63,44 @@ pub struct ImuState {
     pub gyro: GyroData,
 }
 
-/// State for IMU tracker logic.
+// State for IMU tracker logic.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TrackerState {
     Motionless,
     Moving,
     Lost,
+}
+
+// Gives the current estimate of the gyro zero bias. This is the rotational
+// velocity reported for each axis while the gyro is at rest.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ZeroBias {
+    // Degrees/sec.
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransformCalibration {
+    // Gives the fit quality of the current estimate of the camera-to-gyro
+    // rotation transform.
+    // This is the RMS residual angle distance divided by the angle distance
+    // between the points from which the transform estimate was formed. If this
+    // value is 0.05 (a decent fit), then during a slew of 100 degrees the
+    // expected error in the IMU estimate will be 0.05 * 100 degrees or 5
+    // degrees.
+    pub transform_error_fraction: f64,
+
+    // Identifies which gyro axis is parallel to the camera view axis, and the
+    // degree of misalignment.
+    pub camera_view_gyro_axis: String, // +X, -X, +Y, -Y, +Z, -Z.
+    pub camera_view_misalignment: f64, // degrees.
+
+    // Identifies which gyro axis is parallel to the camera up direction, and
+    // the degree of misalignment.
+    pub camera_up_gyro_axis: String, // +X, -X, +Y, -Y, +Z, -Z.
+    pub camera_up_misalignment: f64, // degrees.
 }
 
 #[async_trait]
@@ -105,14 +137,10 @@ pub trait ImuTrait {
     // Returns the current state of the IMU tracker logic.
     async fn get_tracker_state(&self) -> TrackerState;
 
-    // Returns the RMS error (in degrees) of the IMU transform calibration fit.
-    // Returns None if not yet calibrated.
-    async fn get_transform_calibration_quality(&self) -> Option<f64>;
-
-    // Returns the baseline over which the IMU's zero offset was calibrated.
-    // Returns None if not yet calibrated.
-    // TODO: return zero bias gyro magnitude instead?
-    async fn get_zero_calibration_duration(&self) -> Option<Duration>;
+    // Returns the current calibration state, if any, of the IMU tracker.
+    async fn get_calibration(
+        &self,
+    ) -> (Option<ZeroBias>, Option<TransformCalibration>);
 
     // Returns the most recent IMU reading.
     async fn get_state(&self)

@@ -2905,18 +2905,20 @@ impl MyCedar {
         if let Some(imu_tracker) = &locked_state.imu_tracker {
             let locked_imu = imu_tracker.lock().await;
             let cal_data = frame_result.calibration_data.as_mut().unwrap();
-            if let Some(transform_quality) =
-                locked_imu.get_transform_calibration_quality().await
-            {
-                cal_data.imu_transform_calibration_quality =
-                    Some(transform_quality);
+
+            let (zero_bias, transform_calibration) =
+                locked_imu.get_calibration().await;
+            if let Some(zb) = zero_bias {
+                cal_data.gyro_zero_bias_x = Some(zb.x);
+                cal_data.gyro_zero_bias_y = Some(zb.y);
+                cal_data.gyro_zero_bias_z = Some(zb.z);
             }
-            if let Some(zero_cal_duration) =
-                locked_imu.get_zero_calibration_duration().await
-            {
-                cal_data.imu_zero_calibration_quality = Some(
-                    prost_types::Duration::try_from(zero_cal_duration).unwrap(),
-                );
+            if let Some(tc) = transform_calibration {
+                cal_data.gyro_transform_error_fraction = Some(tc.transform_error_fraction);
+                cal_data.camera_view_gyro_axis = Some(tc.camera_view_gyro_axis);
+                cal_data.camera_view_misalignment = Some(tc.camera_view_misalignment);
+                cal_data.camera_up_gyro_axis = Some(tc.camera_up_gyro_axis);
+                cal_data.camera_up_misalignment = Some(tc.camera_up_misalignment);
             }
         }
 
