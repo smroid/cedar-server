@@ -994,11 +994,8 @@ impl Cedar for MyCedar {
         if let Some(screen_always_on) = req.screen_always_on {
             our_prefs.screen_always_on = Some(screen_always_on);
         }
-        if let Some(use_lx200_wifi) = req.use_lx200_wifi {
-            our_prefs.use_lx200_wifi = Some(use_lx200_wifi);
-        }
-        if let Some(use_lx200_bt) = req.use_lx200_bt {
-            our_prefs.use_lx200_bt = Some(use_lx200_bt);
+        if let Some(use_bluetooth) = req.use_bluetooth {
+            our_prefs.use_bluetooth = Some(use_bluetooth);
         }
         // Handle dont_show_items array - if non-empty, add items to existing
         // set
@@ -3101,8 +3098,7 @@ impl MyCedar {
             perf_gauge_choice: None,
             screen_always_on: Some(true),
             dont_show_items: Vec::new(),
-            use_lx200_wifi: None,
-            use_lx200_bt: None,
+            use_bluetooth: None,
         };
 
         // If there is a preferences file, read it and merge its contents into
@@ -3996,10 +3992,10 @@ async fn async_main(
     .await
     .unwrap();
 
-    let (use_lx200_wifi, use_lx200_bt) = {
+    let use_lx200_bt = {
         let state = cedar.state.lock().await;
         let preferences = state.preferences.lock().await;
-        (preferences.use_lx200_wifi, preferences.use_lx200_bt)
+        preferences.use_bluetooth
     };
 
     let cedar_server = CedarServer::new(cedar);
@@ -4037,25 +4033,6 @@ async fn async_main(
         });
     });
 
-    let _lx200_wifi_handle: Option<
-        tokio::task::JoinHandle<Result<(), tonic::Status>>,
-    > = {
-        match use_lx200_wifi {
-            Some(true) => {
-                let mut lx200_server_wifi = create_lx200_server(
-                    shared_telescope_position.clone(),
-                    async_callback.clone(),
-                    false,
-                );
-                Some(tokio::task::spawn(async move {
-                    let _status = lx200_server_wifi.start().await;
-                    Ok(())
-                }))
-            }
-            _ => None,
-        }
-    };
-
     let _lx200_bt_handle: Option<
         tokio::task::JoinHandle<Result<(), tonic::Status>>,
     > = {
@@ -4074,6 +4051,17 @@ async fn async_main(
             _ => None,
         }
     };
+
+    let mut lx200_server = create_lx200_server(
+        shared_telescope_position.clone(),
+        async_callback.clone(),
+        false,
+    );
+    let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move {
+            let _status = lx200_server.start().await;
+            Ok(())
+        });
 
     let alpaca_server =
         create_alpaca_server(shared_telescope_position, async_callback);
