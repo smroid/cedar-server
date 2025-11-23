@@ -65,8 +65,12 @@ message ServerInformation {
   // Omitted if no IMU detected.
   optional string imu_model = 14;
 
-  // The most recent IMU reading. Omitted if no IMU detected.
+  // The most recent raw IMU reading. Omitted if no IMU detected.
   optional ImuState imu = 13;
+
+  // The current IMU angular speed, adjusted for the measured zero bias. Omitted
+  // if no IMU detected.
+  optional double imu_angular_speed = 16;
 
   // The current state of the IMU tracking logic. Omitted if no IMU detected.
   optional ImuTrackerState imu_tracker_state = 15;

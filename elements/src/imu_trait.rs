@@ -142,7 +142,7 @@ pub trait ImuTrait {
         &self,
     ) -> (Option<ZeroBias>, Option<TransformCalibration>);
 
-    // Returns the most recent IMU reading.
+    // Returns the most recent raw IMU reading.
     async fn get_state(&self)
         -> Result<(ImuState, SystemTime), CanonicalError>;
 
@@ -151,9 +151,9 @@ pub trait ImuTrait {
         &self,
     ) -> Result<(f64, SystemTime), CanonicalError>;
 
-    // Returns the angular velocity magnitude (degrees/s) seen in the most
-    // recent samples. Returns failed_precondition error if there is no IMU
-    // calibration.
+    // Returns the bias-adjusted angular velocity magnitude (degrees/s) seen in
+    // the most recent samples. Returns failed_precondition error if there is no
+    // IMU calibration.
     async fn get_angular_velocity_magnitude(
         &self,
     ) -> Result<(f64, SystemTime), CanonicalError>;

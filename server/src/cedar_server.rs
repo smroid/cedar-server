@@ -1875,6 +1875,7 @@ impl MyCedar {
             server_time: None,
             camera,
             imu: None,
+            imu_angular_speed: None,
             imu_model: None,
             imu_tracker_state: None,
             wifi_access_point: None,
@@ -1909,6 +1910,11 @@ impl MyCedar {
                     angle_rate_y: imu_state.gyro.y,
                     angle_rate_z: imu_state.gyro.z,
                 });
+            }
+            if let Ok((angle_speed, _)) =
+                locked_imu.get_angular_velocity_magnitude().await
+            {
+                server_info.imu_angular_speed = Some(angle_speed);
             }
         }
 
