@@ -1,0 +1,19 @@
+2025-11-06T18:40:04.170459Z  INFO cedar_server::cedar_server: Using camera imx477 4056x3040
+2025-11-06T18:40:04.171402Z  INFO tetra3_server::tetra3_solver: Using Tetra3 server "../cedar/tetra3_server/python/tetra3_server.py" listening at "/tmp/cedar.sock"
+2025-11-06T18:40:05.171742Z  INFO tetra3_server::tetra3_subprocess: Tetra3 subprocess started
+2025-11-06T18:40:05.172098Z  WARN tetra3_server::tetra3_subprocess: 2025-11-06 13:40:04,947:tetra3.Tetra3-INFO: Loading database from: /home/cedar/build-rn/cedar-solve/tetra3/data/default_database.npz
+
+2025-11-06T18:40:05.273581Z  INFO cedar_server::cedar_server: Cedar-Box
+2025-11-06T18:40:05.273589Z  INFO cedar_server::cedar_server: Copyright (c) 2024 Steven Rosenthal smr@dt3.org.
+Licensed for non-commercial use.
+See LICENSE.md at https://github.com/smroid/cedar-server
+2025-11-06T18:40:05.273594Z  INFO cedar_server::cedar_server: Cedar server version 0.16.0 running on Raspberry Pi 5 Model B Rev 1.1/Debian GNU/Linux 12 (bookworm)
+2025-11-06T18:40:05.273598Z  INFO cedar_server::cedar_server: Processor serial number b9b411bdbb49f666
+2025-11-06T18:40:05.273650Z  WARN cedar_server::cedar_server: Could not read file "./cedar_ui_prefs.binpb": Os { code: 2, kind: NotFound, message: "No such file or directory" }
+2025-11-06T18:40:05.273742Z  INFO cedar_server::cedar_server: Listening at 0.0.0.0:80
+2025-11-06T18:40:05.273802Z  INFO cedar_server::lx200: LX200 server listenening on: 0.0.0.0:7878
+2025-11-06T18:40:05.273846Z  INFO ascom_alpaca::server: Bound Alpaca server bound_addr=[::]:11111
+2025-11-06T18:40:14.124827Z  INFO cedar_server::cedar_server: Got control-c
+2025-11-06T18:40:14.177451Z  INFO tetra3_server::tetra3_subprocess: Killing "../cedar/tetra3_server/python/tetra3_server.py"
+2025-11-06T18:40:14.277586Z  INFO tetra3_server::tetra3_subprocess: Killing "../cedar/tetra3_server/python/tetra3_server.py"
+2025-11-06T18:40:15.124916Z  INFO cedar_server::cedar_server: Exiting

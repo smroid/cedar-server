@@ -10,3 +10,6 @@ pub mod polar_analyzer;
 pub mod position_reporter;
 pub mod rate_estimator;
 pub mod solve_engine;
+
+//lx200 module
+pub mod lx200;
