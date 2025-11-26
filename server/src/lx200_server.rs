@@ -464,7 +464,7 @@ impl Lx200Controller {
                 let longitude = if n > 180.0 { 360.0 - n } else { -n };
                 debug!("Set longitude {}", longitude);
                 let mut locked_position = self.telescope_position.lock().await;
-                locked_position.site_latitude = Some(longitude);
+                locked_position.site_longitude = Some(longitude);
                 Self::get_success()
             }
             None => Self::get_failure(),
