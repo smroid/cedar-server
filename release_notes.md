@@ -283,3 +283,29 @@ Cedar-server version: 0.12.2
   Too few stars due to lens cap being covered; sky too bright.
 
 * Improved twilight tolerance.
+
+# November 25 2025
+
+Cedar-server version: 0.16.0
+
+* Reorganize "don't show" preference items.
+
+* Allow perf gauge display item to be chosen.
+
+* Daylight focus zoom image.
+
+* Improve server mutex and async logic.
+
+* Improve About screen organization.
+
+* Remove update rate slider (always runs at full speed).
+
+* Draw slew directions in data area instead of overlayed on main image.
+
+* Fix determination of whether slew target is in view.
+
+* Long press on shutdown confirmation clears observer location.
+
+* Fix full screen layout on Pixel phone.
+
+* Layout tweaks for iOS.
