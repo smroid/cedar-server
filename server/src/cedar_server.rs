@@ -82,6 +82,7 @@ use crate::{
     activity_led::ActivityLed,
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
+    lx200_server::create_lx200_server,
     motion_estimator::MotionEstimator,
     polar_analyzer::PolarAnalyzer,
     position_reporter::{create_alpaca_server, TelescopePosition},
@@ -992,6 +993,9 @@ impl Cedar for MyCedar {
         }
         if let Some(screen_always_on) = req.screen_always_on {
             our_prefs.screen_always_on = Some(screen_always_on);
+        }
+        if let Some(use_bluetooth) = req.use_bluetooth {
+            our_prefs.use_bluetooth = Some(use_bluetooth);
         }
         // Handle dont_show_items array - if non-empty, add items to existing
         // set
@@ -3094,6 +3098,7 @@ impl MyCedar {
             perf_gauge_choice: None,
             screen_always_on: Some(true),
             dont_show_items: Vec::new(),
+            use_bluetooth: None,
         };
 
         // If there is a preferences file, read it and merge its contents into
@@ -3956,38 +3961,44 @@ async fn async_main(
 
     // Build the gRPC service.
     let path: PathBuf = [args.log_dir, args.log_file].iter().collect();
-    let cedar_server = CedarServer::new(
-        MyCedar::new(
-            solver,
-            args.binning,
-            args.display_sampling,
-            // initial_exposure_duration=
-            Duration::from_millis(100),
-            args.min_exposure,
-            args.max_exposure,
-            activity_led.clone(),
-            attached_camera,
-            test_image_camera,
-            camera,
-            shared_telescope_position.clone(),
-            args.star_count_goal,
-            args.sigma,
-            args.min_sigma,
-            // TODO: arg for this?
-            // stats_capacity=
-            100,
-            PathBuf::from(args.ui_prefs),
-            path,
-            product_name,
-            copyright,
-            feature_level,
-            cedar_sky,
-            wifi,
-            imu_tracker,
-        )
-        .await
-        .unwrap(),
-    );
+    let cedar = MyCedar::new(
+        solver,
+        args.binning,
+        args.display_sampling,
+        // initial_exposure_duration=
+        Duration::from_millis(100),
+        args.min_exposure,
+        args.max_exposure,
+        activity_led.clone(),
+        attached_camera,
+        test_image_camera,
+        camera,
+        shared_telescope_position.clone(),
+        args.star_count_goal,
+        args.sigma,
+        args.min_sigma,
+        // TODO: arg for this?
+        // stats_capacity=
+        100,
+        PathBuf::from(args.ui_prefs),
+        path,
+        product_name,
+        copyright,
+        feature_level,
+        cedar_sky,
+        wifi,
+        imu_tracker,
+    )
+    .await
+    .unwrap();
+
+    let use_lx200_bt = {
+        let state = cedar.state.lock().await;
+        let preferences = state.preferences.lock().await;
+        preferences.use_bluetooth
+    };
+
+    let cedar_server = CedarServer::new(cedar);
 
     let grpc = tonic::transport::Server::builder()
         .accept_http1(true) // TODO: don't need this?
@@ -4010,8 +4021,8 @@ async fn async_main(
     let service_future8080 =
         hyper::Server::bind(&addr8080).serve(tower::make::Shared::new(service));
 
-    // Spin up ASCOM Alpaca server for reporting our RA/Dec solution as the
-    // telescope position.
+    // Spin up servers for reporting our RA/Dec solution as the telescope
+    // position.
 
     // Function called whenever SkySafari interrogates our position.
     let async_callback = Box::new(move || {
@@ -4021,6 +4032,37 @@ async fn async_main(
             });
         });
     });
+
+    let _lx200_bt_handle: Option<
+        tokio::task::JoinHandle<Result<(), tonic::Status>>,
+    > = {
+        match use_lx200_bt {
+            Some(true) => {
+                let mut lx200_server_bt = create_lx200_server(
+                    shared_telescope_position.clone(),
+                    async_callback.clone(),
+                    true,
+                );
+                Some(tokio::task::spawn(async move {
+                    let _status = lx200_server_bt.start().await;
+                    Ok(())
+                }))
+            }
+            _ => None,
+        }
+    };
+
+    let mut lx200_server = create_lx200_server(
+        shared_telescope_position.clone(),
+        async_callback.clone(),
+        false,
+    );
+    let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move {
+            let _status = lx200_server.start().await;
+            Ok(())
+        });
+
     let alpaca_server =
         create_alpaca_server(shared_telescope_position, async_callback);
     let alpaca_server_future = alpaca_server.start();
