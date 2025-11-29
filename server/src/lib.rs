@@ -2,6 +2,7 @@
 // See LICENSE file in root directory for license terms.
 
 pub mod activity_led;
+pub mod bonding_helper;
 pub mod calibrator;
 pub mod cedar_server;
 pub mod detect_engine;

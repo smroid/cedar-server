@@ -32,14 +32,15 @@ use cedar_elements::{
     },
     cedar::{
         cedar_server::{Cedar, CedarServer},
-        ActionRequest, CalibrationData, CalibrationFailureReason, CameraModel,
-        CelestialCoordFormat, DisplayOrientation, EmptyMessage, FeatureLevel,
-        FixedSettings, FovCatalogEntry, FrameRequest, FrameResult, Image,
-        ImageCoord, ImuState, ImuTrackerState, LatLong, LocationBasedInfo,
-        MountType, OperatingMode, OperationSettings,
-        PlateSolution as PlateSolutionProto, Preferences, ProcessingStats,
-        Rectangle, ServerInformation, ServerLogRequest, ServerLogResult,
-        StarCentroid, WiFiAccessPoint,
+        ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
+        CameraModel, CelestialCoordFormat, DisplayOrientation, EmptyMessage,
+        FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
+        FrameResult, GetBondedDevicesResponse, Image, ImageCoord, ImuState,
+        ImuTrackerState, LatLong, LocationBasedInfo, MountType, OperatingMode,
+        OperationSettings, PlateSolution as PlateSolutionProto, Preferences,
+        ProcessingStats, Rectangle, RemoveBondRequest, ServerInformation,
+        ServerLogRequest, ServerLogResult, StarCentroid, StartBondingResponse,
+        WiFiAccessPoint,
     },
     cedar_common::CelestialCoord,
     cedar_sky::{
@@ -80,6 +81,7 @@ use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
+    bonding_helper::{get_bonded_devices, remove_bond, start_bonding},
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
     lx200_server::create_lx200_server,
@@ -1528,6 +1530,64 @@ impl Cedar for MyCedar {
 
         Ok(tonic::Response::new(response))
     }
+
+    async fn start_bonding(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<StartBondingResponse>, tonic::Status> {
+        let result = start_bonding().await;
+        let response = match result {
+            Ok(Some((addr, key))) => StartBondingResponse {
+                address: Some(addr),
+                passkey: Some(key),
+            },
+            Ok(None) => StartBondingResponse::default(),
+            Err(_) => {
+                warn!("Error when bonding");
+                StartBondingResponse::default()
+            }
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_bonded_devices(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<GetBondedDevicesResponse>, tonic::Status> {
+        let result = get_bonded_devices().await;
+        let response = match result {
+            Ok(btdevices) => {
+                let mut devices: Vec<BondedDevice> = Vec::new();
+                for device in btdevices {
+                    devices.push(BondedDevice {
+                        name: device.name,
+                        address: device.address,
+                    });
+                }
+                GetBondedDevicesResponse { devices: devices }
+            }
+            Err(_) => {
+                warn!("Error retrieving bonded devices");
+                GetBondedDevicesResponse::default()
+            }
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn remove_bond(
+        &self,
+        request: tonic::Request<RemoveBondRequest>,
+    ) -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
+        let req: RemoveBondRequest = request.into_inner();
+        let result = remove_bond(req.address).await;
+        match result {
+            Ok(()) => {}
+            Err(_) => {
+                warn!("Error removing bond");
+            }
+        };
+        Ok(tonic::Response::new(EmptyMessage::default()))
+    }
 } // impl Cedar for MyCedar.
 
 impl MyCedar {
@@ -2917,11 +2977,14 @@ impl MyCedar {
                 cal_data.gyro_zero_bias_z = Some(zb.z);
             }
             if let Some(tc) = transform_calibration {
-                cal_data.gyro_transform_error_fraction = Some(tc.transform_error_fraction);
+                cal_data.gyro_transform_error_fraction =
+                    Some(tc.transform_error_fraction);
                 cal_data.camera_view_gyro_axis = Some(tc.camera_view_gyro_axis);
-                cal_data.camera_view_misalignment = Some(tc.camera_view_misalignment);
+                cal_data.camera_view_misalignment =
+                    Some(tc.camera_view_misalignment);
                 cal_data.camera_up_gyro_axis = Some(tc.camera_up_gyro_axis);
-                cal_data.camera_up_misalignment = Some(tc.camera_up_misalignment);
+                cal_data.camera_up_misalignment =
+                    Some(tc.camera_up_misalignment);
             }
         }
 
