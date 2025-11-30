@@ -896,6 +896,24 @@ message ServerLogResult {
 
 message EmptyMessage {}
 
+message StartBondingResponse {
+  optional string name = 1;
+  optional uint32 passkey = 2;
+}
+
+message BondedDevice {
+  string name = 1;
+  string address = 2;
+}
+
+message GetBondedDevicesResponse {
+  repeated BondedDevice devices = 1;
+}
+
+message RemoveBondRequest {
+  string address = 1;
+}
+
 service Cedar {
   rpc GetServerLog(ServerLogRequest) returns (ServerLogResult);
 
@@ -940,4 +958,8 @@ service Cedar {
   rpc GetCatalogDescriptions(EmptyMessage) returns (cedar_sky.CatalogDescriptionResponse);
   rpc GetObjectTypes(EmptyMessage) returns (cedar_sky.ObjectTypeResponse);
   rpc GetConstellations(EmptyMessage) returns (cedar_sky.ConstellationResponse);
+
+  rpc StartBonding(EmptyMessage) returns (StartBondingResponse);
+  rpc GetBondedDevices(EmptyMessage) returns (GetBondedDevicesResponse);
+  rpc RemoveBond(RemoveBondRequest) returns (EmptyMessage);
 }
