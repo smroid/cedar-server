@@ -897,7 +897,7 @@ message ServerLogResult {
 message EmptyMessage {}
 
 message StartBondingResponse {
-  optional string address = 1;
+  optional string name = 1;
   optional uint32 passkey = 2;
 }
 

@@ -41,13 +41,13 @@ pub async fn start_bonding(
     let _handle = session.register_agent(agent).await?;
 
     adapter.set_discoverable(true).await?;
-    adapter.set_discoverable_timeout(60).await?;
+    adapter.set_discoverable_timeout(55).await?;
     adapter.set_pairable(true).await?;
 
-    info!("Accepting pairings - waiting up to 60 seconds...");
+    info!("Accepting pairings - waiting up to 55 seconds...");
 
     // Wait for the address or timeout
-    let result = timeout(Duration::from_secs(60), rx.recv()).await;
+    let result = timeout(Duration::from_secs(55), rx.recv()).await;
 
     let paired_info = match result {
         Ok(Some((address, passkey))) => {
@@ -85,6 +85,7 @@ pub async fn remove_bond(
 
     let device = Address::from_str(&address)?;
     adapter.remove_device(device).await?;
+    info!("Removed bond: {}", address);
     Ok(())
 }
 
@@ -97,6 +98,7 @@ pub async fn get_bonded_devices(
     let mut result: Vec<BluetoothDevice> = Vec::new();
     let devices = adapter.device_addresses().await?;
     for addr in devices {
+        info!("Found bonded device: {}", addr);
         let device = adapter.device(addr)?;
         result.push(BluetoothDevice {
             name: device.alias().await?,

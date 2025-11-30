@@ -1537,8 +1537,8 @@ impl Cedar for MyCedar {
     ) -> Result<tonic::Response<StartBondingResponse>, tonic::Status> {
         let result = start_bonding().await;
         let response = match result {
-            Ok(Some((addr, key))) => StartBondingResponse {
-                address: Some(addr),
+            Ok(Some((name, key))) => StartBondingResponse {
+                name: Some(name),
                 passkey: Some(key),
             },
             Ok(None) => StartBondingResponse::default(),

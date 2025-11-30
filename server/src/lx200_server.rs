@@ -11,7 +11,6 @@ use std::{
 
 use async_trait::async_trait;
 use bluer::{
-    agent::{Agent, ReqResult, RequestConfirmation},
     rfcomm::{Profile, Role, Stream},
     Session, Uuid,
 };
@@ -105,17 +104,6 @@ impl Lx200Telescope for Lx200BtTelescope {
         let adapter = session.default_adapter().await?;
         adapter.set_powered(true).await?;
 
-        // Start pairing, accepting any requests. Ideally we would be able to
-        // show confirmation in the UI for better security.
-        let agent = Agent {
-            request_default: true,
-            request_confirmation: Some(Box::new(|req| {
-                Box::pin(Self::request_confirmation(req))
-            })),
-            ..Default::default()
-        };
-        let _handle = session.register_agent(agent).await?;
-
         let profile = Profile {
             uuid: Uuid::parse_str("00001101-0000-1000-8000-00805F9B34FB")
                 .unwrap(),
@@ -131,19 +119,12 @@ impl Lx200Telescope for Lx200BtTelescope {
         info!("Running LX200 server using SPP: {}", adapter.address().await?);
 
         loop {
-            adapter.set_discoverable(true).await?;
-            adapter.set_discoverable_timeout(0).await?;
-            adapter.set_pairable(true).await?;
-            info!("Accepting pairings");
             let req = profile_handle.next().await;
             if req.is_none() {
                 return Ok(());
             }
             match req.unwrap().accept() {
                 Ok(stream) => {
-                    adapter.set_pairable(false).await?;
-                    adapter.set_discoverable(false).await?;
-                    info!("Stopped accepting pairings");
                     self.handle_connection(stream).await;
                 }
                 Err(e) => {
@@ -162,14 +143,6 @@ impl Lx200BtTelescope {
         Lx200BtTelescope {
             controller: Lx200Controller::new(telescope_position, cb),
         }
-    }
-
-    async fn request_confirmation(req: RequestConfirmation) -> ReqResult<()> {
-        info!(
-            "Confirming request from {} with key {}",
-            req.device, req.passkey
-        );
-        Ok(())
     }
 
     async fn handle_connection(&mut self, mut stream: Stream) {
