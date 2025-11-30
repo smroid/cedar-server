@@ -15,6 +15,12 @@ pub struct BluetoothDevice {
     pub address: String,
 }
 
+pub async fn get_adapter_name() -> Result<String, Box<dyn Error + 'static>> {
+    let session = Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    Ok(adapter.name().to_string())
+}
+
 pub async fn start_bonding(
 ) -> Result<Option<(String, u32)>, Box<dyn Error + 'static>> {
     let session = Session::new().await?;

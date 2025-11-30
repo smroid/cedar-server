@@ -896,6 +896,10 @@ message ServerLogResult {
 
 message EmptyMessage {}
 
+message GetBluetoothNameResponse {
+  string name = 1;
+}
+
 message StartBondingResponse {
   optional string name = 1;
   optional uint32 passkey = 2;
@@ -959,6 +963,8 @@ service Cedar {
   rpc GetObjectTypes(EmptyMessage) returns (cedar_sky.ObjectTypeResponse);
   rpc GetConstellations(EmptyMessage) returns (cedar_sky.ConstellationResponse);
 
+  // Bluetooth management.
+  rpc GetBluetoothName(EmptyMessage) returns (GetBluetoothNameResponse);
   rpc StartBonding(EmptyMessage) returns (StartBondingResponse);
   rpc GetBondedDevices(EmptyMessage) returns (GetBondedDevicesResponse);
   rpc RemoveBond(RemoveBondRequest) returns (EmptyMessage);

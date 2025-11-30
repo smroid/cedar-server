@@ -35,12 +35,12 @@ use cedar_elements::{
         ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
         CameraModel, CelestialCoordFormat, DisplayOrientation, EmptyMessage,
         FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
-        FrameResult, GetBondedDevicesResponse, Image, ImageCoord, ImuState,
-        ImuTrackerState, LatLong, LocationBasedInfo, MountType, OperatingMode,
-        OperationSettings, PlateSolution as PlateSolutionProto, Preferences,
-        ProcessingStats, Rectangle, RemoveBondRequest, ServerInformation,
-        ServerLogRequest, ServerLogResult, StarCentroid, StartBondingResponse,
-        WiFiAccessPoint,
+        FrameResult, GetBluetoothNameResponse, GetBondedDevicesResponse, Image,
+        ImageCoord, ImuState, ImuTrackerState, LatLong, LocationBasedInfo,
+        MountType, OperatingMode, OperationSettings,
+        PlateSolution as PlateSolutionProto, Preferences, ProcessingStats,
+        Rectangle, RemoveBondRequest, ServerInformation, ServerLogRequest,
+        ServerLogResult, StarCentroid, StartBondingResponse, WiFiAccessPoint,
     },
     cedar_common::CelestialCoord,
     cedar_sky::{
@@ -81,7 +81,9 @@ use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
-    bonding_helper::{get_bonded_devices, remove_bond, start_bonding},
+    bonding_helper::{
+        get_adapter_name, get_bonded_devices, remove_bond, start_bonding,
+    },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
     lx200_server::create_lx200_server,
@@ -1529,6 +1531,20 @@ impl Cedar for MyCedar {
         }
 
         Ok(tonic::Response::new(response))
+    }
+
+    async fn get_bluetooth_name(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
+        let bt_name = match get_adapter_name().await {
+            Ok(name) => name,
+            Err(_) => {
+                warn!("Unable to get Bluetooth name");
+                "cedar".to_string()
+            }
+        };
+        Ok(tonic::Response::new(GetBluetoothNameResponse { name: bt_name }))
     }
 
     async fn start_bonding(
