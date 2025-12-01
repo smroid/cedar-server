@@ -12,6 +12,7 @@ approx = "0.5.1"
 ascom-alpaca = { version = "=1.0.0-beta.3", features = ["server", "telescope"] }
 async-trait = "0.1.77"
 axum = "0.6.20"
+bluer = { version = "0.17.4", features = ["bluetoothd", "rfcomm"] }
 canonical-error = "0.1.0"
 cedar-camera = { version = "0.4.0", path = "../../cedar-camera" }
 cedar_detect = { version = "0.8.0", path = "../../cedar-detect" }
