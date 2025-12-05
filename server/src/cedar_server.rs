@@ -1894,15 +1894,20 @@ impl MyCedar {
             });
 
             // Get the most recent IMU state.
-            if let Ok((imu_state, _)) = locked_imu.get_state().await {
-                server_info.imu = Some(ImuState {
-                    accel_x: imu_state.accel.x,
-                    accel_y: imu_state.accel.y,
-                    accel_z: imu_state.accel.z,
-                    angle_rate_x: imu_state.gyro.x,
-                    angle_rate_y: imu_state.gyro.y,
-                    angle_rate_z: imu_state.gyro.z,
-                });
+            match locked_imu.get_state().await {
+                Ok((imu_state, _)) => {
+                    server_info.imu = Some(ImuState {
+                        accel_x: imu_state.accel.x,
+                        accel_y: imu_state.accel.y,
+                        accel_z: imu_state.accel.z,
+                        angle_rate_x: imu_state.gyro.x,
+                        angle_rate_y: imu_state.gyro.y,
+                        angle_rate_z: imu_state.gyro.z,
+                    });
+                }
+                Err(e) => {
+                    warn!("Failed to get IMU state: {:?}", e);
+                }
             }
             if let Ok((angle_speed, _)) =
                 locked_imu.get_angular_velocity_magnitude().await
