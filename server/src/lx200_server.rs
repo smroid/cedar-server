@@ -24,7 +24,7 @@ use crate::position_reporter::{Callback, TelescopePosition};
 
 #[async_trait]
 pub trait Lx200Telescope {
-    async fn start(&mut self) -> Result<(), Box<dyn Error + 'static>>;
+    async fn serve_requests(&mut self) -> Result<(), Box<dyn Error + 'static>>;
 }
 
 #[derive(Default, Debug)]
@@ -34,7 +34,7 @@ struct Lx200WifiTelescope {
 
 #[async_trait]
 impl Lx200Telescope for Lx200WifiTelescope {
-    async fn start(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+    async fn serve_requests(&mut self) -> Result<(), Box<dyn Error + 'static>> {
         let listener = TcpListener::bind("0.0.0.0:4030").unwrap();
         info!("Running LX200 server on: {}", listener.local_addr().unwrap());
 
@@ -99,7 +99,7 @@ struct Lx200BtTelescope {
 
 #[async_trait]
 impl Lx200Telescope for Lx200BtTelescope {
-    async fn start(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+    async fn serve_requests(&mut self) -> Result<(), Box<dyn Error + 'static>> {
         let session = Session::new().await?;
         let adapter = session.default_adapter().await?;
         adapter.set_powered(true).await?;
@@ -187,29 +187,35 @@ impl Lx200BtTelescope {
 struct Lx200Controller {
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
 
-    // Animate the reported ra/dec position when it is invalid.
-    animate_while_invalid: bool,
+    // Animate the reported ra/dec position when it is invalid
+    wiggle_phase: bool,
 
     // Called whenever client obtains our right ascension
     callback: Option<Callback>,
 
-    // Pending target coordinates for sync/slew
+    // Pending target coordinates (in jnow_epoch) for sync/slew
     target_ra: Option<f64>,
     target_dec: Option<f64>,
 
     // Pending time
+    // Timezone format is sHH:MM as the offset from GMT
     timezone: Option<String>,
+    // Time format is HH:MM:SS
     time: Option<String>,
 
     // Local time, possibly provided by the client
     datetime: DateTime<FixedOffset>,
 
-    // Current site set by the client
+    // Current site set by the client. These values are stored here in the same
+    // format provided by the client, for possible retrieval by the client.
+    // Latitude format: sDD:MM where s is +/-
     latitude: String,
+    // Longitude format: DDD:MM where DDD is defined as degrees west of the
+    //                   Prime Meridian, from 0-359
     longitude: String,
 
     // Current epoch to the closest tenth of a year
-    epoch: f64,
+    jnow_epoch: f64,
 }
 
 impl Lx200Controller {
@@ -229,14 +235,18 @@ impl Lx200Controller {
             // Ideally these should be the current location in Cedar's settings
             latitude: "+00:00".to_string(),
             longitude: "000:00".to_string(),
-            epoch: jnow,
+            jnow_epoch: jnow,
             ..Default::default()
         }
     }
 
+    // Returns the command portion of the input string
     fn extract_command(s: &str) -> Option<String> {
         // We expect LX200 commands to be in the format ":[Command][Payload]#".
-        // The command is is typically composed of one or two letters.
+        // The command portion consists of the alphabetical string that follows
+        // the colon until the first non-alphabetic character is found. The
+        // payload is the remainder of the string (if any) until the hash mark.
+        // Supported commands are between 1-3 letters in length.
         let colon_index = s.find(':')?;
         if colon_index + 1 >= s.len() {
             return None;
@@ -263,13 +273,13 @@ impl Lx200Controller {
 
     fn convert_to_j2000(&self, ra: f64, dec: f64) -> (f64, f64) {
         let (ra_rad, dec_rad) =
-            precess(ra.to_radians(), dec.to_radians(), self.epoch, 2000.0);
+            precess(ra.to_radians(), dec.to_radians(), self.jnow_epoch, 2000.0);
         (ra_rad.to_degrees(), dec_rad.to_degrees())
     }
 
     fn convert_to_jnow(&self, ra: f64, dec: f64) -> (f64, f64) {
         let (ra_rad, dec_rad) =
-            precess(ra.to_radians(), dec.to_radians(), 2000.0, self.epoch);
+            precess(ra.to_radians(), dec.to_radians(), 2000.0, self.jnow_epoch);
         (ra_rad.to_degrees(), dec_rad.to_degrees())
     }
 
@@ -306,9 +316,9 @@ impl Lx200Controller {
 
         if !locked_position.boresight_valid {
             // Wiggle the position to indicate that it's invalid
-            self.animate_while_invalid = !self.animate_while_invalid;
-            if self.animate_while_invalid {
-                dec += if dec > 0.0 { 0.1 } else { -0.1 };
+            self.wiggle_phase = !self.wiggle_phase;
+            if self.wiggle_phase {
+                dec += if dec > 0.0 { -0.1 } else { 0.1 };
             }
         }
 
@@ -323,15 +333,15 @@ impl Lx200Controller {
         format!("{sign}{h:02}*{m:02}'{s:02}#")
     }
 
-    fn set_ra(&mut self, cmd: &str) -> String {
+    fn set_target_ra(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SrHH:MM:SS"
         if cmd.len() < 11 {
             warn!("Unexpected ra length");
             return Self::get_failure();
         }
-        let degrees =
+        let hours =
             Self::parse_coordinates(&cmd[3..5], &cmd[6..8], &cmd[9..11]);
-        match degrees {
+        match hours {
             Some(n) => {
                 // Convert hours to 360-degree format
                 let ra = n * 15.0;
@@ -343,8 +353,8 @@ impl Lx200Controller {
         }
     }
 
-    fn set_dec(&mut self, cmd: &str) -> String {
-        // The command is expected to be ":SdsHH*MM:SS" where s is +/-
+    fn set_target_dec(&mut self, cmd: &str) -> String {
+        // The command is expected to be ":SdsDD*MM:SS" where s is +/-
         if cmd.len() < 12 {
             warn!("Unexpected dec length");
             return Self::get_failure();
@@ -362,7 +372,7 @@ impl Lx200Controller {
     }
 
     async fn slew(&mut self) -> String {
-        // Check if there is a pending position set. The client will issue an Sr
+        // Check if there is a pending target set. The client will issue an Sr
         // command, followed by an Sd command, followed by MS to
         // initiate the movement. This applies to GoTo mode.
         if let (Some(ra), Some(dec)) =
@@ -381,7 +391,7 @@ impl Lx200Controller {
     }
 
     async fn sync(&mut self) -> String {
-        // Check if there is a pending position set. The client will issue an Sr
+        // Check if there is a pending target set. The client will issue an Sr
         // command, followed by an Sd command, followed by CM to
         // sync/align. This applies to both GoTo and PushTo modes.
         if let (Some(ra), Some(dec)) =
@@ -492,7 +502,7 @@ impl Lx200Controller {
                 Ok(dt) => {
                     info!("Set date/time to {}", dt);
                     self.datetime = dt;
-                    self.epoch = ((dt.year() as f64
+                    self.jnow_epoch = ((dt.year() as f64
                         + dt.ordinal0() as f64 / 365.0)
                         * 10.0)
                         .round()
@@ -566,14 +576,14 @@ impl Lx200Controller {
         (hours, minutes, seconds)
     }
 
-    fn parse_coordinates(h: &str, m: &str, s: &str) -> Option<f64> {
-        let hours: Result<i32, _> = h.parse();
-        let is_negative = match hours {
+    fn parse_coordinates(d: &str, m: &str, s: &str) -> Option<f64> {
+        let degrees: Result<i32, _> = d.parse();
+        let is_negative = match degrees {
             Err(e) => {
-                warn!("Error parsing hours: {}", e);
+                warn!("Error parsing degrees: {}", e);
                 return None;
             }
-            Ok(h) => h < 0,
+            Ok(h) => d < 0,
         };
         let minutes: Result<i32, _> = m.parse();
         match minutes {
@@ -591,7 +601,7 @@ impl Lx200Controller {
             }
             Ok(_) => {}
         }
-        let deg = hours.unwrap().abs() as f64
+        let deg = degrees.unwrap().abs() as f64
             + minutes.unwrap() as f64 / 60.0
             + seconds.unwrap() as f64 / 3600.00;
         Some(if is_negative { -deg } else { deg })
@@ -696,7 +706,7 @@ impl Lx200Controller {
                 }
                 Some("Sd") => {
                     debug!("Received set declination command: {}", in_data);
-                    result.push_str(&self.set_dec(&in_data));
+                    result.push_str(&self.set_target_dec(&in_data));
                 }
                 Some("Sg") => {
                     debug!("Received set longitude command: {}", in_data);
@@ -704,7 +714,7 @@ impl Lx200Controller {
                 }
                 Some("Sr") => {
                     debug!("Received set ra command: {}", in_data);
-                    result.push_str(&self.set_ra(&in_data));
+                    result.push_str(&self.set_target_ra(&in_data));
                 }
                 Some("St") => {
                     debug!("Received set latitude command: {}", in_data);
@@ -887,7 +897,7 @@ mod tests {
     async fn test_get_ra_and_dec() {
         let (mut controller, position_arc) = setup_controller().await;
         // Set epoch to J2000 for no change
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         let ra_j2000 = 1.5 * 15.0;
         let dec_j2000 = 30.5;
@@ -921,7 +931,7 @@ mod tests {
         }
 
         // Set epoch to J2025.9 and test with known object (M31)
-        controller.epoch = 2025.9;
+        controller.jnow_epoch = 2025.9;
         // M31 is actually at (00:44:09, +41*24'40) - conversion is not exact
         let (ra_j2025_9, dec_j2025_9) = ("00:44:10#", "+41*24'39#");
         {
@@ -940,7 +950,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_dec_invalid_wiggles() {
         let (mut controller, position_arc) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         {
             let mut locked_position = position_arc.lock().await;
@@ -948,16 +958,16 @@ mod tests {
             locked_position.boresight_valid = false;
         }
 
-        let is_wiggled = controller.animate_while_invalid;
+        let is_wiggled = controller.wiggle_phase;
         // Also checks that boresight dec is used when there is no snapshot
         let dec1 = controller.process_input(b":GD#").await;
-        assert_ne!(is_wiggled, controller.animate_while_invalid);
+        assert_ne!(is_wiggled, controller.wiggle_phase);
         let dec2 = controller.process_input(b":GD#").await;
 
         // We don't care about the order, just that it wiggled by 0.1
         let mut results = [dec1.unwrap(), dec2.unwrap()];
         results.sort();
-        assert_eq!(results, ["+10*00'00#", "+10*06'00#"]);
+        assert_eq!(results, ["+09*54'00#", "+10*00'00#"]);
 
         // Now check that we don't wiggle when valid
         {
@@ -976,7 +986,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_ra_dec_slew_abort() {
         let (mut controller, position_arc) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         let set_ra = controller.process_input(b":Sr10:30:00#").await;
         assert_eq!(set_ra.as_deref(), Some("1"));
@@ -1019,7 +1029,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_ra_dec_sync() {
         let (mut controller, position_arc) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         // Even with no target we should still return canned result
         let mut sync = controller.process_input(b":CM#").await;
@@ -1061,14 +1071,14 @@ mod tests {
         let set_lon_w = controller.process_input(b":Sg122:25#").await;
         assert_eq!(set_lon_w.as_deref(), Some("1"));
         assert_eq!(controller.longitude, "122:25");
-        let lon_w = position_arc.lock().await.site_latitude.unwrap();
+        let lon_w = position_arc.lock().await.site_longitude.unwrap();
         assert_approx_eq(lon_w, -122.4167);
 
         // Longitude values are > 180 for East
         let set_lon_e = controller.process_input(b":Sg300:00#").await;
         assert_eq!(set_lon_e.as_deref(), Some("1"));
         assert_eq!(controller.longitude, "300:00");
-        let lon_e = position_arc.lock().await.site_latitude.unwrap();
+        let lon_e = position_arc.lock().await.site_longitude.unwrap();
         // 360 - 300 = 60.0
         assert_approx_eq(lon_e, 60.0);
 
@@ -1185,7 +1195,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_input_leading_hash() {
         let (mut controller, _) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         // Stellarium sends a leading #
         let result = controller.process_input(b"#:GR#").await;
@@ -1195,7 +1205,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_input_multiple_commands() {
         let (mut controller, position_arc) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         {
             let mut locked_position = position_arc.lock().await;

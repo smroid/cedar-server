@@ -4128,7 +4128,7 @@ async fn async_main(
                     true,
                 );
                 Some(tokio::task::spawn(async move {
-                    let _status = lx200_server_bt.start().await;
+                    let _status = lx200_server_bt.serve_requests().await;
                     Ok(())
                 }))
             }
@@ -4143,7 +4143,7 @@ async fn async_main(
     );
     let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
-            let _status = lx200_server.start().await;
+            let _status = lx200_server.serve_requests().await;
             Ok(())
         });
 
