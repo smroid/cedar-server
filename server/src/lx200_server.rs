@@ -336,7 +336,7 @@ impl Lx200Controller {
     fn set_target_ra(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SrHH:MM:SS"
         if cmd.len() < 11 {
-            warn!("Unexpected ra length");
+            warn!("Unexpected ra length, cmd: {}", cmd);
             return Self::get_failure();
         }
         let hours =
@@ -356,7 +356,7 @@ impl Lx200Controller {
     fn set_target_dec(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SdsDD*MM:SS" where s is +/-
         if cmd.len() < 12 {
-            warn!("Unexpected dec length");
+            warn!("Unexpected dec length, cmd: {}", cmd);
             return Self::get_failure();
         }
         let degrees =
