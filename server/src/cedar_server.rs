@@ -1539,8 +1539,8 @@ impl Cedar for MyCedar {
     ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
         let bt_name = match get_adapter_alias().await {
             Ok(name) => name,
-            Err(_) => {
-                warn!("Unable to get Bluetooth name");
+            Err(e) => {
+                warn!("Unable to get Bluetooth name: {}", e);
                 "cedar".to_string()
             }
         };
@@ -4076,11 +4076,8 @@ async fn async_main(
     .await
     .unwrap();
 
-    let use_lx200_bt = {
-        let state = cedar.state.lock().await;
-        let preferences = state.preferences.lock().await;
-        preferences.use_bluetooth
-    };
+    let use_lx200_bt =
+        cedar.state.lock().await.preferences.lock().await.use_bluetooth;
 
     let cedar_server = CedarServer::new(cedar);
 
@@ -4117,7 +4114,7 @@ async fn async_main(
         });
     });
 
-    let _lx200_bt_handle: Option<
+    let _bt_task_handle: Option<
         tokio::task::JoinHandle<Result<(), tonic::Status>>,
     > = {
         match use_lx200_bt {
