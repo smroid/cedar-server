@@ -32,14 +32,15 @@ use cedar_elements::{
     },
     cedar::{
         cedar_server::{Cedar, CedarServer},
-        ActionRequest, CalibrationData, CalibrationFailureReason, CameraModel,
-        CelestialCoordFormat, DisplayOrientation, EmptyMessage, FeatureLevel,
-        FixedSettings, FovCatalogEntry, FrameRequest, FrameResult, Image,
+        ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
+        CameraModel, CelestialCoordFormat, DisplayOrientation, EmptyMessage,
+        FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
+        FrameResult, GetBluetoothNameResponse, GetBondedDevicesResponse, Image,
         ImageCoord, ImuState, ImuTrackerState, LatLong, LocationBasedInfo,
         MountType, OperatingMode, OperationSettings,
         PlateSolution as PlateSolutionProto, Preferences, ProcessingStats,
-        Rectangle, ServerInformation, ServerLogRequest, ServerLogResult,
-        StarCentroid, WiFiAccessPoint,
+        Rectangle, RemoveBondRequest, ServerInformation, ServerLogRequest,
+        ServerLogResult, StarCentroid, StartBondingResponse, WiFiAccessPoint,
     },
     cedar_common::CelestialCoord,
     cedar_sky::{
@@ -80,8 +81,12 @@ use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
+    bonding_helper::{
+        get_adapter_alias, get_bonded_devices, remove_bond, start_bonding,
+    },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
+    lx200_server::create_lx200_server,
     motion_estimator::MotionEstimator,
     polar_analyzer::PolarAnalyzer,
     position_reporter::{create_alpaca_server, TelescopePosition},
@@ -993,6 +998,9 @@ impl Cedar for MyCedar {
         if let Some(screen_always_on) = req.screen_always_on {
             our_prefs.screen_always_on = Some(screen_always_on);
         }
+        if let Some(use_bluetooth) = req.use_bluetooth {
+            our_prefs.use_bluetooth = Some(use_bluetooth);
+        }
         // Handle dont_show_items array - if non-empty, add items to existing
         // set
         if !req.dont_show_items.is_empty() {
@@ -1523,6 +1531,78 @@ impl Cedar for MyCedar {
         }
 
         Ok(tonic::Response::new(response))
+    }
+
+    async fn get_bluetooth_name(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
+        let bt_name = match get_adapter_alias().await {
+            Ok(name) => name,
+            Err(e) => {
+                warn!("Unable to get Bluetooth name: {}", e);
+                "cedar".to_string()
+            }
+        };
+        Ok(tonic::Response::new(GetBluetoothNameResponse { name: bt_name }))
+    }
+
+    async fn start_bonding(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<StartBondingResponse>, tonic::Status> {
+        let result = start_bonding().await;
+        let response = match result {
+            Ok(Some((name, key))) => StartBondingResponse {
+                name: Some(name),
+                passkey: Some(key),
+            },
+            Ok(None) => StartBondingResponse::default(),
+            Err(_) => {
+                warn!("Error when bonding");
+                StartBondingResponse::default()
+            }
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_bonded_devices(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<GetBondedDevicesResponse>, tonic::Status> {
+        let result = get_bonded_devices().await;
+        let response = match result {
+            Ok(btdevices) => {
+                let mut devices: Vec<BondedDevice> = Vec::new();
+                for device in btdevices {
+                    devices.push(BondedDevice {
+                        name: device.name,
+                        address: device.address,
+                    });
+                }
+                GetBondedDevicesResponse { devices: devices }
+            }
+            Err(_) => {
+                warn!("Error retrieving bonded devices");
+                GetBondedDevicesResponse::default()
+            }
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn remove_bond(
+        &self,
+        request: tonic::Request<RemoveBondRequest>,
+    ) -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
+        let req: RemoveBondRequest = request.into_inner();
+        let result = remove_bond(req.address).await;
+        match result {
+            Ok(()) => {}
+            Err(_) => {
+                warn!("Error removing bond");
+            }
+        };
+        Ok(tonic::Response::new(EmptyMessage::default()))
     }
 } // impl Cedar for MyCedar.
 
@@ -2918,11 +2998,14 @@ impl MyCedar {
                 cal_data.gyro_zero_bias_z = Some(zb.z);
             }
             if let Some(tc) = transform_calibration {
-                cal_data.gyro_transform_error_fraction = Some(tc.transform_error_fraction);
+                cal_data.gyro_transform_error_fraction =
+                    Some(tc.transform_error_fraction);
                 cal_data.camera_view_gyro_axis = Some(tc.camera_view_gyro_axis);
-                cal_data.camera_view_misalignment = Some(tc.camera_view_misalignment);
+                cal_data.camera_view_misalignment =
+                    Some(tc.camera_view_misalignment);
                 cal_data.camera_up_gyro_axis = Some(tc.camera_up_gyro_axis);
-                cal_data.camera_up_misalignment = Some(tc.camera_up_misalignment);
+                cal_data.camera_up_misalignment =
+                    Some(tc.camera_up_misalignment);
             }
         }
 
@@ -3099,6 +3182,7 @@ impl MyCedar {
             perf_gauge_choice: None,
             screen_always_on: Some(true),
             dont_show_items: Vec::new(),
+            use_bluetooth: None,
         };
 
         // If there is a preferences file, read it and merge its contents into
@@ -3961,38 +4045,41 @@ async fn async_main(
 
     // Build the gRPC service.
     let path: PathBuf = [args.log_dir, args.log_file].iter().collect();
-    let cedar_server = CedarServer::new(
-        MyCedar::new(
-            solver,
-            args.binning,
-            args.display_sampling,
-            // initial_exposure_duration=
-            Duration::from_millis(100),
-            args.min_exposure,
-            args.max_exposure,
-            activity_led.clone(),
-            attached_camera,
-            test_image_camera,
-            camera,
-            shared_telescope_position.clone(),
-            args.star_count_goal,
-            args.sigma,
-            args.min_sigma,
-            // TODO: arg for this?
-            // stats_capacity=
-            100,
-            PathBuf::from(args.ui_prefs),
-            path,
-            product_name,
-            copyright,
-            feature_level,
-            cedar_sky,
-            wifi,
-            imu_tracker,
-        )
-        .await
-        .unwrap(),
-    );
+    let cedar = MyCedar::new(
+        solver,
+        args.binning,
+        args.display_sampling,
+        // initial_exposure_duration=
+        Duration::from_millis(100),
+        args.min_exposure,
+        args.max_exposure,
+        activity_led.clone(),
+        attached_camera,
+        test_image_camera,
+        camera,
+        shared_telescope_position.clone(),
+        args.star_count_goal,
+        args.sigma,
+        args.min_sigma,
+        // TODO: arg for this?
+        // stats_capacity=
+        100,
+        PathBuf::from(args.ui_prefs),
+        path,
+        product_name,
+        copyright,
+        feature_level,
+        cedar_sky,
+        wifi,
+        imu_tracker,
+    )
+    .await
+    .unwrap();
+
+    let use_lx200_bt =
+        cedar.state.lock().await.preferences.lock().await.use_bluetooth;
+
+    let cedar_server = CedarServer::new(cedar);
 
     let grpc = tonic::transport::Server::builder()
         .accept_http1(true) // TODO: don't need this?
@@ -4015,8 +4102,8 @@ async fn async_main(
     let service_future8080 =
         hyper::Server::bind(&addr8080).serve(tower::make::Shared::new(service));
 
-    // Spin up ASCOM Alpaca server for reporting our RA/Dec solution as the
-    // telescope position.
+    // Spin up servers for reporting our RA/Dec solution as the telescope
+    // position.
 
     // Function called whenever SkySafari interrogates our position.
     let async_callback = Box::new(move || {
@@ -4026,6 +4113,37 @@ async fn async_main(
             });
         });
     });
+
+    let _bt_task_handle: Option<
+        tokio::task::JoinHandle<Result<(), tonic::Status>>,
+    > = {
+        match use_lx200_bt {
+            Some(true) => {
+                let mut lx200_server_bt = create_lx200_server(
+                    shared_telescope_position.clone(),
+                    async_callback.clone(),
+                    true,
+                );
+                Some(tokio::task::spawn(async move {
+                    let _status = lx200_server_bt.serve_requests().await;
+                    Ok(())
+                }))
+            }
+            _ => None,
+        }
+    };
+
+    let mut lx200_server = create_lx200_server(
+        shared_telescope_position.clone(),
+        async_callback.clone(),
+        false,
+    );
+    let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move {
+            let _status = lx200_server.serve_requests().await;
+            Ok(())
+        });
+
     let alpaca_server =
         create_alpaca_server(shared_telescope_position, async_callback);
     let alpaca_server_future = alpaca_server.start();
