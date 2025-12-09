@@ -1,3 +1,10 @@
+// Implementation of the Meade LX200 protocol for Cedar.
+//
+// References for LX200 command set include:
+//    https://www.astro.louisville.edu/software/xmtel/archive/xmtel-indi-6.0/xmtel-6.0l/support/lx200/CommandSet.html
+//    https://interactiveastronomy.com/lx-200gps_telescope_protocol_2010-10.pdf
+//    https://skymtn.com/mapug-astronomy/ragreiner/LX200Commands.html
+//
 // Copyright (c) 2025 Omair Kamil
 // See LICENSE file in root directory for license terms.
 
@@ -416,7 +423,7 @@ impl Lx200Controller {
     async fn set_latitude(&mut self, cmd: &str) -> String {
         // The command is expected to be ":StsDD:MM" where s is +/-
         if cmd.len() < 9 {
-            warn!("Unexpected lat length");
+            warn!("Unexpected lat length, cmd: {}", cmd);
             return Self::get_failure();
         }
         let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
@@ -435,7 +442,7 @@ impl Lx200Controller {
     async fn set_longitude(&mut self, cmd: &str) -> String {
         // The command is expected to be ":StDDD:MM"
         if cmd.len() < 9 {
-            warn!("Unexpected lon length");
+            warn!("Unexpected lon length, cmd: {}", cmd);
             return Self::get_failure();
         }
         let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
@@ -457,7 +464,7 @@ impl Lx200Controller {
     fn set_timezone(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SGsXX.X" where s is +/-
         if cmd.len() < 8 {
-            warn!("Unexpected tz length");
+            warn!("Unexpected tz length, cmd: {}", cmd);
             return Self::get_failure();
         }
         let mut timezone = cmd[3..6].to_string();
@@ -478,7 +485,7 @@ impl Lx200Controller {
     fn set_time(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SLHH:MM:SS"
         if cmd.len() < 11 {
-            warn!("Unexpected time length");
+            warn!("Unexpected time length, cmd: {}", cmd);
             return Self::get_failure();
         }
         self.time = Some(cmd[3..11].to_string());
@@ -488,7 +495,7 @@ impl Lx200Controller {
     async fn set_date(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SCMM/DD/YY"
         if cmd.len() < 11 {
-            warn!("Unexpected time length");
+            warn!("Unexpected time length, cmd: {}", cmd);
             return Self::get_failure();
         }
         if let (Some(timezone), Some(time)) =
@@ -557,22 +564,24 @@ impl Lx200Controller {
         }
     }
 
-    fn get_approx_and_remainder(n: f64, epsilon: f64) -> (i64, f64) {
-        if (n - n.round()).abs() < epsilon {
-            (n.round() as i64, 0.0)
-        } else {
-            let whole = n.trunc();
-            (whole as i64, n - whole)
-        }
-    }
-
     fn to_hms(n: f64) -> (i64, i64, i64) {
-        // 1 second is 0.000278 hours
-        let (hours, h_rem) = Self::get_approx_and_remainder(n, 0.00014);
-        // 1 second is 0.016667 minutes
-        let (minutes, m_rem) =
-            Self::get_approx_and_remainder(h_rem * 60.0, 0.00834);
-        let seconds = (m_rem * 60.0).round() as i64;
+        let n_abs = n.abs();
+        let mut hours = n_abs.trunc() as i64;
+        let h_rem = n_abs.fract() * 60.0;
+        let mut minutes = h_rem.trunc() as i64;
+        let m_rem = h_rem.fract() * 60.0;
+        let mut seconds = m_rem.round() as i64;
+        if seconds == 60 {
+            seconds = 0;
+            minutes += 1;
+            if minutes == 60 {
+                minutes = 0;
+                hours += 1;
+            }
+        }
+        if n < 0.0 {
+            hours = -hours;
+        }
         (hours, minutes, seconds)
     }
 
@@ -583,7 +592,7 @@ impl Lx200Controller {
                 warn!("Error parsing degrees: {}", e);
                 return None;
             }
-            Ok(h) => d < 0,
+            Ok(deg) => deg < 0,
         };
         let minutes: Result<i32, _> = m.parse();
         match minutes {
@@ -813,48 +822,20 @@ mod tests {
     }
 
     #[test]
-    fn test_get_approximate_and_remainder() {
-        let e = 0.00014;
-        let (mut whole, mut rem) =
-            Lx200Controller::get_approx_and_remainder(3.7, e);
-        assert_eq!(whole, 3);
-        assert_approx_eq(rem, 0.7);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.99995, e);
-        assert_eq!(whole, 4);
-        assert_approx_eq(rem, 0.0);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(-3.99995, e);
-        assert_eq!(whole, -4);
-        assert_approx_eq(rem, 0.0);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.9995, e);
-        assert_eq!(whole, 3);
-        assert_approx_eq(rem, 0.9995);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.00001, e);
-        assert_eq!(whole, 3);
-        assert_approx_eq(rem, 0.0);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.0001, e);
-        assert_eq!(whole, 3);
-        assert_approx_eq(rem, 0.0001);
-    }
-
-    #[test]
     fn test_to_hms() {
         assert_eq!(Lx200Controller::to_hms(0.0), (0, 0, 0));
         assert_eq!(Lx200Controller::to_hms(1.5), (1, 30, 0));
-        assert_eq!(Lx200Controller::to_hms(10.5083), (10, 30, 30));
+        assert_eq!(Lx200Controller::to_hms(-10.5083), (-10, 30, 30));
         assert_eq!(Lx200Controller::to_hms(23.99972), (23, 59, 59));
         // Floating point math is hard
         assert_eq!(Lx200Controller::to_hms(10.1), (10, 6, 0));
         // Make sure we don't end up with 60 minutes or seconds
         assert_eq!(Lx200Controller::to_hms(23.999859), (23, 59, 59));
         // Checking 2 possible values due to floating point imprecision
-        let v = Lx200Controller::to_hms(23.999860);
+        let v = Lx200Controller::to_hms(23.999861);
         assert!(v == (23, 59, 59) || v == (24, 0, 0), "Incorrect: {:?}", v);
-        assert_eq!(Lx200Controller::to_hms(23.999861), (24, 0, 0));
+        assert_eq!(Lx200Controller::to_hms(23.999862), (24, 0, 0));
+        assert_eq!(Lx200Controller::to_hms(-23.999999), (-24, 0, 0));
     }
 
     #[test]
