@@ -495,7 +495,7 @@ impl Lx200Controller {
     async fn set_date(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SCMM/DD/YY"
         if cmd.len() < 11 {
-            warn!("Unexpected time length, cmd: {}", cmd);
+            warn!("Unexpected date length, cmd: {}", cmd);
             return Self::get_failure();
         }
         if let (Some(timezone), Some(time)) =
