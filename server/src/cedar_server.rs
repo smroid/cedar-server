@@ -32,14 +32,15 @@ use cedar_elements::{
     },
     cedar::{
         cedar_server::{Cedar, CedarServer},
-        ActionRequest, CalibrationData, CalibrationFailureReason, CameraModel,
-        CelestialCoordFormat, DisplayOrientation, EmptyMessage, FeatureLevel,
-        FixedSettings, FovCatalogEntry, FrameRequest, FrameResult, Image,
+        ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
+        CameraModel, CelestialCoordFormat, DisplayOrientation, EmptyMessage,
+        FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
+        FrameResult, GetBluetoothNameResponse, GetBondedDevicesResponse, Image,
         ImageCoord, ImuState, ImuTrackerState, LatLong, LocationBasedInfo,
         MountType, OperatingMode, OperationSettings,
         PlateSolution as PlateSolutionProto, Preferences, ProcessingStats,
-        Rectangle, ServerInformation, ServerLogRequest, ServerLogResult,
-        StarCentroid, WiFiAccessPoint,
+        Rectangle, RemoveBondRequest, ServerInformation, ServerLogRequest,
+        ServerLogResult, StarCentroid, StartBondingResponse, WiFiAccessPoint,
     },
     cedar_common::CelestialCoord,
     cedar_sky::{
@@ -80,6 +81,9 @@ use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
+    bonding_helper::{
+        get_adapter_alias, get_bonded_devices, remove_bond, start_bonding,
+    },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
     lx200_server::create_lx200_server,
@@ -1529,6 +1533,78 @@ impl Cedar for MyCedar {
 
         Ok(tonic::Response::new(response))
     }
+
+    async fn get_bluetooth_name(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
+        let bt_name = match get_adapter_alias().await {
+            Ok(name) => name,
+            Err(e) => {
+                warn!("Unable to get Bluetooth name: {}", e);
+                "cedar".to_string()
+            }
+        };
+        Ok(tonic::Response::new(GetBluetoothNameResponse { name: bt_name }))
+    }
+
+    async fn start_bonding(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<StartBondingResponse>, tonic::Status> {
+        let result = start_bonding().await;
+        let response = match result {
+            Ok(Some((name, key))) => StartBondingResponse {
+                name: Some(name),
+                passkey: Some(key),
+            },
+            Ok(None) => StartBondingResponse::default(),
+            Err(_) => {
+                warn!("Error when bonding");
+                StartBondingResponse::default()
+            }
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_bonded_devices(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<GetBondedDevicesResponse>, tonic::Status> {
+        let result = get_bonded_devices().await;
+        let response = match result {
+            Ok(btdevices) => {
+                let mut devices: Vec<BondedDevice> = Vec::new();
+                for device in btdevices {
+                    devices.push(BondedDevice {
+                        name: device.name,
+                        address: device.address,
+                    });
+                }
+                GetBondedDevicesResponse { devices: devices }
+            }
+            Err(_) => {
+                warn!("Error retrieving bonded devices");
+                GetBondedDevicesResponse::default()
+            }
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn remove_bond(
+        &self,
+        request: tonic::Request<RemoveBondRequest>,
+    ) -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
+        let req: RemoveBondRequest = request.into_inner();
+        let result = remove_bond(req.address).await;
+        match result {
+            Ok(()) => {}
+            Err(_) => {
+                warn!("Error removing bond");
+            }
+        };
+        Ok(tonic::Response::new(EmptyMessage::default()))
+    }
 } // impl Cedar for MyCedar.
 
 impl MyCedar {
@@ -1925,15 +2001,20 @@ impl MyCedar {
             });
 
             // Get the most recent IMU state.
-            if let Ok((imu_state, _)) = locked_imu.get_state().await {
-                server_info.imu = Some(ImuState {
-                    accel_x: imu_state.accel.x,
-                    accel_y: imu_state.accel.y,
-                    accel_z: imu_state.accel.z,
-                    angle_rate_x: imu_state.gyro.x,
-                    angle_rate_y: imu_state.gyro.y,
-                    angle_rate_z: imu_state.gyro.z,
-                });
+            match locked_imu.get_state().await {
+                Ok((imu_state, _)) => {
+                    server_info.imu = Some(ImuState {
+                        accel_x: imu_state.accel.x,
+                        accel_y: imu_state.accel.y,
+                        accel_z: imu_state.accel.z,
+                        angle_rate_x: imu_state.gyro.x,
+                        angle_rate_y: imu_state.gyro.y,
+                        angle_rate_z: imu_state.gyro.z,
+                    });
+                }
+                Err(e) => {
+                    warn!("Failed to get IMU state: {:?}", e);
+                }
             }
             if let Ok((angle_speed, _)) =
                 locked_imu.get_angular_velocity_magnitude().await
@@ -4022,11 +4103,8 @@ async fn async_main(
     .await
     .unwrap();
 
-    let use_lx200_bt = {
-        let state = cedar.state.lock().await;
-        let preferences = state.preferences.lock().await;
-        preferences.use_bluetooth
-    };
+    let use_lx200_bt =
+        cedar.state.lock().await.preferences.lock().await.use_bluetooth;
 
     let cedar_clone = cedar.clone();
     let operate_callback = Box::new(move || {
@@ -4072,7 +4150,7 @@ async fn async_main(
         });
     });
 
-    let _lx200_bt_handle: Option<
+    let _bt_task_handle: Option<
         tokio::task::JoinHandle<Result<(), tonic::Status>>,
     > = {
         match use_lx200_bt {
@@ -4084,7 +4162,7 @@ async fn async_main(
                     true,
                 );
                 Some(tokio::task::spawn(async move {
-                    let _status = lx200_server_bt.start().await;
+                    let _status = lx200_server_bt.serve_requests().await;
                     Ok(())
                 }))
             }
@@ -4100,7 +4178,7 @@ async fn async_main(
     );
     let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
-            let _status = lx200_server.start().await;
+            let _status = lx200_server.serve_requests().await;
             Ok(())
         });
 

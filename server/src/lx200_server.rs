@@ -1,3 +1,10 @@
+// Implementation of the Meade LX200 protocol for Cedar.
+//
+// References for LX200 command set include:
+//    https://www.astro.louisville.edu/software/xmtel/archive/xmtel-indi-6.0/xmtel-6.0l/support/lx200/CommandSet.html
+//    https://interactiveastronomy.com/lx-200gps_telescope_protocol_2010-10.pdf
+//    https://skymtn.com/mapug-astronomy/ragreiner/LX200Commands.html
+//
 // Copyright (c) 2025 Omair Kamil
 // See LICENSE file in root directory for license terms.
 
@@ -11,7 +18,6 @@ use std::{
 
 use async_trait::async_trait;
 use bluer::{
-    agent::{Agent, ReqResult, RequestConfirmation},
     rfcomm::{Profile, Role, Stream},
     Session, Uuid,
 };
@@ -25,7 +31,7 @@ use crate::position_reporter::{Callback, TelescopePosition};
 
 #[async_trait]
 pub trait Lx200Telescope {
-    async fn start(&mut self) -> Result<(), Box<dyn Error + 'static>>;
+    async fn serve_requests(&mut self) -> Result<(), Box<dyn Error + 'static>>;
 }
 
 #[derive(Default, Debug)]
@@ -35,7 +41,7 @@ struct Lx200WifiTelescope {
 
 #[async_trait]
 impl Lx200Telescope for Lx200WifiTelescope {
-    async fn start(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+    async fn serve_requests(&mut self) -> Result<(), Box<dyn Error + 'static>> {
         let listener = TcpListener::bind("0.0.0.0:4030").unwrap();
         info!("Running LX200 server on: {}", listener.local_addr().unwrap());
 
@@ -105,21 +111,10 @@ struct Lx200BtTelescope {
 
 #[async_trait]
 impl Lx200Telescope for Lx200BtTelescope {
-    async fn start(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+    async fn serve_requests(&mut self) -> Result<(), Box<dyn Error + 'static>> {
         let session = Session::new().await?;
         let adapter = session.default_adapter().await?;
         adapter.set_powered(true).await?;
-
-        // Start pairing, accepting any requests. Ideally we would be able to
-        // show confirmation in the UI for better security.
-        let agent = Agent {
-            request_default: true,
-            request_confirmation: Some(Box::new(|req| {
-                Box::pin(Self::request_confirmation(req))
-            })),
-            ..Default::default()
-        };
-        let _handle = session.register_agent(agent).await?;
 
         let profile = Profile {
             uuid: Uuid::parse_str("00001101-0000-1000-8000-00805F9B34FB")
@@ -136,19 +131,12 @@ impl Lx200Telescope for Lx200BtTelescope {
         info!("Running LX200 server using SPP: {}", adapter.address().await?);
 
         loop {
-            adapter.set_discoverable(true).await?;
-            adapter.set_discoverable_timeout(0).await?;
-            adapter.set_pairable(true).await?;
-            info!("Accepting pairings");
             let req = profile_handle.next().await;
             if req.is_none() {
                 return Ok(());
             }
             match req.unwrap().accept() {
                 Ok(stream) => {
-                    adapter.set_pairable(false).await?;
-                    adapter.set_discoverable(false).await?;
-                    info!("Stopped accepting pairings");
                     self.handle_connection(stream).await;
                 }
                 Err(e) => {
@@ -172,14 +160,6 @@ impl Lx200BtTelescope {
                 set_date_cb,
             ),
         }
-    }
-
-    async fn request_confirmation(req: RequestConfirmation) -> ReqResult<()> {
-        info!(
-            "Confirming request from {} with key {}",
-            req.device, req.passkey
-        );
-        Ok(())
     }
 
     async fn handle_connection(&mut self, mut stream: Stream) {
@@ -224,31 +204,37 @@ impl Lx200BtTelescope {
 struct Lx200Controller {
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
 
-    // Animate the reported ra/dec position when it is invalid.
-    animate_while_invalid: bool,
+    // Animate the reported ra/dec position when it is invalid
+    wiggle_phase: bool,
 
     // Called whenever client obtains our right ascension
     get_ra_callback: Option<Callback>,
     // Called whenever client updates time/date
     set_date_callback: Option<Callback>,
 
-    // Pending target coordinates for sync/slew
+    // Pending target coordinates (in jnow_epoch) for sync/slew
     target_ra: Option<f64>,
     target_dec: Option<f64>,
 
     // Pending time
+    // Timezone format is sHH:MM as the offset from GMT
     timezone: Option<String>,
+    // Time format is HH:MM:SS
     time: Option<String>,
 
     // Local time, possibly provided by the client
     datetime: DateTime<FixedOffset>,
 
-    // Current site set by the client
+    // Current site set by the client. These values are stored here in the same
+    // format provided by the client, for possible retrieval by the client.
+    // Latitude format: sDD:MM where s is +/-
     latitude: String,
+    // Longitude format: DDD:MM where DDD is defined as degrees west of the
+    //                   Prime Meridian, from 0-359
     longitude: String,
 
     // Current epoch to the closest tenth of a year
-    epoch: f64,
+    jnow_epoch: f64,
 }
 
 impl Lx200Controller {
@@ -270,14 +256,18 @@ impl Lx200Controller {
             // Ideally these should be the current location in Cedar's settings
             latitude: "+00:00".to_string(),
             longitude: "000:00".to_string(),
-            epoch: jnow,
+            jnow_epoch: jnow,
             ..Default::default()
         }
     }
 
+    // Returns the command portion of the input string
     fn extract_command(s: &str) -> Option<String> {
         // We expect LX200 commands to be in the format ":[Command][Payload]#".
-        // The command is is typically composed of one or two letters.
+        // The command portion consists of the alphabetical string that follows
+        // the colon until the first non-alphabetic character is found. The
+        // payload is the remainder of the string (if any) until the hash mark.
+        // Supported commands are between 1-3 letters in length.
         let colon_index = s.find(':')?;
         if colon_index + 1 >= s.len() {
             return None;
@@ -304,13 +294,13 @@ impl Lx200Controller {
 
     fn convert_to_j2000(&self, ra: f64, dec: f64) -> (f64, f64) {
         let (ra_rad, dec_rad) =
-            precess(ra.to_radians(), dec.to_radians(), self.epoch, 2000.0);
+            precess(ra.to_radians(), dec.to_radians(), self.jnow_epoch, 2000.0);
         (ra_rad.to_degrees(), dec_rad.to_degrees())
     }
 
     fn convert_to_jnow(&self, ra: f64, dec: f64) -> (f64, f64) {
         let (ra_rad, dec_rad) =
-            precess(ra.to_radians(), dec.to_radians(), 2000.0, self.epoch);
+            precess(ra.to_radians(), dec.to_radians(), 2000.0, self.jnow_epoch);
         (ra_rad.to_degrees(), dec_rad.to_degrees())
     }
 
@@ -347,9 +337,9 @@ impl Lx200Controller {
 
         if !locked_position.boresight_valid {
             // Wiggle the position to indicate that it's invalid
-            self.animate_while_invalid = !self.animate_while_invalid;
-            if self.animate_while_invalid {
-                dec += if dec > 0.0 { 0.1 } else { -0.1 };
+            self.wiggle_phase = !self.wiggle_phase;
+            if self.wiggle_phase {
+                dec += if dec > 0.0 { -0.1 } else { 0.1 };
             }
         }
 
@@ -364,15 +354,15 @@ impl Lx200Controller {
         format!("{sign}{h:02}*{m:02}'{s:02}#")
     }
 
-    fn set_ra(&mut self, cmd: &str) -> String {
+    fn set_target_ra(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SrHH:MM:SS"
         if cmd.len() < 11 {
-            warn!("Unexpected ra length");
+            warn!("Unexpected ra length, cmd: {}", cmd);
             return Self::get_failure();
         }
-        let degrees =
+        let hours =
             Self::parse_coordinates(&cmd[3..5], &cmd[6..8], &cmd[9..11]);
-        match degrees {
+        match hours {
             Some(n) => {
                 // Convert hours to 360-degree format
                 let ra = n * 15.0;
@@ -384,10 +374,10 @@ impl Lx200Controller {
         }
     }
 
-    fn set_dec(&mut self, cmd: &str) -> String {
-        // The command is expected to be ":SdsHH*MM:SS" where s is +/-
+    fn set_target_dec(&mut self, cmd: &str) -> String {
+        // The command is expected to be ":SdsDD*MM:SS" where s is +/-
         if cmd.len() < 12 {
-            warn!("Unexpected dec length");
+            warn!("Unexpected dec length, cmd: {}", cmd);
             return Self::get_failure();
         }
         let degrees =
@@ -403,7 +393,7 @@ impl Lx200Controller {
     }
 
     async fn slew(&mut self) -> String {
-        // Check if there is a pending position set. The client will issue an Sr
+        // Check if there is a pending target set. The client will issue an Sr
         // command, followed by an Sd command, followed by MS to
         // initiate the movement. This applies to GoTo mode.
         if let (Some(ra), Some(dec)) =
@@ -422,7 +412,7 @@ impl Lx200Controller {
     }
 
     async fn sync(&mut self) -> String {
-        // Check if there is a pending position set. The client will issue an Sr
+        // Check if there is a pending target set. The client will issue an Sr
         // command, followed by an Sd command, followed by CM to
         // sync/align. This applies to both GoTo and PushTo modes.
         if let (Some(ra), Some(dec)) =
@@ -447,7 +437,7 @@ impl Lx200Controller {
     async fn set_latitude(&mut self, cmd: &str) -> String {
         // The command is expected to be ":StsDD:MM" where s is +/-
         if cmd.len() < 9 {
-            warn!("Unexpected lat length");
+            warn!("Unexpected lat length, cmd: {}", cmd);
             return Self::get_failure();
         }
         let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
@@ -466,7 +456,7 @@ impl Lx200Controller {
     async fn set_longitude(&mut self, cmd: &str) -> String {
         // The command is expected to be ":StDDD:MM"
         if cmd.len() < 9 {
-            warn!("Unexpected lon length");
+            warn!("Unexpected lon length, cmd: {}", cmd);
             return Self::get_failure();
         }
         let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
@@ -478,7 +468,7 @@ impl Lx200Controller {
                 let longitude = if n > 180.0 { 360.0 - n } else { -n };
                 debug!("Set longitude {}", longitude);
                 let mut locked_position = self.telescope_position.lock().await;
-                locked_position.site_latitude = Some(longitude);
+                locked_position.site_longitude = Some(longitude);
                 Self::get_success()
             }
             None => Self::get_failure(),
@@ -488,7 +478,7 @@ impl Lx200Controller {
     fn set_timezone(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SGsXX.X" where s is +/-
         if cmd.len() < 8 {
-            warn!("Unexpected tz length");
+            warn!("Unexpected tz length, cmd: {}", cmd);
             return Self::get_failure();
         }
         let mut timezone = cmd[3..6].to_string();
@@ -509,7 +499,7 @@ impl Lx200Controller {
     fn set_time(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SLHH:MM:SS"
         if cmd.len() < 11 {
-            warn!("Unexpected time length");
+            warn!("Unexpected time length, cmd: {}", cmd);
             return Self::get_failure();
         }
         self.time = Some(cmd[3..11].to_string());
@@ -519,7 +509,7 @@ impl Lx200Controller {
     async fn set_date(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SCMM/DD/YY"
         if cmd.len() < 11 {
-            warn!("Unexpected time length");
+            warn!("Unexpected date length, cmd: {}", cmd);
             return Self::get_failure();
         }
         if let (Some(timezone), Some(time)) =
@@ -533,7 +523,7 @@ impl Lx200Controller {
                 Ok(dt) => {
                     info!("Set date/time to {}", dt);
                     self.datetime = dt;
-                    self.epoch = ((dt.year() as f64
+                    self.jnow_epoch = ((dt.year() as f64
                         + dt.ordinal0() as f64 / 365.0)
                         * 10.0)
                         .round()
@@ -590,33 +580,35 @@ impl Lx200Controller {
         }
     }
 
-    fn get_approx_and_remainder(n: f64, epsilon: f64) -> (i64, f64) {
-        if (n - n.round()).abs() < epsilon {
-            (n.round() as i64, 0.0)
-        } else {
-            let whole = n.trunc();
-            (whole as i64, n - whole)
-        }
-    }
-
     fn to_hms(n: f64) -> (i64, i64, i64) {
-        // 1 second is 0.000278 hours
-        let (hours, h_rem) = Self::get_approx_and_remainder(n, 0.00014);
-        // 1 second is 0.016667 minutes
-        let (minutes, m_rem) =
-            Self::get_approx_and_remainder(h_rem * 60.0, 0.00834);
-        let seconds = (m_rem * 60.0).round() as i64;
+        let n_abs = n.abs();
+        let mut hours = n_abs.trunc() as i64;
+        let h_rem = n_abs.fract() * 60.0;
+        let mut minutes = h_rem.trunc() as i64;
+        let m_rem = h_rem.fract() * 60.0;
+        let mut seconds = m_rem.round() as i64;
+        if seconds == 60 {
+            seconds = 0;
+            minutes += 1;
+            if minutes == 60 {
+                minutes = 0;
+                hours += 1;
+            }
+        }
+        if n < 0.0 {
+            hours = -hours;
+        }
         (hours, minutes, seconds)
     }
 
-    fn parse_coordinates(h: &str, m: &str, s: &str) -> Option<f64> {
-        let hours: Result<i32, _> = h.parse();
-        let is_negative = match hours {
+    fn parse_coordinates(d: &str, m: &str, s: &str) -> Option<f64> {
+        let degrees: Result<i32, _> = d.parse();
+        let is_negative = match degrees {
             Err(e) => {
-                warn!("Error parsing hours: {}", e);
+                warn!("Error parsing degrees: {}", e);
                 return None;
             }
-            Ok(h) => h < 0,
+            Ok(deg) => deg < 0,
         };
         let minutes: Result<i32, _> = m.parse();
         match minutes {
@@ -634,7 +626,7 @@ impl Lx200Controller {
             }
             Ok(_) => {}
         }
-        let deg = hours.unwrap().abs() as f64
+        let deg = degrees.unwrap().abs() as f64
             + minutes.unwrap() as f64 / 60.0
             + seconds.unwrap() as f64 / 3600.00;
         Some(if is_negative { -deg } else { deg })
@@ -739,7 +731,7 @@ impl Lx200Controller {
                 }
                 Some("Sd") => {
                     debug!("Received set declination command: {}", in_data);
-                    result.push_str(&self.set_dec(&in_data));
+                    result.push_str(&self.set_target_dec(&in_data));
                 }
                 Some("Sg") => {
                     debug!("Received set longitude command: {}", in_data);
@@ -747,7 +739,7 @@ impl Lx200Controller {
                 }
                 Some("Sr") => {
                     debug!("Received set ra command: {}", in_data);
-                    result.push_str(&self.set_ra(&in_data));
+                    result.push_str(&self.set_target_ra(&in_data));
                 }
                 Some("St") => {
                     debug!("Received set latitude command: {}", in_data);
@@ -855,48 +847,20 @@ mod tests {
     }
 
     #[test]
-    fn test_get_approximate_and_remainder() {
-        let e = 0.00014;
-        let (mut whole, mut rem) =
-            Lx200Controller::get_approx_and_remainder(3.7, e);
-        assert_eq!(whole, 3);
-        assert_approx_eq(rem, 0.7);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.99995, e);
-        assert_eq!(whole, 4);
-        assert_approx_eq(rem, 0.0);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(-3.99995, e);
-        assert_eq!(whole, -4);
-        assert_approx_eq(rem, 0.0);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.9995, e);
-        assert_eq!(whole, 3);
-        assert_approx_eq(rem, 0.9995);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.00001, e);
-        assert_eq!(whole, 3);
-        assert_approx_eq(rem, 0.0);
-
-        (whole, rem) = Lx200Controller::get_approx_and_remainder(3.0001, e);
-        assert_eq!(whole, 3);
-        assert_approx_eq(rem, 0.0001);
-    }
-
-    #[test]
     fn test_to_hms() {
         assert_eq!(Lx200Controller::to_hms(0.0), (0, 0, 0));
         assert_eq!(Lx200Controller::to_hms(1.5), (1, 30, 0));
-        assert_eq!(Lx200Controller::to_hms(10.5083), (10, 30, 30));
+        assert_eq!(Lx200Controller::to_hms(-10.5083), (-10, 30, 30));
         assert_eq!(Lx200Controller::to_hms(23.99972), (23, 59, 59));
         // Floating point math is hard
         assert_eq!(Lx200Controller::to_hms(10.1), (10, 6, 0));
         // Make sure we don't end up with 60 minutes or seconds
         assert_eq!(Lx200Controller::to_hms(23.999859), (23, 59, 59));
         // Checking 2 possible values due to floating point imprecision
-        let v = Lx200Controller::to_hms(23.999860);
+        let v = Lx200Controller::to_hms(23.999861);
         assert!(v == (23, 59, 59) || v == (24, 0, 0), "Incorrect: {:?}", v);
-        assert_eq!(Lx200Controller::to_hms(23.999861), (24, 0, 0));
+        assert_eq!(Lx200Controller::to_hms(23.999862), (24, 0, 0));
+        assert_eq!(Lx200Controller::to_hms(-23.999999), (-24, 0, 0));
     }
 
     #[test]
@@ -939,7 +903,7 @@ mod tests {
     async fn test_get_ra_and_dec() {
         let (mut controller, position_arc) = setup_controller().await;
         // Set epoch to J2000 for no change
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         let ra_j2000 = 1.5 * 15.0;
         let dec_j2000 = 30.5;
@@ -973,7 +937,7 @@ mod tests {
         }
 
         // Set epoch to J2025.9 and test with known object (M31)
-        controller.epoch = 2025.9;
+        controller.jnow_epoch = 2025.9;
         // M31 is actually at (00:44:09, +41*24'40) - conversion is not exact
         let (ra_j2025_9, dec_j2025_9) = ("00:44:10#", "+41*24'39#");
         {
@@ -992,7 +956,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_dec_invalid_wiggles() {
         let (mut controller, position_arc) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         {
             let mut locked_position = position_arc.lock().await;
@@ -1000,16 +964,16 @@ mod tests {
             locked_position.boresight_valid = false;
         }
 
-        let is_wiggled = controller.animate_while_invalid;
+        let is_wiggled = controller.wiggle_phase;
         // Also checks that boresight dec is used when there is no snapshot
         let dec1 = controller.process_input(b":GD#").await;
-        assert_ne!(is_wiggled, controller.animate_while_invalid);
+        assert_ne!(is_wiggled, controller.wiggle_phase);
         let dec2 = controller.process_input(b":GD#").await;
 
         // We don't care about the order, just that it wiggled by 0.1
         let mut results = [dec1.unwrap(), dec2.unwrap()];
         results.sort();
-        assert_eq!(results, ["+10*00'00#", "+10*06'00#"]);
+        assert_eq!(results, ["+09*54'00#", "+10*00'00#"]);
 
         // Now check that we don't wiggle when valid
         {
@@ -1028,7 +992,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_ra_dec_slew_abort() {
         let (mut controller, position_arc) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         let set_ra = controller.process_input(b":Sr10:30:00#").await;
         assert_eq!(set_ra.as_deref(), Some("1"));
@@ -1071,7 +1035,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_ra_dec_sync() {
         let (mut controller, position_arc) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         // Even with no target we should still return canned result
         let mut sync = controller.process_input(b":CM#").await;
@@ -1113,14 +1077,14 @@ mod tests {
         let set_lon_w = controller.process_input(b":Sg122:25#").await;
         assert_eq!(set_lon_w.as_deref(), Some("1"));
         assert_eq!(controller.longitude, "122:25");
-        let lon_w = position_arc.lock().await.site_latitude.unwrap();
+        let lon_w = position_arc.lock().await.site_longitude.unwrap();
         assert_approx_eq(lon_w, -122.4167);
 
         // Longitude values are > 180 for East
         let set_lon_e = controller.process_input(b":Sg300:00#").await;
         assert_eq!(set_lon_e.as_deref(), Some("1"));
         assert_eq!(controller.longitude, "300:00");
-        let lon_e = position_arc.lock().await.site_latitude.unwrap();
+        let lon_e = position_arc.lock().await.site_longitude.unwrap();
         // 360 - 300 = 60.0
         assert_approx_eq(lon_e, 60.0);
 
@@ -1237,7 +1201,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_input_leading_hash() {
         let (mut controller, _) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         // Stellarium sends a leading #
         let result = controller.process_input(b"#:GR#").await;
@@ -1247,7 +1211,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_input_multiple_commands() {
         let (mut controller, position_arc) = setup_controller().await;
-        controller.epoch = 2000.0;
+        controller.jnow_epoch = 2000.0;
 
         {
             let mut locked_position = position_arc.lock().await;
