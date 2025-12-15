@@ -309,3 +309,17 @@ Cedar-server version: 0.16.0
 * Fix full screen layout on Pixel phone.
 
 * Layout tweaks for iOS.
+
+# December 15 2025
+
+* Improve focus screen prompts.
+
+* Improve alignment screen prompts.
+
+* Popup feedback when user taps on align target.
+
+Plus contributions from a member of the Cedar user community:
+
+* Support LX200 protocol for SkySafari 6 and 7 and Stellarium.
+
+* Support Bluetooth for SkySafari to connect to Cedar server.
