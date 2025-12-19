@@ -126,7 +126,9 @@ impl Lx200Telescope for Lx200BtTelescope {
         info!("Running LX200 server using SPP: {}", adapter.address().await?);
 
         loop {
+            adapter.set_discoverable(true).await?;
             let req = profile_handle.next().await;
+            adapter.set_discoverable(false).await?;
             if req.is_none() {
                 return Ok(());
             }
