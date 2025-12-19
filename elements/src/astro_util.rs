@@ -509,11 +509,12 @@ pub fn fill_in_detections(
             {
                 // Found a same-location item between catalog_entries and
                 // detections.
-                match_magnitude =
-                    catalog_entry.entry.as_ref().unwrap().magnitude;
-                match_brightness = detection.brightness;
-                found_match = true;
-                break;
+                if let Some(mag) = catalog_entry.entry.as_ref().unwrap().magnitude {
+                    match_magnitude = mag;
+                    match_brightness = detection.brightness;
+                    found_match = true;
+                    break;
+                }
             }
         }
         if found_match {
@@ -525,7 +526,8 @@ pub fn fill_in_detections(
     }
 
     // Gather `catalog_entries` that do not have corresponding `detections`
-    // entries
+    // entries. We can only synthesize detections for entries that have a
+    // magnitude value, so entries without magnitude are silently skipped.
     let mut detections_for_catalog_entries = Vec::<StarCentroid>::new();
     for catalog_entry in catalog_entries {
         let cat_coord = catalog_entry.image_pos.as_ref().unwrap();
@@ -541,16 +543,20 @@ pub fn fill_in_detections(
         }
         if !found_detection {
             // Synthesize a StarCentroid corresponding to `catalog_entry`.
-            let brightness = match_brightness
-                * magnitude_intensity_ratio(
-                    match_magnitude,
-                    catalog_entry.entry.as_ref().unwrap().magnitude,
-                );
-            detections_for_catalog_entries.push(StarCentroid {
-                centroid_position: Some(cat_coord.clone()),
-                brightness,
-                num_saturated: 0,
-            });
+            // Note: entries without magnitude cannot be synthesized, so they
+            // are skipped.
+            if let Some(catalog_mag) = catalog_entry.entry.as_ref().unwrap().magnitude {
+                let brightness = match_brightness
+                    * magnitude_intensity_ratio(
+                        match_magnitude,
+                        catalog_mag,
+                    );
+                detections_for_catalog_entries.push(StarCentroid {
+                    centroid_position: Some(cat_coord.clone()),
+                    brightness,
+                    num_saturated: 0,
+                });
+            }
         }
     }
 
@@ -895,7 +901,7 @@ mod tests {
                         label: "xx".to_string(),
                         broad_category: "yy".to_string(),
                     }),
-                    magnitude: -1.5,
+                    magnitude: Some(-1.5),
                     angular_size: None,
                     common_name: None,
                     notes: None,
@@ -912,7 +918,7 @@ mod tests {
                         label: "xx".to_string(),
                         broad_category: "yy".to_string(),
                     }),
-                    magnitude: 2.5,
+                    magnitude: Some(2.5),
                     angular_size: None,
                     common_name: None,
                     notes: None,

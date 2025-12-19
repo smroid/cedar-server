@@ -118,7 +118,7 @@ message CatalogEntry {
   optional Constellation constellation = 4;
   ObjectType object_type = 5;
 
-  double magnitude = 6;  // Apparent magnitude.
+  optional double magnitude = 6;  // Apparent magnitude.
   optional string angular_size = 7;  // Arc minutes. Usually numeric.
 
   optional string common_name = 8;  // Albireo, Horsehead, Crab Nebula, etc.
