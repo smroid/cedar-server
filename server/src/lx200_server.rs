@@ -742,6 +742,9 @@ impl Lx200Controller {
                     if in_data == "\x06" {
                         info!("Received ack command");
                         result.push_str("A");
+                        // Only Stellarium uses this command. Set the epoch to
+                        // J2000 since Stellarium appears to use J2000.
+                        self.jnow_epoch = 2000.0;
                     }
                 }
             }
