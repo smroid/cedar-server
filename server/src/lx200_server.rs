@@ -225,6 +225,10 @@ struct Lx200Controller {
 
     // Current epoch to the closest tenth of a year
     jnow_epoch: f64,
+
+    // Stellarium seems to use J2000 epoch. If Stellarium is connected do not
+    // precess.
+    is_stellarium: bool,
 }
 
 impl Lx200Controller {
@@ -281,12 +285,18 @@ impl Lx200Controller {
     }
 
     fn convert_to_j2000(&self, ra: f64, dec: f64) -> (f64, f64) {
+        if self.is_stellarium {
+            return (ra, dec)
+        }
         let (ra_rad, dec_rad) =
             precess(ra.to_radians(), dec.to_radians(), self.jnow_epoch, 2000.0);
         (ra_rad.to_degrees(), dec_rad.to_degrees())
     }
 
     fn convert_to_jnow(&self, ra: f64, dec: f64) -> (f64, f64) {
+        if self.is_stellarium {
+            return (ra, dec)
+        }
         let (ra_rad, dec_rad) =
             precess(ra.to_radians(), dec.to_radians(), 2000.0, self.jnow_epoch);
         (ra_rad.to_degrees(), dec_rad.to_degrees())
@@ -742,9 +752,8 @@ impl Lx200Controller {
                     if in_data == "\x06" {
                         info!("Received ack command");
                         result.push_str("A");
-                        // Only Stellarium uses this command. Set the epoch to
-                        // J2000 since Stellarium appears to use J2000.
-                        self.jnow_epoch = 2000.0;
+                        // Only Stellarium uses this command.
+                        self.is_stellarium = true;
                     }
                 }
             }
