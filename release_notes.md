@@ -323,3 +323,9 @@ Plus contributions from a member of the Cedar user community:
 * Support LX200 protocol for SkySafari 6 and 7 and Stellarium.
 
 * Support Bluetooth for SkySafari to connect to Cedar server.
+
+December 22 2025
+
+* LX200 fixes and improvements.
+
+* Bluetooth fixes and improvements.
