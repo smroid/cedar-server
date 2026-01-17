@@ -126,7 +126,9 @@ impl Lx200Telescope for Lx200BtTelescope {
         info!("Running LX200 server using SPP: {}", adapter.address().await?);
 
         loop {
+            adapter.set_discoverable(true).await?;
             let req = profile_handle.next().await;
+            adapter.set_discoverable(false).await?;
             if req.is_none() {
                 return Ok(());
             }
@@ -223,6 +225,10 @@ struct Lx200Controller {
 
     // Current epoch to the closest tenth of a year
     jnow_epoch: f64,
+
+    // Stellarium seems to use J2000 epoch. If Stellarium is connected do not
+    // precess.
+    is_stellarium: bool,
 }
 
 impl Lx200Controller {
@@ -279,12 +285,18 @@ impl Lx200Controller {
     }
 
     fn convert_to_j2000(&self, ra: f64, dec: f64) -> (f64, f64) {
+        if self.is_stellarium {
+            return (ra, dec)
+        }
         let (ra_rad, dec_rad) =
             precess(ra.to_radians(), dec.to_radians(), self.jnow_epoch, 2000.0);
         (ra_rad.to_degrees(), dec_rad.to_degrees())
     }
 
     fn convert_to_jnow(&self, ra: f64, dec: f64) -> (f64, f64) {
+        if self.is_stellarium {
+            return (ra, dec)
+        }
         let (ra_rad, dec_rad) =
             precess(ra.to_radians(), dec.to_radians(), 2000.0, self.jnow_epoch);
         (ra_rad.to_degrees(), dec_rad.to_degrees())
@@ -740,6 +752,8 @@ impl Lx200Controller {
                     if in_data == "\x06" {
                         info!("Received ack command");
                         result.push_str("A");
+                        // Only Stellarium uses this command.
+                        self.is_stellarium = true;
                     }
                 }
             }
@@ -1201,5 +1215,48 @@ mod tests {
         // although no client does this
         let result2 = controller.process_input(b":GR#:GD#").await;
         assert_eq!(result2.as_deref(), Some("00:00:00#+00*00'00#"));
+    }
+
+    #[tokio::test]
+    async fn test_stellarium_mode_no_precess() {
+        let (mut controller, position_arc) = setup_controller().await;
+        controller.jnow_epoch = 2026.0;
+
+        // Ack should toggle is_stellarium
+        let ack_result = controller.process_input(b"\x06").await;
+        assert_eq!(ack_result.as_deref(), Some("A"));
+        assert!(controller.is_stellarium);
+
+        // Use 10h RA (150 degrees) and +45d Dec
+        let internal_ra = 150.0;
+        let internal_dec = 45.0;
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_ra = internal_ra;
+            locked_position.boresight_dec = internal_dec;
+            locked_position.boresight_valid = true;
+        }
+
+        // Ensure no precessing for boresight position
+        let ra_result = controller.process_input(b":GR#").await;
+        assert_eq!(ra_result.as_deref(), Some("10:00:00#"));        
+        let dec_result = controller.process_input(b":GD#").await;
+        assert_eq!(dec_result.as_deref(), Some("+45*00'00#"));
+
+        // Target: 20h RA (300 degrees), -30d Dec
+        let set_ra_res = controller.process_input(b":Sr20:00:00#").await;
+        assert_eq!(set_ra_res.as_deref(), Some("1"));
+        let set_dec_res = controller.process_input(b":Sd-30*00:00#").await;
+        assert_eq!(set_dec_res.as_deref(), Some("1"));
+        let slew_res = controller.process_input(b":MS#").await;
+        assert_eq!(slew_res.as_deref(), Some("0"));
+
+        // Ensure no precessing for target
+        {
+            let locked_position = position_arc.lock().await;
+            assert!(locked_position.slew_active);
+            assert_approx_eq(locked_position.slew_target_ra, 300.0);
+            assert_approx_eq(locked_position.slew_target_dec, -30.0);
+        }
     }
 }

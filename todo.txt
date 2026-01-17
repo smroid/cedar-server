@@ -6,8 +6,6 @@ Default pattern database:
 
 auto-detect alt-az vs equatorial (with manual override)
 
-Calibrate button.
-
 Base python scripting support for working with Cedar grpc server.
 
 Mic button on keyboard for voice input. Can work offline? Good for
@@ -15,12 +13,6 @@ Mic button on keyboard for voice input. Can work offline? Good for
 
 Make polar advice data block tappable, zooms to larger dialog.
 * polar advice can just be an "idea" icon.
-
-Mobile app: support split screen; support picture-in-picture.
-
-Different on-screen prompt on connection loss vs. never having connection.
-Loss reasons: check server power (battery drained?), check phone's wifi
-connection (sometimes phone reverts to cell connection).
 
 "serve engine" pipeline stage. Moves some logic out of cedar_server.rs.
 
@@ -31,6 +23,7 @@ Multiple scopes
 Ability to access (and download) saved images in Cedar Aim.
 Maybe save them to web side in the first place?
 High-quality jpg with exif info.
+Pacifier/busy indicator for capturing/downloading image
 
 Tetra3
 * use brightness ratio (broadly quantized) of most separated stars in
@@ -42,8 +35,6 @@ time display:
 * time to sunset/sunrise, astro twilight
 * moonrise/set
 * display all? selectable?
-
-Option to unset observer location (long press?)
 
 Catalog
 * text search: preprocess input, e.g. the following should all locate
@@ -59,18 +50,12 @@ visual feedback on camera errors
 visual feedback on connectivity errors
 visual feedback on SkySafari connection
 
-add (tm) at appropriate places for Cedar
-
 Refresh rate: Go full speed; when dwelling for more than N
 seconds drop to 2hz. Use accelerometer to quickly detect resumption of
 motion.
 
-Pacifier/busy indicator for capturing/downloading image
-
 eq vs alt/az setting
 * convey to SkySafari
-
-Support Stellarium telescope control
 
 Cedar Pole Align
 * top-level mode?
@@ -82,12 +67,6 @@ Polar alignment technique:
 https://www.sharpcap.co.uk/sharpcap/features/polar-alignment
 https://github.com/ThemosTsikas/PhotoPolarAlign
 https://www.considine.net/aplanatic/align.htm
-
-create IOS app
-create Android app
-* option to download APK file from Cedar server for sideloading.
-* benefits (for both): access to location info; switching
-  app to SkySafari? Screen wake lock.
 
 Cedar Journal
 * capture Cedar Sky goto requests (and whether target was reached)
@@ -113,7 +92,6 @@ Remaining work:
 Push-to ra/dec button: pops up text entry field
 
 remote ops, proxied via phone
-* update cedar server
 * download logs
 * send bug reports
 
@@ -123,14 +101,9 @@ remote ops, proxied via phone
 bug report
 
 interoperation with SkySafari
-* goto vs. pushto
 * switch apps?
 * split screen?
 * picture-in-picture?
-* support LX200 (also for Nexus DSC)
-
-help system
-* long press? (GestureDetector wrapped around a widget)
 
 vignetting calibration
 
@@ -150,8 +123,5 @@ motion classification
 UI:
 * operation controls
   - save image: add confirmation+rename
-
-Help page
-* mostly redirects attention to long-press aids?
 
 Sounds for various actions/events in app?
