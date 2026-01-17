@@ -286,7 +286,7 @@ impl Lx200Controller {
 
     fn convert_to_j2000(&self, ra: f64, dec: f64) -> (f64, f64) {
         if self.is_stellarium {
-            return (ra, dec)
+            return (ra, dec);
         }
         let (ra_rad, dec_rad) =
             precess(ra.to_radians(), dec.to_radians(), self.jnow_epoch, 2000.0);
@@ -295,7 +295,7 @@ impl Lx200Controller {
 
     fn convert_to_jnow(&self, ra: f64, dec: f64) -> (f64, f64) {
         if self.is_stellarium {
-            return (ra, dec)
+            return (ra, dec);
         }
         let (ra_rad, dec_rad) =
             precess(ra.to_radians(), dec.to_radians(), 2000.0, self.jnow_epoch);
@@ -441,7 +441,7 @@ impl Lx200Controller {
         let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
         match location {
             Some(n) => {
-                debug!("Set latitude {}", n);
+                info!("Set latitude {}", n);
                 self.latitude = cmd[3..9].to_string();
                 let mut locked_position = self.telescope_position.lock().await;
                 locked_position.site_latitude = Some(n);
@@ -464,7 +464,7 @@ impl Lx200Controller {
                 // Cedar expects -180..180. The client will give 0..360, with
                 // East being > 180
                 let longitude = if n > 180.0 { 360.0 - n } else { -n };
-                debug!("Set longitude {}", longitude);
+                info!("Set longitude {}", longitude);
                 let mut locked_position = self.telescope_position.lock().await;
                 locked_position.site_longitude = Some(longitude);
                 Self::get_success()
@@ -740,6 +740,11 @@ impl Lx200Controller {
                 Some("St") => {
                     debug!("Received set latitude command: {}", in_data);
                     result.push_str(&self.set_latitude(&in_data).await);
+                }
+                Some("Sw") => {
+                    // Not used for LX200 but other Meade scope types
+                    debug!("Received set max slew rate command: {}", in_data);
+                    result.push_str(&Self::get_success());
                 }
                 Some("U") => {
                     debug!("Received precision toggle command");
@@ -1239,7 +1244,7 @@ mod tests {
 
         // Ensure no precessing for boresight position
         let ra_result = controller.process_input(b":GR#").await;
-        assert_eq!(ra_result.as_deref(), Some("10:00:00#"));        
+        assert_eq!(ra_result.as_deref(), Some("10:00:00#"));
         let dec_result = controller.process_input(b":GD#").await;
         assert_eq!(dec_result.as_deref(), Some("+45*00'00#"));
 

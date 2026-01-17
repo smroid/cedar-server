@@ -60,7 +60,7 @@ use cedar_elements::{
     wifi_trait::WifiTrait,
 };
 use chrono::offset::Local;
-use futures::{StreamExt, join};
+use futures::{join, StreamExt};
 use glob::glob;
 use hyper::server::conn::Http;
 use image::{codecs::jpeg::JpegEncoder, GrayImage, ImageReader};
@@ -330,18 +330,8 @@ impl Cedar for MyCedar {
         if let Some(current_time) = req.current_time {
             let current_time =
                 TimeSpec::new(current_time.seconds, current_time.nanos as i64);
-            if let Err(e) = clock_settime(ClockId::CLOCK_REALTIME, current_time)
-            {
-                if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
-                    // If our current time is close to the client's time, just
-                    // warn.
-                    if (cur_time.tv_sec() - current_time.tv_sec()).abs() < 60 {
-                        warn!("Could not update server time: {:?}", e);
-                    } else {
-                        error!("Could not update server time: {:?}", e);
-                    }
-                }
-                // Either way, return an error to the client.
+            if let Err(e) = Self::set_server_time(current_time) {
+                // Return an error to the client.
                 // Note: the cedar-server binary needs CAP_SYS_TIME capability:
                 // sudo setcap cap_sys_time+ep <path to cedar-server>
                 return Err(logged_status!(
@@ -3603,6 +3593,17 @@ impl MyCedar {
                 // Flag updated preferences to write to file below.
                 prefs_to_save = Some(locked_preferences.clone());
             }
+            // Has SkySafari reported the time?
+            if let Some(dt) = locked_telescope_position.utc_date {
+                if let Ok(duration) = dt.duration_since(std::time::UNIX_EPOCH) {
+                    _ = Self::set_server_time(TimeSpec::new(
+                        duration.as_secs() as i64,
+                        duration.subsec_nanos() as i64,
+                    ));
+                } else {
+                    warn!("Unable to set server time to {:?}", dt);
+                }
+            }
             // Has SkySafari done a "sync"?
             if locked_telescope_position.sync_ra.is_some()
                 && locked_telescope_position.sync_dec.is_some()
@@ -3655,6 +3656,26 @@ impl MyCedar {
             )
         } else {
             (None, sync_coord)
+        }
+    }
+
+    fn set_server_time(
+        current_time: TimeSpec,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Err(e) = clock_settime(ClockId::CLOCK_REALTIME, current_time) {
+            if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
+                // If our current time is close to the client's time, just
+                // warn.
+                if (cur_time.tv_sec() - current_time.tv_sec()).abs() < 60 {
+                    warn!("Could not update server time: {:?}", e);
+                } else {
+                    error!("Could not update server time: {:?}", e);
+                }
+            }
+            Err(Box::new(e))
+        } else {
+            info!("Updated server time");
+            Ok(())
         }
     }
 } // impl MyCedar.
@@ -3901,14 +3922,15 @@ fn get_camera(
     )))
 }
 
-async fn serve_over_bt(service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>) -> Result<(), Box<dyn std::error::Error + 'static>> {
+async fn serve_over_bt(
+    service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>,
+) -> Result<(), Box<dyn std::error::Error + 'static>> {
     let session = Session::new().await?;
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
 
     let profile = Profile {
-        uuid: Uuid::parse_str("4e5d4c88-2965-423f-9111-28a506720760")
-            .unwrap(),
+        uuid: Uuid::parse_str("4e5d4c88-2965-423f-9111-28a506720760").unwrap(),
         name: Some("Cedar Control".to_string()),
         role: Some(Role::Server),
         channel: Some(15),
@@ -3930,7 +3952,8 @@ async fn serve_over_bt(service: MultiplexService<axum::Router, GrpcWebService<Co
         match req.unwrap().accept() {
             Ok(stream) => {
                 info!("Serving new connection");
-                let _ = Http::new().serve_connection(stream, service.clone()).await;
+                let _ =
+                    Http::new().serve_connection(stream, service.clone()).await;
             }
             Err(e) => {
                 warn!("Failed to accept connection: {}", e);
@@ -4120,8 +4143,14 @@ async fn async_main(
     .await
     .unwrap();
 
-    let use_lx200_bt =
-        cedar.state.lock().await.preferences.lock().await.use_bluetooth;
+    let use_lx200_bt = cedar
+        .state
+        .lock()
+        .await
+        .preferences
+        .lock()
+        .await
+        .use_bluetooth;
 
     let cedar_server = CedarServer::new(cedar);
 
@@ -4143,15 +4172,14 @@ async fn async_main(
         .serve(tower::make::Shared::new(service.clone()));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let service_future8080 =
-        hyper::Server::bind(&addr8080).serve(tower::make::Shared::new(service.clone()));
+    let service_future8080 = hyper::Server::bind(&addr8080)
+        .serve(tower::make::Shared::new(service.clone()));
 
     let _bt_server_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
             let _status = serve_over_bt(service).await;
             Ok(())
         });
-
 
     // Spin up servers for reporting our RA/Dec solution as the telescope
     // position.
