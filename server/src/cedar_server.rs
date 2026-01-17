@@ -3594,7 +3594,7 @@ impl MyCedar {
                 prefs_to_save = Some(locked_preferences.clone());
             }
             // Has SkySafari reported the time?
-            if let Some(dt) = locked_telescope_position.utc_date {
+            if let Some(dt) = locked_telescope_position.utc_date.take() {
                 if let Ok(duration) = dt.duration_since(std::time::UNIX_EPOCH) {
                     _ = Self::set_server_time(TimeSpec::new(
                         duration.as_secs() as i64,
