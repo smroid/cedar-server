@@ -441,7 +441,7 @@ impl Lx200Controller {
         let location = Self::parse_location(&cmd[3..6], &cmd[7..9]);
         match location {
             Some(n) => {
-                info!("Set latitude {}", n);
+                info!("Set observer latitude");
                 self.latitude = cmd[3..9].to_string();
                 let mut locked_position = self.telescope_position.lock().await;
                 locked_position.site_latitude = Some(n);
@@ -464,7 +464,7 @@ impl Lx200Controller {
                 // Cedar expects -180..180. The client will give 0..360, with
                 // East being > 180
                 let longitude = if n > 180.0 { 360.0 - n } else { -n };
-                info!("Set longitude {}", longitude);
+                info!("Set observer longitude");
                 let mut locked_position = self.telescope_position.lock().await;
                 locked_position.site_longitude = Some(longitude);
                 Self::get_success()
