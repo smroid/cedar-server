@@ -330,18 +330,8 @@ impl Cedar for MyCedar {
         if let Some(current_time) = req.current_time {
             let current_time =
                 TimeSpec::new(current_time.seconds, current_time.nanos as i64);
-            if let Err(e) = clock_settime(ClockId::CLOCK_REALTIME, current_time)
-            {
-                if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
-                    // If our current time is close to the client's time, just
-                    // warn.
-                    if (cur_time.tv_sec() - current_time.tv_sec()).abs() < 60 {
-                        warn!("Could not update server time: {:?}", e);
-                    } else {
-                        error!("Could not update server time: {:?}", e);
-                    }
-                }
-                // Either way, return an error to the client.
+            if let Err(e) = Self::set_server_time(current_time) {
+                // Return an error to the client.
                 // Note: the cedar-server binary needs CAP_SYS_TIME capability:
                 // sudo setcap cap_sys_time+ep <path to cedar-server>
                 return Err(logged_status!(
@@ -3603,6 +3593,17 @@ impl MyCedar {
                 // Flag updated preferences to write to file below.
                 prefs_to_save = Some(locked_preferences.clone());
             }
+            // Has SkySafari reported the time?
+            if let Some(dt) = locked_telescope_position.utc_date.take() {
+                if let Ok(duration) = dt.duration_since(std::time::UNIX_EPOCH) {
+                    _ = Self::set_server_time(TimeSpec::new(
+                        duration.as_secs() as i64,
+                        duration.subsec_nanos() as i64,
+                    ));
+                } else {
+                    warn!("Unable to set server time to {:?}", dt);
+                }
+            }
             // Has SkySafari done a "sync"?
             if locked_telescope_position.sync_ra.is_some()
                 && locked_telescope_position.sync_dec.is_some()
@@ -3655,6 +3656,26 @@ impl MyCedar {
             )
         } else {
             (None, sync_coord)
+        }
+    }
+
+    fn set_server_time(
+        current_time: TimeSpec,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Err(e) = clock_settime(ClockId::CLOCK_REALTIME, current_time) {
+            if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
+                // If our current time is close to the client's time, just
+                // warn.
+                if (cur_time.tv_sec() - current_time.tv_sec()).abs() < 60 {
+                    warn!("Could not update server time: {:?}", e);
+                } else {
+                    error!("Could not update server time: {:?}", e);
+                }
+            }
+            Err(Box::new(e))
+        } else {
+            info!("Updated server time");
+            Ok(())
         }
     }
 } // impl MyCedar.
