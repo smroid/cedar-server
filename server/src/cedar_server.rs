@@ -60,7 +60,7 @@ use cedar_elements::{
     wifi_trait::WifiTrait,
 };
 use chrono::offset::Local;
-use futures::{StreamExt, join};
+use futures::{join, StreamExt};
 use glob::glob;
 use hyper::server::conn::Http;
 use image::{codecs::jpeg::JpegEncoder, GrayImage, ImageReader};
@@ -3922,14 +3922,15 @@ fn get_camera(
     )))
 }
 
-async fn serve_over_bt(service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>) -> Result<(), Box<dyn std::error::Error + 'static>> {
+async fn serve_over_bt(
+    service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>,
+) -> Result<(), Box<dyn std::error::Error + 'static>> {
     let session = Session::new().await?;
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
 
     let profile = Profile {
-        uuid: Uuid::parse_str("4e5d4c88-2965-423f-9111-28a506720760")
-            .unwrap(),
+        uuid: Uuid::parse_str("4e5d4c88-2965-423f-9111-28a506720760").unwrap(),
         name: Some("Cedar Control".to_string()),
         role: Some(Role::Server),
         channel: Some(15),
@@ -3951,7 +3952,8 @@ async fn serve_over_bt(service: MultiplexService<axum::Router, GrpcWebService<Co
         match req.unwrap().accept() {
             Ok(stream) => {
                 info!("Serving new connection");
-                let _ = Http::new().serve_connection(stream, service.clone()).await;
+                let _ =
+                    Http::new().serve_connection(stream, service.clone()).await;
             }
             Err(e) => {
                 warn!("Failed to accept connection: {}", e);
@@ -4141,8 +4143,14 @@ async fn async_main(
     .await
     .unwrap();
 
-    let use_lx200_bt =
-        cedar.state.lock().await.preferences.lock().await.use_bluetooth;
+    let use_bluetooth = cedar
+        .state
+        .lock()
+        .await
+        .preferences
+        .lock()
+        .await
+        .use_bluetooth;
 
     let cedar_server = CedarServer::new(cedar);
 
@@ -4164,15 +4172,18 @@ async fn async_main(
         .serve(tower::make::Shared::new(service.clone()));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let service_future8080 =
-        hyper::Server::bind(&addr8080).serve(tower::make::Shared::new(service.clone()));
+    let service_future8080 = hyper::Server::bind(&addr8080)
+        .serve(tower::make::Shared::new(service.clone()));
 
-    let _bt_server_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
-        tokio::task::spawn(async move {
+    let _bt_server_handle: Option<
+        tokio::task::JoinHandle<Result<(), tonic::Status>>,
+    > = match use_bluetooth {
+        Some(true) => Some(tokio::task::spawn(async move {
             let _status = serve_over_bt(service).await;
             Ok(())
-        });
-
+        })),
+        _ => None,
+    };
 
     // Spin up servers for reporting our RA/Dec solution as the telescope
     // position.
@@ -4189,7 +4200,7 @@ async fn async_main(
     let _bt_task_handle: Option<
         tokio::task::JoinHandle<Result<(), tonic::Status>>,
     > = {
-        match use_lx200_bt {
+        match use_bluetooth {
             Some(true) => {
                 let mut lx200_server_bt = create_lx200_server(
                     shared_telescope_position.clone(),
