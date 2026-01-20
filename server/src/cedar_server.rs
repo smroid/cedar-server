@@ -88,7 +88,7 @@ use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
     bonding_helper::{
-        get_adapter_alias, get_bonded_devices, remove_bond, start_bonding,
+        get_adapter_info, get_bonded_devices, remove_bond, start_bonding,
     },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
@@ -1533,14 +1533,17 @@ impl Cedar for MyCedar {
         &self,
         _request: tonic::Request<EmptyMessage>,
     ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
-        let bt_name = match get_adapter_alias().await {
-            Ok(name) => name,
+        let (bt_name, bt_addr) = match get_adapter_info().await {
+            Ok((name, addr)) => (name, Some(addr)),
             Err(e) => {
                 warn!("Unable to get Bluetooth name: {}", e);
-                "cedar".to_string()
+                ("cedar".to_string(), None)
             }
         };
-        Ok(tonic::Response::new(GetBluetoothNameResponse { name: bt_name }))
+        Ok(tonic::Response::new(GetBluetoothNameResponse {
+            name: bt_name,
+            address: bt_addr,
+        }))
     }
 
     async fn start_bonding(

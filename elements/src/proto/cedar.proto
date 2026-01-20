@@ -898,6 +898,7 @@ message EmptyMessage {}
 
 message GetBluetoothNameResponse {
   string name = 1;
+  optional string address = 2;
 }
 
 message StartBondingResponse {

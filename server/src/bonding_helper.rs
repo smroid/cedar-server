@@ -15,12 +15,14 @@ pub struct BluetoothDevice {
     pub address: String,
 }
 
-pub async fn get_adapter_alias() -> Result<String, Box<dyn Error + 'static>> {
+pub async fn get_adapter_info(
+) -> Result<(String, String), Box<dyn Error + 'static>> {
     let session = Session::new().await?;
     let adapter = session.default_adapter().await?;
     let alias = adapter.alias().await?;
+    let address = adapter.address().await?;
     info!("Current device alias: {}", alias);
-    Ok(alias)
+    Ok((alias, address.to_string()))
 }
 
 pub async fn start_bonding(
