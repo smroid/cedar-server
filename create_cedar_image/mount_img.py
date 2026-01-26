@@ -20,7 +20,7 @@ class ImageMounter:
 
             # Parse kpartx output to get loop devices
             # Example output line: "add map loop5p1 (253:0): 0 524288 linear 7:5 8192"
-            loop_matches = re.finditer(r'add map (loop\dp\d)', result.stdout)
+            loop_matches = re.finditer(r'add map (loop\d+p\d+)', result.stdout)
             self.loop_devices = [match.group(1) for match in loop_matches]
 
             if len(self.loop_devices) != 2:
