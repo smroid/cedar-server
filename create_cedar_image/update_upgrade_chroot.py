@@ -17,12 +17,17 @@ def remount_host_filesystems():
         # Ensure /dev/pts exists
         os.makedirs('/dev/pts', exist_ok=True)
 
-        # Remount devpts
-        subprocess.run(
-            ['mount', '-t', 'devpts', '-o', 'gid=5,mode=620', 'devpts', '/dev/pts'],
-            check=True
-        )
-        print("Remounted devpts filesystem")
+        # Check if devpts is already mounted
+        result = subprocess.run(['mountpoint', '-q', '/dev/pts'])
+        if result.returncode != 0:
+            # Remount devpts
+            subprocess.run(
+                ['mount', '-t', 'devpts', '-o', 'gid=5,mode=620', 'devpts', '/dev/pts'],
+                check=True
+            )
+            print("Remounted devpts filesystem")
+        else:
+            print("devpts already mounted")
 
     except subprocess.CalledProcessError as e:
         print(f"Warning: Failed to remount filesystems: {e}")
@@ -35,23 +40,29 @@ def mount_context(rootfs_path):
     mounted_paths = []
 
     try:
-        # Define mount points
+        # Define mount points: (name, destination, mount_args, make_rslave)
         mount_points = [
-            ('proc', os.path.join(rootfs_path, 'proc'), '-tproc'),
-            ('sys', os.path.join(rootfs_path, 'sys'), '--rbind'),
-            ('dev', os.path.join(rootfs_path, 'dev'), '--rbind'),
-            ('devpts', os.path.join(rootfs_path, 'dev/pts'), '-tdevpts'),
-            ('run', os.path.join(rootfs_path, 'run'), '--rbind')
+            ('proc', os.path.join(rootfs_path, 'proc'), ['-t', 'proc', 'proc'], False),
+            ('sys', os.path.join(rootfs_path, 'sys'), ['--rbind', '/sys'], True),
+            ('dev', os.path.join(rootfs_path, 'dev'), ['--rbind', '/dev'], True),
+            ('run', os.path.join(rootfs_path, 'run'), ['--rbind', '/run'], True),
         ]
 
         # Perform mounts
-        for src, dest, option in mount_points:
-            if option in ['-tproc', '-tdevpts']:
-                subprocess.run(['mount', option, src, dest], check=True)
-            else:
-                subprocess.run(['mount', option, f'/{src}', dest], check=True)
+        for name, dest, options, make_rslave in mount_points:
+            os.makedirs(dest, exist_ok=True)
+            subprocess.run(['mount'] + options + [dest], check=True)
+            if make_rslave:
+                subprocess.run(['mount', '--make-rslave', dest], check=True)
             mounted_paths.append(dest)
-            print(f"Mounted {src} at {dest}")
+            print(f"Mounted {name} at {dest}")
+
+        # Mount devpts separately (needs the directory from dev bind mount to exist first)
+        devpts_dest = os.path.join(rootfs_path, 'dev/pts')
+        os.makedirs(devpts_dest, exist_ok=True)
+        subprocess.run(['mount', '-t', 'devpts', '-o', 'gid=5,mode=620', 'devpts', devpts_dest], check=True)
+        mounted_paths.append(devpts_dest)
+        print(f"Mounted devpts at {devpts_dest}")
 
         # Copy resolv.conf for DNS resolution
         shutil.copy2('/etc/resolv.conf', os.path.join(rootfs_path, 'etc/resolv.conf'))
@@ -79,9 +90,17 @@ def mount_context(rootfs_path):
 
 def run_chroot_command(rootfs_path, command):
     """Run a command in chroot environment"""
+    env = os.environ.copy()
+    env['DEBIAN_FRONTEND'] = 'noninteractive'
+    env['LC_ALL'] = 'C'
+
+    # For apt commands, add options to handle config file prompts automatically
+    if command[0] == 'apt':
+        # Insert dpkg options after 'apt' but before the subcommand
+        command = [command[0]] + ['-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold'] + command[1:]
+
     result = subprocess.run(['chroot', rootfs_path] + command,
-                            capture_output=True,
-                            text=True)
+                            env=env, text=True)
 
     print(f"Command output:")
     print(result.stdout)
@@ -174,12 +193,26 @@ def update_system(rootfs_path):
 
 def main():
     ROOTFS_PATH = "/mnt/part2"
+    policy_file = os.path.join(ROOTFS_PATH, 'usr/sbin/policy-rc.d')
 
     try:
+        # Create policy-rc.d to prevent services from starting
+        os.makedirs(os.path.dirname(policy_file), exist_ok=True)
+        with open(policy_file, 'w') as f:
+            f.write('#!/bin/sh\nexit 101\n')
+        os.chmod(policy_file, 0o755)
+        print(f"Created policy-rc.d")
+
         update_system(ROOTFS_PATH)
+
     except Exception as e:
         print(f"Failed to update system: {e}")
         exit(1)
+    finally:
+        # Clean up policy-rc.d
+        if os.path.exists(policy_file):
+            os.remove(policy_file)
+            print(f"Removed policy-rc.d")
 
 if __name__ == "__main__":
     main()
