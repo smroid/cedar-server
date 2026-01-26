@@ -103,6 +103,9 @@ use crate::{
 // than this.
 const GRPC_SLOW_THRESHOLD_MS: u64 = 100;
 
+// RFCOMM UUID for gRPC over Bluetooth. The same UUID must be used in Cedar Aim.
+const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
+
 // RAII timing guard for gRPC methods - automatically logs duration when dropped
 struct GrpcTimer {
     method_name: &'static str,
@@ -3933,9 +3936,11 @@ async fn serve_over_bt(
     adapter.set_powered(true).await?;
 
     let profile = Profile {
-        uuid: Uuid::parse_str("4e5d4c88-2965-423f-9111-28a506720760").unwrap(),
+        uuid: Uuid::parse_str(BT_CONTROL_UUID).unwrap(),
         name: Some("Cedar Control".to_string()),
         role: Some(Role::Server),
+        // Explicitly setting channel seems to be required, omitting
+        // it doesn't work.
         channel: Some(15),
         require_authentication: Some(false),
         require_authorization: Some(false),
