@@ -172,6 +172,7 @@ macro_rules! logged_status {
     }};
 }
 
+#[derive(Clone)]
 struct MyCedar {
     // We organize our state as a sub-object so update_operation_settings() can
     // spawn a sub-task for the SETUP -> OPERATE mode transition; the sub-task
@@ -1597,6 +1598,32 @@ impl Cedar for MyCedar {
 } // impl Cedar for MyCedar.
 
 impl MyCedar {
+    async fn move_to_operating_mode(&self) {
+        let (mode, utc_date) = {
+            let state = self.state.lock().await;
+            let date = state.telescope_position.lock().await.utc_date;
+            (state.operation_settings.operating_mode, date)
+        };
+        if mode.unwrap() != OperatingMode::Operate as i32 && utc_date.is_some()
+        {
+            info!("Moving to operate mode");
+            let fixed_settings = FixedSettings {
+                current_time: Some(utc_date.unwrap().into()),
+                ..Default::default()
+            };
+            let _ = self
+                .update_fixed_settings(tonic::Request::new(fixed_settings))
+                .await;
+            let settings = OperationSettings {
+                operating_mode: Some(OperatingMode::Operate as i32),
+                ..Default::default()
+            };
+            let _ = self
+                .update_operation_settings(tonic::Request::new(settings))
+                .await;
+        }
+    }
+
     fn get_demo_images() -> Result<Vec<String>, tonic::Status> {
         let dir = Path::new("./demo_images");
         if !dir.exists() {
@@ -4100,6 +4127,15 @@ async fn async_main(
     let use_lx200_bt =
         cedar.state.lock().await.preferences.lock().await.use_bluetooth;
 
+    let cedar_clone = cedar.clone();
+    let operate_callback = Box::new(move || {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                cedar_clone.move_to_operating_mode().await;
+            });
+        });
+    });
+
     let cedar_server = CedarServer::new(cedar);
 
     let grpc = tonic::transport::Server::builder()
@@ -4143,6 +4179,7 @@ async fn async_main(
                 let mut lx200_server_bt = create_lx200_server(
                     shared_telescope_position.clone(),
                     async_callback.clone(),
+                    operate_callback.clone(),
                     true,
                 );
                 Some(tokio::task::spawn(async move {
@@ -4157,6 +4194,7 @@ async fn async_main(
     let mut lx200_server = create_lx200_server(
         shared_telescope_position.clone(),
         async_callback.clone(),
+        operate_callback,
         false,
     );
     let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
