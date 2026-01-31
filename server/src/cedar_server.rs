@@ -1527,7 +1527,7 @@ impl Cedar for MyCedar {
         &self,
         _request: tonic::Request<EmptyMessage>,
     ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
-        let bt_name = match get_adapter_alias().await {
+        let bt_name = match get_adapter_alias(&self.serial_number).await {
             Ok(name) => name,
             Err(e) => {
                 warn!("Unable to get Bluetooth name: {}", e);

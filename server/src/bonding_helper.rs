@@ -7,18 +7,35 @@ use bluer::{
     agent::{Agent, ReqResult, RequestConfirmation},
     Address, Session,
 };
-use log::info;
+use log::{info, warn};
 use tokio::{sync::mpsc, time::timeout};
+
+const BT_NAME_PREFIX: &str = "cedar-";
 
 pub struct BluetoothDevice {
     pub name: String,
     pub address: String,
 }
 
-pub async fn get_adapter_alias() -> Result<String, Box<dyn Error + 'static>> {
+pub async fn get_adapter_alias(
+    serial: &str,
+) -> Result<String, Box<dyn Error + 'static>> {
     let session = Session::new().await?;
     let adapter = session.default_adapter().await?;
-    let alias = adapter.alias().await?;
+    let mut alias = adapter.alias().await?;
+    let expected_alias = generate_bluetooth_name(serial);
+    if alias != expected_alias {
+        info!("Updating Bluetooth alias");
+        match adapter.set_alias(expected_alias.clone()).await {
+            Ok(_) => {
+                alias = expected_alias.to_string();
+            }
+            Err(e) => {
+                warn!("Unable to update alias: {:?}", e);
+            }
+        }
+    }
+
     info!("Current device alias: {}", alias);
     Ok(alias)
 }
@@ -114,4 +131,12 @@ pub async fn get_bonded_devices(
         });
     }
     Ok(result)
+}
+
+fn generate_bluetooth_name(serial: &str) -> String {
+    if serial.len() < 3 {
+        warn!("Unexpected length for serial number: {}", serial);
+        return "cedar".to_string();
+    }
+    format!("{}{}", BT_NAME_PREFIX, &serial[serial.len() - 3..])
 }
