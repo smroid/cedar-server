@@ -18,6 +18,10 @@ use std::{
 };
 
 use axum::Router;
+use bluer::{
+    rfcomm::{Profile, Role},
+    Session, Uuid,
+};
 use canonical_error::{aborted_error, CanonicalError, CanonicalErrorCode};
 use cedar_camera::{
     abstract_camera::{AbstractCamera, Gain, Offset},
@@ -56,8 +60,9 @@ use cedar_elements::{
     wifi_trait::WifiTrait,
 };
 use chrono::offset::Local;
-use futures::join;
+use futures::{join, StreamExt};
 use glob::glob;
+use hyper::server::conn::Http;
 use image::{codecs::jpeg::JpegEncoder, GrayImage, ImageReader};
 use log::{debug, error, info, warn};
 use nix::{
@@ -67,9 +72,10 @@ use nix::{
 use pico_args::Arguments;
 use prost::Message;
 use tetra3_server::tetra3_solver::Tetra3Solver;
-use tonic_web::GrpcWebLayer;
+use tonic::transport::server::Routes;
+use tonic_web::{GrpcWebLayer, GrpcWebService};
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{Any, Cors, CorsLayer},
     services::ServeDir,
 };
 use tracing_appender::{
@@ -82,7 +88,7 @@ use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
     bonding_helper::{
-        get_adapter_alias, get_bonded_devices, remove_bond, start_bonding,
+        get_adapter_info, get_bonded_devices, remove_bond, start_bonding,
     },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
@@ -96,6 +102,9 @@ use crate::{
 // gRPC performance monitoring threshold - log warning if methods take longer
 // than this.
 const GRPC_SLOW_THRESHOLD_MS: u64 = 100;
+
+// RFCOMM UUID for gRPC over Bluetooth. The same UUID must be used in Cedar Aim.
+const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
 
 // RAII timing guard for gRPC methods - automatically logs duration when dropped
 struct GrpcTimer {
@@ -1527,14 +1536,17 @@ impl Cedar for MyCedar {
         &self,
         _request: tonic::Request<EmptyMessage>,
     ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
-        let bt_name = match get_adapter_alias().await {
-            Ok(name) => name,
+        let (bt_name, bt_addr) = match get_adapter_info().await {
+            Ok((name, addr)) => (name, Some(addr)),
             Err(e) => {
                 warn!("Unable to get Bluetooth name: {}", e);
-                "cedar".to_string()
+                ("cedar".to_string(), None)
             }
         };
-        Ok(tonic::Response::new(GetBluetoothNameResponse { name: bt_name }))
+        Ok(tonic::Response::new(GetBluetoothNameResponse {
+            name: bt_name,
+            address: bt_addr,
+        }))
     }
 
     async fn start_bonding(
@@ -3916,6 +3928,48 @@ fn get_camera(
     )))
 }
 
+async fn serve_over_bt(
+    service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>,
+) -> Result<(), Box<dyn std::error::Error + 'static>> {
+    let session = Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    adapter.set_powered(true).await?;
+
+    let profile = Profile {
+        uuid: Uuid::parse_str(BT_CONTROL_UUID).unwrap(),
+        name: Some("Cedar Control".to_string()),
+        role: Some(Role::Server),
+        // Explicitly setting channel seems to be required, omitting
+        // it doesn't work.
+        channel: Some(15),
+        require_authentication: Some(false),
+        require_authorization: Some(false),
+        auto_connect: Some(false),
+        ..Default::default()
+    };
+
+    let mut profile_handle = session.register_profile(profile).await?;
+    info!("Running cedar control channel: {}", adapter.address().await?);
+
+    loop {
+        let req = profile_handle.next().await;
+        if req.is_none() {
+            info!("Found no request, returning");
+            return Ok(());
+        }
+        match req.unwrap().accept() {
+            Ok(stream) => {
+                info!("Serving new connection");
+                let _ =
+                    Http::new().serve_connection(stream, service.clone()).await;
+            }
+            Err(e) => {
+                warn!("Failed to accept connection: {}", e);
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn async_main(
     args: AppArgs,
@@ -4097,8 +4151,14 @@ async fn async_main(
     .await
     .unwrap();
 
-    let use_lx200_bt =
-        cedar.state.lock().await.preferences.lock().await.use_bluetooth;
+    let use_bluetooth = cedar
+        .state
+        .lock()
+        .await
+        .preferences
+        .lock()
+        .await
+        .use_bluetooth;
 
     let cedar_server = CedarServer::new(cedar);
 
@@ -4120,8 +4180,18 @@ async fn async_main(
         .serve(tower::make::Shared::new(service.clone()));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let service_future8080 =
-        hyper::Server::bind(&addr8080).serve(tower::make::Shared::new(service));
+    let service_future8080 = hyper::Server::bind(&addr8080)
+        .serve(tower::make::Shared::new(service.clone()));
+
+    let _bt_server_handle: Option<
+        tokio::task::JoinHandle<Result<(), tonic::Status>>,
+    > = match use_bluetooth {
+        Some(true) => Some(tokio::task::spawn(async move {
+            let _status = serve_over_bt(service).await;
+            Ok(())
+        })),
+        _ => None,
+    };
 
     // Spin up servers for reporting our RA/Dec solution as the telescope
     // position.
@@ -4138,7 +4208,7 @@ async fn async_main(
     let _bt_task_handle: Option<
         tokio::task::JoinHandle<Result<(), tonic::Status>>,
     > = {
-        match use_lx200_bt {
+        match use_bluetooth {
             Some(true) => {
                 let mut lx200_server_bt = create_lx200_server(
                     shared_telescope_position.clone(),
