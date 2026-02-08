@@ -443,6 +443,10 @@ message FrameResult {
   // the calibration, which can take several seconds.
   optional double calibration_progress = 23;
 
+  // True when the server is in skip-focus auto-calibration mode with retries.
+  // The user must disable the skip_focus preference to exit this mode.
+  bool skip_focus_active = 38;
+
   // Information returned when `operating_mode` is SETUP.
 
   // This is the estimated position of the brightest point. In full resolution
