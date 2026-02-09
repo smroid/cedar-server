@@ -56,10 +56,15 @@ impl Lx200Telescope for Lx200WifiTelescope {
 impl Lx200WifiTelescope {
     pub fn new(
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
-        cb: Box<dyn Fn() + Send + Sync>,
+        get_ra_cb: Box<dyn Fn() + Send + Sync>,
+        set_date_cb: Box<dyn Fn() + Send + Sync>,
     ) -> Self {
         Lx200WifiTelescope {
-            controller: Lx200Controller::new(telescope_position, cb),
+            controller: Lx200Controller::new(
+                telescope_position,
+                get_ra_cb,
+                set_date_cb,
+            ),
         }
     }
 
@@ -147,10 +152,15 @@ impl Lx200Telescope for Lx200BtTelescope {
 impl Lx200BtTelescope {
     pub fn new(
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
-        cb: Box<dyn Fn() + Send + Sync>,
+        get_ra_cb: Box<dyn Fn() + Send + Sync>,
+        set_date_cb: Box<dyn Fn() + Send + Sync>,
     ) -> Self {
         Lx200BtTelescope {
-            controller: Lx200Controller::new(telescope_position, cb),
+            controller: Lx200Controller::new(
+                telescope_position,
+                get_ra_cb,
+                set_date_cb,
+            ),
         }
     }
 
@@ -200,7 +210,9 @@ struct Lx200Controller {
     wiggle_phase: bool,
 
     // Called whenever client obtains our right ascension
-    callback: Option<Callback>,
+    get_ra_callback: Option<Callback>,
+    // Called whenever client updates time/date
+    set_date_callback: Option<Callback>,
 
     // Pending target coordinates (in jnow_epoch) for sync/slew
     target_ra: Option<f64>,
@@ -234,7 +246,8 @@ struct Lx200Controller {
 impl Lx200Controller {
     pub fn new(
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
-        cb: Box<dyn Fn() + Send + Sync>,
+        get_ra_cb: Box<dyn Fn() + Send + Sync>,
+        set_date_cb: Box<dyn Fn() + Send + Sync>,
     ) -> Self {
         let dt = Local::now();
         let jnow = ((dt.year() as f64 + dt.ordinal0() as f64 / 365.0) * 10.0)
@@ -243,7 +256,8 @@ impl Lx200Controller {
         info!("Using now epoch: {}", jnow);
         Lx200Controller {
             telescope_position,
-            callback: Some(Callback(cb)),
+            get_ra_callback: Some(Callback(get_ra_cb)),
+            set_date_callback: Some(Callback(set_date_cb)),
             datetime: dt.with_timezone(dt.offset()),
             // Ideally these should be the current location in Cedar's settings
             latitude: "+00:00".to_string(),
@@ -303,7 +317,7 @@ impl Lx200Controller {
     }
 
     async fn get_ra(&self) -> String {
-        if let Some(ref cb) = self.callback {
+        if let Some(ref cb) = self.get_ra_callback {
             cb.0();
         }
         let mut locked_position = self.telescope_position.lock().await;
@@ -526,9 +540,11 @@ impl Lx200Controller {
                         * 10.0)
                         .round()
                         / 10.0;
-                    let mut locked_position =
-                        self.telescope_position.lock().await;
-                    locked_position.utc_date = Some(SystemTime::from(dt));
+                    self.telescope_position.lock().await.utc_date =
+                        Some(SystemTime::from(dt));
+                    if let Some(ref cb) = self.set_date_callback {
+                        cb.0();
+                    }
                     return "1Updating Planetary Data# #".to_string();
                 }
                 Err(e) => {
@@ -773,13 +789,22 @@ impl Lx200Controller {
 
 pub fn create_lx200_server(
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
-    cb: Box<dyn Fn() + Send + Sync>,
+    get_ra_cb: Box<dyn Fn() + Send + Sync>,
+    set_date_cb: Box<dyn Fn() + Send + Sync>,
     use_bluetooth: bool,
 ) -> Box<dyn Lx200Telescope + Send> {
     if use_bluetooth {
-        Box::new(Lx200BtTelescope::new(telescope_position, cb))
+        Box::new(Lx200BtTelescope::new(
+            telescope_position,
+            get_ra_cb,
+            set_date_cb,
+        ))
     } else {
-        Box::new(Lx200WifiTelescope::new(telescope_position, cb))
+        Box::new(Lx200WifiTelescope::new(
+            telescope_position,
+            get_ra_cb,
+            set_date_cb,
+        ))
     }
 }
 
