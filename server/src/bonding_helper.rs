@@ -17,11 +17,12 @@ pub struct BluetoothDevice {
     pub address: String,
 }
 
-pub async fn get_adapter_alias(
+pub async fn get_adapter_info(
     serial: &str,
-) -> Result<String, Box<dyn Error + 'static>> {
+) -> Result<(String, String), Box<dyn Error + 'static>> {
     let session = Session::new().await?;
     let adapter = session.default_adapter().await?;
+    let address = adapter.address().await?;
     let mut alias = adapter.alias().await?;
     let expected_alias = generate_bluetooth_name(serial);
     if alias != expected_alias {
@@ -37,7 +38,7 @@ pub async fn get_adapter_alias(
     }
 
     info!("Current device alias: {}", alias);
-    Ok(alias)
+    Ok((alias, address.to_string()))
 }
 
 pub async fn start_bonding(

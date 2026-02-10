@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
 syntax = "proto3";
@@ -80,8 +80,6 @@ message ServerInformation {
 
   // Filenames of image(s) found in run/demo_images directory.
   repeated string demo_image_names = 11;
-
-  // Status of SkySafari integration; SkySafari version.
 }
 
 message CameraModel {
@@ -290,6 +288,20 @@ message Preferences {
   // logic.
   repeated string dont_show_items = 32;
 
+  // If true, the SETUP focus assist step is skipped. The server attempts to
+  // perform the post-focus calibrations:
+  // * If successful, the server advances to SETUP boresight aligning or OPERATE
+  //   mode.
+  // * If unsuccessful, the
+  //   FrameResult.calibration_data.calibration_failure_reason field is
+  //   populated and the post-focus calibrations are retried every 30 seconds.
+  optional bool skip_focus = 35;
+
+  // If true, when SETUP focus assist is completed (or skipped), the server
+  // advances to OPERATE mode. If false, the server advances to SETUP alignment
+  // mode.
+  optional bool skip_alignment = 36;
+
   // Allow LX200 control over Bluetooth.
   optional bool use_bluetooth = 34;
 
@@ -430,6 +442,10 @@ message FrameResult {
   // When `calibrating` is true, this field is an estimate of the progress of
   // the calibration, which can take several seconds.
   optional double calibration_progress = 23;
+
+  // True when the server is in skip-focus auto-calibration mode with retries.
+  // The user must disable the skip_focus preference to exit this mode.
+  bool skip_focus_active = 38;
 
   // Information returned when `operating_mode` is SETUP.
 
@@ -898,6 +914,7 @@ message EmptyMessage {}
 
 message GetBluetoothNameResponse {
   string name = 1;
+  optional string address = 2;
 }
 
 message StartBondingResponse {

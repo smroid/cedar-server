@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
 use std::{
@@ -18,6 +18,10 @@ use std::{
 };
 
 use axum::Router;
+use bluer::{
+    rfcomm::{Profile, Role},
+    Session, Uuid,
+};
 use canonical_error::{aborted_error, CanonicalError, CanonicalErrorCode};
 use cedar_camera::{
     abstract_camera::{AbstractCamera, Gain, Offset},
@@ -56,8 +60,9 @@ use cedar_elements::{
     wifi_trait::WifiTrait,
 };
 use chrono::offset::Local;
-use futures::join;
+use futures::{join, StreamExt};
 use glob::glob;
+use hyper::server::conn::Http;
 use image::{codecs::jpeg::JpegEncoder, GrayImage, ImageReader};
 use log::{debug, error, info, warn};
 use nix::{
@@ -67,9 +72,10 @@ use nix::{
 use pico_args::Arguments;
 use prost::Message;
 use tetra3_server::tetra3_solver::Tetra3Solver;
-use tonic_web::GrpcWebLayer;
+use tonic::transport::server::Routes;
+use tonic_web::{GrpcWebLayer, GrpcWebService};
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{Any, Cors, CorsLayer},
     services::ServeDir,
 };
 use tracing_appender::{
@@ -82,7 +88,7 @@ use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
     bonding_helper::{
-        get_adapter_alias, get_bonded_devices, remove_bond, start_bonding,
+        get_adapter_info, get_bonded_devices, remove_bond, start_bonding,
     },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
@@ -96,6 +102,12 @@ use crate::{
 // gRPC performance monitoring threshold - log warning if methods take longer
 // than this.
 const GRPC_SLOW_THRESHOLD_MS: u64 = 100;
+
+// RFCOMM UUID for gRPC over Bluetooth. The same UUID must be used in Cedar Aim.
+const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
+
+// Retry interval for skip-focus auto-calibration attempts.
+const SKIP_FOCUS_RETRY_INTERVAL_SECS: u64 = 15;
 
 // RAII timing guard for gRPC methods - automatically logs duration when dropped
 struct GrpcTimer {
@@ -263,6 +275,13 @@ struct CedarState {
     calibration_start: Instant,
     calibration_duration_estimate: Duration,
 
+    // When true, server is in skip-focus auto-calibration mode with retries.
+    skip_focus_active: bool,
+    // When true, the skip-focus worker task is still running.
+    skip_focus_worker_running: bool,
+    // Timestamp of last calibration attempt (for skip-focus retry interval).
+    skip_focus_last_attempt: Option<Instant>,
+
     // For focus assist.
     center_peak_position: Arc<tokio::sync::Mutex<Option<ImageCoord>>>,
 
@@ -395,8 +414,32 @@ impl Cedar for MyCedar {
         request: tonic::Request<OperationSettings>,
     ) -> Result<tonic::Response<OperationSettings>, tonic::Status> {
         let _timer = GrpcTimer::new("update_operation_settings");
-
         let mut req: OperationSettings = request.into_inner();
+
+        // Block operation setting changes while in skip-focus auto-calibration mode.
+        // User must first disable skip_focus preference to exit this mode.
+        // Also read skip_alignment preference for use below.
+        let skip_alignment = {
+            let locked_state = self.state.lock().await;
+            if locked_state.skip_focus_active &&
+               (req.operating_mode.is_some() || req.daylight_mode.is_some() ||
+                req.focus_assist_mode.is_some())
+            {
+                return Err(logged_status!(
+                    failed_precondition,
+                    "Cannot change operation settings while in skip-focus \
+                     auto-calibration mode. Disable skip_focus preference first."
+                ));
+            }
+            let skip_alignment = locked_state
+                .preferences
+                .lock()
+                .await
+                .skip_alignment
+                .unwrap_or(false);
+            skip_alignment
+        };
+
         if let Some(new_operating_mode) = req.operating_mode {
             // Extract current state and component references first.
             let (
@@ -615,7 +658,7 @@ impl Cedar for MyCedar {
                             Self::spawn_calibration(
                                 self.state.clone(),
                                 // new_operate_mode=
-                                false,
+                                skip_alignment,
                                 final_focus_mode,
                                 new_daylight_mode,
                             );
@@ -690,13 +733,32 @@ impl Cedar for MyCedar {
                         // want the calibration and state updates (i.e. detect
                         // engine's focus_mode, our operating_mode) to be
                         // completed properly.
-                        Self::spawn_calibration(
-                            self.state.clone(),
-                            // new_operate_mode=
-                            false,
-                            new_focus_assist_mode,
-                            daylight_mode,
-                        );
+                        let skip_focus = locked_state
+                            .preferences
+                            .lock()
+                            .await
+                            .skip_focus
+                            .unwrap_or(false);
+                        if skip_focus {
+                            locked_state.skip_focus_active = true;
+                        }
+                        let spawn_fn = |state: Arc<tokio::sync::Mutex<CedarState>>| {
+                            if skip_focus {
+                                Self::spawn_skip_focus_calibration(
+                                    state,
+                                    skip_alignment,
+                                );
+                            } else {
+                                Self::spawn_calibration(
+                                    state,
+                                    // new_operate_mode=
+                                    skip_alignment,
+                                    new_focus_assist_mode,
+                                    daylight_mode,
+                                );
+                            }
+                        };
+                        spawn_fn(self.state.clone());
                         calibrating = true;
                     }
                 }
@@ -922,7 +984,7 @@ impl Cedar for MyCedar {
         let req: Preferences = request.into_inner();
         // Hold our lock across this entire operation to ensure that the file
         // update is done one at a time.
-        let locked_state = self.state.lock().await;
+        let mut locked_state = self.state.lock().await;
 
         let mut our_prefs = locked_state.preferences.lock().await.clone();
         if let Some(coord_format) = req.celestial_coord_format {
@@ -991,6 +1053,12 @@ impl Cedar for MyCedar {
         if let Some(use_bluetooth) = req.use_bluetooth {
             our_prefs.use_bluetooth = Some(use_bluetooth);
         }
+        if let Some(skip_focus) = req.skip_focus {
+            our_prefs.skip_focus = Some(skip_focus);
+        }
+        if let Some(skip_alignment) = req.skip_alignment {
+            our_prefs.skip_alignment = Some(skip_alignment);
+        }
         // Handle dont_show_items array - if non-empty, add items to existing
         // set
         if !req.dont_show_items.is_empty() {
@@ -1004,6 +1072,49 @@ impl Cedar for MyCedar {
         // Write updated preferences to file. Note that this operation is
         // guarded by our holding locked_state.
         Self::write_preferences_file(&self.preferences_file, &our_prefs);
+
+        // Handle skip_focus being cleared - exit skip-focus retry mode.
+        if req.skip_focus == Some(false) && locked_state.skip_focus_active {
+            info!("User cleared skip_focus preference, exiting skip-focus mode");
+
+            // Deactivate skip-focus mode (this will cause retry loop to exit).
+            locked_state.skip_focus_active = false;
+
+            // If currently calibrating, cancel it.
+            if locked_state.calibrating {
+                *locked_state.cancel_calibration.lock().await = true;
+                locked_state.solver.lock().await.cancel();
+            }
+
+            // Wait for skip-focus worker to actually exit.
+            drop(locked_state);
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let state = self.state.lock().await;
+                if !state.skip_focus_worker_running {
+                    locked_state = state;
+                    break;
+                }
+            }
+
+            // Transition to normal SETUP focus assist mode.
+            locked_state.operation_settings.focus_assist_mode = Some(true);
+            locked_state.operation_settings.operating_mode =
+                Some(OperatingMode::Setup as i32);
+
+            // Set pre-calibration defaults.
+            Self::set_pre_calibration_defaults(&mut locked_state)
+                .await
+                .ok();
+            Self::set_gain(&mut locked_state, false).await;
+
+            locked_state
+                .detect_engine
+                .lock()
+                .await
+                .set_focus_mode(true)
+                .await;
+        }
 
         Ok(tonic::Response::new(our_prefs.clone()))
     }
@@ -1527,14 +1638,17 @@ impl Cedar for MyCedar {
         &self,
         _request: tonic::Request<EmptyMessage>,
     ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
-        let bt_name = match get_adapter_alias(&self.serial_number).await {
-            Ok(name) => name,
+        let (bt_name, bt_addr) = match get_adapter_info(&self.serial_number).await {
+            Ok((name, addr)) => (name, Some(addr)),
             Err(e) => {
-                warn!("Unable to get Bluetooth name: {}", e);
-                "cedar".to_string()
+                warn!("Unable to get Bluetooth adapter info: {}", e);
+                ("cedar".to_string(), None)
             }
         };
-        Ok(tonic::Response::new(GetBluetoothNameResponse { name: bt_name }))
+        Ok(tonic::Response::new(GetBluetoothNameResponse {
+            name: bt_name,
+            address: bt_addr,
+        }))
     }
 
     async fn start_bonding(
@@ -1666,6 +1780,78 @@ impl MyCedar {
         (binning, display_sampling)
     }
 
+    /// Runs a single calibration attempt. Returns true if calibration succeeded.
+    /// Handles all setup (gain, autoexposure, timing) and cleanup (autoexposure
+    /// restore). Does NOT handle mode transitions on success/failure - caller
+    /// is responsible.
+    async fn run_calibration_attempt(
+        state: Arc<tokio::sync::Mutex<CedarState>>,
+    ) -> bool {
+        // Setup phase.
+        let (solver_arc, calibration_data_arc, detect_engine_arc) = {
+            let locked_state = state.lock().await;
+            if locked_state.calibrating {
+                return false; // Already in flight.
+            }
+            (
+                locked_state.solver.clone(),
+                locked_state.calibration_data.clone(),
+                locked_state.detect_engine.clone(),
+            )
+        }; // State lock released here!
+
+        let calibration_solve_timeout = solver_arc.lock().await.default_timeout();
+        {
+            let mut locked_state = state.lock().await;
+            Self::set_gain(&mut locked_state, /* daylight_mode= */ false).await;
+            locked_state.calibrating = true;
+            locked_state.calibration_start = Instant::now();
+            locked_state.calibration_duration_estimate =
+                Duration::from_secs(5) + calibration_solve_timeout;
+        } // State lock released here!
+
+        calibration_data_arc.lock().await.calibration_time =
+            Some(prost_types::Timestamp::from(SystemTime::now()));
+        detect_engine_arc
+            .lock()
+            .await
+            .set_autoexposure_enabled(false)
+            .await;
+
+        // Execute phase.
+        let succeeded = match Self::calibrate(state.clone()).await {
+            Ok(s) => s,
+            Err(e) => {
+                // The only error we expect is Aborted.
+                if e.code != CanonicalErrorCode::Aborted {
+                    warn!("Unexpected calibration error: {:?}", e);
+                }
+                false
+            }
+        };
+
+        // Cleanup phase.
+        let cancel_calibration_arc = {
+            let mut locked_state = state.lock().await;
+            locked_state.calibrating = false;
+            locked_state.cancel_calibration.clone()
+        }; // State lock released here!
+
+        detect_engine_arc
+            .lock()
+            .await
+            .set_autoexposure_enabled(true)
+            .await;
+
+        // Check if cancelled.
+        let cancelled = *cancel_calibration_arc.lock().await;
+        if cancelled {
+            *cancel_calibration_arc.lock().await = false;
+        }
+
+        succeeded && !cancelled
+    }
+
     // When we leave SETUP (with focus mode), either because focus mode is
     // turned off (transitioning to SETUP align mode), or because of
     // transitioning to OPERATE, we need to calibrate.
@@ -1693,91 +1879,23 @@ impl MyCedar {
 
         let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
             tokio::task::spawn(async move {
-                {
-                    let (solver_arc, calibration_data_arc, detect_engine_arc) = {
-                        let locked_state = state.lock().await;
-                        if locked_state.calibrating {
-                            return Ok(()); // Already in flight.
-                        }
-                        (
-                            locked_state.solver.clone(),
-                            locked_state.calibration_data.clone(),
-                            locked_state.detect_engine.clone(),
-                        )
-                    }; // State lock released here!
+                let succeeded =
+                    Self::run_calibration_attempt(state.clone()).await;
 
-                    let calibration_solve_timeout =
-                        solver_arc.lock().await.default_timeout();
-                    {
-                        let mut locked_state = state.lock().await;
-                        Self::set_gain(
-                            &mut locked_state,
-                            // daylight_mode=
-                            false,
-                        )
-                        .await;
-                        locked_state.calibrating = true;
-                        locked_state.calibration_start = Instant::now();
-                        locked_state.calibration_duration_estimate =
-                            Duration::from_secs(5) + calibration_solve_timeout;
-                    } // State lock released here!
-
-                    calibration_data_arc.lock().await.calibration_time =
-                        Some(prost_types::Timestamp::from(SystemTime::now()));
-                    detect_engine_arc
-                        .lock()
-                        .await
-                        .set_autoexposure_enabled(false)
-                        .await;
-                }
-                // No locks held.
-                let succeeded = match Self::calibrate(state.clone()).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        // The only error we expect is Aborted.
-                        assert!(e.code == CanonicalErrorCode::Aborted);
-                        false
-                    }
-                };
-
-                let (
-                    detect_engine_arc,
-                    cancel_calibration_arc,
-                    solve_engine_arc,
-                    focus_mode,
-                    daylight_mode,
-                ) = {
-                    let mut locked_state = state.lock().await;
-                    locked_state.calibrating = false;
-                    let focus_mode = locked_state
-                        .operation_settings
-                        .focus_assist_mode
-                        .unwrap();
-                    let daylight_mode =
-                        locked_state.operation_settings.daylight_mode.unwrap();
-
+                // Get state for mode transitions.
+                let (detect_engine_arc, solve_engine_arc, focus_mode, daylight_mode) = {
+                    let locked_state = state.lock().await;
                     (
                         locked_state.detect_engine.clone(),
-                        locked_state.cancel_calibration.clone(),
                         locked_state.solve_engine.clone(),
-                        focus_mode,
-                        daylight_mode,
+                        locked_state.operation_settings.focus_assist_mode.unwrap(),
+                        locked_state.operation_settings.daylight_mode.unwrap(),
                     )
-                }; // State lock released here!
+                };
 
-                let cancelled_or_failed =
-                    *cancel_calibration_arc.lock().await || !succeeded;
-
-                detect_engine_arc
-                    .lock()
-                    .await
-                    .set_autoexposure_enabled(true)
-                    .await;
-
-                if cancelled_or_failed {
+                if !succeeded {
                     // Calibration failed or was cancelled. Stay in current
                     // mode.
-                    *cancel_calibration_arc.lock().await = false;
                     {
                         let mut locked_state = state.lock().await;
                         Self::set_gain(&mut locked_state, daylight_mode).await;
@@ -1798,35 +1916,27 @@ impl MyCedar {
                             Some(new_focus_mode);
                     }
 
-                    detect_engine_arc
-                        .lock()
-                        .await
-                        .set_daylight_mode(new_daylight_mode)
-                        .await;
-                    detect_engine_arc
-                        .lock()
-                        .await
-                        .set_focus_mode(new_focus_mode)
-                        .await;
+                    {
+                        let mut detect_engine = detect_engine_arc.lock().await;
+                        if new_operate_mode {
+                            // Transition into Operate mode.
+                            detect_engine.set_focus_mode(false).await;
+                            detect_engine.set_daylight_mode(false).await;
+                        } else {
+                            detect_engine
+                                .set_daylight_mode(new_daylight_mode)
+                                .await;
+                            detect_engine.set_focus_mode(new_focus_mode).await;
+                        }
+                    }
 
                     if new_operate_mode {
-                        // Transition into Operate mode.
-                        detect_engine_arc
-                            .lock()
-                            .await
-                            .set_focus_mode(false)
-                            .await;
-                        detect_engine_arc
-                            .lock()
-                            .await
-                            .set_daylight_mode(false)
-                            .await;
-                        solve_engine_arc
-                            .lock()
-                            .await
-                            .set_align_mode(false)
-                            .await;
-                        solve_engine_arc.lock().await.start();
+                        {
+                            let mut solve_engine =
+                                solve_engine_arc.lock().await;
+                            solve_engine.set_align_mode(false).await;
+                            solve_engine.start();
+                        }
                         // Set automatic update interval for OPERATE mode.
                         {
                             let mut locked_state = state.lock().await;
@@ -1851,6 +1961,117 @@ impl MyCedar {
             });
         // Let _task_handle go out of scope, detaching the spawned calibration
         // task to complete regardless of a possible RPC timeout.
+    }
+
+    /// Spawns an auto-calibration loop for skip-focus mode. Retries periodically
+    /// until calibration succeeds or skip_focus_active is cleared.
+    fn spawn_skip_focus_calibration(
+        state: Arc<tokio::sync::Mutex<CedarState>>,
+        advance_to_operate: bool, // Based on skip_alignment preference.
+    ) {
+        tokio::task::spawn(async move {
+            // Mark worker as running.
+            {
+                let mut locked_state = state.lock().await;
+                locked_state.skip_focus_worker_running = true;
+            }
+
+            loop {
+                // Record attempt time.
+                {
+                    let mut locked_state = state.lock().await;
+                    locked_state.skip_focus_last_attempt = Some(Instant::now());
+                }
+
+                // Run calibration using shared helper.
+                let succeeded =
+                    Self::run_calibration_attempt(state.clone()).await;
+
+                if succeeded {
+                    info!("Skip-focus calibration succeeded");
+                    let mut locked_state = state.lock().await;
+                    locked_state.skip_focus_active = false;
+
+                    if advance_to_operate {
+                        // Transition to OPERATE mode.
+                        locked_state.operation_settings.operating_mode =
+                            Some(OperatingMode::Operate as i32);
+                        locked_state.operation_settings.focus_assist_mode =
+                            Some(false);
+                        locked_state.operation_settings.daylight_mode =
+                            Some(false);
+
+                        let detect_engine = locked_state.detect_engine.clone();
+                        let solve_engine = locked_state.solve_engine.clone();
+                        drop(locked_state);
+
+                        detect_engine.lock().await.set_focus_mode(false).await;
+                        detect_engine
+                            .lock()
+                            .await
+                            .set_daylight_mode(false)
+                            .await;
+                        solve_engine.lock().await.set_align_mode(false).await;
+                        solve_engine.lock().await.start();
+
+                        let locked_state = state.lock().await;
+                        let std_duration =
+                            Self::get_automatic_update_interval(&locked_state);
+                        Self::set_update_interval(&locked_state, std_duration)
+                            .await
+                            .ok();
+                    } else {
+                        // Transition to SETUP alignment mode.
+                        locked_state.operation_settings.focus_assist_mode =
+                            Some(false);
+                        locked_state.operation_settings.daylight_mode =
+                            Some(false);
+
+                        let detect_engine = locked_state.detect_engine.clone();
+                        drop(locked_state);
+
+                        detect_engine.lock().await.set_focus_mode(false).await;
+                        detect_engine
+                            .lock()
+                            .await
+                            .set_daylight_mode(false)
+                            .await;
+                    }
+                    let mut s = state.lock().await;
+                    s.skip_focus_worker_running = false;
+                    return;
+                }
+
+                // Calibration failed - retry after interval from attempt start.
+                info!(
+                    "Skip-focus calibration failed, will retry in {} seconds",
+                    SKIP_FOCUS_RETRY_INTERVAL_SECS
+                );
+
+                // Check every 100ms if we should abort or if interval has elapsed.
+                loop {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+
+                    let locked_state = state.lock().await;
+                    if !locked_state.skip_focus_active {
+                        info!("Skip-focus mode deactivated during retry wait");
+                        drop(locked_state);
+                        let mut s = state.lock().await;
+                        s.skip_focus_worker_running = false;
+                        return;
+                    }
+                    if locked_state
+                        .skip_focus_last_attempt
+                        .unwrap()
+                        .elapsed()
+                        .as_secs()
+                        >= SKIP_FOCUS_RETRY_INTERVAL_SECS
+                    {
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     fn write_preferences_file(
@@ -2333,6 +2554,7 @@ impl MyCedar {
             scaled_image_data,
             operation_settings,
             fixed_settings_arc,
+            skip_focus_active,
         ) = {
             let locked_state = state.lock().await;
 
@@ -2375,6 +2597,7 @@ impl MyCedar {
                 scaled_image_data,
                 operation_settings,
                 locked_state.fixed_settings.clone(),
+                locked_state.skip_focus_active,
             )
         }; // State lock released here!
 
@@ -2383,6 +2606,8 @@ impl MyCedar {
 
         // Fill in our current time (outside lock).
         Self::fill_in_time(&mut fixed_settings);
+
+        frame_result.skip_focus_active = skip_focus_active;
 
         if calibrating {
             frame_result.calibrating = true;
@@ -3173,6 +3398,8 @@ impl MyCedar {
             screen_always_on: Some(true),
             dont_show_items: Vec::new(),
             use_bluetooth: None,
+            skip_focus: None,
+            skip_alignment: None,
         };
 
         // If there is a preferences file, read it and merge its contents into
@@ -3356,6 +3583,9 @@ impl MyCedar {
                 cancel_calibration: Arc::new(tokio::sync::Mutex::new(false)),
                 calibration_start: Instant::now(),
                 calibration_duration_estimate: Duration::MAX,
+                skip_focus_active: false,
+                skip_focus_worker_running: false,
+                skip_focus_last_attempt: None,
                 center_peak_position: Arc::new(tokio::sync::Mutex::new(None)),
                 serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 args_binning,
@@ -3399,50 +3629,59 @@ impl MyCedar {
             warn!("Could not set default settings on camera {:?}", x);
         }
 
-        locked_state
-            .detect_engine
-            .lock()
-            .await
-            .set_binning(binning, display_sampling)
-            .await;
-        locked_state
-            .detect_engine
-            .lock()
-            .await
-            .set_focus_mode(
-                locked_state.operation_settings.focus_assist_mode.unwrap(),
-            )
-            .await;
-        locked_state
-            .detect_engine
-            .lock()
-            .await
-            .set_daylight_mode(
-                locked_state.operation_settings.daylight_mode.unwrap(),
-            )
-            .await;
-        locked_state
-            .solve_engine
-            .lock()
-            .await
-            .set_catalog_entry_match(
-                copied_preferences.catalog_entry_match.clone(),
-            )
-            .await;
-        locked_state
-            .solve_engine
-            .lock()
-            .await
-            .set_align_mode(true)
-            .await;
-        if let Some(bsp) = &copied_preferences.boresight_pixel {
-            locked_state
-                .solve_engine
-                .lock()
-                .await
-                .set_boresight_pixel(Some(ImageCoord { x: bsp.x, y: bsp.y }))
-                .await
-                .unwrap();
+        {
+            let mut detect_engine = locked_state.detect_engine.lock().await;
+            detect_engine.set_binning(binning, display_sampling).await;
+            detect_engine
+                .set_focus_mode(
+                    locked_state.operation_settings.focus_assist_mode.unwrap(),
+                )
+                .await;
+            detect_engine
+                .set_daylight_mode(
+                    locked_state.operation_settings.daylight_mode.unwrap(),
+                )
+                .await;
+        }
+        {
+            let mut solve_engine = locked_state.solve_engine.lock().await;
+            solve_engine
+                .set_catalog_entry_match(
+                    copied_preferences.catalog_entry_match.clone(),
+                )
+                .await;
+            solve_engine.set_align_mode(true).await;
+            if let Some(bsp) = &copied_preferences.boresight_pixel {
+                solve_engine
+                    .set_boresight_pixel(Some(ImageCoord { x: bsp.x, y: bsp.y }))
+                    .await
+                    .unwrap();
+            }
+        }
+
+        // Check if skip_focus is enabled in preferences.
+        let skip_focus = copied_preferences.skip_focus.unwrap_or(false);
+        let skip_alignment = copied_preferences.skip_alignment.unwrap_or(false);
+        if skip_focus {
+            info!(
+                "Skip-focus mode enabled, starting auto-calibration (skip_alignment={})",
+                skip_alignment
+            );
+            // Set initial state for skip-focus mode.
+            locked_state.skip_focus_active = true;
+            locked_state.operation_settings.focus_assist_mode = Some(true);
+
+            // Configure detect engine for non-focus mode.
+            {
+                let mut detect_engine = locked_state.detect_engine.lock().await;
+                detect_engine.set_focus_mode(true).await;
+                detect_engine.set_daylight_mode(false).await;
+            }
+
+            // Release lock before spawning the calibration task.
+            drop(locked_state);
+
+            Self::spawn_skip_focus_calibration(state.clone(), skip_alignment);
         }
 
         Ok(cedar)
@@ -3916,6 +4155,48 @@ fn get_camera(
     )))
 }
 
+async fn serve_over_bt(
+    service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>,
+) -> Result<(), Box<dyn std::error::Error + 'static>> {
+    let session = Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    adapter.set_powered(true).await?;
+
+    let profile = Profile {
+        uuid: Uuid::parse_str(BT_CONTROL_UUID).unwrap(),
+        name: Some("Cedar Control".to_string()),
+        role: Some(Role::Server),
+        // Explicitly setting channel seems to be required, omitting
+        // it doesn't work.
+        channel: Some(15),
+        require_authentication: Some(false),
+        require_authorization: Some(false),
+        auto_connect: Some(false),
+        ..Default::default()
+    };
+
+    let mut profile_handle = session.register_profile(profile).await?;
+    info!("Running cedar control channel: {}", adapter.address().await?);
+
+    loop {
+        let req = profile_handle.next().await;
+        if req.is_none() {
+            info!("Found no request, returning");
+            return Ok(());
+        }
+        match req.unwrap().accept() {
+            Ok(stream) => {
+                info!("Serving new connection");
+                let _ =
+                    Http::new().serve_connection(stream, service.clone()).await;
+            }
+            Err(e) => {
+                warn!("Failed to accept connection: {}", e);
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn async_main(
     args: AppArgs,
@@ -4097,8 +4378,14 @@ async fn async_main(
     .await
     .unwrap();
 
-    let use_lx200_bt =
-        cedar.state.lock().await.preferences.lock().await.use_bluetooth;
+    let use_bluetooth = cedar
+        .state
+        .lock()
+        .await
+        .preferences
+        .lock()
+        .await
+        .use_bluetooth;
 
     let cedar_server = CedarServer::new(cedar);
 
@@ -4120,8 +4407,18 @@ async fn async_main(
         .serve(tower::make::Shared::new(service.clone()));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let service_future8080 =
-        hyper::Server::bind(&addr8080).serve(tower::make::Shared::new(service));
+    let service_future8080 = hyper::Server::bind(&addr8080)
+        .serve(tower::make::Shared::new(service.clone()));
+
+    let _bt_server_handle: Option<
+        tokio::task::JoinHandle<Result<(), tonic::Status>>,
+    > = match use_bluetooth {
+        Some(true) => Some(tokio::task::spawn(async move {
+            let _status = serve_over_bt(service).await;
+            Ok(())
+        })),
+        _ => None,
+    };
 
     // Spin up servers for reporting our RA/Dec solution as the telescope
     // position.
@@ -4138,7 +4435,7 @@ async fn async_main(
     let _bt_task_handle: Option<
         tokio::task::JoinHandle<Result<(), tonic::Status>>,
     > = {
-        match use_lx200_bt {
+        match use_bluetooth {
             Some(true) => {
                 let mut lx200_server_bt = create_lx200_server(
                     shared_telescope_position.clone(),
