@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Omair Kamil
 // See LICENSE file in root directory for license terms.
 
-use std::{error::Error, str::FromStr, time::Duration};
+use std::{error::Error, str::FromStr, sync::Arc, time::Duration};
 
 use bluer::{
     agent::{Agent, ReqResult, RequestConfirmation},
@@ -24,7 +24,12 @@ pub async fn get_adapter_info(
     let adapter = session.default_adapter().await?;
     let address = adapter.address().await?;
     let mut alias = adapter.alias().await?;
-    let expected_alias = generate_bluetooth_name(serial);
+    let expected_alias = if serial.len() < 3 {
+        warn!("Unexpected length for serial number: {}", serial);
+        "cedar".to_string()
+    } else {
+        format!("{}{}", BT_NAME_PREFIX, &serial[serial.len() - 3..])
+    };
     if alias != expected_alias {
         info!("Updating Bluetooth alias");
         match adapter.set_alias(expected_alias.clone()).await {
@@ -41,19 +46,24 @@ pub async fn get_adapter_info(
     Ok((alias, address.to_string()))
 }
 
-pub async fn start_bonding(
-) -> Result<Option<(String, u32)>, Box<dyn Error + 'static>> {
+/// Run pairing mode indefinitely, respecting the pairing_mode flag.
+/// This function runs continuously and monitors the pairing_mode flag.
+/// When pairing_mode is true, the adapter is set to discoverable and pairable.
+/// When pairing_mode is false, the adapter is set to not discoverable and not pairable.
+pub async fn run_pairing_mode(
+    pairing_mode: Arc<tokio::sync::Mutex<bool>>,
+) -> Result<(), Box<dyn Error + 'static>> {
     let session = Session::new().await?;
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
 
-    // Use a channel to pass the address back to the main thread.
-    let (tx, mut rx) = mpsc::channel(1);
+    // Use a channel to pass device info from the agent.
+    let (tx, mut rx) = mpsc::channel(10);
 
-    // Clone sender for the agent closure to capture
+    // Clone sender for the agent closure to capture.
     let tx_req = tx.clone();
 
-    // Start pairing, accepting any requests.
+    // Start pairing agent that accepts any requests.
     let agent = Agent {
         request_default: true,
         request_confirmation: Some(Box::new(move |req| {
@@ -63,42 +73,69 @@ pub async fn start_bonding(
         ..Default::default()
     };
 
-    // Keep the handle in scope to keep the agent active
+    // Keep the handle in scope to keep the agent active.
     let _handle = session.register_agent(agent).await?;
 
-    adapter.set_discoverable(true).await?;
-    adapter.set_discoverable_timeout(55).await?;
-    adapter.set_pairable(true).await?;
+    info!("Bluetooth pairing mode loop started");
 
-    info!("Accepting pairings - waiting up to 55 seconds...");
+    let mut last_pairing_state = false;
 
-    // Wait for the address or timeout
-    let result = timeout(Duration::from_secs(55), rx.recv()).await;
+    loop {
+        let current_pairing_state = *pairing_mode.lock().await;
 
-    let paired_info = match result {
-        Ok(Some((address, passkey))) => {
-            let device = adapter.device(address)?;
-            let name = device.alias().await?;
-            info!("Paired with {}", name);
-            Some((name, passkey))
+        // Update adapter state if pairing mode changed.
+        if current_pairing_state != last_pairing_state {
+            if current_pairing_state {
+                info!("Enabling Bluetooth pairing");
+                adapter.set_discoverable(true).await?;
+                adapter.set_discoverable_timeout(0).await?; // 0 = indefinite
+                adapter.set_pairable(true).await?;
+            } else {
+                info!("Disabling Bluetooth pairing");
+                adapter.set_pairable(false).await?;
+                adapter.set_discoverable(false).await?;
+            }
+            last_pairing_state = current_pairing_state;
         }
-        _ => {
-            info!("Timeout reached");
-            None
-        }
-    };
 
-    adapter.set_pairable(false).await?;
-    adapter.set_discoverable(false).await?;
-    Ok(paired_info)
+        // Check for incoming pairing requests with a timeout.
+        match timeout(Duration::from_secs(5), rx.recv()).await {
+            Ok(Some((address, passkey))) => {
+                let device = adapter.device(address)?;
+                let name = device.alias().await?;
+                info!("Paired with client {} (passkey: {})", name, passkey);
+            }
+            Ok(None) => {
+                // Channel closed, exit.
+                break;
+            }
+            Err(_) => {
+                // Timeout, continue loop to check pairing_mode flag.
+            }
+        }
+    }
+
+    info!("Pairing mode loop ended");
+    Ok(())
 }
 
 async fn request_confirmation(
     req: RequestConfirmation,
     tx: mpsc::Sender<(Address, u32)>,
 ) -> ReqResult<()> {
-    info!("Confirming request from {} with key {}", req.device, req.passkey);
-    let _ = tx.send((req.device, req.passkey)).await;
+    info!(
+        "Pairing attempt from device {} with passkey {}",
+        req.device, req.passkey
+    );
+    match tx.send((req.device, req.passkey)).await {
+        Ok(_) => {
+            info!("Accepted pairing request from client {}", req.device);
+        }
+        Err(e) => {
+            warn!("Failed to send pairing confirmation for {}: {:?}",
+                  req.device, e);
+        }
+    }
     Ok(())
 }
 
@@ -110,9 +147,16 @@ pub async fn remove_bond(
     adapter.set_powered(true).await?;
 
     let device = Address::from_str(&address)?;
-    adapter.remove_device(device).await?;
-    info!("Removed bond: {}", address);
-    Ok(())
+    match adapter.remove_device(device).await {
+        Ok(_) => {
+            info!("Bond removed for device {}", address);
+            Ok(())
+        }
+        Err(e) => {
+            warn!("Failed to remove bond for device {}: {:?}", address, e);
+            Err(Box::new(e))
+        }
+    }
 }
 
 pub async fn get_bonded_devices(
@@ -124,7 +168,7 @@ pub async fn get_bonded_devices(
     let mut result: Vec<BluetoothDevice> = Vec::new();
     let devices = adapter.device_addresses().await?;
     for addr in devices {
-        info!("Found bonded device: {}", addr);
+        info!("Found bonded client device: {}", addr);
         let device = adapter.device(addr)?;
         result.push(BluetoothDevice {
             name: device.alias().await?,
@@ -132,12 +176,4 @@ pub async fn get_bonded_devices(
         });
     }
     Ok(result)
-}
-
-fn generate_bluetooth_name(serial: &str) -> String {
-    if serial.len() < 3 {
-        warn!("Unexpected length for serial number: {}", serial);
-        return "cedar".to_string();
-    }
-    format!("{}{}", BT_NAME_PREFIX, &serial[serial.len() - 3..])
 }

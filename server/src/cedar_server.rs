@@ -44,7 +44,7 @@ use cedar_elements::{
         MountType, OperatingMode, OperationSettings,
         PlateSolution as PlateSolutionProto, Preferences, ProcessingStats,
         Rectangle, RemoveBondRequest, ServerInformation, ServerLogRequest,
-        ServerLogResult, StarCentroid, StartBondingResponse, WiFiAccessPoint,
+        ServerLogResult, SetPairingModeRequest, StarCentroid, WiFiAccessPoint,
     },
     cedar_common::CelestialCoord,
     cedar_sky::{
@@ -88,7 +88,7 @@ use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
     bonding_helper::{
-        get_adapter_info, get_bonded_devices, remove_bond, start_bonding,
+        get_adapter_info, get_bonded_devices, remove_bond, run_pairing_mode,
     },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
@@ -108,6 +108,9 @@ const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
 
 // Retry interval for skip-focus auto-calibration attempts.
 const SKIP_FOCUS_RETRY_INTERVAL_SECS: u64 = 15;
+
+// Delay before exiting pairing mode after first get_frame() call.
+const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 60;
 
 // RAII timing guard for gRPC methods - automatically logs duration when dropped
 struct GrpcTimer {
@@ -290,6 +293,12 @@ struct CedarState {
     // Some command line args.
     args_binning: Option<u32>,
     args_display_sampling: Option<bool>,
+
+    // Bluetooth pairing mode state.
+    pairing_mode: Arc<tokio::sync::Mutex<bool>>,
+
+    // Timestamp of the first get_frame() call (used to delay pairing mode exit).
+    first_get_frame_time: Option<Instant>,
 }
 
 #[tonic::async_trait]
@@ -1126,6 +1135,32 @@ impl Cedar for MyCedar {
         let _timer =
             GrpcTimer::with_threshold("get_frame", Duration::from_millis(200));
 
+        // Track first get_frame() call and exit Bluetooth pairing mode after 1
+        // minute.
+        let is_bluetooth = request.extensions().get::<BluetoothRequest>().is_some();
+        {
+            let mut state = self.state.lock().await;
+
+            if state.first_get_frame_time.is_none() {
+                state.first_get_frame_time = Some(Instant::now());
+                let transport =
+                    if is_bluetooth { "Bluetooth" } else { "WiFi" };
+                info!("First get_frame() call received over {}, pairing mode will exit in {} seconds",
+                      transport, PAIRING_MODE_EXIT_DELAY_SECS);
+            }
+
+            if let Some(first_instant) = state.first_get_frame_time {
+                if first_instant.elapsed() >= Duration::from_secs(PAIRING_MODE_EXIT_DELAY_SECS) {
+                    let mut pairing_mode = state.pairing_mode.lock().await;
+                    if *pairing_mode {
+                        *pairing_mode = false;
+                        info!("Exiting pairing mode - {} seconds elapsed since first get_frame() call",
+                              PAIRING_MODE_EXIT_DELAY_SECS);
+                    }
+                }
+            }
+        }
+
         let activity_led = self.state.lock().await.activity_led.clone();
         activity_led.lock().await.received_rpc().await;
         let req: FrameRequest = request.into_inner();
@@ -1638,36 +1673,26 @@ impl Cedar for MyCedar {
         &self,
         _request: tonic::Request<EmptyMessage>,
     ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
-        let (bt_name, bt_addr) = match get_adapter_info(&self.serial_number).await {
+        let (adapter_name, adapter_addr) = match get_adapter_info(&self.serial_number).await {
             Ok((name, addr)) => (name, Some(addr)),
             Err(e) => {
-                warn!("Unable to get Bluetooth adapter info: {}", e);
+                warn!("Unable to get Bluetooth adapter info: {:?}", e);
                 ("cedar".to_string(), None)
             }
         };
+
+        // Use WiFi access point name if available, otherwise use constructed
+        // adapter name.
+        let bt_name = if let Some(wifi) = self.state.lock().await.wifi.as_ref() {
+            wifi.lock().await.ssid()
+        } else {
+            adapter_name
+        };
+
         Ok(tonic::Response::new(GetBluetoothNameResponse {
             name: bt_name,
-            address: bt_addr,
+            address: adapter_addr,
         }))
-    }
-
-    async fn start_bonding(
-        &self,
-        _request: tonic::Request<EmptyMessage>,
-    ) -> Result<tonic::Response<StartBondingResponse>, tonic::Status> {
-        let result = start_bonding().await;
-        let response = match result {
-            Ok(Some((name, key))) => StartBondingResponse {
-                name: Some(name),
-                passkey: Some(key),
-            },
-            Ok(None) => StartBondingResponse::default(),
-            Err(_) => {
-                warn!("Error when bonding");
-                StartBondingResponse::default()
-            }
-        };
-        Ok(tonic::Response::new(response))
     }
 
     async fn get_bonded_devices(
@@ -1706,6 +1731,22 @@ impl Cedar for MyCedar {
                 warn!("Error removing bond");
             }
         };
+        Ok(tonic::Response::new(EmptyMessage::default()))
+    }
+
+    async fn set_pairing_mode(
+        &self,
+        request: tonic::Request<SetPairingModeRequest>,
+    ) -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
+        let req = request.into_inner();
+        let state = self.state.lock().await;
+        let mut pairing_mode = state.pairing_mode.lock().await;
+        *pairing_mode = req.enabled;
+        if req.enabled {
+            info!("Entering pairing mode via RPC");
+        } else {
+            info!("Exiting pairing mode via RPC");
+        }
         Ok(tonic::Response::new(EmptyMessage::default()))
     }
 } // impl Cedar for MyCedar.
@@ -3590,6 +3631,8 @@ impl MyCedar {
                 serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 args_binning,
                 args_display_sampling,
+                pairing_mode: Arc::new(tokio::sync::Mutex::new(true)),
+                first_get_frame_time: None,
             }))
         };
 
@@ -4155,6 +4198,35 @@ fn get_camera(
     )))
 }
 
+/// Extension marker for requests coming over Bluetooth.
+#[derive(Clone, Copy, Debug)]
+struct BluetoothRequest;
+
+/// Middleware that marks requests as coming from Bluetooth.
+#[derive(Clone)]
+struct BluetoothMarkingMiddleware<S> {
+    inner: S,
+}
+
+impl<S> tower::Service<hyper::Request<hyper::Body>> for BluetoothMarkingMiddleware<S>
+where
+    S: tower::Service<hyper::Request<hyper::Body>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: hyper::Request<hyper::Body>) -> Self::Future {
+        req.extensions_mut().insert(BluetoothRequest);
+        self.inner.call(req)
+    }
+}
+
 async fn serve_over_bt(
     service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>,
 ) -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -4176,7 +4248,10 @@ async fn serve_over_bt(
     };
 
     let mut profile_handle = session.register_profile(profile).await?;
-    info!("Running cedar control channel: {}", adapter.address().await?);
+    info!("Running cedar control BT channel: {}", adapter.address().await?);
+
+    // Wrap service with middleware that marks requests as Bluetooth
+    let bt_service = BluetoothMarkingMiddleware { inner: service };
 
     loop {
         let req = profile_handle.next().await;
@@ -4186,12 +4261,12 @@ async fn serve_over_bt(
         }
         match req.unwrap().accept() {
             Ok(stream) => {
-                info!("Serving new connection");
+                info!("Serving new BT connection");
                 let _ =
-                    Http::new().serve_connection(stream, service.clone()).await;
+                    Http::new().serve_connection(stream, bt_service.clone()).await;
             }
             Err(e) => {
-                warn!("Failed to accept connection: {}", e);
+                warn!("Failed to accept BT connection: {}", e);
             }
         }
     }
@@ -4378,7 +4453,7 @@ async fn async_main(
     .await
     .unwrap();
 
-    let use_bluetooth = cedar
+    let _use_bluetooth = cedar
         .state
         .lock()
         .await
@@ -4386,6 +4461,9 @@ async fn async_main(
         .lock()
         .await
         .use_bluetooth;
+
+    // Clone pairing_mode state before cedar is moved.
+    let pairing_mode_state = cedar.state.lock().await.pairing_mode.clone();
 
     let cedar_server = CedarServer::new(cedar);
 
@@ -4400,7 +4478,7 @@ async fn async_main(
     // service.
     let service = MultiplexService::new(rest, grpc);
 
-    // Listen on any address for the given port.
+    // Listen on any WiFi address for the given port.
     let addr = SocketAddr::from(([0, 0, 0, 0], 80));
     info!("Listening at {:?}", addr);
     let service_future = hyper::Server::bind(&addr)
@@ -4410,15 +4488,19 @@ async fn async_main(
     let service_future8080 = hyper::Server::bind(&addr8080)
         .serve(tower::make::Shared::new(service.clone()));
 
-    let _bt_server_handle: Option<
-        tokio::task::JoinHandle<Result<(), tonic::Status>>,
-    > = match use_bluetooth {
-        Some(true) => Some(tokio::task::spawn(async move {
+    // Also listen on Bluetooth.
+    let bt_server_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move {
             let _status = serve_over_bt(service).await;
             Ok(())
-        })),
-        _ => None,
-    };
+        });
+
+    // Run pairing mode loop.
+    let pairing_mode_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move {
+            let _status = run_pairing_mode(pairing_mode_state).await;
+            Ok(())
+        });
 
     // Spin up servers for reporting our RA/Dec solution as the telescope
     // position.
@@ -4432,42 +4514,43 @@ async fn async_main(
         });
     });
 
-    let _bt_task_handle: Option<
-        tokio::task::JoinHandle<Result<(), tonic::Status>>,
-    > = {
-        match use_bluetooth {
-            Some(true) => {
-                let mut lx200_server_bt = create_lx200_server(
-                    shared_telescope_position.clone(),
-                    async_callback.clone(),
-                    true,
-                );
-                Some(tokio::task::spawn(async move {
-                    let _status = lx200_server_bt.serve_requests().await;
-                    Ok(())
-                }))
-            }
-            _ => None,
-        }
-    };
-
+    // Serve LX200 protocol over Bluetooth and WiFi.
+    let mut lx200_server_bt = create_lx200_server(
+        shared_telescope_position.clone(),
+        async_callback.clone(),
+        true,
+    );
+    let lx200_task_bt_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move {
+            let _status = lx200_server_bt.serve_requests().await;
+            Ok(())
+        });
     let mut lx200_server = create_lx200_server(
         shared_telescope_position.clone(),
         async_callback.clone(),
         false,
     );
-    let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+    let lx200_task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
             let _status = lx200_server.serve_requests().await;
             Ok(())
         });
 
+    // Serve Alpaca protocol.
     let alpaca_server =
         create_alpaca_server(shared_telescope_position, async_callback);
     let alpaca_server_future = alpaca_server.start();
 
-    let (service_result, service_result8080, alpaca_result) =
-        join!(service_future, service_future8080, alpaca_server_future);
+    let (service_result, service_result8080, alpaca_result, _, _, _, _) =
+        join!(
+            service_future,
+            service_future8080,
+            alpaca_server_future,
+            bt_server_handle,
+            lx200_task_bt_handle,
+            lx200_task_handle,
+            pairing_mode_handle
+        );
     service_result.unwrap();
     service_result8080.unwrap();
     alpaca_result.unwrap();

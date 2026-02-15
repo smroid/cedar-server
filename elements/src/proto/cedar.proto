@@ -917,11 +917,6 @@ message GetBluetoothNameResponse {
   optional string address = 2;
 }
 
-message StartBondingResponse {
-  optional string name = 1;
-  optional uint32 passkey = 2;
-}
-
 message BondedDevice {
   string name = 1;
   string address = 2;
@@ -933,6 +928,10 @@ message GetBondedDevicesResponse {
 
 message RemoveBondRequest {
   string address = 1;
+}
+
+message SetPairingModeRequest {
+  bool enabled = 1;
 }
 
 service Cedar {
@@ -982,7 +981,7 @@ service Cedar {
 
   // Bluetooth management.
   rpc GetBluetoothName(EmptyMessage) returns (GetBluetoothNameResponse);
-  rpc StartBonding(EmptyMessage) returns (StartBondingResponse);
+  rpc SetPairingMode(SetPairingModeRequest) returns (EmptyMessage);
   rpc GetBondedDevices(EmptyMessage) returns (GetBondedDevicesResponse);
   rpc RemoveBond(RemoveBondRequest) returns (EmptyMessage);
 }
