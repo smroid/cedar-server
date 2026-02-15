@@ -302,10 +302,7 @@ message Preferences {
   // mode.
   optional bool skip_alignment = 36;
 
-  // Allow LX200 control over Bluetooth.
-  optional bool use_bluetooth = 34;
-
-  reserved 4, 8, 9, 20, 24, 25, 26, 27, 28, 29, 30, 31;
+  reserved 4, 8, 9, 20, 24, 25, 26, 27, 28, 29, 30, 31, 34;
 }
 
 enum CelestialCoordFormat {
@@ -932,6 +929,11 @@ message RemoveBondRequest {
 
 message SetPairingModeRequest {
   bool enabled = 1;
+
+  // When enabled==true, by default Cedar's bluetooth pairing mode is enabled
+  // for a finite time duration. Setting forever==true keeps pairing enabled
+  // indefinitely.
+  bool forever = 2;
 }
 
 service Cedar {
