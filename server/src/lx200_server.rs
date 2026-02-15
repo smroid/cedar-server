@@ -79,7 +79,7 @@ impl Lx200WifiTelescope {
                             debug!("Writing to client: {}", result);
                             if let Err(e) = stream.write_all(result.as_bytes())
                             {
-                                warn!("Failed to send data to client: {}", e);
+                                warn!("Failed to send data to client: {:?}", e);
                             }
                         }
                         None => {}
@@ -91,7 +91,7 @@ impl Lx200WifiTelescope {
                 }
                 Err(e) => {
                     // An actual network error occurred
-                    debug!("Error reading from stream: {}", e);
+                    warn!("Error reading from stream: {:?}", e);
                     break;
                 }
             }
@@ -137,7 +137,7 @@ impl Lx200Telescope for Lx200BtTelescope {
                     self.handle_connection(stream).await;
                 }
                 Err(e) => {
-                    warn!("Failed to accept connection: {}", e);
+                    warn!("Failed to accept connection: {:?}", e);
                 }
             }
         }
@@ -157,11 +157,11 @@ impl Lx200BtTelescope {
     async fn handle_connection(&mut self, mut stream: Stream) {
         let mut buffer = [0; 1024];
 
-        info!("Starting to read from LX200 connection");
+        debug!("Starting to read from LX200 connection");
         loop {
             match stream.read(&mut buffer).await {
                 Ok(0) => {
-                    info!("Client closed connection");
+                    debug!("Client closed connection");
                     break;
                 }
                 Ok(n) => {
@@ -171,20 +171,20 @@ impl Lx200BtTelescope {
                             if let Err(e) =
                                 stream.write_all(result.as_bytes()).await
                             {
-                                warn!("Failed to send data to client: {}", e);
+                                warn!("Failed to send data to client: {:?}", e);
                             }
                         }
                         None => {}
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                    // Interruption is recoverable, try reading again
-                    info!("Interrupted: {}", e);
+                    // Interruption is recoverable, try reading again.
+                    warn!("Interrupted: {:?}", e);
                     continue;
                 }
                 Err(e) => {
-                    // An actual network error occurred
-                    info!("Error reading from stream: {}", e);
+                    // An actual network error occurred.
+                    warn!("Error reading from stream: {:?}", e);
                     break;
                 }
             }
@@ -240,7 +240,7 @@ impl Lx200Controller {
         let jnow = ((dt.year() as f64 + dt.ordinal0() as f64 / 365.0) * 10.0)
             .round()
             / 10.0;
-        info!("Using now epoch: {}", jnow);
+        debug!("Using now epoch: {}", jnow);
         Lx200Controller {
             telescope_position,
             callback: Some(Callback(cb)),
@@ -398,7 +398,7 @@ impl Lx200Controller {
             (self.target_ra.take(), self.target_dec.take())
         {
             let (j2000_ra, j2000_dec) = self.convert_to_j2000(ra, dec);
-            info!("Slewing to {}, {}", j2000_ra, j2000_dec);
+            debug!("Slewing to {}, {}", j2000_ra, j2000_dec);
             let mut locked_position = self.telescope_position.lock().await;
             locked_position.slew_target_ra = j2000_ra;
             locked_position.slew_target_dec = j2000_dec;
@@ -417,7 +417,7 @@ impl Lx200Controller {
             (self.target_ra.take(), self.target_dec.take())
         {
             let (j2000_ra, j2000_dec) = self.convert_to_j2000(ra, dec);
-            info!("Syncing to {}, {}", j2000_ra, j2000_dec);
+            debug!("Syncing to {}, {}", j2000_ra, j2000_dec);
             let mut locked_position = self.telescope_position.lock().await;
             locked_position.sync_ra = Some(j2000_ra);
             locked_position.sync_dec = Some(j2000_dec);
@@ -429,7 +429,7 @@ impl Lx200Controller {
     async fn abort(&mut self) {
         let mut locked_position = self.telescope_position.lock().await;
         locked_position.slew_active = false;
-        info!("Stopping slew");
+        debug!("Stopping slew");
     }
 
     async fn set_latitude(&mut self, cmd: &str) -> String {
@@ -532,7 +532,7 @@ impl Lx200Controller {
                     return "1Updating Planetary Data# #".to_string();
                 }
                 Err(e) => {
-                    warn!("Error parsing date/time: {}", e);
+                    warn!("Error parsing date/time: {:?}", e);
                 }
             }
         }
@@ -601,7 +601,7 @@ impl Lx200Controller {
         let degrees: Result<i32, _> = d.parse();
         let is_negative = match degrees {
             Err(e) => {
-                warn!("Error parsing degrees: {}", e);
+                warn!("Error parsing degrees: {:?}", e);
                 return None;
             }
             Ok(deg) => deg < 0,
@@ -609,7 +609,7 @@ impl Lx200Controller {
         let minutes: Result<i32, _> = m.parse();
         match minutes {
             Err(e) => {
-                warn!("Error parsing minutes: {}", e);
+                warn!("Error parsing minutes: {:?}", e);
                 return None;
             }
             Ok(_) => {}
@@ -617,7 +617,7 @@ impl Lx200Controller {
         let seconds: Result<i32, _> = s.parse();
         match seconds {
             Err(e) => {
-                warn!("Error parsing seconds: {}", e);
+                warn!("Error parsing seconds: {:?}", e);
                 return None;
             }
             Ok(_) => {}
@@ -750,7 +750,7 @@ impl Lx200Controller {
                     debug!("Received precision toggle command");
                 }
                 Some(_) => {
-                    info!("Unknown command: {}", in_data);
+                    warn!("Unknown command: {}", in_data);
                 }
                 None => {
                     // Special case for ack command not prefixed by ":"
