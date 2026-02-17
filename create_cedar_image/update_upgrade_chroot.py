@@ -156,6 +156,9 @@ def update_system(rootfs_path):
             print("\nInstalling i2c tools...")
             run_chroot_command(rootfs_path, ['apt', 'install', '-y', 'i2c-tools'])
 
+            print("\nInstalling Bluetooth support...")
+            run_chroot_command(rootfs_path, ['apt', 'install', '-y', 'bluez'])
+
             print("\nInstalling python deps and grpc...")
             run_chroot_command(rootfs_path, ['apt', 'install', '-y', 'build-essential'])
             run_chroot_command(rootfs_path, ['apt', 'install', '-y', 'python3-dev'])
