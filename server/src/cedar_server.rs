@@ -88,7 +88,7 @@ use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
     bonding_helper::{
-        get_adapter_info, get_bonded_devices, remove_bond, run_pairing_mode,
+        get_adapter_alias, set_adapter_name, get_bonded_devices, remove_bond, run_pairing_mode,
     },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
@@ -296,6 +296,9 @@ struct CedarState {
 
     // Bluetooth pairing mode state.
     pairing_mode: Arc<tokio::sync::Mutex<bool>>,
+
+    // When true, pairing mode will remain enabled indefinitely (not auto-exit).
+    pairing_mode_forever: bool,
 
     // Timestamp of the first get_frame() call (used to delay pairing mode exit).
     first_get_frame_time: Option<Instant>,
@@ -1059,9 +1062,6 @@ impl Cedar for MyCedar {
         if let Some(screen_always_on) = req.screen_always_on {
             our_prefs.screen_always_on = Some(screen_always_on);
         }
-        if let Some(use_bluetooth) = req.use_bluetooth {
-            our_prefs.use_bluetooth = Some(use_bluetooth);
-        }
         if let Some(skip_focus) = req.skip_focus {
             our_prefs.skip_focus = Some(skip_focus);
         }
@@ -1150,7 +1150,7 @@ impl Cedar for MyCedar {
             }
 
             if let Some(first_instant) = state.first_get_frame_time {
-                if first_instant.elapsed() >= Duration::from_secs(PAIRING_MODE_EXIT_DELAY_SECS) {
+                if !state.pairing_mode_forever && first_instant.elapsed() >= Duration::from_secs(PAIRING_MODE_EXIT_DELAY_SECS) {
                     let mut pairing_mode = state.pairing_mode.lock().await;
                     if *pairing_mode {
                         *pairing_mode = false;
@@ -1174,6 +1174,7 @@ impl Cedar for MyCedar {
             req.prev_frame_id,
             non_blocking,
             landscape,
+            is_bluetooth,
         )
         .await;
         let mut frame_result = FrameResult {
@@ -1673,25 +1674,18 @@ impl Cedar for MyCedar {
         &self,
         _request: tonic::Request<EmptyMessage>,
     ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
-        let (adapter_name, adapter_addr) = match get_adapter_info(&self.serial_number).await {
-            Ok((name, addr)) => (name, Some(addr)),
+        // Get the current Bluetooth adapter alias and address.
+        let (name, address) = match get_adapter_alias().await {
+            Ok((alias, addr)) => (alias, Some(addr)),
             Err(e) => {
                 warn!("Unable to get Bluetooth adapter info: {:?}", e);
-                ("cedar".to_string(), None)
+                ("".to_string(), None)
             }
         };
 
-        // Use WiFi access point name if available, otherwise use constructed
-        // adapter name.
-        let bt_name = if let Some(wifi) = self.state.lock().await.wifi.as_ref() {
-            wifi.lock().await.ssid()
-        } else {
-            adapter_name
-        };
-
         Ok(tonic::Response::new(GetBluetoothNameResponse {
-            name: bt_name,
-            address: adapter_addr,
+            name,
+            address,
         }))
     }
 
@@ -1739,11 +1733,21 @@ impl Cedar for MyCedar {
         request: tonic::Request<SetPairingModeRequest>,
     ) -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req = request.into_inner();
-        let state = self.state.lock().await;
-        let mut pairing_mode = state.pairing_mode.lock().await;
-        *pairing_mode = req.enabled;
+        let mut state = self.state.lock().await;
+        {
+            let mut pairing_mode = state.pairing_mode.lock().await;
+            *pairing_mode = req.enabled;
+        }
         if req.enabled {
-            info!("Entering pairing mode via RPC");
+            // Restart the get_frame pairing mode exit timer when entering
+            // pairing mode.
+            state.first_get_frame_time = None;
+            state.pairing_mode_forever = req.forever;
+            if req.forever {
+                info!("Entering pairing mode via RPC, will remain enabled");
+            } else {
+                info!("Entering pairing mode via RPC, timer restarted");
+            }
         } else {
             info!("Exiting pairing mode via RPC");
         }
@@ -2555,17 +2559,17 @@ impl MyCedar {
         bin_and_histogram_2x2(image, /* normalize_rows= */ false).binned
     }
 
-    fn jpeg_encode(img: &GrayImage) -> Vec<u8> {
+    // Quality:
+    // 75: 40x compression, bad artifacts.
+    // 90: 20x compression, mild artifacts.
+    // 95: 13x compression, almost no artifacts.
+    fn jpeg_encode(img: &GrayImage, jpeg_quality: u8) -> Vec<u8> {
         let (width, height) = img.dimensions();
         let mut jpg_buf = Vec::<u8>::with_capacity((width * height) as usize);
         let mut buffer = Cursor::new(&mut jpg_buf);
-        // 75: 40x compression, bad artifacts.
-        // 90: 20x compression, mild artifacts.
-        // 95: 13x compression, almost no artifacts.
         let mut jpeg_encoder = JpegEncoder::new_with_quality(
             &mut buffer,
-            // jpeg_quality=
-            95,
+            jpeg_quality,
         );
         jpeg_encoder.encode_image(img).unwrap();
         jpg_buf
@@ -2576,6 +2580,7 @@ impl MyCedar {
         prev_frame_id: Option<i32>,
         non_blocking: bool,
         landscape: bool,
+        is_bluetooth: bool,
     ) -> Option<FrameResult> {
         let mut frame_result = FrameResult {
             ..Default::default()
@@ -2650,6 +2655,8 @@ impl MyCedar {
 
         frame_result.skip_focus_active = skip_focus_active;
 
+        let jpeg_quality = if is_bluetooth { 20_u8 } else { 95_u8 };
+
         if calibrating {
             frame_result.calibrating = true;
             let time_spent_calibrating = calibration_start.elapsed();
@@ -2670,7 +2677,7 @@ impl MyCedar {
                 if let Some(img) = scaled_image_opt {
                     let (scaled_width, scaled_height) = img.dimensions();
                     // JPEG encoding now happens outside the state lock!
-                    let jpg_buf = Self::jpeg_encode(&img);
+                    let jpg_buf = Self::jpeg_encode(&img, jpeg_quality);
                     let image_rectangle = Rectangle {
                         origin_x: 0,
                         origin_y: 0,
@@ -2942,10 +2949,11 @@ impl MyCedar {
                         Self::bin_2x2(&center_peak_image);
                     binning_factor = 2;
                     center_peak_jpg_buf =
-                        Self::jpeg_encode(&binned_center_peak_image);
+                        Self::jpeg_encode(&binned_center_peak_image, jpeg_quality);
                 } else {
                     binning_factor = 1;
-                    center_peak_jpg_buf = Self::jpeg_encode(&center_peak_image);
+                    center_peak_jpg_buf = Self::jpeg_encode(&center_peak_image,
+                                                            jpeg_quality);
                 }
 
                 frame_result.center_peak_image = Some(Image {
@@ -2972,11 +2980,12 @@ impl MyCedar {
                         Self::bin_2x2(&daylight_focus_image);
                     binning_factor = 2;
                     daylight_focus_jpg_buf =
-                        Self::jpeg_encode(&binned_daylight_focus_image);
+                        Self::jpeg_encode(&binned_daylight_focus_image,
+                                          jpeg_quality);
                 } else {
                     binning_factor = 1;
                     daylight_focus_jpg_buf =
-                        Self::jpeg_encode(&daylight_focus_image);
+                        Self::jpeg_encode(&daylight_focus_image, jpeg_quality);
                 }
 
                 frame_result.daylight_focus_zoom_image = Some(Image {
@@ -3002,7 +3011,8 @@ impl MyCedar {
         // Save most recent display image.
         locked_state.scaled_image = Some(Arc::new(scaled_image));
         let jpg_buf =
-            Self::jpeg_encode(&locked_state.scaled_image.as_ref().unwrap());
+            Self::jpeg_encode(&locked_state.scaled_image.as_ref().unwrap(),
+                              jpeg_quality);
         locked_state.scaled_image_frame_id = frame_result.frame_id;
         frame_result.image = Some(Image {
             binning_factor: binning_factor as i32,
@@ -3041,7 +3051,8 @@ impl MyCedar {
 
                 let rotated_boresight_image =
                     irr.rotate_image_and_crop(&resized_boresight_image);
-                let jpg_buf = Self::jpeg_encode(&rotated_boresight_image);
+                let jpg_buf = Self::jpeg_encode(&rotated_boresight_image,
+                                                jpeg_quality);
 
                 let bsi_rect = psr.boresight_image_region.unwrap();
                 frame_result.boresight_image = Some(Image {
@@ -3438,7 +3449,6 @@ impl MyCedar {
             perf_gauge_choice: None,
             screen_always_on: Some(true),
             dont_show_items: Vec::new(),
-            use_bluetooth: None,
             skip_focus: None,
             skip_alignment: None,
         };
@@ -3632,6 +3642,7 @@ impl MyCedar {
                 args_binning,
                 args_display_sampling,
                 pairing_mode: Arc::new(tokio::sync::Mutex::new(true)),
+                pairing_mode_forever: false,
                 first_get_frame_time: None,
             }))
         };
@@ -4453,17 +4464,28 @@ async fn async_main(
     .await
     .unwrap();
 
-    let _use_bluetooth = cedar
-        .state
-        .lock()
-        .await
-        .preferences
-        .lock()
-        .await
-        .use_bluetooth;
-
     // Clone pairing_mode state before cedar is moved.
     let pairing_mode_state = cedar.state.lock().await.pairing_mode.clone();
+
+    // Initialize Bluetooth adapter name during startup.
+    {
+        let state = cedar.state.lock().await;
+        let bt_name = if let Some(wifi) = state.wifi.as_ref() {
+            let wifi_name = wifi.lock().await.ssid();
+            wifi_name
+        } else if cedar.serial_number.len() >= 3 {
+            let serial_name =
+                format!("cedar-{}",
+                        &cedar.serial_number[cedar.serial_number.len() - 3..]);
+            serial_name
+        } else {
+            "cedar".to_string()
+        };
+        drop(state);
+        if let Err(e) = set_adapter_name(&bt_name).await {
+            warn!("Failed to set Bluetooth adapter name during startup: {:?}", e);
+        }
+    }
 
     let cedar_server = CedarServer::new(cedar);
 

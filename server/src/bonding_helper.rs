@@ -3,88 +3,108 @@
 
 use std::{error::Error, str::FromStr, sync::Arc, time::Duration};
 
-use bluer::{
-    agent::{Agent, ReqResult, RequestConfirmation},
-    Address, Session,
-};
+use bluer::agent::Agent;
+use bluer::{Address, Session};
 use log::{info, warn};
 use tokio::{sync::mpsc, time::timeout};
-
-const BT_NAME_PREFIX: &str = "cedar-";
 
 pub struct BluetoothDevice {
     pub name: String,
     pub address: String,
 }
 
-pub async fn get_adapter_info(
-    serial: &str,
+/// Gets the Bluetooth adapter's current alias and address.
+///
+/// # Returns
+/// * `Ok((alias, address))` - The adapter's current alias and Bluetooth address
+/// * `Err(e)` - Error if the Bluetooth adapter cannot be accessed
+pub async fn get_adapter_alias(
 ) -> Result<(String, String), Box<dyn Error + 'static>> {
     let session = Session::new().await?;
     let adapter = session.default_adapter().await?;
     let address = adapter.address().await?;
-    let mut alias = adapter.alias().await?;
-    let expected_alias = if serial.len() < 3 {
-        warn!("Unexpected length for serial number: {}", serial);
-        "cedar".to_string()
-    } else {
-        format!("{}{}", BT_NAME_PREFIX, &serial[serial.len() - 3..])
-    };
-    if alias != expected_alias {
-        info!("Updating Bluetooth alias");
-        match adapter.set_alias(expected_alias.clone()).await {
+    let alias = adapter.alias().await?;
+
+    Ok((alias, address.to_string()))
+}
+
+/// Sets the Bluetooth adapter's name/alias.
+pub async fn set_adapter_name(
+    desired_name: &str,
+) -> Result<(), Box<dyn Error + 'static>> {
+    let session = Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    let alias = adapter.alias().await?;
+
+    if alias != desired_name {
+        match adapter.set_alias(desired_name.to_string()).await {
             Ok(_) => {
-                alias = expected_alias.to_string();
+                info!("Successfully updated Bluetooth alias to '{}'", desired_name);
             }
             Err(e) => {
                 warn!("Unable to update alias: {:?}", e);
+                return Err(Box::new(e) as Box<dyn Error + 'static>);
             }
         }
     }
 
-    info!("Current device alias: {}", alias);
-    Ok((alias, address.to_string()))
+    Ok(())
 }
 
 /// Run pairing mode indefinitely, respecting the pairing_mode flag.
 /// This function runs continuously and monitors the pairing_mode flag.
 /// When pairing_mode is true, the adapter is set to discoverable and pairable.
 /// When pairing_mode is false, the adapter is set to not discoverable and not pairable.
+///
+/// Registers a Bluetooth agent that auto-accepts pairing requests.
 pub async fn run_pairing_mode(
     pairing_mode: Arc<tokio::sync::Mutex<bool>>,
 ) -> Result<(), Box<dyn Error + 'static>> {
-    let session = Session::new().await?;
-    let adapter = session.default_adapter().await?;
-    adapter.set_powered(true).await?;
+    let session = Session::new().await.map_err(|e| {
+        warn!("Failed to create Bluetooth session: {:?}", e);
+        Box::new(e) as Box<dyn Error + 'static>
+    })?;
+    let adapter = session.default_adapter().await.map_err(|e| {
+        warn!("Failed to get default Bluetooth adapter: {:?}", e);
+        warn!("Make sure the BlueZ service (bluetoothd) is running. Start it with: sudo systemctl start bluetooth");
+        Box::new(e) as Box<dyn Error + 'static>
+    })?;
+    adapter.set_powered(true).await.map_err(|e| {
+        warn!("Failed to power on Bluetooth adapter: {:?}", e);
+        Box::new(e) as Box<dyn Error + 'static>
+    })?;
 
-    // Use a channel to pass device info from the agent.
-    let (tx, mut rx) = mpsc::channel(10);
+    let (tx, mut rx) = mpsc::channel::<Address>(1);
 
-    // Clone sender for the agent closure to capture.
-    let tx_req = tx.clone();
-
-    // Start pairing agent that accepts any requests.
+    // Register a Bluetooth agent that auto-accepts pairing confirmations.
+    let tx_confirm = tx.clone();
     let agent = Agent {
         request_default: true,
         request_confirmation: Some(Box::new(move |req| {
-            let tx = tx_req.clone();
-            Box::pin(request_confirmation(req, tx))
+            let tx = tx_confirm.clone();
+            Box::pin(async move {
+                info!("RequestConfirmation from {}: auto-accepting", req.device);
+                let _ = tx.try_send(req.device);
+                Ok(())
+            })
         })),
         ..Default::default()
     };
 
-    // Keep the handle in scope to keep the agent active.
-    let _handle = session.register_agent(agent).await?;
+    let _agent_handle = session.register_agent(agent).await.map_err(|e| {
+        warn!("Failed to register Bluetooth agent: {:?}", e);
+        Box::new(e) as Box<dyn Error + 'static>
+    })?;
 
-    info!("Bluetooth pairing mode loop started");
+    info!("Registered Bluetooth pairing agent");
 
-    let mut last_pairing_state = false;
+    let mut last_pairing_state: Option<bool> = None;
 
     loop {
         let current_pairing_state = *pairing_mode.lock().await;
 
-        // Update adapter state if pairing mode changed.
-        if current_pairing_state != last_pairing_state {
+        // Update adapter state if pairing mode changed or on first iteration.
+        if last_pairing_state != Some(current_pairing_state) {
             if current_pairing_state {
                 info!("Enabling Bluetooth pairing");
                 adapter.set_discoverable(true).await?;
@@ -95,15 +115,15 @@ pub async fn run_pairing_mode(
                 adapter.set_pairable(false).await?;
                 adapter.set_discoverable(false).await?;
             }
-            last_pairing_state = current_pairing_state;
+            last_pairing_state = Some(current_pairing_state);
         }
 
         // Check for incoming pairing requests with a timeout.
         match timeout(Duration::from_secs(5), rx.recv()).await {
-            Ok(Some((address, passkey))) => {
+            Ok(Some(address)) => {
                 let device = adapter.device(address)?;
                 let name = device.alias().await?;
-                info!("Paired with client {} (passkey: {})", name, passkey);
+                info!("Paired with client {}", name);
             }
             Ok(None) => {
                 // Channel closed, exit.
@@ -116,26 +136,6 @@ pub async fn run_pairing_mode(
     }
 
     info!("Pairing mode loop ended");
-    Ok(())
-}
-
-async fn request_confirmation(
-    req: RequestConfirmation,
-    tx: mpsc::Sender<(Address, u32)>,
-) -> ReqResult<()> {
-    info!(
-        "Pairing attempt from device {} with passkey {}",
-        req.device, req.passkey
-    );
-    match tx.send((req.device, req.passkey)).await {
-        Ok(_) => {
-            info!("Accepted pairing request from client {}", req.device);
-        }
-        Err(e) => {
-            warn!("Failed to send pairing confirmation for {}: {:?}",
-                  req.device, e);
-        }
-    }
     Ok(())
 }
 
