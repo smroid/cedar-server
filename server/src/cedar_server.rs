@@ -751,9 +751,6 @@ impl Cedar for MyCedar {
                             .await
                             .skip_focus
                             .unwrap_or(false);
-                        if skip_focus {
-                            locked_state.skip_focus_active = true;
-                        }
                         let spawn_fn = |state: Arc<tokio::sync::Mutex<CedarState>>| {
                             if skip_focus {
                                 Self::spawn_skip_focus_calibration(
@@ -1064,6 +1061,9 @@ impl Cedar for MyCedar {
         }
         if let Some(skip_focus) = req.skip_focus {
             our_prefs.skip_focus = Some(skip_focus);
+            if skip_focus {
+                locked_state.skip_focus_active = true;
+            }
         }
         if let Some(skip_alignment) = req.skip_alignment {
             our_prefs.skip_alignment = Some(skip_alignment);
