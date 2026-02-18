@@ -433,7 +433,7 @@ impl Cedar for MyCedar {
         // Also read skip_alignment preference for use below.
         let skip_alignment = {
             let locked_state = self.state.lock().await;
-            if locked_state.skip_focus_active &&
+            if locked_state.skip_focus_worker_running &&
                (req.operating_mode.is_some() || req.daylight_mode.is_some() ||
                 req.focus_assist_mode.is_some())
             {
