@@ -8,7 +8,7 @@ use cedar_server::cedar_server::server_main;
 fn main() {
     server_main(
         "Cedar-Box",
-        "Copyright (c) 2024 Steven Rosenthal smr@dt3.org.\n\
+        "Copyright (c) 2026 Steven Rosenthal smr@dt3.org.\n\
          Licensed for non-commercial use.\n\
          See LICENSE.md at https://github.com/smroid/cedar-server",
         /*flutter_app_path=*/"../cedar/cedar-aim/cedar_flutter/build/web",
