@@ -1123,10 +1123,27 @@ impl SolveEngine {
             slew_request.target_catalog_entry_distance = distance;
         }
 
-        if plate_solution.target_pixel.is_empty() {
-            return (Some(slew_request), None, None);
-        }
-        let img_coord = &plate_solution.target_pixel[0];
+        let computed_pixel;
+        let img_coord = if plate_solution.target_pixel.is_empty() {
+            // The solver didn't compute the target pixel (e.g. slew target was
+            // set after the solve). Compute it from the plate solution.
+            let mut rotation_matrix = [0.0_f64; 9];
+            for (idx, &c) in plate_solution.rotation_matrix.iter().enumerate() {
+                rotation_matrix[idx] = c;
+            }
+            let xy = transform_to_image_coord(
+                &[target_coords.ra, target_coords.dec],
+                width as usize,
+                height as usize,
+                plate_solution.fov,
+                &rotation_matrix,
+                plate_solution.distortion.unwrap_or(0.0),
+            );
+            computed_pixel = ImageCoord { x: xy[0], y: xy[1] };
+            &computed_pixel
+        } else {
+            &plate_solution.target_pixel[0]
+        };
         if img_coord.x < 0.0 {
             return (Some(slew_request), None, None);
         }
