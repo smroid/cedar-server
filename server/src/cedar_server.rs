@@ -3820,7 +3820,7 @@ impl MyCedar {
         polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
     ) -> (Option<CelestialCoord>, Option<CelestialCoord>) {
         // Notice when solve engine has recently changed its boresight due
-        // to a previous call to this callback function reporting a SkySafari
+        // to a previous call to this callback function reporting a telescope
         // sync.
         let mut prefs_to_save: Option<Preferences> = None;
         if let Some(bp) = boresight_pixel {
@@ -3848,7 +3848,7 @@ impl MyCedar {
             }
         } else {
             let plate_solution = plate_solution.unwrap();
-            // Update SkySafari telescope interface with our position.
+            // Update telescope interface with our position.
             let coords = if plate_solution.target_sky_coord.is_empty() {
                 plate_solution.image_sky_coord.as_ref().unwrap().clone()
             } else {
@@ -3866,7 +3866,7 @@ impl MyCedar {
                 Some(plate_solution.rmse),
             );
 
-            // Has SkySafari reported the site geolocation?
+            // Has telescope reported the site geolocation?
             if locked_telescope_position.site_latitude.is_some()
                 && locked_telescope_position.site_longitude.is_some()
             {
@@ -3878,7 +3878,7 @@ impl MyCedar {
                 };
                 fixed_settings.lock().await.observer_location =
                     Some(observer_location.clone());
-                info!("Alpaca updated observer location");
+                info!("Telescope updated observer location");
                 locked_telescope_position.site_latitude = None;
                 locked_telescope_position.site_longitude = None;
                 // Save in preferences.
@@ -3888,7 +3888,7 @@ impl MyCedar {
                 // Flag updated preferences to write to file below.
                 prefs_to_save = Some(locked_preferences.clone());
             }
-            // Has SkySafari reported the time?
+            // Has telescope reported the time?
             if let Some(dt) = locked_telescope_position.utc_date.take() {
                 if let Ok(duration) = dt.duration_since(std::time::UNIX_EPOCH) {
                     _ = Self::set_server_time(TimeSpec::new(
@@ -3899,7 +3899,7 @@ impl MyCedar {
                     warn!("Unable to set server time to {:?}", dt);
                 }
             }
-            // Has SkySafari done a "sync"?
+            // Has telescope done a "sync"?
             if locked_telescope_position.sync_ra.is_some()
                 && locked_telescope_position.sync_dec.is_some()
             {
@@ -3907,7 +3907,7 @@ impl MyCedar {
                     ra: locked_telescope_position.sync_ra.unwrap(),
                     dec: locked_telescope_position.sync_dec.unwrap(),
                 });
-                info!("Alpaca synced boresight to {:?}", sync_coord);
+                info!("Telescope synced boresight to {:?}", sync_coord);
                 locked_telescope_position.sync_ra = None;
                 locked_telescope_position.sync_dec = None;
             }
@@ -4535,7 +4535,7 @@ async fn async_main(
     // Spin up servers for reporting our RA/Dec solution as the telescope
     // position.
 
-    // Function called whenever SkySafari interrogates our position.
+    // Function called whenever telescope interrogates our position.
     let async_callback = Box::new(move || {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
