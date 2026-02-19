@@ -3072,16 +3072,24 @@ impl MyCedar {
                 let slew_request =
                     &mut frame_result.slew_request.as_mut().unwrap();
                 if slew_request.image_pos.is_some() {
-                    // Apply rotator to slew target.
-                    let slew_target_image_pos =
-                        &mut slew_request.image_pos.as_mut().unwrap();
-                    (slew_target_image_pos.x, slew_target_image_pos.y) = irr
-                        .transform_to_rotated(
-                            slew_target_image_pos.x,
-                            slew_target_image_pos.y,
-                            width,
-                            height,
-                        );
+                    // The solver populates image_pos when the slew target is
+                    // within the camera image. When we apply the image rotator,
+                    // the slew target might not be in the rotated/cropped
+                    // result, in which case we set it to None.
+                    let pos = slew_request.image_pos.as_ref().unwrap();
+                    let (rx, ry) = irr.transform_to_rotated(
+                        pos.x, pos.y, width, height);
+                    let square_size = height as f64;
+                    if rx >= 0.0 && rx < square_size
+                        && ry >= 0.0 && ry < square_size
+                    {
+                        let slew_target_image_pos =
+                            slew_request.image_pos.as_mut().unwrap();
+                        slew_target_image_pos.x = rx;
+                        slew_target_image_pos.y = ry;
+                    } else {
+                        slew_request.image_pos = None;
+                    }
                 }
                 if let Some(ta) = slew_request.target_angle {
                     // Apply rotator to slew direction.
