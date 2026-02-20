@@ -51,7 +51,7 @@ impl Lx200Telescope for Lx200WifiTelescope {
                     self.controller.handle_connection(reader, writer).await;
                 }
                 Err(e) => {
-                    warn!("Failed to accept connection: {}", e);
+                    warn!("Failed to accept connection: {:?}", e);
                 }
             }
         }
