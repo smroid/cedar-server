@@ -332,17 +332,19 @@ December 22 2025
 
 February 20 2026
 
-* Cedar always starts Bluetooth server for SkySafary/Stellarium, don't need to enable.
+* Cedar always starts Bluetooth server for SkySafari/Stellarium, don't need to enable.
 
-* Cedar always starts Bluetooth server for Cedar Aim app (Android only; not web app).
+* Cedar always starts Bluetooth server for Cedar Aim app (Android only; not web app), don't need to enable.
 
 * Make Cedar's Bluetooth device name same as WiFi access point name.
 
 * Provide controls for skipping focus and/or align steps (and restoring them).
 
-* Enable Bluetooth pairing to Cedar at startup; auto-disable after receiving get_frame RPC. Provide option to keep pairing on.
+* Enable Bluetooth pairing to Cedar at startup; auto-disable after receiving get_frame RPC. Provide control to enable/disable pairing with option to keep pairing on.
 
 * Fix bug in determining whether slew target is on-screen.
+
+* Fix jank when first displaying slew target.
 
 * Fix WiFi access point security configuration; fixes problems with Samsung devices not connecting and iOS warning about insecure connection.
 
