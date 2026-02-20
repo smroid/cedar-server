@@ -1180,11 +1180,6 @@ mod tests {
             controller.process_input(b":GW#").await.as_deref(),
             Some("AT1")
         );
-        // Ack command is unterminated should result in A for Alt-Az mode
-        assert_eq!(
-            controller.process_input(b"\x06").await.as_deref(),
-            Some("A")
-        );
     }
 
     #[tokio::test]
@@ -1213,17 +1208,66 @@ mod tests {
     // --- Special Case Tests ---
 
     #[tokio::test]
+    async fn test_handle_connection_ack() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut controller, _) = setup_controller().await;
+        let (client, server) = tokio::io::duplex(1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+
+        let server_handle = tokio::spawn(async move {
+            controller
+                .handle_connection(server_read, server_write)
+                .await;
+            controller
+        });
+
+        // Ack command is unterminated, should result in A for Alt-Az mode
+        client_write.write_all(b"\x06").await.unwrap();
+
+        let mut buf = [0; 64];
+        let len = client_read.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"A");
+
+        // Shut down the client write half so the server sees EOF and exits
+        client_write.shutdown().await.unwrap();
+
+        let controller = server_handle.await.unwrap();
+        assert!(controller.is_stellarium);
+    }
+
+    #[tokio::test]
     async fn test_process_input_leading_hash() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
         let (mut controller, _) = setup_controller().await;
         controller.jnow_epoch = 2000.0;
 
+        let (client, server) = tokio::io::duplex(1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+
+        let server_handle = tokio::spawn(async move {
+            controller
+                .handle_connection(server_read, server_write)
+                .await;
+        });
+
         // Stellarium sends a leading #
-        let result = controller.process_input(b"#:GR#").await;
-        assert_eq!(result.as_deref(), Some("00:00:00#"));
+        client_write.write_all(b"#:GR#").await.unwrap();
+
+        let mut buf = [0; 64];
+        let len = client_read.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"00:00:00#");
+
+        server_handle.abort();
     }
 
     #[tokio::test]
     async fn test_process_input_multiple_commands() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
         let (mut controller, position_arc) = setup_controller().await;
         controller.jnow_epoch = 2000.0;
 
@@ -1232,25 +1276,37 @@ mod tests {
             locked_position.boresight_valid = true;
         }
 
+        let (client, server) = tokio::io::duplex(1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+
+        let server_handle = tokio::spawn(async move {
+            controller
+                .handle_connection(server_read, server_write)
+                .await;
+        });
+
         // SkySafari in Bluetooth mode sets slew rate and gets RA together
-        let result = controller.process_input(b":RS#:GR#").await;
-        assert_eq!(result.as_deref(), Some("00:00:00#"));
+        client_write.write_all(b":RS#:GR#").await.unwrap();
+        let mut buf = [0; 64];
+        let mut len = client_read.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"00:00:00#");
 
         // Make sure 2 commands that need responses get a concatenated response
-        // although no client does this
-        let result2 = controller.process_input(b":GR#:GD#").await;
-        assert_eq!(result2.as_deref(), Some("00:00:00#+00*00'00#"));
+        client_write.write_all(b":GR#:GD#").await.unwrap();
+        buf = [0; 64];
+        len = client_read.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"00:00:00#+00*00'00#");
+
+        server_handle.abort();
     }
 
     #[tokio::test]
     async fn test_stellarium_mode_no_precess() {
         let (mut controller, position_arc) = setup_controller().await;
         controller.jnow_epoch = 2026.0;
-
-        // Ack should toggle is_stellarium
-        let ack_result = controller.process_input(b"\x06").await;
-        assert_eq!(ack_result.as_deref(), Some("A"));
-        assert!(controller.is_stellarium);
+        // Toggle is_stellarium directly as the ack command is tested separately
+        controller.is_stellarium = true;
 
         // Use 10h RA (150 degrees) and +45d Dec
         let internal_ra = 150.0;
