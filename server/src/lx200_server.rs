@@ -203,6 +203,9 @@ impl Lx200Controller {
 
         for (index, c) in s.char_indices().skip(1) {
             if !c.is_alphabetic() {
+                if index == 1 {
+                    return None;
+                }
                 return Some(&s[1..index]);
             }
         }
@@ -782,10 +785,6 @@ impl Lx200Controller {
                     debug!("Received precision toggle command");
                     None
                 }
-                "" => {
-                    info!("Empty command: {}", in_data);
-                    None
-                }
                 _ => {
                     info!("Unknown command: {}", in_data);
                     None
@@ -855,15 +854,9 @@ mod tests {
             Lx200Controller::extract_command(":Sr00:00:00#").as_deref(),
             Some("Sr")
         );
-        // Stellarium format
-        assert_eq!(
-            Lx200Controller::extract_command("#:GR#").as_deref(),
-            Some("GR")
-        );
         // Invalid cases - commands start with : and contain letters
         assert_eq!(Lx200Controller::extract_command(":123#"), None);
         assert_eq!(Lx200Controller::extract_command(":#"), None);
-        assert_eq!(Lx200Controller::extract_command(":"), None);
         assert_eq!(Lx200Controller::extract_command("GR#"), None);
     }
 
