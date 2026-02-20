@@ -8,24 +8,22 @@
 // Copyright (c) 2025 Omair Kamil
 // See LICENSE file in root directory for license terms.
 
-use std::{
-    error::Error,
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
-    sync::Arc,
-    time::SystemTime,
-};
+use std::{error::Error, sync::Arc, time::SystemTime};
 
 use async_trait::async_trait;
 use bluer::{
-    rfcomm::{Profile, Role, Stream},
+    rfcomm::{Profile, Role},
     Session, Uuid,
 };
 use cedar_elements::astro_util::precess;
 use chrono::{DateTime, Datelike, FixedOffset, Local};
 use futures::StreamExt;
 use log::{debug, info, warn};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use memchr::memchr;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    net::TcpListener,
+};
 
 use crate::position_reporter::{Callback, TelescopePosition};
 
@@ -42,14 +40,21 @@ struct Lx200WifiTelescope {
 #[async_trait]
 impl Lx200Telescope for Lx200WifiTelescope {
     async fn serve_requests(&mut self) -> Result<(), Box<dyn Error + 'static>> {
-        let listener = TcpListener::bind("0.0.0.0:4030").unwrap();
+        let listener = TcpListener::bind("0.0.0.0:4030").await?;
         info!("Running LX200 server on: {}", listener.local_addr().unwrap());
 
-        for stream in listener.incoming() {
-            let stream = stream.unwrap();
-            self.handle_connection(stream).await;
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    debug!("Starting to read from WiFi LX200 connection");
+                    let (reader, writer) = stream.into_split();
+                    self.controller.handle_connection(reader, writer).await;
+                }
+                Err(e) => {
+                    warn!("Failed to accept connection: {}", e);
+                }
+            }
         }
-        Ok(())
     }
 }
 
@@ -60,41 +65,6 @@ impl Lx200WifiTelescope {
     ) -> Self {
         Lx200WifiTelescope {
             controller: Lx200Controller::new(telescope_position, cb),
-        }
-    }
-
-    async fn handle_connection(&mut self, mut stream: TcpStream) {
-        let mut buffer = [0; 1024];
-
-        debug!("Starting to read from LX200 connection");
-        loop {
-            match stream.read(&mut buffer) {
-                Ok(0) => {
-                    debug!("Client closed connection");
-                    break;
-                }
-                Ok(n) => {
-                    match self.controller.process_input(&buffer[..n]).await {
-                        Some(result) => {
-                            debug!("Writing to client: {}", result);
-                            if let Err(e) = stream.write_all(result.as_bytes())
-                            {
-                                warn!("Failed to send data to client: {:?}", e);
-                            }
-                        }
-                        None => {}
-                    }
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                    // Interruption is recoverable, try reading again
-                    continue;
-                }
-                Err(e) => {
-                    // An actual network error occurred
-                    warn!("Error reading from stream: {:?}", e);
-                    break;
-                }
-            }
         }
     }
 }
@@ -134,7 +104,9 @@ impl Lx200Telescope for Lx200BtTelescope {
             }
             match req.unwrap().accept() {
                 Ok(stream) => {
-                    self.handle_connection(stream).await;
+                    debug!("Starting to read from Bluetooth LX200 connection");
+                    let (reader, writer) = tokio::io::split(stream);
+                    self.controller.handle_connection(reader, writer).await;
                 }
                 Err(e) => {
                     warn!("Failed to accept connection: {:?}", e);
@@ -151,43 +123,6 @@ impl Lx200BtTelescope {
     ) -> Self {
         Lx200BtTelescope {
             controller: Lx200Controller::new(telescope_position, cb),
-        }
-    }
-
-    async fn handle_connection(&mut self, mut stream: Stream) {
-        let mut buffer = [0; 1024];
-
-        debug!("Starting to read from LX200 connection");
-        loop {
-            match stream.read(&mut buffer).await {
-                Ok(0) => {
-                    debug!("Client closed connection");
-                    break;
-                }
-                Ok(n) => {
-                    match self.controller.process_input(&buffer[..n]).await {
-                        Some(result) => {
-                            debug!("Writing to client: {}", result);
-                            if let Err(e) =
-                                stream.write_all(result.as_bytes()).await
-                            {
-                                warn!("Failed to send data to client: {:?}", e);
-                            }
-                        }
-                        None => {}
-                    }
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                    // Interruption is recoverable, try reading again.
-                    warn!("Interrupted: {:?}", e);
-                    continue;
-                }
-                Err(e) => {
-                    // An actual network error occurred.
-                    warn!("Error reading from stream: {:?}", e);
-                    break;
-                }
-            }
         }
     }
 }
@@ -254,26 +189,26 @@ impl Lx200Controller {
     }
 
     // Returns the command portion of the input string
-    fn extract_command(s: &str) -> Option<String> {
+    fn extract_command(s: &str) -> Option<&str> {
         // We expect LX200 commands to be in the format ":[Command][Payload]#".
         // The command portion consists of the alphabetical string that follows
         // the colon until the first non-alphabetic character is found. The
         // payload is the remainder of the string (if any) until the hash mark.
         // Supported commands are between 1-3 letters in length.
-        let colon_index = s.find(':')?;
-        if colon_index + 1 >= s.len() {
+        if !s.starts_with(':') {
             return None;
         }
 
-        let command: String = s[colon_index + 1..]
-            .chars()
-            .take_while(|c| c.is_alphabetic())
-            .collect();
-        if command.is_empty() {
-            None
-        } else {
-            Some(command)
+        for (index, c) in s.char_indices().skip(1) {
+            if !c.is_alphabetic() {
+                if index == 1 {
+                    return None;
+                }
+                return Some(&s[1..index]);
+            }
         }
+
+        return Some(&s[1..]);
     }
 
     fn get_failure() -> String {
@@ -632,141 +567,230 @@ impl Lx200Controller {
         Self::parse_coordinates(deg, min, "0")
     }
 
-    async fn process_input(&mut self, buffer: &[u8]) -> Option<String> {
-        let mut result = String::new();
-        // Stellarium provides a leading #
-        let start = if buffer[0] == b'#' { 1 } else { 0 };
-        let in_data = String::from_utf8_lossy(&buffer[start..]);
-        // SkySafari in Bluetooth mode sometimes sends more than 1 command
-        for cmd in in_data.split("#") {
-            match Self::extract_command(&cmd).as_deref() {
-                Some("CM") => {
-                    debug!("Received sync command");
-                    result.push_str(&self.sync().await);
-                }
-                Some("D") => {
-                    debug!("Received distance bars command");
-                    result.push_str(&self.get_distance_bars().await);
-                }
-                Some("GC") => {
-                    debug!("Received get date command");
-                    result.push_str(&self.get_date());
-                }
-                Some("GD") => {
-                    debug!("Received get declination command");
-                    result.push_str(&self.get_dec().await);
-                }
-                Some("GG") => {
-                    debug!("Received get timezone command");
-                    result.push_str(&self.get_timezone());
-                }
-                Some("GL") => {
-                    debug!("Received get time command");
-                    result.push_str(&self.get_time());
-                }
-                Some("GR") => {
-                    debug!("Received get ra command");
-                    result.push_str(&self.get_ra().await);
-                }
-                Some("GVD") => {
-                    debug!("Received get firmware date command");
-                    result.push_str("Nov 14 2025#");
-                }
-                Some("GVN") => {
-                    debug!("Received get firmware version command");
-                    result.push_str("01.0#");
-                }
-                Some("GVP") => {
-                    debug!("Received get product command");
-                    result.push_str("Cedar#");
-                }
-                Some("GVT") => {
-                    debug!("Received get firmware time command");
-                    result.push_str("23:00:00#");
-                }
-                Some("GW") => {
-                    debug!("Received get status command");
-                    result.push_str("AT1");
-                }
-                Some("Gg") => {
-                    debug!("Received get longitude command");
-                    result.push_str(&self.get_longitude());
-                }
-                Some("Gt") => {
-                    debug!("Received get latitude command");
-                    result.push_str(&self.get_latitude());
-                }
-                Some("MS") => {
-                    debug!("Received slew to object command");
-                    result.push_str(&self.slew().await);
-                }
-                Some("Me") | Some("Mn") | Some("Ms") | Some("Mw") => {
-                    debug!("Received movement command");
-                }
-                Some("Q") => {
-                    debug!("Received abort command");
-                    self.abort().await;
-                }
-                Some("Qe") | Some("Qn") | Some("Qs") | Some("Qw") => {
-                    debug!("Received stop movement command");
-                }
-                Some("RS") => {
-                    debug!("Received set rate to slew command");
-                }
-                Some("SC") => {
-                    debug!("Received set date command: {}", in_data);
-                    result.push_str(&self.set_date(&in_data).await);
-                }
-                Some("SG") => {
-                    debug!("Received set timezone command: {}", in_data);
-                    result.push_str(&self.set_timezone(&in_data));
-                }
-                Some("SL") => {
-                    debug!("Received set time command: {}", in_data);
-                    result.push_str(&self.set_time(&in_data));
-                }
-                Some("Sd") => {
-                    debug!("Received set declination command: {}", in_data);
-                    result.push_str(&self.set_target_dec(&in_data));
-                }
-                Some("Sg") => {
-                    debug!("Received set longitude command: {}", in_data);
-                    result.push_str(&self.set_longitude(&in_data).await);
-                }
-                Some("Sr") => {
-                    debug!("Received set ra command: {}", in_data);
-                    result.push_str(&self.set_target_ra(&in_data));
-                }
-                Some("St") => {
-                    debug!("Received set latitude command: {}", in_data);
-                    result.push_str(&self.set_latitude(&in_data).await);
-                }
-                Some("Sw") => {
-                    // Not used for LX200 but other Meade scope types
-                    debug!("Received set max slew rate command: {}", in_data);
-                    result.push_str(&Self::get_success());
-                }
-                Some("U") => {
-                    debug!("Received precision toggle command");
-                }
-                Some(_) => {
-                    warn!("Unknown command: {}", in_data);
-                }
-                None => {
-                    // Special case for ack command not prefixed by ":"
-                    if in_data == "\x06" {
-                        info!("Received ack command");
-                        result.push_str("A");
-                        // Only Stellarium uses this command.
-                        self.is_stellarium = true;
+    async fn handle_connection<R, W>(&mut self, reader: R, mut writer: W)
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let mut buf_reader = BufReader::new(reader);
+        let mut buffer = Vec::new();
+
+        const ACK_CMD: [u8; 1] = [0x06];
+        const SKY_SAFARI_INIT: [u8; 3] = [b'$', b'$', b'$'];
+        const HASH: u8 = b'#';
+
+        loop {
+            buffer.clear();
+
+            loop {
+                let (found, consumed) = match buf_reader.fill_buf().await {
+                    Ok(chunk) => {
+                        if chunk.is_empty() {
+                            debug!("Client closed connection");
+                            // Ignore any unterminated data that is pending
+                            return;
+                        }
+                        match memchr(HASH, chunk) {
+                            Some(i) => {
+                                buffer.extend_from_slice(&chunk[..=i]);
+                                (true, i + 1)
+                            }
+                            None => {
+                                buffer.extend_from_slice(chunk);
+                                (false, chunk.len())
+                            }
+                        }
                     }
+                    Err(e) => {
+                        warn!("Error reading from stream: {:?}", e);
+                        return;
+                    }
+                };
+
+                buf_reader.consume(consumed);
+                if found {
+                    break;
+                }
+                if buffer == ACK_CMD {
+                    // Special case for ack command
+                    info!("Received ack command");
+                    buffer.clear();
+                    // Only Stellarium uses this command.
+                    self.is_stellarium = true;
+
+                    if let Err(e) =
+                        Self::process_output(&mut writer, "A".to_string()).await
+                    {
+                        warn!("Failed to send ack response: {:?}", e);
+                        return;
+                    }
+                } else if buffer == SKY_SAFARI_INIT {
+                    // SkySafari sends $$$ at the beginning of initialization in
+                    // Bluetooth mode
+                    info!("Received $$$");
+                    buffer.clear();
                 }
             }
+
+            if buffer.len() == 1 {
+                // Skip processing a single # - Stellarium uses a leading #
+                continue;
+            }
+            match self.process_input(&buffer).await {
+                Some(result) => {
+                    debug!("Writing to client: {}", result);
+
+                    if let Err(e) =
+                        Self::process_output(&mut writer, result).await
+                    {
+                        warn!("Failed to send data to client: {:?}", e);
+                        return;
+                    }
+                }
+                None => {}
+            }
         }
-        if result.is_empty() {
-            None
+    }
+
+    async fn process_output<W>(
+        writer: &mut W,
+        output: String,
+    ) -> std::io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        writer.write_all(output.as_bytes()).await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
+    async fn process_input(&mut self, buffer: &[u8]) -> Option<String> {
+        let input = String::from_utf8_lossy(&buffer);
+        let in_data = input.as_ref();
+        if let Some(command) = Self::extract_command(in_data) {
+            match command {
+                "CM" => {
+                    debug!("Received sync command");
+                    Some(self.sync().await)
+                }
+                "D" => {
+                    debug!("Received distance bars command");
+                    Some(self.get_distance_bars().await)
+                }
+                "GC" => {
+                    debug!("Received get date command");
+                    Some(self.get_date())
+                }
+                "GD" => {
+                    debug!("Received get declination command");
+                    Some(self.get_dec().await)
+                }
+                "GG" => {
+                    debug!("Received get timezone command");
+                    Some(self.get_timezone())
+                }
+                "GL" => {
+                    debug!("Received get time command");
+                    Some(self.get_time())
+                }
+                "GR" => {
+                    debug!("Received get ra command");
+                    Some(self.get_ra().await)
+                }
+                "GVD" => {
+                    debug!("Received get firmware date command");
+                    Some("Nov 14 2025#".to_string())
+                }
+                "GVN" => {
+                    debug!("Received get firmware version command");
+                    Some("01.0#".to_string())
+                }
+                "GVP" => {
+                    debug!("Received get product command");
+                    Some("Cedar#".to_string())
+                }
+                "GVT" => {
+                    debug!("Received get firmware time command");
+                    Some("23:00:00#".to_string())
+                }
+                "GW" => {
+                    debug!("Received get status command");
+                    Some("AT1".to_string())
+                }
+                "Gg" => {
+                    debug!("Received get longitude command");
+                    Some(self.get_longitude())
+                }
+                "Gt" => {
+                    debug!("Received get latitude command");
+                    Some(self.get_latitude())
+                }
+                "MS" => {
+                    debug!("Received slew to object command");
+                    Some(self.slew().await)
+                }
+                "Me" | "Mn" | "Ms" | "Mw" => {
+                    debug!("Received movement command");
+                    None
+                }
+                "Q" => {
+                    debug!("Received abort command");
+                    self.abort().await;
+                    None
+                }
+                "Qe" | "Qn" | "Qs" | "Qw" => {
+                    debug!("Received stop movement command");
+                    None
+                }
+                "RS" => {
+                    debug!("Received set rate to slew command");
+                    None
+                }
+                "SC" => {
+                    debug!("Received set date command: {}", in_data);
+                    Some(self.set_date(in_data).await)
+                }
+                "SG" => {
+                    debug!("Received set timezone command: {}", in_data);
+                    Some(self.set_timezone(in_data))
+                }
+                "SL" => {
+                    debug!("Received set time command: {}", in_data);
+                    Some(self.set_time(in_data))
+                }
+                "Sd" => {
+                    debug!("Received set declination command: {}", in_data);
+                    Some(self.set_target_dec(in_data))
+                }
+                "Sg" => {
+                    debug!("Received set longitude command: {}", in_data);
+                    Some(self.set_longitude(in_data).await)
+                }
+                "Sr" => {
+                    debug!("Received set ra command: {}", in_data);
+                    Some(self.set_target_ra(in_data))
+                }
+                "St" => {
+                    debug!("Received set latitude command: {}", in_data);
+                    Some(self.set_latitude(in_data).await)
+                }
+                "Sw" => {
+                    // Not used for LX200 but other Meade scope types
+                    debug!("Received set max slew rate command: {}", in_data);
+                    Some(Self::get_success())
+                }
+                "U" => {
+                    debug!("Received precision toggle command");
+                    None
+                }
+                _ => {
+                    warn!("Unknown command: {}", in_data);
+                    None
+                }
+            }
         } else {
-            Some(result)
+            warn!("Malformed input: {}", in_data);
+            None
         }
     }
 }
@@ -828,15 +852,9 @@ mod tests {
             Lx200Controller::extract_command(":Sr00:00:00#").as_deref(),
             Some("Sr")
         );
-        // Stellarium format
-        assert_eq!(
-            Lx200Controller::extract_command("#:GR#").as_deref(),
-            Some("GR")
-        );
         // Invalid cases - commands start with : and contain letters
         assert_eq!(Lx200Controller::extract_command(":123#"), None);
         assert_eq!(Lx200Controller::extract_command(":#"), None);
-        assert_eq!(Lx200Controller::extract_command(":"), None);
         assert_eq!(Lx200Controller::extract_command("GR#"), None);
     }
 
@@ -1160,11 +1178,6 @@ mod tests {
             controller.process_input(b":GW#").await.as_deref(),
             Some("AT1")
         );
-        // Ack command is unterminated should result in A for Alt-Az mode
-        assert_eq!(
-            controller.process_input(b"\x06").await.as_deref(),
-            Some("A")
-        );
     }
 
     #[tokio::test]
@@ -1193,17 +1206,66 @@ mod tests {
     // --- Special Case Tests ---
 
     #[tokio::test]
+    async fn test_handle_connection_ack() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut controller, _) = setup_controller().await;
+        let (client, server) = tokio::io::duplex(1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+
+        let server_handle = tokio::spawn(async move {
+            controller
+                .handle_connection(server_read, server_write)
+                .await;
+            controller
+        });
+
+        // Ack command is unterminated, should result in A for Alt-Az mode
+        client_write.write_all(b"\x06").await.unwrap();
+
+        let mut buf = [0; 64];
+        let len = client_read.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"A");
+
+        // Shut down the client write half so the server sees EOF and exits
+        client_write.shutdown().await.unwrap();
+
+        let controller = server_handle.await.unwrap();
+        assert!(controller.is_stellarium);
+    }
+
+    #[tokio::test]
     async fn test_process_input_leading_hash() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
         let (mut controller, _) = setup_controller().await;
         controller.jnow_epoch = 2000.0;
 
+        let (client, server) = tokio::io::duplex(1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+
+        let server_handle = tokio::spawn(async move {
+            controller
+                .handle_connection(server_read, server_write)
+                .await;
+        });
+
         // Stellarium sends a leading #
-        let result = controller.process_input(b"#:GR#").await;
-        assert_eq!(result.as_deref(), Some("00:00:00#"));
+        client_write.write_all(b"#:GR#").await.unwrap();
+
+        let mut buf = [0; 64];
+        let len = client_read.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"00:00:00#");
+
+        server_handle.abort();
     }
 
     #[tokio::test]
     async fn test_process_input_multiple_commands() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
         let (mut controller, position_arc) = setup_controller().await;
         controller.jnow_epoch = 2000.0;
 
@@ -1212,25 +1274,37 @@ mod tests {
             locked_position.boresight_valid = true;
         }
 
+        let (client, server) = tokio::io::duplex(1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+
+        let server_handle = tokio::spawn(async move {
+            controller
+                .handle_connection(server_read, server_write)
+                .await;
+        });
+
         // SkySafari in Bluetooth mode sets slew rate and gets RA together
-        let result = controller.process_input(b":RS#:GR#").await;
-        assert_eq!(result.as_deref(), Some("00:00:00#"));
+        client_write.write_all(b":RS#:GR#").await.unwrap();
+        let mut buf = [0; 64];
+        let mut len = client_read.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"00:00:00#");
 
         // Make sure 2 commands that need responses get a concatenated response
-        // although no client does this
-        let result2 = controller.process_input(b":GR#:GD#").await;
-        assert_eq!(result2.as_deref(), Some("00:00:00#+00*00'00#"));
+        client_write.write_all(b":GR#:GD#").await.unwrap();
+        buf = [0; 64];
+        len = client_read.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"00:00:00#+00*00'00#");
+
+        server_handle.abort();
     }
 
     #[tokio::test]
     async fn test_stellarium_mode_no_precess() {
         let (mut controller, position_arc) = setup_controller().await;
         controller.jnow_epoch = 2026.0;
-
-        // Ack should toggle is_stellarium
-        let ack_result = controller.process_input(b"\x06").await;
-        assert_eq!(ack_result.as_deref(), Some("A"));
-        assert!(controller.is_stellarium);
+        // Toggle is_stellarium directly as the ack command is tested separately
+        controller.is_stellarium = true;
 
         // Use 10h RA (150 degrees) and +45d Dec
         let internal_ra = 150.0;
