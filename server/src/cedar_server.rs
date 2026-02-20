@@ -3559,33 +3559,81 @@ impl MyCedar {
                 Duration::from_secs_f64(2.0),
             )));
         let closure_polar_analyzer = polar_analyzer.clone();
-        let closure = Arc::new(
+
+        // Pre-solve callback: gets the current slew target and sync coordinates
+        // before the plate solve runs.
+        let pre_solve_closure_telescope_position = closure_telescope_position.clone();
+        let pre_solve_callback = Arc::new(
+            move || -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                        Output = (Option<CelestialCoord>, Option<CelestialCoord>),
+                    > + Send,
+                >,
+            > {
+                let telescope_pos = pre_solve_closure_telescope_position.clone();
+                Box::pin(async move {
+                    let mut locked_telescope_position = telescope_pos.lock().await;
+                    let slew_target = if locked_telescope_position.slew_active {
+                        Some(CelestialCoord {
+                            ra: locked_telescope_position.slew_target_ra,
+                            dec: locked_telescope_position.slew_target_dec,
+                        })
+                    } else {
+                        None
+                    };
+                    let sync_coord = if locked_telescope_position.sync_ra.is_some()
+                        && locked_telescope_position.sync_dec.is_some()
+                    {
+                        Some(CelestialCoord {
+                            ra: locked_telescope_position.sync_ra.unwrap(),
+                            dec: locked_telescope_position.sync_dec.unwrap(),
+                        })
+                    } else {
+                        None
+                    };
+                    // Clear sync flags after reading them.
+                    if sync_coord.is_some() {
+                        info!("Telescope synced boresight to {:?}", sync_coord);
+                        locked_telescope_position.sync_ra = None;
+                        locked_telescope_position.sync_dec = None;
+                    }
+                    (slew_target, sync_coord)
+                })
+            },
+        );
+
+        // Post-solve callback: processes the plate solution results and updates
+        // server state (motion estimator, polar analyzer, preferences).
+        let post_solve_closure_fixed_settings = closure_fixed_settings.clone();
+        let post_solve_closure_preferences = closure_preferences.clone();
+        let post_solve_closure_preferences_file = closure_preferences_file.clone();
+        let post_solve_closure_telescope_position = closure_telescope_position.clone();
+        let post_solve_motion_estimator = motion_estimator.clone();
+        let post_solve_closure_polar_analyzer = closure_polar_analyzer.clone();
+        let post_solve_callback = Arc::new(
             move |boresight_pixel: Option<ImageCoord>,
                   detect_result: Option<DetectResult>,
                   plate_solution: Option<PlateSolutionProto>|
                   -> std::pin::Pin<
                 Box<
-                    dyn std::future::Future<
-                            Output = (
-                                Option<CelestialCoord>,
-                                Option<CelestialCoord>,
-                            ),
-                        > + Send,
+                    dyn std::future::Future<Output = ()> + Send,
                 >,
             > {
-                Box::pin(Self::solution_callback(
+                Box::pin(Self::post_solve_callback(
                     boresight_pixel,
                     detect_result,
                     plate_solution,
-                    closure_fixed_settings.clone(),
-                    closure_preferences.clone(),
-                    closure_preferences_file.clone(),
-                    closure_telescope_position.clone(),
-                    motion_estimator.clone(),
-                    closure_polar_analyzer.clone(),
+                    post_solve_closure_fixed_settings.clone(),
+                    post_solve_closure_preferences.clone(),
+                    post_solve_closure_preferences_file.clone(),
+                    post_solve_closure_telescope_position.clone(),
+                    post_solve_motion_estimator.clone(),
+                    post_solve_closure_polar_analyzer.clone(),
                 ))
             },
         );
+
         let state = {
             Arc::new(tokio::sync::Mutex::new(CedarState {
                 solver: solver.clone(),
@@ -3619,7 +3667,8 @@ impl MyCedar {
                         imu_tracker.clone(),
                         detect_engine.clone(),
                         stats_capacity,
-                        closure,
+                        pre_solve_callback,
+                        post_solve_callback,
                     )
                     .unwrap(),
                 )),
@@ -3808,7 +3857,7 @@ impl MyCedar {
         Ok(content)
     }
 
-    async fn solution_callback(
+    async fn post_solve_callback(
         boresight_pixel: Option<ImageCoord>,
         detect_result: Option<DetectResult>,
         plate_solution: Option<PlateSolutionProto>,
@@ -3818,10 +3867,9 @@ impl MyCedar {
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         motion_estimator: Arc<tokio::sync::Mutex<MotionEstimator>>,
         polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
-    ) -> (Option<CelestialCoord>, Option<CelestialCoord>) {
+    ) {
         // Notice when solve engine has recently changed its boresight due
-        // to a previous call to this callback function reporting a telescope
-        // sync.
+        // to the pre-solve callback function reporting a telescope sync.
         let mut prefs_to_save: Option<Preferences> = None;
         if let Some(bp) = boresight_pixel {
             let cedar_bp = ImageCoord { x: bp.x, y: bp.y };
@@ -3836,7 +3884,6 @@ impl MyCedar {
                 prefs_to_save = Some(locked_preferences.clone());
             }
         }
-        let mut sync_coord: Option<CelestialCoord> = None;
         if plate_solution.is_none() {
             telescope_position.lock().await.boresight_valid = false;
             if let Some(detect_result) = detect_result {
@@ -3899,18 +3946,6 @@ impl MyCedar {
                     warn!("Unable to set server time to {:?}", dt);
                 }
             }
-            // Has telescope done a "sync"?
-            if locked_telescope_position.sync_ra.is_some()
-                && locked_telescope_position.sync_dec.is_some()
-            {
-                sync_coord = Some(CelestialCoord {
-                    ra: locked_telescope_position.sync_ra.unwrap(),
-                    dec: locked_telescope_position.sync_dec.unwrap(),
-                });
-                info!("Telescope synced boresight to {:?}", sync_coord);
-                locked_telescope_position.sync_ra = None;
-                locked_telescope_position.sync_dec = None;
-            }
 
             let geo_location = &fixed_settings.lock().await.observer_location;
             if let Some(geo_location) = geo_location {
@@ -3939,18 +3974,6 @@ impl MyCedar {
         if let Some(prefs) = prefs_to_save {
             // Write updated preferences to file.
             Self::write_preferences_file(&preferences_file, &prefs);
-        }
-        let locked_telescope_position = telescope_position.lock().await;
-        if locked_telescope_position.slew_active {
-            (
-                Some(CelestialCoord {
-                    ra: locked_telescope_position.slew_target_ra,
-                    dec: locked_telescope_position.slew_target_dec,
-                }),
-                sync_coord,
-            )
-        } else {
-            (None, sync_coord)
         }
     }
 
