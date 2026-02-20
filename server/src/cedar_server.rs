@@ -44,7 +44,7 @@ use cedar_elements::{
         MountType, OperatingMode, OperationSettings,
         PlateSolution as PlateSolutionProto, Preferences, ProcessingStats,
         Rectangle, RemoveBondRequest, ServerInformation, ServerLogRequest,
-        ServerLogResult, StarCentroid, StartBondingResponse, WiFiAccessPoint,
+        ServerLogResult, SetPairingModeRequest, StarCentroid, WiFiAccessPoint,
     },
     cedar_common::CelestialCoord,
     cedar_sky::{
@@ -88,7 +88,7 @@ use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
     bonding_helper::{
-        get_adapter_info, get_bonded_devices, remove_bond, start_bonding,
+        get_adapter_alias, set_adapter_name, get_bonded_devices, remove_bond, run_pairing_mode,
     },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
@@ -108,6 +108,9 @@ const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
 
 // Retry interval for skip-focus auto-calibration attempts.
 const SKIP_FOCUS_RETRY_INTERVAL_SECS: u64 = 15;
+
+// Delay before exiting pairing mode after first get_frame() call.
+const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 60;
 
 // RAII timing guard for gRPC methods - automatically logs duration when dropped
 struct GrpcTimer {
@@ -290,6 +293,15 @@ struct CedarState {
     // Some command line args.
     args_binning: Option<u32>,
     args_display_sampling: Option<bool>,
+
+    // Bluetooth pairing mode state.
+    pairing_mode: Arc<tokio::sync::Mutex<bool>>,
+
+    // When true, pairing mode will remain enabled indefinitely (not auto-exit).
+    pairing_mode_forever: bool,
+
+    // Timestamp of the first get_frame() call (used to delay pairing mode exit).
+    first_get_frame_time: Option<Instant>,
 }
 
 #[tonic::async_trait]
@@ -421,7 +433,7 @@ impl Cedar for MyCedar {
         // Also read skip_alignment preference for use below.
         let skip_alignment = {
             let locked_state = self.state.lock().await;
-            if locked_state.skip_focus_active &&
+            if locked_state.skip_focus_worker_running &&
                (req.operating_mode.is_some() || req.daylight_mode.is_some() ||
                 req.focus_assist_mode.is_some())
             {
@@ -739,9 +751,6 @@ impl Cedar for MyCedar {
                             .await
                             .skip_focus
                             .unwrap_or(false);
-                        if skip_focus {
-                            locked_state.skip_focus_active = true;
-                        }
                         let spawn_fn = |state: Arc<tokio::sync::Mutex<CedarState>>| {
                             if skip_focus {
                                 Self::spawn_skip_focus_calibration(
@@ -1050,11 +1059,11 @@ impl Cedar for MyCedar {
         if let Some(screen_always_on) = req.screen_always_on {
             our_prefs.screen_always_on = Some(screen_always_on);
         }
-        if let Some(use_bluetooth) = req.use_bluetooth {
-            our_prefs.use_bluetooth = Some(use_bluetooth);
-        }
         if let Some(skip_focus) = req.skip_focus {
             our_prefs.skip_focus = Some(skip_focus);
+            if skip_focus {
+                locked_state.skip_focus_active = true;
+            }
         }
         if let Some(skip_alignment) = req.skip_alignment {
             our_prefs.skip_alignment = Some(skip_alignment);
@@ -1126,6 +1135,32 @@ impl Cedar for MyCedar {
         let _timer =
             GrpcTimer::with_threshold("get_frame", Duration::from_millis(200));
 
+        // Track first get_frame() call and exit Bluetooth pairing mode after 1
+        // minute.
+        let is_bluetooth = request.extensions().get::<BluetoothRequest>().is_some();
+        {
+            let mut state = self.state.lock().await;
+
+            if state.first_get_frame_time.is_none() {
+                state.first_get_frame_time = Some(Instant::now());
+                let transport =
+                    if is_bluetooth { "Bluetooth" } else { "WiFi" };
+                info!("First get_frame() call received over {}, pairing mode will exit in {} seconds",
+                      transport, PAIRING_MODE_EXIT_DELAY_SECS);
+            }
+
+            if let Some(first_instant) = state.first_get_frame_time {
+                if !state.pairing_mode_forever && first_instant.elapsed() >= Duration::from_secs(PAIRING_MODE_EXIT_DELAY_SECS) {
+                    let mut pairing_mode = state.pairing_mode.lock().await;
+                    if *pairing_mode {
+                        *pairing_mode = false;
+                        info!("Exiting pairing mode - {} seconds elapsed since first get_frame() call",
+                              PAIRING_MODE_EXIT_DELAY_SECS);
+                    }
+                }
+            }
+        }
+
         let activity_led = self.state.lock().await.activity_led.clone();
         activity_led.lock().await.received_rpc().await;
         let req: FrameRequest = request.into_inner();
@@ -1139,6 +1174,7 @@ impl Cedar for MyCedar {
             req.prev_frame_id,
             non_blocking,
             landscape,
+            is_bluetooth,
         )
         .await;
         let mut frame_result = FrameResult {
@@ -1638,36 +1674,19 @@ impl Cedar for MyCedar {
         &self,
         _request: tonic::Request<EmptyMessage>,
     ) -> Result<tonic::Response<GetBluetoothNameResponse>, tonic::Status> {
-        let (bt_name, bt_addr) = match get_adapter_info().await {
-            Ok((name, addr)) => (name, Some(addr)),
+        // Get the current Bluetooth adapter alias and address.
+        let (name, address) = match get_adapter_alias().await {
+            Ok((alias, addr)) => (alias, Some(addr)),
             Err(e) => {
-                warn!("Unable to get Bluetooth name: {}", e);
-                ("cedar".to_string(), None)
+                warn!("Unable to get Bluetooth adapter info: {:?}", e);
+                ("".to_string(), None)
             }
         };
-        Ok(tonic::Response::new(GetBluetoothNameResponse {
-            name: bt_name,
-            address: bt_addr,
-        }))
-    }
 
-    async fn start_bonding(
-        &self,
-        _request: tonic::Request<EmptyMessage>,
-    ) -> Result<tonic::Response<StartBondingResponse>, tonic::Status> {
-        let result = start_bonding().await;
-        let response = match result {
-            Ok(Some((name, key))) => StartBondingResponse {
-                name: Some(name),
-                passkey: Some(key),
-            },
-            Ok(None) => StartBondingResponse::default(),
-            Err(_) => {
-                warn!("Error when bonding");
-                StartBondingResponse::default()
-            }
-        };
-        Ok(tonic::Response::new(response))
+        Ok(tonic::Response::new(GetBluetoothNameResponse {
+            name,
+            address,
+        }))
     }
 
     async fn get_bonded_devices(
@@ -1706,6 +1725,32 @@ impl Cedar for MyCedar {
                 warn!("Error removing bond");
             }
         };
+        Ok(tonic::Response::new(EmptyMessage::default()))
+    }
+
+    async fn set_pairing_mode(
+        &self,
+        request: tonic::Request<SetPairingModeRequest>,
+    ) -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
+        let req = request.into_inner();
+        let mut state = self.state.lock().await;
+        {
+            let mut pairing_mode = state.pairing_mode.lock().await;
+            *pairing_mode = req.enabled;
+        }
+        if req.enabled {
+            // Restart the get_frame pairing mode exit timer when entering
+            // pairing mode.
+            state.first_get_frame_time = None;
+            state.pairing_mode_forever = req.forever;
+            if req.forever {
+                info!("Entering pairing mode via RPC, will remain enabled");
+            } else {
+                info!("Entering pairing mode via RPC, timer restarted");
+            }
+        } else {
+            info!("Exiting pairing mode via RPC");
+        }
         Ok(tonic::Response::new(EmptyMessage::default()))
     }
 } // impl Cedar for MyCedar.
@@ -2514,17 +2559,17 @@ impl MyCedar {
         bin_and_histogram_2x2(image, /* normalize_rows= */ false).binned
     }
 
-    fn jpeg_encode(img: &GrayImage) -> Vec<u8> {
+    // Quality:
+    // 75: 40x compression, bad artifacts.
+    // 90: 20x compression, mild artifacts.
+    // 95: 13x compression, almost no artifacts.
+    fn jpeg_encode(img: &GrayImage, jpeg_quality: u8) -> Vec<u8> {
         let (width, height) = img.dimensions();
         let mut jpg_buf = Vec::<u8>::with_capacity((width * height) as usize);
         let mut buffer = Cursor::new(&mut jpg_buf);
-        // 75: 40x compression, bad artifacts.
-        // 90: 20x compression, mild artifacts.
-        // 95: 13x compression, almost no artifacts.
         let mut jpeg_encoder = JpegEncoder::new_with_quality(
             &mut buffer,
-            // jpeg_quality=
-            95,
+            jpeg_quality,
         );
         jpeg_encoder.encode_image(img).unwrap();
         jpg_buf
@@ -2535,6 +2580,7 @@ impl MyCedar {
         prev_frame_id: Option<i32>,
         non_blocking: bool,
         landscape: bool,
+        is_bluetooth: bool,
     ) -> Option<FrameResult> {
         let mut frame_result = FrameResult {
             ..Default::default()
@@ -2609,6 +2655,8 @@ impl MyCedar {
 
         frame_result.skip_focus_active = skip_focus_active;
 
+        let jpeg_quality = if is_bluetooth { 20_u8 } else { 95_u8 };
+
         if calibrating {
             frame_result.calibrating = true;
             let time_spent_calibrating = calibration_start.elapsed();
@@ -2629,7 +2677,7 @@ impl MyCedar {
                 if let Some(img) = scaled_image_opt {
                     let (scaled_width, scaled_height) = img.dimensions();
                     // JPEG encoding now happens outside the state lock!
-                    let jpg_buf = Self::jpeg_encode(&img);
+                    let jpg_buf = Self::jpeg_encode(&img, jpeg_quality);
                     let image_rectangle = Rectangle {
                         origin_x: 0,
                         origin_y: 0,
@@ -2901,10 +2949,11 @@ impl MyCedar {
                         Self::bin_2x2(&center_peak_image);
                     binning_factor = 2;
                     center_peak_jpg_buf =
-                        Self::jpeg_encode(&binned_center_peak_image);
+                        Self::jpeg_encode(&binned_center_peak_image, jpeg_quality);
                 } else {
                     binning_factor = 1;
-                    center_peak_jpg_buf = Self::jpeg_encode(&center_peak_image);
+                    center_peak_jpg_buf = Self::jpeg_encode(&center_peak_image,
+                                                            jpeg_quality);
                 }
 
                 frame_result.center_peak_image = Some(Image {
@@ -2931,11 +2980,12 @@ impl MyCedar {
                         Self::bin_2x2(&daylight_focus_image);
                     binning_factor = 2;
                     daylight_focus_jpg_buf =
-                        Self::jpeg_encode(&binned_daylight_focus_image);
+                        Self::jpeg_encode(&binned_daylight_focus_image,
+                                          jpeg_quality);
                 } else {
                     binning_factor = 1;
                     daylight_focus_jpg_buf =
-                        Self::jpeg_encode(&daylight_focus_image);
+                        Self::jpeg_encode(&daylight_focus_image, jpeg_quality);
                 }
 
                 frame_result.daylight_focus_zoom_image = Some(Image {
@@ -2961,7 +3011,8 @@ impl MyCedar {
         // Save most recent display image.
         locked_state.scaled_image = Some(Arc::new(scaled_image));
         let jpg_buf =
-            Self::jpeg_encode(&locked_state.scaled_image.as_ref().unwrap());
+            Self::jpeg_encode(&locked_state.scaled_image.as_ref().unwrap(),
+                              jpeg_quality);
         locked_state.scaled_image_frame_id = frame_result.frame_id;
         frame_result.image = Some(Image {
             binning_factor: binning_factor as i32,
@@ -3000,7 +3051,8 @@ impl MyCedar {
 
                 let rotated_boresight_image =
                     irr.rotate_image_and_crop(&resized_boresight_image);
-                let jpg_buf = Self::jpeg_encode(&rotated_boresight_image);
+                let jpg_buf = Self::jpeg_encode(&rotated_boresight_image,
+                                                jpeg_quality);
 
                 let bsi_rect = psr.boresight_image_region.unwrap();
                 frame_result.boresight_image = Some(Image {
@@ -3020,16 +3072,24 @@ impl MyCedar {
                 let slew_request =
                     &mut frame_result.slew_request.as_mut().unwrap();
                 if slew_request.image_pos.is_some() {
-                    // Apply rotator to slew target.
-                    let slew_target_image_pos =
-                        &mut slew_request.image_pos.as_mut().unwrap();
-                    (slew_target_image_pos.x, slew_target_image_pos.y) = irr
-                        .transform_to_rotated(
-                            slew_target_image_pos.x,
-                            slew_target_image_pos.y,
-                            width,
-                            height,
-                        );
+                    // The solver populates image_pos when the slew target is
+                    // within the camera image. When we apply the image rotator,
+                    // the slew target might not be in the rotated/cropped
+                    // result, in which case we set it to None.
+                    let pos = slew_request.image_pos.as_ref().unwrap();
+                    let (rx, ry) = irr.transform_to_rotated(
+                        pos.x, pos.y, width, height);
+                    let square_size = height as f64;
+                    if rx >= 0.0 && rx < square_size
+                        && ry >= 0.0 && ry < square_size
+                    {
+                        let slew_target_image_pos =
+                            slew_request.image_pos.as_mut().unwrap();
+                        slew_target_image_pos.x = rx;
+                        slew_target_image_pos.y = ry;
+                    } else {
+                        slew_request.image_pos = None;
+                    }
                 }
                 if let Some(ta) = slew_request.target_angle {
                     // Apply rotator to slew direction.
@@ -3397,7 +3457,6 @@ impl MyCedar {
             perf_gauge_choice: None,
             screen_always_on: Some(true),
             dont_show_items: Vec::new(),
-            use_bluetooth: None,
             skip_focus: None,
             skip_alignment: None,
         };
@@ -3500,33 +3559,81 @@ impl MyCedar {
                 Duration::from_secs_f64(2.0),
             )));
         let closure_polar_analyzer = polar_analyzer.clone();
-        let closure = Arc::new(
+
+        // Pre-solve callback: gets the current slew target and sync coordinates
+        // before the plate solve runs.
+        let pre_solve_closure_telescope_position = closure_telescope_position.clone();
+        let pre_solve_callback = Arc::new(
+            move || -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                        Output = (Option<CelestialCoord>, Option<CelestialCoord>),
+                    > + Send,
+                >,
+            > {
+                let telescope_pos = pre_solve_closure_telescope_position.clone();
+                Box::pin(async move {
+                    let mut locked_telescope_position = telescope_pos.lock().await;
+                    let slew_target = if locked_telescope_position.slew_active {
+                        Some(CelestialCoord {
+                            ra: locked_telescope_position.slew_target_ra,
+                            dec: locked_telescope_position.slew_target_dec,
+                        })
+                    } else {
+                        None
+                    };
+                    let sync_coord = if locked_telescope_position.sync_ra.is_some()
+                        && locked_telescope_position.sync_dec.is_some()
+                    {
+                        Some(CelestialCoord {
+                            ra: locked_telescope_position.sync_ra.unwrap(),
+                            dec: locked_telescope_position.sync_dec.unwrap(),
+                        })
+                    } else {
+                        None
+                    };
+                    // Clear sync flags after reading them.
+                    if sync_coord.is_some() {
+                        info!("Telescope synced boresight to {:?}", sync_coord);
+                        locked_telescope_position.sync_ra = None;
+                        locked_telescope_position.sync_dec = None;
+                    }
+                    (slew_target, sync_coord)
+                })
+            },
+        );
+
+        // Post-solve callback: processes the plate solution results and updates
+        // server state (motion estimator, polar analyzer, preferences).
+        let post_solve_closure_fixed_settings = closure_fixed_settings.clone();
+        let post_solve_closure_preferences = closure_preferences.clone();
+        let post_solve_closure_preferences_file = closure_preferences_file.clone();
+        let post_solve_closure_telescope_position = closure_telescope_position.clone();
+        let post_solve_motion_estimator = motion_estimator.clone();
+        let post_solve_closure_polar_analyzer = closure_polar_analyzer.clone();
+        let post_solve_callback = Arc::new(
             move |boresight_pixel: Option<ImageCoord>,
                   detect_result: Option<DetectResult>,
                   plate_solution: Option<PlateSolutionProto>|
                   -> std::pin::Pin<
                 Box<
-                    dyn std::future::Future<
-                            Output = (
-                                Option<CelestialCoord>,
-                                Option<CelestialCoord>,
-                            ),
-                        > + Send,
+                    dyn std::future::Future<Output = ()> + Send,
                 >,
             > {
-                Box::pin(Self::solution_callback(
+                Box::pin(Self::post_solve_callback(
                     boresight_pixel,
                     detect_result,
                     plate_solution,
-                    closure_fixed_settings.clone(),
-                    closure_preferences.clone(),
-                    closure_preferences_file.clone(),
-                    closure_telescope_position.clone(),
-                    motion_estimator.clone(),
-                    closure_polar_analyzer.clone(),
+                    post_solve_closure_fixed_settings.clone(),
+                    post_solve_closure_preferences.clone(),
+                    post_solve_closure_preferences_file.clone(),
+                    post_solve_closure_telescope_position.clone(),
+                    post_solve_motion_estimator.clone(),
+                    post_solve_closure_polar_analyzer.clone(),
                 ))
             },
         );
+
         let state = {
             Arc::new(tokio::sync::Mutex::new(CedarState {
                 solver: solver.clone(),
@@ -3560,7 +3667,8 @@ impl MyCedar {
                         imu_tracker.clone(),
                         detect_engine.clone(),
                         stats_capacity,
-                        closure,
+                        pre_solve_callback,
+                        post_solve_callback,
                     )
                     .unwrap(),
                 )),
@@ -3590,6 +3698,9 @@ impl MyCedar {
                 serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 args_binning,
                 args_display_sampling,
+                pairing_mode: Arc::new(tokio::sync::Mutex::new(true)),
+                pairing_mode_forever: false,
+                first_get_frame_time: None,
             }))
         };
 
@@ -3746,7 +3857,7 @@ impl MyCedar {
         Ok(content)
     }
 
-    async fn solution_callback(
+    async fn post_solve_callback(
         boresight_pixel: Option<ImageCoord>,
         detect_result: Option<DetectResult>,
         plate_solution: Option<PlateSolutionProto>,
@@ -3756,10 +3867,9 @@ impl MyCedar {
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         motion_estimator: Arc<tokio::sync::Mutex<MotionEstimator>>,
         polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
-    ) -> (Option<CelestialCoord>, Option<CelestialCoord>) {
+    ) {
         // Notice when solve engine has recently changed its boresight due
-        // to a previous call to this callback function reporting a SkySafari
-        // sync.
+        // to the pre-solve callback function reporting a telescope sync.
         let mut prefs_to_save: Option<Preferences> = None;
         if let Some(bp) = boresight_pixel {
             let cedar_bp = ImageCoord { x: bp.x, y: bp.y };
@@ -3774,7 +3884,6 @@ impl MyCedar {
                 prefs_to_save = Some(locked_preferences.clone());
             }
         }
-        let mut sync_coord: Option<CelestialCoord> = None;
         if plate_solution.is_none() {
             telescope_position.lock().await.boresight_valid = false;
             if let Some(detect_result) = detect_result {
@@ -3786,7 +3895,7 @@ impl MyCedar {
             }
         } else {
             let plate_solution = plate_solution.unwrap();
-            // Update SkySafari telescope interface with our position.
+            // Update telescope interface with our position.
             let coords = if plate_solution.target_sky_coord.is_empty() {
                 plate_solution.image_sky_coord.as_ref().unwrap().clone()
             } else {
@@ -3804,7 +3913,7 @@ impl MyCedar {
                 Some(plate_solution.rmse),
             );
 
-            // Has SkySafari reported the site geolocation?
+            // Has telescope reported the site geolocation?
             if locked_telescope_position.site_latitude.is_some()
                 && locked_telescope_position.site_longitude.is_some()
             {
@@ -3816,7 +3925,7 @@ impl MyCedar {
                 };
                 fixed_settings.lock().await.observer_location =
                     Some(observer_location.clone());
-                info!("Alpaca updated observer location");
+                info!("Telescope updated observer location");
                 locked_telescope_position.site_latitude = None;
                 locked_telescope_position.site_longitude = None;
                 // Save in preferences.
@@ -3826,7 +3935,7 @@ impl MyCedar {
                 // Flag updated preferences to write to file below.
                 prefs_to_save = Some(locked_preferences.clone());
             }
-            // Has SkySafari reported the time?
+            // Has telescope reported the time?
             if let Some(dt) = locked_telescope_position.utc_date.take() {
                 if let Ok(duration) = dt.duration_since(std::time::UNIX_EPOCH) {
                     _ = Self::set_server_time(TimeSpec::new(
@@ -3836,18 +3945,6 @@ impl MyCedar {
                 } else {
                     warn!("Unable to set server time to {:?}", dt);
                 }
-            }
-            // Has SkySafari done a "sync"?
-            if locked_telescope_position.sync_ra.is_some()
-                && locked_telescope_position.sync_dec.is_some()
-            {
-                sync_coord = Some(CelestialCoord {
-                    ra: locked_telescope_position.sync_ra.unwrap(),
-                    dec: locked_telescope_position.sync_dec.unwrap(),
-                });
-                info!("Alpaca synced boresight to {:?}", sync_coord);
-                locked_telescope_position.sync_ra = None;
-                locked_telescope_position.sync_dec = None;
             }
 
             let geo_location = &fixed_settings.lock().await.observer_location;
@@ -3877,18 +3974,6 @@ impl MyCedar {
         if let Some(prefs) = prefs_to_save {
             // Write updated preferences to file.
             Self::write_preferences_file(&preferences_file, &prefs);
-        }
-        let locked_telescope_position = telescope_position.lock().await;
-        if locked_telescope_position.slew_active {
-            (
-                Some(CelestialCoord {
-                    ra: locked_telescope_position.slew_target_ra,
-                    dec: locked_telescope_position.slew_target_dec,
-                }),
-                sync_coord,
-            )
-        } else {
-            (None, sync_coord)
         }
     }
 
@@ -4155,6 +4240,35 @@ fn get_camera(
     )))
 }
 
+/// Extension marker for requests coming over Bluetooth.
+#[derive(Clone, Copy, Debug)]
+struct BluetoothRequest;
+
+/// Middleware that marks requests as coming from Bluetooth.
+#[derive(Clone)]
+struct BluetoothMarkingMiddleware<S> {
+    inner: S,
+}
+
+impl<S> tower::Service<hyper::Request<hyper::Body>> for BluetoothMarkingMiddleware<S>
+where
+    S: tower::Service<hyper::Request<hyper::Body>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: hyper::Request<hyper::Body>) -> Self::Future {
+        req.extensions_mut().insert(BluetoothRequest);
+        self.inner.call(req)
+    }
+}
+
 async fn serve_over_bt(
     service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>,
 ) -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -4176,7 +4290,10 @@ async fn serve_over_bt(
     };
 
     let mut profile_handle = session.register_profile(profile).await?;
-    info!("Running cedar control channel: {}", adapter.address().await?);
+    info!("Running cedar control BT channel: {}", adapter.address().await?);
+
+    // Wrap service with middleware that marks requests as Bluetooth
+    let bt_service = BluetoothMarkingMiddleware { inner: service };
 
     loop {
         let req = profile_handle.next().await;
@@ -4186,12 +4303,12 @@ async fn serve_over_bt(
         }
         match req.unwrap().accept() {
             Ok(stream) => {
-                info!("Serving new connection");
+                info!("Serving new BT connection");
                 let _ =
-                    Http::new().serve_connection(stream, service.clone()).await;
+                    Http::new().serve_connection(stream, bt_service.clone()).await;
             }
             Err(e) => {
-                warn!("Failed to accept connection: {}", e);
+                warn!("Failed to accept BT connection: {}", e);
             }
         }
     }
@@ -4378,14 +4495,28 @@ async fn async_main(
     .await
     .unwrap();
 
-    let use_bluetooth = cedar
-        .state
-        .lock()
-        .await
-        .preferences
-        .lock()
-        .await
-        .use_bluetooth;
+    // Clone pairing_mode state before cedar is moved.
+    let pairing_mode_state = cedar.state.lock().await.pairing_mode.clone();
+
+    // Initialize Bluetooth adapter name during startup.
+    {
+        let state = cedar.state.lock().await;
+        let bt_name = if let Some(wifi) = state.wifi.as_ref() {
+            let wifi_name = wifi.lock().await.ssid();
+            wifi_name
+        } else if cedar.serial_number.len() >= 3 {
+            let serial_name =
+                format!("cedar-{}",
+                        &cedar.serial_number[cedar.serial_number.len() - 3..]);
+            serial_name
+        } else {
+            "cedar".to_string()
+        };
+        drop(state);
+        if let Err(e) = set_adapter_name(&bt_name).await {
+            warn!("Failed to set Bluetooth adapter name during startup: {:?}", e);
+        }
+    }
 
     let cedar_server = CedarServer::new(cedar);
 
@@ -4400,7 +4531,7 @@ async fn async_main(
     // service.
     let service = MultiplexService::new(rest, grpc);
 
-    // Listen on any address for the given port.
+    // Listen on any WiFi address for the given port.
     let addr = SocketAddr::from(([0, 0, 0, 0], 80));
     info!("Listening at {:?}", addr);
     let service_future = hyper::Server::bind(&addr)
@@ -4410,20 +4541,24 @@ async fn async_main(
     let service_future8080 = hyper::Server::bind(&addr8080)
         .serve(tower::make::Shared::new(service.clone()));
 
-    let _bt_server_handle: Option<
-        tokio::task::JoinHandle<Result<(), tonic::Status>>,
-    > = match use_bluetooth {
-        Some(true) => Some(tokio::task::spawn(async move {
+    // Also listen on Bluetooth.
+    let bt_server_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move {
             let _status = serve_over_bt(service).await;
             Ok(())
-        })),
-        _ => None,
-    };
+        });
+
+    // Run pairing mode loop.
+    let pairing_mode_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move {
+            let _status = run_pairing_mode(pairing_mode_state).await;
+            Ok(())
+        });
 
     // Spin up servers for reporting our RA/Dec solution as the telescope
     // position.
 
-    // Function called whenever SkySafari interrogates our position.
+    // Function called whenever telescope interrogates our position.
     let async_callback = Box::new(move || {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -4432,42 +4567,43 @@ async fn async_main(
         });
     });
 
-    let _bt_task_handle: Option<
-        tokio::task::JoinHandle<Result<(), tonic::Status>>,
-    > = {
-        match use_bluetooth {
-            Some(true) => {
-                let mut lx200_server_bt = create_lx200_server(
-                    shared_telescope_position.clone(),
-                    async_callback.clone(),
-                    true,
-                );
-                Some(tokio::task::spawn(async move {
-                    let _status = lx200_server_bt.serve_requests().await;
-                    Ok(())
-                }))
-            }
-            _ => None,
-        }
-    };
-
+    // Serve LX200 protocol over Bluetooth and WiFi.
+    let mut lx200_server_bt = create_lx200_server(
+        shared_telescope_position.clone(),
+        async_callback.clone(),
+        true,
+    );
+    let lx200_task_bt_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+        tokio::task::spawn(async move {
+            let _status = lx200_server_bt.serve_requests().await;
+            Ok(())
+        });
     let mut lx200_server = create_lx200_server(
         shared_telescope_position.clone(),
         async_callback.clone(),
         false,
     );
-    let _task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
+    let lx200_task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
             let _status = lx200_server.serve_requests().await;
             Ok(())
         });
 
+    // Serve Alpaca protocol.
     let alpaca_server =
         create_alpaca_server(shared_telescope_position, async_callback);
     let alpaca_server_future = alpaca_server.start();
 
-    let (service_result, service_result8080, alpaca_result) =
-        join!(service_future, service_future8080, alpaca_server_future);
+    let (service_result, service_result8080, alpaca_result, _, _, _, _) =
+        join!(
+            service_future,
+            service_future8080,
+            alpaca_server_future,
+            bt_server_handle,
+            lx200_task_bt_handle,
+            lx200_task_handle,
+            pairing_mode_handle
+        );
     service_result.unwrap();
     service_result8080.unwrap();
     alpaca_result.unwrap();

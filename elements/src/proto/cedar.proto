@@ -302,10 +302,7 @@ message Preferences {
   // mode.
   optional bool skip_alignment = 36;
 
-  // Allow LX200 control over Bluetooth.
-  optional bool use_bluetooth = 34;
-
-  reserved 4, 8, 9, 20, 24, 25, 26, 27, 28, 29, 30, 31;
+  reserved 4, 8, 9, 20, 24, 25, 26, 27, 28, 29, 30, 31, 34;
 }
 
 enum CelestialCoordFormat {
@@ -917,11 +914,6 @@ message GetBluetoothNameResponse {
   optional string address = 2;
 }
 
-message StartBondingResponse {
-  optional string name = 1;
-  optional uint32 passkey = 2;
-}
-
 message BondedDevice {
   string name = 1;
   string address = 2;
@@ -933,6 +925,15 @@ message GetBondedDevicesResponse {
 
 message RemoveBondRequest {
   string address = 1;
+}
+
+message SetPairingModeRequest {
+  bool enabled = 1;
+
+  // When enabled==true, by default Cedar's bluetooth pairing mode is enabled
+  // for a finite time duration. Setting forever==true keeps pairing enabled
+  // indefinitely.
+  bool forever = 2;
 }
 
 service Cedar {
@@ -967,7 +968,6 @@ service Cedar {
 
   // Obtains the most recent Cedar computation result. Blocks if necessary to
   // wait for a new result (see FrameRequest's `prev_frame_id` field).
-  // DEPRECATED, use GetFrames() instead.
   rpc GetFrame(FrameRequest) returns (FrameResult);
 
   // Performs the requested action(s).
@@ -982,7 +982,7 @@ service Cedar {
 
   // Bluetooth management.
   rpc GetBluetoothName(EmptyMessage) returns (GetBluetoothNameResponse);
-  rpc StartBonding(EmptyMessage) returns (StartBondingResponse);
+  rpc SetPairingMode(SetPairingModeRequest) returns (EmptyMessage);
   rpc GetBondedDevices(EmptyMessage) returns (GetBondedDevicesResponse);
   rpc RemoveBond(RemoveBondRequest) returns (EmptyMessage);
 }
