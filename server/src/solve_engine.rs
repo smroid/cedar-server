@@ -39,19 +39,29 @@ use log::{debug, warn};
 
 use crate::detect_engine::{DetectEngine, DetectResult};
 
-type SolutionCallback = Arc<
+// Pre-solve callback: called before the plate solve to get any active slew
+// target and/or sync coordinates. Returns (slew_target, sync_coord).
+type PreSolveCallback = Arc<
+    dyn Fn() -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = (Option<CelestialCoord>, Option<CelestialCoord>),
+                > + Send,
+        >,
+    > + Send
+        + Sync,
+>;
+
+// Post-solve callback: called after the plate solve to process the solution
+// result and update server/telescope state.
+type PostSolveCallback = Arc<
     dyn Fn(
             Option<ImageCoord>,
             Option<DetectResult>,
             Option<PlateSolutionProto>,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<
-                        Output = (
-                            Option<CelestialCoord>,
-                            Option<CelestialCoord>,
-                        ),
-                    > + Send,
+                dyn std::future::Future<Output = ()> + Send,
             >,
         > + Send
         + Sync,
@@ -70,11 +80,11 @@ pub struct SolveEngine {
     // Executes worker().
     worker_thread: Option<std::thread::JoinHandle<()>>,
 
-    // Called whenever worker() finishes an evaluation when not in align mode.
-    // Return value:
-    // (sky coordinate of slew target (if any),
-    //  sky coordinate of sync operation (if any))
-    solution_callback: SolutionCallback,
+    // Called before the plate solve to get active slew target and sync coords.
+    pre_solve_callback: PreSolveCallback,
+
+    // Called after the plate solve to process the solution result.
+    post_solve_callback: PostSolveCallback,
 }
 
 // State shared between worker thread and the SolveEngine methods.
@@ -137,7 +147,8 @@ impl SolveEngine {
         imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         stats_capacity: usize,
-        solution_callback: SolutionCallback,
+        pre_solve_callback: PreSolveCallback,
+        post_solve_callback: PostSolveCallback,
     ) -> Result<Self, CanonicalError> {
         Ok(SolveEngine {
             solver,
@@ -173,7 +184,8 @@ impl SolveEngine {
             })),
             detect_engine,
             worker_thread: None,
-            solution_callback,
+            pre_solve_callback,
+            post_solve_callback,
         })
     }
 
@@ -473,7 +485,8 @@ impl SolveEngine {
             let cloned_solver = self.solver.clone();
             let cloned_state = self.state.clone();
             let cloned_detect_engine = self.detect_engine.clone();
-            let cloned_callback = self.solution_callback.clone();
+            let cloned_pre_solve_callback = self.pre_solve_callback.clone();
+            let cloned_post_solve_callback = self.post_solve_callback.clone();
             // Allocate a thread for concurrent execution of solver with
             // other activities.
             self.worker_thread = Some(std::thread::spawn(move || {
@@ -487,7 +500,8 @@ impl SolveEngine {
                         cloned_solver,
                         cloned_state,
                         cloned_detect_engine,
-                        cloned_callback,
+                        cloned_pre_solve_callback,
+                        cloned_post_solve_callback,
                     )
                     .await;
                 });
@@ -680,7 +694,9 @@ impl SolveEngine {
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_result: &DetectResult,
         plate_solution_proto: &Option<PlateSolutionProto>,
-        solution_callback: &SolutionCallback,
+        post_solve_callback: &PostSolveCallback,
+        slew_target: Option<CelestialCoord>,
+        sync_coord: Option<CelestialCoord>,
         width: u32,
         height: u32,
     ) -> (
@@ -710,7 +726,7 @@ impl SolveEngine {
 
         if plate_solution_proto.is_none() {
             if !align_mode {
-                solution_callback(
+                post_solve_callback(
                     boresight_pixel,
                     Some(detect_result.clone()),
                     None,
@@ -731,24 +747,18 @@ impl SolveEngine {
             state.lock().await.solve_success_stats.add_value(1.0);
 
             if !align_mode {
-                // Let integration layer pass solution to SkySafari telescope
-                // interface and MotionEstimator. Integration layer returns
-                // current slew target coords, if any.
-                let (slew_target, sync_coord) = solution_callback(
+                // Process the plate solution result (update motion estimator, etc).
+                post_solve_callback(
                     boresight_pixel.clone(),
                     Some(detect_result.clone()),
                     Some(psp.clone()),
                 )
                 .await;
-                let normalize_rows = {
-                    let mut state = state.lock().await;
-                    state.slew_target = slew_target.clone();
-                    state.normalize_rows
-                };
+
                 // If we're slewing, see if the boresight is close enough to
                 // the slew target that Cedar Aim should display an inset image
                 // of the region around the boresight.
-                if let Some(target_coords) = slew_target {
+                if let Some(target_coords) = &slew_target {
                     (slew_request, boresight_image_region, boresight_image) =
                         Self::handle_slew(
                             &cedar_sky,
@@ -757,7 +767,7 @@ impl SolveEngine {
                             &boresight_coords,
                             &boresight_pixel,
                             psp,
-                            normalize_rows,
+                            state.lock().await.normalize_rows,
                             width,
                             height,
                         )
@@ -881,7 +891,8 @@ impl SolveEngine {
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-        solution_callback: SolutionCallback,
+        pre_solve_callback: PreSolveCallback,
+        post_solve_callback: PostSolveCallback,
     ) {
         debug!("Starting solve engine");
         loop {
@@ -889,9 +900,15 @@ impl SolveEngine {
             let frame_id;
             let mut solve_extension = SolveExtension::default();
             let mut solve_params = SolveParams::default();
+
+            // Call pre-solve callback to get current slew target and sync
+            // coords.
+            let (slew_target, sync_coord) = pre_solve_callback().await;
+
             {
                 let mut locked_state = state.lock().await;
                 locked_state.eta = None;
+                locked_state.slew_target = slew_target.clone();
 
                 minimum_stars = locked_state.minimum_stars;
                 frame_id = locked_state.frame_id;
@@ -906,21 +923,10 @@ impl SolveEngine {
                 solve_params.solve_timeout = Some(locked_state.solve_timeout);
                 if let Some(boresight_pixel) = &locked_state.boresight_pixel {
                     solve_extension.target_pixel =
-                        Some(Vec::<ImageCoord>::new());
-                    solve_extension
-                        .target_pixel
-                        .as_mut()
-                        .unwrap()
-                        .push(boresight_pixel.clone());
+                        Some(vec![boresight_pixel.clone()]);
                 }
-                if let Some(slew_target) = &locked_state.slew_target {
-                    solve_extension.target_sky_coord =
-                        Some(Vec::<CelestialCoord>::new());
-                    solve_extension
-                        .target_sky_coord
-                        .as_mut()
-                        .unwrap()
-                        .push(slew_target.clone());
+                if let Some(st) = &slew_target {
+                    solve_extension.target_sky_coord = Some(vec![st.clone()]);
                 }
                 solve_params.distortion = Some(locked_state.distortion);
                 solve_params.match_max_error =
@@ -993,7 +999,9 @@ impl SolveEngine {
                 state.clone(),
                 &detect_result,
                 &plate_solution_proto,
-                &solution_callback,
+                &post_solve_callback,
+                slew_target.clone(),
+                sync_coord.clone(),
                 width,
                 height,
             )

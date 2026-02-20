@@ -49,7 +49,6 @@ impl Lx200Telescope for Lx200WifiTelescope {
                     debug!("Starting to read from WiFi LX200 connection");
                     let (reader, writer) = stream.into_split();
                     self.controller.handle_connection(reader, writer).await;
-                    debug!("WiFi LX200 connection ended");
                 }
                 Err(e) => {
                     warn!("Failed to accept connection: {}", e);
@@ -105,13 +104,12 @@ impl Lx200Telescope for Lx200BtTelescope {
             }
             match req.unwrap().accept() {
                 Ok(stream) => {
-                    info!("Starting to read from Bluetooth LX200 connection");
+                    debug!("Starting to read from Bluetooth LX200 connection");
                     let (reader, writer) = tokio::io::split(stream);
                     self.controller.handle_connection(reader, writer).await;
-                    info!("Bluetooth LX200 connection ended");
                 }
                 Err(e) => {
-                    warn!("Failed to accept connection: {}", e);
+                    warn!("Failed to accept connection: {:?}", e);
                 }
             }
         }
@@ -177,7 +175,7 @@ impl Lx200Controller {
         let jnow = ((dt.year() as f64 + dt.ordinal0() as f64 / 365.0) * 10.0)
             .round()
             / 10.0;
-        info!("Using now epoch: {}", jnow);
+        debug!("Using now epoch: {}", jnow);
         Lx200Controller {
             telescope_position,
             callback: Some(Callback(cb)),
@@ -335,7 +333,7 @@ impl Lx200Controller {
             (self.target_ra.take(), self.target_dec.take())
         {
             let (j2000_ra, j2000_dec) = self.convert_to_j2000(ra, dec);
-            info!("Slewing to {}, {}", j2000_ra, j2000_dec);
+            debug!("Slewing to {}, {}", j2000_ra, j2000_dec);
             let mut locked_position = self.telescope_position.lock().await;
             locked_position.slew_target_ra = j2000_ra;
             locked_position.slew_target_dec = j2000_dec;
@@ -354,7 +352,7 @@ impl Lx200Controller {
             (self.target_ra.take(), self.target_dec.take())
         {
             let (j2000_ra, j2000_dec) = self.convert_to_j2000(ra, dec);
-            info!("Syncing to {}, {}", j2000_ra, j2000_dec);
+            debug!("Syncing to {}, {}", j2000_ra, j2000_dec);
             let mut locked_position = self.telescope_position.lock().await;
             locked_position.sync_ra = Some(j2000_ra);
             locked_position.sync_dec = Some(j2000_dec);
@@ -366,7 +364,7 @@ impl Lx200Controller {
     async fn abort(&mut self) {
         let mut locked_position = self.telescope_position.lock().await;
         locked_position.slew_active = false;
-        info!("Stopping slew");
+        debug!("Stopping slew");
     }
 
     async fn set_latitude(&mut self, cmd: &str) -> String {
@@ -469,7 +467,7 @@ impl Lx200Controller {
                     return "1Updating Planetary Data# #".to_string();
                 }
                 Err(e) => {
-                    warn!("Error parsing date/time: {}", e);
+                    warn!("Error parsing date/time: {:?}", e);
                 }
             }
         }
@@ -538,7 +536,7 @@ impl Lx200Controller {
         let degrees: Result<i32, _> = d.parse();
         let is_negative = match degrees {
             Err(e) => {
-                warn!("Error parsing degrees: {}", e);
+                warn!("Error parsing degrees: {:?}", e);
                 return None;
             }
             Ok(deg) => deg < 0,
@@ -546,7 +544,7 @@ impl Lx200Controller {
         let minutes: Result<i32, _> = m.parse();
         match minutes {
             Err(e) => {
-                warn!("Error parsing minutes: {}", e);
+                warn!("Error parsing minutes: {:?}", e);
                 return None;
             }
             Ok(_) => {}
@@ -554,7 +552,7 @@ impl Lx200Controller {
         let seconds: Result<i32, _> = s.parse();
         match seconds {
             Err(e) => {
-                warn!("Error parsing seconds: {}", e);
+                warn!("Error parsing seconds: {:?}", e);
                 return None;
             }
             Ok(_) => {}
@@ -604,7 +602,7 @@ impl Lx200Controller {
                         }
                     }
                     Err(e) => {
-                        debug!("Error reading from stream: {}", e);
+                        warn!("Error reading from stream: {:?}", e);
                         return;
                     }
                 };
@@ -623,7 +621,7 @@ impl Lx200Controller {
                     if let Err(e) =
                         Self::process_output(&mut writer, "A".to_string()).await
                     {
-                        warn!("Failed to send ack response: {}", e);
+                        warn!("Failed to send ack response: {:?}", e);
                         return;
                     }
                 } else if buffer == SKY_SAFARI_INIT {
@@ -645,7 +643,7 @@ impl Lx200Controller {
                     if let Err(e) =
                         Self::process_output(&mut writer, result).await
                     {
-                        warn!("Failed to send/ data to client: {}", e);
+                        warn!("Failed to send data to client: {:?}", e);
                         return;
                     }
                 }
@@ -786,12 +784,12 @@ impl Lx200Controller {
                     None
                 }
                 _ => {
-                    info!("Unknown command: {}", in_data);
+                    warn!("Unknown command: {}", in_data);
                     None
                 }
             }
         } else {
-            info!("Malformed input: {}", in_data);
+            warn!("Malformed input: {}", in_data);
             None
         }
     }
