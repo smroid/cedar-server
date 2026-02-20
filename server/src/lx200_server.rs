@@ -613,7 +613,7 @@ impl Lx200Controller {
                 }
                 if buffer == ACK_CMD {
                     // Special case for ack command
-                    info!("Received ack command");
+                    debug!("Received ack command");
                     buffer.clear();
                     // Only Stellarium uses this command.
                     self.is_stellarium = true;
@@ -627,7 +627,7 @@ impl Lx200Controller {
                 } else if buffer == SKY_SAFARI_INIT {
                     // SkySafari sends $$$ at the beginning of initialization in
                     // Bluetooth mode
-                    info!("Received $$$");
+                    debug!("Received $$$");
                     buffer.clear();
                 }
             }
@@ -1256,6 +1256,49 @@ mod tests {
         client_write.write_all(b"#:GR#").await.unwrap();
 
         let mut buf = [0; 64];
+        let len = client_read.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"00:00:00#");
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_process_input_fragmented_command() {
+        use futures::poll;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut controller, _) = setup_controller().await;
+        controller.jnow_epoch = 2000.0;
+
+        let (client, server) = tokio::io::duplex(1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+
+        let server_handle = tokio::spawn(async move {
+            controller
+                .handle_connection(server_read, server_write)
+                .await;
+        });
+
+        // Send the first fragment of the command
+        client_write.write_all(b"#:G").await.unwrap();
+
+        // Yield execution to give the server task a chance to process the first
+        // fragment
+        tokio::task::yield_now().await;
+
+        let mut buf = [0; 64];
+        // Verify that no data is returned yet
+        {
+            let read_fut = client_read.read(&mut buf);
+            tokio::pin!(read_fut);
+            assert!(poll!(&mut read_fut).is_pending());
+        } // Drop read_fut to allow reading again and checking the buffer
+
+        assert_eq!(buf, [0; 64]);
+
+        // Send the rest of the command
+        client_write.write_all(b"R#").await.unwrap();
         let len = client_read.read(&mut buf).await.unwrap();
         assert_eq!(&buf[..len], b"00:00:00#");
 
