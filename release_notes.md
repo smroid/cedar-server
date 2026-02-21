@@ -332,6 +332,8 @@ December 22 2025
 
 February 20 2026
 
+Cedar-server version: 0.18.0
+
 * Cedar always starts Bluetooth server for SkySafari/Stellarium, don't need to enable.
 
 * Cedar always starts Bluetooth server for Cedar Aim app (Android only; not web app), don't need to enable.
