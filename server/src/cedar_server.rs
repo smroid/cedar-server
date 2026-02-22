@@ -4081,7 +4081,6 @@ fn parse_duration(
 //     arguments have been consumed.
 //     The AtomicBool is set to true if control-c occurs.
 pub fn server_main(
-    product_name: &str,
     copyright: &str,
     flutter_app_path: &str,
     get_dependencies: fn(
@@ -4194,6 +4193,11 @@ pub fn server_main(
 
     let (cedar_sky, wifi, imu_tracker, solver) =
         get_dependencies(Arguments::from_vec(remaining));
+
+    // Derive product name from device verification status (indicated by whether
+    // cedar_sky is Some).
+    let product_name = if cedar_sky.is_some() { "Hopper" } else { "Cedar-Box" };
+
     async_main(
         args,
         product_name,
@@ -4372,14 +4376,16 @@ async fn async_main(
         None => None,
     };
 
-    let feature_level = if product_name.eq_ignore_ascii_case("Cedar-Box") {
-        FeatureLevel::Diy
-    } else if let Some(attached_camera) = &attached_camera {
-        let camera_model = attached_camera.lock().await.model();
-        if camera_model == "imx296" || camera_model == "imx290" {
-            FeatureLevel::Plus // Hopper.
+    let feature_level = if product_name.eq_ignore_ascii_case("Hopper") {
+        if let Some(attached_camera) = &attached_camera {
+            let camera_model = attached_camera.lock().await.model();
+            if camera_model == "imx296" || camera_model == "imx290" {
+                FeatureLevel::Plus // Hopper.
+            } else {
+                FeatureLevel::Basic // Hopper LE.
+            }
         } else {
-            FeatureLevel::Basic // Hopper LE.
+            FeatureLevel::Diy
         }
     } else {
         FeatureLevel::Diy
