@@ -110,7 +110,7 @@ const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
 const SKIP_FOCUS_RETRY_INTERVAL_SECS: u64 = 15;
 
 // Delay before exiting pairing mode after first get_frame() call.
-const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 60;
+const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 300;  // 5 minutes.
 
 // RAII timing guard for gRPC methods - automatically logs duration when dropped
 struct GrpcTimer {
