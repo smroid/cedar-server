@@ -1397,6 +1397,13 @@ impl Cedar for MyCedar {
             ) {
                 return Err(tonic_status(x));
             }
+            drop(locked_wifi);
+            // Update Bluetooth adapter name to match new WiFi SSID.
+            if let Some(new_ssid) = update_ap.ssid {
+                if let Err(e) = set_adapter_name(&new_ssid).await {
+                    warn!("Failed to update Bluetooth adapter name when updating WiFi SSID: {:?}", e);
+                }
+            }
         }
         if req.clear_dont_show_items.unwrap_or(false) {
             let prefs_to_write = {
