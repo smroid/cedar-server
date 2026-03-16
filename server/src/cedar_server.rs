@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering},
         Arc,
     },
     time::{Duration, Instant, SystemTime},
@@ -4280,6 +4280,73 @@ where
     }
 }
 
+/// MakeService that logs WiFi connection open/close and tracks active count.
+struct ConnectionTrackingMakeService<S> {
+    inner: S,
+    active_connections: Arc<AtomicU32>,
+    port: u16,
+}
+
+impl<S: Clone> ConnectionTrackingMakeService<S> {
+    fn new(inner: S, active_connections: Arc<AtomicU32>, port: u16) -> Self {
+        Self { inner, active_connections, port }
+    }
+}
+
+impl<S, T> tower::Service<T> for ConnectionTrackingMakeService<S>
+where
+    S: Clone,
+{
+    type Response = ConnectionTrackingService<S>;
+    type Error = std::convert::Infallible;
+    type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _target: T) -> Self::Future {
+        let count = self.active_connections.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+        info!("WiFi connection opened on port {} ({} active)", self.port, count);
+        std::future::ready(Ok(ConnectionTrackingService {
+            inner: self.inner.clone(),
+            active_connections: self.active_connections.clone(),
+            port: self.port,
+        }))
+    }
+}
+
+/// Wrapper service that decrements active connection count on drop.
+struct ConnectionTrackingService<S> {
+    inner: S,
+    active_connections: Arc<AtomicU32>,
+    port: u16,
+}
+
+impl<S> Drop for ConnectionTrackingService<S> {
+    fn drop(&mut self) {
+        let count = self.active_connections.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
+        info!("WiFi connection closed on port {} ({} active)", self.port, count);
+    }
+}
+
+impl<S> tower::Service<hyper::Request<hyper::Body>> for ConnectionTrackingService<S>
+where
+    S: tower::Service<hyper::Request<hyper::Body>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: hyper::Request<hyper::Body>) -> Self::Future {
+        self.inner.call(req)
+    }
+}
+
 async fn serve_over_bt(
     service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>,
 ) -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -4303,9 +4370,10 @@ async fn serve_over_bt(
     let mut profile_handle = session.register_profile(profile).await?;
     info!("Running cedar control BT channel: {}", adapter.address().await?);
 
-    // Wrap service with middleware that marks requests as Bluetooth
+    // Wrap service with middleware that marks requests as Bluetooth.
     let bt_service = BluetoothMarkingMiddleware { inner: service };
 
+    let bt_connections = Arc::new(AtomicU32::new(0));
     loop {
         let req = profile_handle.next().await;
         if req.is_none() {
@@ -4314,12 +4382,25 @@ async fn serve_over_bt(
         }
         match req.unwrap().accept() {
             Ok(stream) => {
-                info!("Serving new BT connection");
-                let _ =
-                    Http::new().serve_connection(stream, bt_service.clone()).await;
+                let count = bt_connections.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+                info!("BT connection opened ({} active)", count);
+                let bt_service = bt_service.clone();
+                let bt_connections = bt_connections.clone();
+                tokio::task::spawn(async move {
+                    let result =
+                        Http::new().serve_connection(stream, bt_service).await;
+                    let count = bt_connections.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
+                    match result {
+                        Ok(()) => info!("BT connection closed ({} active)", count),
+                        Err(e) if e.is_incomplete_message() || e.is_closed() => {
+                            info!("BT connection closed ({} active)", count);
+                        }
+                        Err(e) => warn!("BT connection closed with error ({} active): {:?}", count, e),
+                    }
+                });
             }
             Err(e) => {
-                warn!("Failed to accept BT connection: {}", e);
+                error!("Failed to accept BT connection: {:?}", e);
             }
         }
     }
@@ -4545,14 +4626,17 @@ async fn async_main(
     let service = MultiplexService::new(rest, grpc);
 
     // Listen on any WiFi address for the given port.
+    let wifi_connections = Arc::new(AtomicU32::new(0));
     let addr = SocketAddr::from(([0, 0, 0, 0], 80));
     info!("Listening at {:?}", addr);
     let service_future = hyper::Server::bind(&addr)
-        .serve(tower::make::Shared::new(service.clone()));
+        .serve(ConnectionTrackingMakeService::new(
+            service.clone(), wifi_connections.clone(), 80));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
     let service_future8080 = hyper::Server::bind(&addr8080)
-        .serve(tower::make::Shared::new(service.clone()));
+        .serve(ConnectionTrackingMakeService::new(
+            service.clone(), wifi_connections.clone(), 8080));
 
     // Also listen on Bluetooth.
     let bt_server_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
