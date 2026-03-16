@@ -46,12 +46,13 @@ impl Lx200Telescope for Lx200WifiTelescope {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    debug!("Starting to read from WiFi LX200 connection");
+                    info!("WiFi LX200 connection opened");
                     let (reader, writer) = stream.into_split();
                     self.controller.handle_connection(reader, writer).await;
+                    info!("WiFi LX200 connection closed");
                 }
                 Err(e) => {
-                    warn!("Failed to accept connection: {:?}", e);
+                    warn!("Failed to accept WiFi LX200 connection: {:?}", e);
                 }
             }
         }
@@ -81,14 +82,48 @@ impl Lx200Telescope for Lx200BtTelescope {
         let adapter = session.default_adapter().await?;
         adapter.set_powered(true).await?;
 
+        // Standard Bluetooth SIG UUID for Serial Port Profile (SPP).
+        // Clients such as SkySafari discover this service by searching
+        // for this UUID via SDP.
+        let spp_channel: u16 = 4;
         let profile = Profile {
             uuid: Uuid::parse_str("00001101-0000-1000-8000-00805F9B34FB")
                 .unwrap(),
             name: Some("Serial Port Profile".to_string()),
             role: Some(Role::Server),
+            channel: Some(spp_channel),
             require_authentication: Some(false),
             require_authorization: Some(false),
             auto_connect: Some(false),
+            // BlueZ does not auto-create SDP records for D-Bus registered
+            // profiles, so we provide one explicitly.
+            service_record: Some(format!(r#"<?xml version="1.0" encoding="utf-8" ?>
+<record>
+  <attribute id="0x0001">
+    <sequence>
+      <uuid value="0x1101" />
+    </sequence>
+  </attribute>
+  <attribute id="0x0004">
+    <sequence>
+      <sequence>
+        <uuid value="0x0100" />
+      </sequence>
+      <sequence>
+        <uuid value="0x0003" />
+        <uint8 value="{spp_channel}" />
+      </sequence>
+    </sequence>
+  </attribute>
+  <attribute id="0x0005">
+    <sequence>
+      <uuid value="0x1002" />
+    </sequence>
+  </attribute>
+  <attribute id="0x0100">
+    <text value="LX200 Serial Port" />
+  </attribute>
+</record>"#)),
             ..Default::default()
         };
 
@@ -104,12 +139,13 @@ impl Lx200Telescope for Lx200BtTelescope {
             }
             match req.unwrap().accept() {
                 Ok(stream) => {
-                    debug!("Starting to read from Bluetooth LX200 connection");
+                    info!("BT LX200 connection opened");
                     let (reader, writer) = tokio::io::split(stream);
                     self.controller.handle_connection(reader, writer).await;
+                    info!("BT LX200 connection closed");
                 }
                 Err(e) => {
-                    warn!("Failed to accept connection: {:?}", e);
+                    warn!("Failed to accept BT LX200 connection: {:?}", e);
                 }
             }
         }
@@ -602,7 +638,16 @@ impl Lx200Controller {
                         }
                     }
                     Err(e) => {
-                        warn!("Error reading from stream: {:?}", e);
+                        match e.kind() {
+                            std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionAborted => {
+                                debug!("Client disconnected: {:?}", e);
+                            }
+                            _ => {
+                                warn!("Error reading from stream: {:?}", e);
+                            }
+                        }
                         return;
                     }
                 };
