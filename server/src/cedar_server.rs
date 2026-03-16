@@ -37,8 +37,8 @@ use cedar_elements::{
     cedar::{
         cedar_server::{Cedar, CedarServer},
         ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
-        CameraModel, CelestialCoordFormat, DisplayOrientation, EmptyMessage,
-        FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
+        CameraModel, CelestialCoordFormat, ConnectionStatus, DisplayOrientation,
+        EmptyMessage, FeatureLevel, FixedSettings, FovCatalogEntry, FrameRequest,
         FrameResult, GetBluetoothNameResponse, GetBondedDevicesResponse, Image,
         ImageCoord, ImuState, ImuTrackerState, LatLong, LocationBasedInfo,
         MountType, OperatingMode, OperationSettings,
@@ -111,6 +111,15 @@ const SKIP_FOCUS_RETRY_INTERVAL_SECS: u64 = 15;
 
 // Delay before exiting pairing mode after first get_frame() call.
 const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 300;  // 5 minutes.
+
+/// Shared counters for tracking active client connections across all servers.
+#[derive(Default)]
+pub(crate) struct ConnectionCounters {
+    pub(crate) cedar_wifi: AtomicU32,
+    pub(crate) cedar_bluetooth: AtomicU32,
+    pub(crate) lx200_wifi: AtomicU32,
+    pub(crate) lx200_bluetooth: AtomicU32,
+}
 
 // RAII timing guard for gRPC methods - automatically logs duration when dropped
 struct GrpcTimer {
@@ -213,6 +222,8 @@ struct MyCedar {
     processor_model: String,
     os_version: String,
     serial_number: String,
+
+    connection_counters: Arc<ConnectionCounters>,
 }
 
 struct CedarState {
@@ -2215,6 +2226,12 @@ impl MyCedar {
             imu_model: None,
             imu_tracker_state: None,
             wifi_access_point: None,
+            connection_status: Some(ConnectionStatus {
+                cedar_wifi: self.connection_counters.cedar_wifi.load(AtomicOrdering::Relaxed) as i32,
+                cedar_bluetooth: self.connection_counters.cedar_bluetooth.load(AtomicOrdering::Relaxed) as i32,
+                lx200_wifi: self.connection_counters.lx200_wifi.load(AtomicOrdering::Relaxed) as i32,
+                lx200_bluetooth: self.connection_counters.lx200_bluetooth.load(AtomicOrdering::Relaxed) as i32,
+            }),
             demo_image_names: self.demo_images.clone(),
         };
 
@@ -3721,6 +3738,7 @@ impl MyCedar {
             }
         }
 
+        let connection_counters = Arc::new(ConnectionCounters::default());
         let cedar = MyCedar {
             state: state.clone(),
             test_image_camera: test_image_camera.clone(),
@@ -3734,6 +3752,7 @@ impl MyCedar {
             processor_model,
             os_version,
             serial_number,
+            connection_counters: connection_counters.clone(),
         };
         // Set pre-calibration defaults on camera.
         let mut locked_state = state.lock().await;
@@ -4283,13 +4302,13 @@ where
 /// MakeService that logs WiFi connection open/close and tracks active count.
 struct ConnectionTrackingMakeService<S> {
     inner: S,
-    active_connections: Arc<AtomicU32>,
+    counters: Arc<ConnectionCounters>,
     port: u16,
 }
 
 impl<S: Clone> ConnectionTrackingMakeService<S> {
-    fn new(inner: S, active_connections: Arc<AtomicU32>, port: u16) -> Self {
-        Self { inner, active_connections, port }
+    fn new(inner: S, counters: Arc<ConnectionCounters>, port: u16) -> Self {
+        Self { inner, counters, port }
     }
 }
 
@@ -4306,11 +4325,11 @@ where
     }
 
     fn call(&mut self, _target: T) -> Self::Future {
-        let count = self.active_connections.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+        let count = self.counters.cedar_wifi.fetch_add(1, AtomicOrdering::Relaxed) + 1;
         info!("WiFi connection opened on port {} ({} active)", self.port, count);
         std::future::ready(Ok(ConnectionTrackingService {
             inner: self.inner.clone(),
-            active_connections: self.active_connections.clone(),
+            counters: self.counters.clone(),
             port: self.port,
         }))
     }
@@ -4319,13 +4338,13 @@ where
 /// Wrapper service that decrements active connection count on drop.
 struct ConnectionTrackingService<S> {
     inner: S,
-    active_connections: Arc<AtomicU32>,
+    counters: Arc<ConnectionCounters>,
     port: u16,
 }
 
 impl<S> Drop for ConnectionTrackingService<S> {
     fn drop(&mut self) {
-        let count = self.active_connections.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
+        let count = self.counters.cedar_wifi.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
         info!("WiFi connection closed on port {} ({} active)", self.port, count);
     }
 }
@@ -4349,6 +4368,7 @@ where
 
 async fn serve_over_bt(
     service: MultiplexService<axum::Router, GrpcWebService<Cors<Routes>>>,
+    counters: Arc<ConnectionCounters>,
 ) -> Result<(), Box<dyn std::error::Error + 'static>> {
     let session = Session::new().await?;
     let adapter = session.default_adapter().await?;
@@ -4373,7 +4393,6 @@ async fn serve_over_bt(
     // Wrap service with middleware that marks requests as Bluetooth.
     let bt_service = BluetoothMarkingMiddleware { inner: service };
 
-    let bt_connections = Arc::new(AtomicU32::new(0));
     loop {
         let req = profile_handle.next().await;
         if req.is_none() {
@@ -4382,14 +4401,14 @@ async fn serve_over_bt(
         }
         match req.unwrap().accept() {
             Ok(stream) => {
-                let count = bt_connections.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+                let count = counters.cedar_bluetooth.fetch_add(1, AtomicOrdering::Relaxed) + 1;
                 info!("BT connection opened ({} active)", count);
                 let bt_service = bt_service.clone();
-                let bt_connections = bt_connections.clone();
+                let counters = counters.clone();
                 tokio::task::spawn(async move {
                     let result =
                         Http::new().serve_connection(stream, bt_service).await;
-                    let count = bt_connections.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
+                    let count = counters.cedar_bluetooth.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
                     match result {
                         Ok(()) => info!("BT connection closed ({} active)", count),
                         Err(e) if e.is_incomplete_message() || e.is_closed() => {
@@ -4612,6 +4631,7 @@ async fn async_main(
         }
     }
 
+    let connection_counters = cedar.connection_counters.clone();
     let cedar_server = CedarServer::new(cedar);
 
     let grpc = tonic::transport::Server::builder()
@@ -4626,22 +4646,22 @@ async fn async_main(
     let service = MultiplexService::new(rest, grpc);
 
     // Listen on any WiFi address for the given port.
-    let wifi_connections = Arc::new(AtomicU32::new(0));
     let addr = SocketAddr::from(([0, 0, 0, 0], 80));
     info!("Listening at {:?}", addr);
     let service_future = hyper::Server::bind(&addr)
         .serve(ConnectionTrackingMakeService::new(
-            service.clone(), wifi_connections.clone(), 80));
+            service.clone(), connection_counters.clone(), 80));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
     let service_future8080 = hyper::Server::bind(&addr8080)
         .serve(ConnectionTrackingMakeService::new(
-            service.clone(), wifi_connections.clone(), 8080));
+            service.clone(), connection_counters.clone(), 8080));
 
     // Also listen on Bluetooth.
+    let bt_counters = connection_counters.clone();
     let bt_server_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
-            let _status = serve_over_bt(service).await;
+            let _status = serve_over_bt(service, bt_counters).await;
             Ok(())
         });
 
@@ -4669,6 +4689,7 @@ async fn async_main(
         shared_telescope_position.clone(),
         async_callback.clone(),
         true,
+        connection_counters.clone(),
     );
     let lx200_task_bt_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
@@ -4679,6 +4700,7 @@ async fn async_main(
         shared_telescope_position.clone(),
         async_callback.clone(),
         false,
+        connection_counters.clone(),
     );
     let lx200_task_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {

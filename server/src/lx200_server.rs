@@ -8,7 +8,7 @@
 // Copyright (c) 2025 Omair Kamil
 // See LICENSE file in root directory for license terms.
 
-use std::{error::Error, sync::Arc, time::SystemTime};
+use std::{error::Error, sync::{atomic::Ordering, Arc}, time::SystemTime};
 
 use async_trait::async_trait;
 use bluer::{
@@ -25,16 +25,25 @@ use tokio::{
     net::TcpListener,
 };
 
+use crate::cedar_server::ConnectionCounters;
 use crate::position_reporter::{Callback, TelescopePosition};
+
+// Note: both WiFi and Bluetooth LX200 servers currently handle one connection
+// at a time. Each server awaits handle_connection() before accepting the next
+// client. Supporting concurrent clients (e.g. SkySafari and Stellarium
+// simultaneously) would require spawning each connection with its own
+// Lx200Controller, since the controller holds per-client state (is_stellarium,
+// target coordinates, etc.). The shared TelescopePosition is already
+// Arc<Mutex<>> and safe for concurrent access.
 
 #[async_trait]
 pub trait Lx200Telescope {
     async fn serve_requests(&mut self) -> Result<(), Box<dyn Error + 'static>>;
 }
 
-#[derive(Default, Debug)]
 struct Lx200WifiTelescope {
     controller: Lx200Controller,
+    counters: Arc<ConnectionCounters>,
 }
 
 #[async_trait]
@@ -46,9 +55,11 @@ impl Lx200Telescope for Lx200WifiTelescope {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
+                    self.counters.lx200_wifi.fetch_add(1, Ordering::Relaxed);
                     info!("WiFi LX200 connection opened");
                     let (reader, writer) = stream.into_split();
                     self.controller.handle_connection(reader, writer).await;
+                    self.counters.lx200_wifi.fetch_sub(1, Ordering::Relaxed);
                     info!("WiFi LX200 connection closed");
                 }
                 Err(e) => {
@@ -60,19 +71,21 @@ impl Lx200Telescope for Lx200WifiTelescope {
 }
 
 impl Lx200WifiTelescope {
-    pub fn new(
+    fn new(
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         cb: Box<dyn Fn() + Send + Sync>,
+        counters: Arc<ConnectionCounters>,
     ) -> Self {
         Lx200WifiTelescope {
             controller: Lx200Controller::new(telescope_position, cb),
+            counters,
         }
     }
 }
 
-#[derive(Default, Debug)]
 struct Lx200BtTelescope {
     controller: Lx200Controller,
+    counters: Arc<ConnectionCounters>,
 }
 
 #[async_trait]
@@ -139,9 +152,11 @@ impl Lx200Telescope for Lx200BtTelescope {
             }
             match req.unwrap().accept() {
                 Ok(stream) => {
+                    self.counters.lx200_bluetooth.fetch_add(1, Ordering::Relaxed);
                     info!("BT LX200 connection opened");
                     let (reader, writer) = tokio::io::split(stream);
                     self.controller.handle_connection(reader, writer).await;
+                    self.counters.lx200_bluetooth.fetch_sub(1, Ordering::Relaxed);
                     info!("BT LX200 connection closed");
                 }
                 Err(e) => {
@@ -153,12 +168,14 @@ impl Lx200Telescope for Lx200BtTelescope {
 }
 
 impl Lx200BtTelescope {
-    pub fn new(
+    fn new(
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         cb: Box<dyn Fn() + Send + Sync>,
+        counters: Arc<ConnectionCounters>,
     ) -> Self {
         Lx200BtTelescope {
             controller: Lx200Controller::new(telescope_position, cb),
+            counters,
         }
     }
 }
@@ -840,15 +857,16 @@ impl Lx200Controller {
     }
 }
 
-pub fn create_lx200_server(
+pub(crate) fn create_lx200_server(
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
     cb: Box<dyn Fn() + Send + Sync>,
     use_bluetooth: bool,
+    counters: Arc<ConnectionCounters>,
 ) -> Box<dyn Lx200Telescope + Send> {
     if use_bluetooth {
-        Box::new(Lx200BtTelescope::new(telescope_position, cb))
+        Box::new(Lx200BtTelescope::new(telescope_position, cb, counters))
     } else {
-        Box::new(Lx200WifiTelescope::new(telescope_position, cb))
+        Box::new(Lx200WifiTelescope::new(telescope_position, cb, counters))
     }
 }
 

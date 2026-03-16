@@ -75,8 +75,11 @@ message ServerInformation {
   // The current state of the IMU tracking logic. Omitted if no IMU detected.
   optional ImuTrackerState imu_tracker_state = 15;
 
-  // Network info.
+  // WiFi hotspot info.
   optional WiFiAccessPoint wifi_access_point = 10;
+
+  // Information about client connections.
+  optional ConnectionStatus connection_status = 17;
 
   // Filenames of image(s) found in run/demo_images directory.
   repeated string demo_image_names = 11;
@@ -113,6 +116,19 @@ message WiFiAccessPoint {
   optional string ssid = 1;
   optional string psk = 2;  // WiFi password.
   optional int32 channel = 3;
+}
+
+// Number of current client connections.
+message ConnectionStatus {
+  // Number of cedar_server clients.
+  int32 cedar_wifi = 1;
+  int32 cedar_bluetooth = 2;
+
+  // Number of LX200 telescope clients.
+  int32 lx200_wifi = 3;
+  int32 lx200_bluetooth = 4;
+
+  // We don't track Alpaca telescope clients.
 }
 
 message FixedSettings {
