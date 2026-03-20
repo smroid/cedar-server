@@ -56,11 +56,11 @@ impl Lx200Telescope for Lx200WifiTelescope {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     self.counters.lx200_wifi.fetch_add(1, Ordering::Relaxed);
-                    info!("WiFi LX200 connection opened");
+                    debug!("WiFi LX200 connection opened");
                     let (reader, writer) = stream.into_split();
                     self.controller.handle_connection(reader, writer).await;
                     self.counters.lx200_wifi.fetch_sub(1, Ordering::Relaxed);
-                    info!("WiFi LX200 connection closed");
+                    debug!("WiFi LX200 connection closed");
                 }
                 Err(e) => {
                     warn!("Failed to accept WiFi LX200 connection: {:?}", e);
