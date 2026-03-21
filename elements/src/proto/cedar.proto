@@ -476,12 +476,6 @@ message FrameResult {
   // in `focus_assist_mode`.
   optional Image center_peak_image = 13;
 
-  // A measure of the image contrast in focus mode. 0 means no contrast, uniform
-  // brightness over image. 1 means high contrast (range of bright - dark equals
-  // bright level; in other words dark == 0). Only present in
-  // `focus_assist_mode`.
-  optional double contrast_ratio = 36;
-
   // A small full resolution (usually; 2x binned for color cameras) crop of
   // `image` centered at a user-designated position (see
   // ActionRequest.designate_daylight_focus_region).
@@ -526,7 +520,7 @@ message FrameResult {
 
   // alerts
   // * prolonged loss of stars; need setup mode?
-  reserved 10, 11;
+  reserved 10, 11, 36;
 }
 
 message Image {

@@ -3027,7 +3027,6 @@ impl MyCedar {
         } else {
             *locked_state.center_peak_position.lock().await = None;
         }
-        frame_result.contrast_ratio = detect_result.contrast_ratio;
 
         let gamma = if daylight_mode { 1.0 } else { 0.7 };
         let scaled_image =

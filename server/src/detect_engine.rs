@@ -17,7 +17,6 @@ use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram,
                                     stats_for_histogram};
-use cedar_detect::image_funcs::bin_and_histogram_2x2;
 use cedar_elements::image_utils::{
     normalize_rows_mut, scale_image_mut};
 use cedar_elements::value_stats::ValueStatsAccumulator;
@@ -447,7 +446,6 @@ impl DetectEngine {
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
 
             let mut focus_aid: Option<FocusAid> = None;
-            let mut contrast_ratio: Option<f64> = None;
             // black_level and peak_value for display stretching.
             let mut black_level = 0_u8;
             let mut peak_value = 0_u8;
@@ -469,33 +467,6 @@ impl DetectEngine {
                     } else {
                         get_level_for_fraction(&roi_histogram, 0.8) as u8
                     };
-
-                // For contrast ratio, use a smaller central crop. Do a 2x2
-                // binning in case we have a color image.
-                let contrast_region_size = height / 8;
-                let contrast_region = Rect::at(
-                    ((width - contrast_region_size) / 2) as i32,
-                    ((height - contrast_region_size) / 2) as i32)
-                    .of_size(contrast_region_size as u32,
-                             contrast_region_size as u32);
-                let contrast_image = image.view(
-                    contrast_region.left() as u32,
-                    contrast_region.top() as u32,
-                    contrast_region.width() as u32,
-                    contrast_region.height() as u32).to_image();
-                let contrast_region_histogram =
-                    bin_and_histogram_2x2(&contrast_image,
-                                          /*normalize_rows=*/false).histogram;
-                let contrast_peak_value =
-                    max(get_level_for_fraction(&contrast_region_histogram, 0.99) as u8, 1);
-                let contrast_black_level = if daylight_mode {
-                    get_level_for_fraction(&contrast_region_histogram, 0.01) as u8
-                } else{
-                    get_level_for_fraction(&contrast_region_histogram, 0.6) as u8
-                };
-                contrast_ratio = Some(
-                    (contrast_peak_value - contrast_black_level) as f64
-                        / contrast_peak_value as f64);
 
                 // Auto exposure.
 
@@ -570,7 +541,9 @@ impl DetectEngine {
                     let max_value = average_top_values(&histogram, 5);
 
                     remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-                    let min_value = get_level_for_fraction(&histogram, 0.95);
+                    // Put the min level near the top of the non-star background,
+                    // so we don't display too much of the noise floor.
+                    let min_value = get_level_for_fraction(&histogram, 0.98);
 
                     scale_image_mut(
                         &mut peak_image, min_value as u8, max_value, /*gamma=*/0.7);
@@ -840,7 +813,6 @@ impl DetectEngine {
                 star_candidates: stars,
                 star_count_moving_average: locked_state.star_count_moving_average,
                 display_black_level: black_level,
-                contrast_ratio,
                 noise_estimate,
                 hot_pixel_count,
                 peak_value,
@@ -881,12 +853,6 @@ pub struct DetectResult {
     // black. This is chosen to allow stars to be visible but supress the
     // background level.
     pub display_black_level: u8,
-
-    // A measure of the image contrast in focus mode. 0 means no contrast,
-    // uniform brightness over image. 1 means high contrast (range of bright -
-    // dark equals bright level; in other words dark == 0). Omitted if not
-    // focus mode.
-    pub contrast_ratio: Option<f64>,
 
     // Estimate of the RMS noise of the full-resolution image.
     pub noise_estimate: f64,
