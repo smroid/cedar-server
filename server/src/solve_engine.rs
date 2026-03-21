@@ -149,6 +149,7 @@ impl SolveEngine {
         stats_capacity: usize,
         pre_solve_callback: PreSolveCallback,
         post_solve_callback: PostSolveCallback,
+        observer_location: Option<LatLong>,
     ) -> Result<Self, CanonicalError> {
         Ok(SolveEngine {
             solver,
@@ -159,7 +160,7 @@ impl SolveEngine {
                 catalog_entry_match: None,
                 imu_tracker: imu_tracker.clone(),
                 use_imu_tracker: imu_tracker.is_some(),
-                observer_location: None,
+                observer_location,
                 frame_id: None,
                 minimum_stars: 4,
                 fov_estimate: None,

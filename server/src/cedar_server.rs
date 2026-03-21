@@ -3695,6 +3695,7 @@ impl MyCedar {
                         stats_capacity,
                         pre_solve_callback,
                         post_solve_callback,
+                        copied_preferences.observer_location.clone(),
                     )
                     .unwrap(),
                 )),
