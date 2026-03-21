@@ -94,11 +94,6 @@ struct DetectState {
     // not find a good value.
     auto_exposure_duration: Option<Duration>,
 
-    // When auto-exposing for detected star count, if there are too many stars
-    // we shorten the exposure. But we don't bother going shorter than the
-    // camera's post-capture processing time.
-    camera_processing_duration: Option<Duration>,
-
     // We update the exposure time based on the number of detected stars.
     // Because of noise, twinking, etc., use a moving average.
     star_count_moving_average: f64,
@@ -142,7 +137,6 @@ impl DetectEngine {
                 display_sampling: false,
                 calibrated_exposure_duration: None,
                 auto_exposure_duration: None,
-                camera_processing_duration: None,
                 star_count_moving_average: 0.0,
                 acquire_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
@@ -161,7 +155,6 @@ impl DetectEngine {
         let mut locked_state = self.state.lock().await;
         locked_state.camera = camera.clone();
         locked_state.auto_exposure_duration = None;
-        locked_state.camera_processing_duration = None;
         locked_state.star_count_moving_average = 0.0;
         locked_state.detect_result = None;
     }
@@ -409,12 +402,7 @@ impl DetectEngine {
                     captured_image = image;
                     let mut locked_state = state.lock().await;
                     locked_state.frame_id = Some(id);
-                    if locked_state.camera_processing_duration.is_none() {
-                        locked_state.camera_processing_duration =
-                            captured_image.processing_duration;
-                    }
-                    camera_processing_duration =
-                        locked_state.camera_processing_duration;
+                    camera_processing_duration = captured_image.processing_duration;
                     break;
                 }
             }
@@ -757,13 +745,6 @@ impl DetectEngine {
                                     new_exposure_duration_secs = f64::min(
                                         new_exposure_duration_secs,
                                         baseline_exposure_duration_secs * 8.0);
-                                }
-                                // Don't make camera exposure shorter than the
-                                // camera's post-readout processing time.
-                                if let Some(cpd) = camera_processing_duration {
-                                    if new_exposure_duration_secs < cpd.as_secs_f64() {
-                                        new_exposure_duration_secs = cpd.as_secs_f64();
-                                    }
                                 }
                             } else {
                                 // Auto exposure time is good. Remember it for
