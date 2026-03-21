@@ -6,7 +6,8 @@ if [[ "$1" == "--release" ]]; then
 fi
 
 # Build with Cargo
-cargo build $release_flag
+# Statically link libjpeg-turbo for SIMD-accelerated JPEG encoding.
+TURBOJPEG_STATIC=1 cargo build $release_flag
 
 # Determine the path to the built program (assumes standard Cargo structure)
 if [[ -z "$release_flag" ]]; then

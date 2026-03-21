@@ -1,11 +1,21 @@
-// Copyright (c) 2024 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
+
+use std::sync::OnceLock;
 
 use image::{GrayImage, Luma};
 use image::imageops;
 use imageproc::geometric_transformations::{Interpolation, rotate_about_center};
 
 use crate::cedar::Rectangle;
+
+pub type RotateCropFn = fn(&GrayImage, &ImageRotator) -> GrayImage;
+
+static ROTATE_CROP_FN: OnceLock<RotateCropFn> = OnceLock::new();
+
+pub fn set_rotate_crop_fn(func: RotateCropFn) {
+    let _ = ROTATE_CROP_FN.set(func);  // Ignores error if already set.
+}
 
 fn compute_lut(min_pixel_value: u8,
                mut peak_pixel_value: u8,
@@ -77,9 +87,9 @@ pub fn normalize_rows_mut(image: &mut GrayImage) {
 // Tool for rotating an image and performing related coordinate transforms.
 #[derive(Clone)]
 pub struct ImageRotator {
-    angle_rad: f64,
-    sin_term: f64,
-    cos_term: f64,
+    pub angle_rad: f64,
+    pub sin_term: f64,
+    pub cos_term: f64,
 }
 // This image rotator rotates the image and takes a central square crop of the
 // result. The square crop is the full height of the original image, so the
@@ -106,12 +116,22 @@ impl ImageRotator {
     // of taking a clockwise-rotated central crop of the original image and
     // rotating it counter-clockwise to become upright as the output image.
     pub fn rotate_image_and_crop(&self, image: &GrayImage) -> GrayImage {
+        match ROTATE_CROP_FN.get() {
+            Some(f) => f(image, self),
+            None => self.rotate_image_and_crop_default(image),
+        }
+    }
+
+    // Default implementation, used if set_rotate_crop_fn() was not called.
+    fn rotate_image_and_crop_default(&self, image: &GrayImage) -> GrayImage {
         let (w, h) = image.dimensions();
+        assert!(w >= h, "rotate_image_and_crop requires width >= height, \
+                         got {}x{}", w, h);
         let square_size = h;
 
         let rotated_image = rotate_about_center(
             image,
-            -1.0 * self.angle_rad as f32,
+            -(self.angle_rad as f32),
             // Almost as fast as Nearest, with much higher visual quality.
             Interpolation::Bilinear,
             Luma::<u8>([0]));

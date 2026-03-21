@@ -5,7 +5,7 @@ use std::{
     fs,
     fs::metadata,
     io,
-    io::{BufRead, BufReader, Cursor, ErrorKind, Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom},
     net::SocketAddr,
     ops::DerefMut,
     path::{Path, PathBuf},
@@ -63,7 +63,7 @@ use chrono::offset::Local;
 use futures::{join, StreamExt};
 use glob::glob;
 use hyper::server::conn::Http;
-use image::{codecs::jpeg::JpegEncoder, GrayImage, ImageReader};
+use image::{GrayImage, ImageReader};
 use log::{debug, error, info, warn};
 use nix::{
     sys::time::TimeSpec,
@@ -2589,14 +2589,17 @@ impl MyCedar {
     // 95: 13x compression, almost no artifacts.
     fn jpeg_encode(img: &GrayImage, jpeg_quality: u8) -> Vec<u8> {
         let (width, height) = img.dimensions();
-        let mut jpg_buf = Vec::<u8>::with_capacity((width * height) as usize);
-        let mut buffer = Cursor::new(&mut jpg_buf);
-        let mut jpeg_encoder = JpegEncoder::new_with_quality(
-            &mut buffer,
-            jpeg_quality,
-        );
-        jpeg_encoder.encode_image(img).unwrap();
-        jpg_buf
+        let image = turbojpeg::Image {
+            pixels: img.as_raw().as_slice(),
+            width: width as usize,
+            pitch: width as usize,  // Grayscale: 1 byte per pixel.
+            height: height as usize,
+            format: turbojpeg::PixelFormat::GRAY,
+        };
+        let mut compressor = turbojpeg::Compressor::new().unwrap();
+        compressor.set_quality(jpeg_quality as i32).unwrap();
+        compressor.set_subsamp(turbojpeg::Subsamp::Gray).unwrap();
+        compressor.compress_to_vec(image).unwrap()
     }
 
     async fn get_next_frame(
@@ -2614,7 +2617,7 @@ impl MyCedar {
         let focus_assist_mode;
         let daylight_mode;
         let normalize_rows;
-        // Extract all data we need first, then release state lock
+        // Extract all data we need first, then release state lock.
         let (
             calibrating,
             calibration_data_arc,
