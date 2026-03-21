@@ -56,6 +56,9 @@ impl Lx200Telescope for Lx200WifiTelescope {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     self.counters.lx200_wifi.fetch_add(1, Ordering::Relaxed);
+                    // SkySafari opens and closes a new WiFi connection for each
+                    // command, so don't spam the log. Stellarium uses a single
+                    // connection for its entire session.
                     debug!("WiFi LX200 connection opened");
                     let (reader, writer) = stream.into_split();
                     self.controller.handle_connection(reader, writer).await;
@@ -674,7 +677,7 @@ impl Lx200Controller {
                     break;
                 }
                 if buffer == ACK_CMD {
-                    // Special case for ack command
+                    // Special case for ack command.
                     debug!("Received ack command");
                     buffer.clear();
                     // Only Stellarium uses this command.
@@ -688,7 +691,7 @@ impl Lx200Controller {
                     }
                 } else if buffer == SKY_SAFARI_INIT {
                     // SkySafari sends $$$ at the beginning of initialization in
-                    // Bluetooth mode
+                    // Bluetooth mode.
                     debug!("Received $$$");
                     buffer.clear();
                 }
