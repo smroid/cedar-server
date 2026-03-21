@@ -123,7 +123,7 @@ impl ImageRotator {
     }
 
     // Default implementation, used if set_rotate_crop_fn() was not called.
-    fn rotate_image_and_crop_default(&self, image: &GrayImage) -> GrayImage {
+    pub fn rotate_image_and_crop_default(&self, image: &GrayImage) -> GrayImage {
         let (w, h) = image.dimensions();
         assert!(w >= h, "rotate_image_and_crop requires width >= height, \
                          got {}x{}", w, h);
