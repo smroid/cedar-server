@@ -3643,7 +3643,7 @@ impl MyCedar {
                   plate_solution: Option<PlateSolutionProto>|
                   -> std::pin::Pin<
                 Box<
-                    dyn std::future::Future<Output = ()> + Send,
+                    dyn std::future::Future<Output = Option<LatLong>> + Send,
                 >,
             > {
                 Box::pin(Self::post_solve_callback(
@@ -3896,10 +3896,11 @@ impl MyCedar {
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         motion_estimator: Arc<tokio::sync::Mutex<MotionEstimator>>,
         polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
-    ) {
+    ) -> Option<LatLong> {
         // Notice when solve engine has recently changed its boresight due
         // to the pre-solve callback function reporting a telescope sync.
         let mut prefs_to_save: Option<Preferences> = None;
+        let mut updated_observer_location: Option<LatLong> = None;
         if let Some(bp) = boresight_pixel {
             let cedar_bp = ImageCoord { x: bp.x, y: bp.y };
             let mut locked_preferences = preferences.lock().await;
@@ -3954,6 +3955,7 @@ impl MyCedar {
                 };
                 fixed_settings.lock().await.observer_location =
                     Some(observer_location.clone());
+                updated_observer_location = Some(observer_location.clone());
                 info!("Telescope updated observer location");
                 locked_telescope_position.site_latitude = None;
                 locked_telescope_position.site_longitude = None;
@@ -4004,6 +4006,7 @@ impl MyCedar {
             // Write updated preferences to file.
             Self::write_preferences_file(&preferences_file, &prefs);
         }
+        updated_observer_location
     }
 
     fn set_server_time(
