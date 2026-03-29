@@ -533,16 +533,17 @@ impl Lx200Controller {
         Self::get_failure()
     }
 
-    fn get_timezone(&self) -> String {
+    fn get_hours_to_utc(&self) -> String {
         let timezone = self.datetime.format("%z").to_string();
-        let hours = &timezone[0..3];
+        let sign = if &timezone[0..1] == "-" { "+" } else { "-" };
+        let hours = &timezone[1..3];
         let partial = match &timezone[3..] {
             "15" => ".2",
             "30" => ".5",
             "45" => ".8",
             _ => ".0",
         };
-        format!("{hours}{partial}#")
+        format!("{sign}{hours}{partial}#")
     }
 
     fn get_time(&self) -> String {
@@ -754,8 +755,8 @@ impl Lx200Controller {
                     Some(self.get_dec().await)
                 }
                 "GG" => {
-                    debug!("Received get timezone command");
-                    Some(self.get_timezone())
+                    debug!("Received get hours to UTC command");
+                    Some(self.get_hours_to_utc())
                 }
                 "GL" => {
                     debug!("Received get time command");
