@@ -3971,6 +3971,7 @@ impl MyCedar {
                         duration.as_secs() as i64,
                         duration.subsec_nanos() as i64,
                     ));
+                    info!("Updated server time to {:?}", Local::now());
                 } else {
                     warn!("Unable to set server time to {:?}", dt);
                 }
