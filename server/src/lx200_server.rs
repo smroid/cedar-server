@@ -464,13 +464,16 @@ impl Lx200Controller {
         }
     }
 
-    fn set_timezone(&mut self, cmd: &str) -> String {
+    fn set_hours_to_utc(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SGsXX.X" where s is +/-
         if cmd.len() < 8 {
             warn!("Unexpected tz length, cmd: {}", cmd);
             return Self::get_failure();
         }
-        let mut timezone = cmd[3..6].to_string();
+        // This command specifies the hours to add to the local timezone to get
+        // to UTC. To convert to a standard timezone offset invert the sign.
+        let sign = if &cmd[3..4] == "-" { "+" } else { "-" };
+        let mut timezone = format!("{}{}", sign, &cmd[4..6]);
         match &cmd[6..8] {
             ".0" => timezone.push_str("00"),
             ".2" => timezone.push_str("15"),
@@ -816,8 +819,8 @@ impl Lx200Controller {
                     Some(self.set_date(in_data).await)
                 }
                 "SG" => {
-                    debug!("Received set timezone command: {}", in_data);
-                    Some(self.set_timezone(in_data))
+                    debug!("Received set hours to UTC command: {}", in_data);
+                    Some(self.set_hours_to_utc(in_data))
                 }
                 "SL" => {
                     debug!("Received set time command: {}", in_data);
