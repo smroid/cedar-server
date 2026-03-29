@@ -109,7 +109,7 @@ const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
 // Retry interval for skip-focus auto-calibration attempts.
 const SKIP_FOCUS_RETRY_INTERVAL_SECS: u64 = 15;
 
-// Delay before exiting pairing mode after first get_frame() call.
+// Duration before auto-exiting pairing mode when forever==false.
 const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 300;  // 5 minutes.
 
 /// Shared counters for tracking active client connections across all servers.
@@ -305,14 +305,13 @@ struct CedarState {
     args_binning: Option<u32>,
     args_display_sampling: Option<bool>,
 
-    // Bluetooth pairing mode state.
+    // Bluetooth pairing mode state. The run_pairing_mode() loop in
+    // bonding_helper polls this every 5 seconds and updates the adapter's
+    // discoverable/pairable state accordingly.
     pairing_mode: Arc<tokio::sync::Mutex<bool>>,
 
     // When true, pairing mode will remain enabled indefinitely (not auto-exit).
     pairing_mode_forever: bool,
-
-    // Timestamp of the first get_frame() call (used to delay pairing mode exit).
-    first_get_frame_time: Option<Instant>,
 }
 
 #[tonic::async_trait]
@@ -1146,31 +1145,7 @@ impl Cedar for MyCedar {
         let _timer =
             GrpcTimer::with_threshold("get_frame", Duration::from_millis(200));
 
-        // Track first get_frame() call and exit Bluetooth pairing mode after 1
-        // minute.
         let is_bluetooth = request.extensions().get::<BluetoothRequest>().is_some();
-        {
-            let mut state = self.state.lock().await;
-
-            if state.first_get_frame_time.is_none() {
-                state.first_get_frame_time = Some(Instant::now());
-                let transport =
-                    if is_bluetooth { "Bluetooth" } else { "WiFi" };
-                info!("First get_frame() call received over {}, pairing mode will exit in {} seconds",
-                      transport, PAIRING_MODE_EXIT_DELAY_SECS);
-            }
-
-            if let Some(first_instant) = state.first_get_frame_time {
-                if !state.pairing_mode_forever && first_instant.elapsed() >= Duration::from_secs(PAIRING_MODE_EXIT_DELAY_SECS) {
-                    let mut pairing_mode = state.pairing_mode.lock().await;
-                    if *pairing_mode {
-                        *pairing_mode = false;
-                        info!("Exiting pairing mode - {} seconds elapsed since first get_frame() call",
-                              PAIRING_MODE_EXIT_DELAY_SECS);
-                    }
-                }
-            }
-        }
 
         let activity_led = self.state.lock().await.activity_led.clone();
         activity_led.lock().await.received_rpc().await;
@@ -1757,14 +1732,23 @@ impl Cedar for MyCedar {
             *pairing_mode = req.enabled;
         }
         if req.enabled {
-            // Restart the get_frame pairing mode exit timer when entering
-            // pairing mode.
-            state.first_get_frame_time = None;
             state.pairing_mode_forever = req.forever;
             if req.forever {
                 info!("Entering pairing mode via RPC, will remain enabled");
             } else {
-                info!("Entering pairing mode via RPC, timer restarted");
+                info!("Entering pairing mode via RPC, will auto-exit in {} seconds",
+                      PAIRING_MODE_EXIT_DELAY_SECS);
+                // Spawn a timer to auto-disable pairing mode.
+                let pairing_mode = state.pairing_mode.clone();
+                tokio::task::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(PAIRING_MODE_EXIT_DELAY_SECS)).await;
+                    let mut pm = pairing_mode.lock().await;
+                    if *pm {
+                        *pm = false;
+                        info!("Auto-exiting pairing mode after {} seconds",
+                              PAIRING_MODE_EXIT_DELAY_SECS);
+                    }
+                });
             }
         } else {
             info!("Exiting pairing mode via RPC");
@@ -3643,7 +3627,7 @@ impl MyCedar {
                   plate_solution: Option<PlateSolutionProto>|
                   -> std::pin::Pin<
                 Box<
-                    dyn std::future::Future<Output = ()> + Send,
+                    dyn std::future::Future<Output = Option<LatLong>> + Send,
                 >,
             > {
                 Box::pin(Self::post_solve_callback(
@@ -3725,9 +3709,8 @@ impl MyCedar {
                 serve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
                 args_binning,
                 args_display_sampling,
-                pairing_mode: Arc::new(tokio::sync::Mutex::new(true)),
+                pairing_mode: Arc::new(tokio::sync::Mutex::new(false)),
                 pairing_mode_forever: false,
-                first_get_frame_time: None,
             }))
         };
 
@@ -3896,10 +3879,11 @@ impl MyCedar {
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         motion_estimator: Arc<tokio::sync::Mutex<MotionEstimator>>,
         polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
-    ) {
+    ) -> Option<LatLong> {
         // Notice when solve engine has recently changed its boresight due
         // to the pre-solve callback function reporting a telescope sync.
         let mut prefs_to_save: Option<Preferences> = None;
+        let mut updated_observer_location: Option<LatLong> = None;
         if let Some(bp) = boresight_pixel {
             let cedar_bp = ImageCoord { x: bp.x, y: bp.y };
             let mut locked_preferences = preferences.lock().await;
@@ -3954,6 +3938,7 @@ impl MyCedar {
                 };
                 fixed_settings.lock().await.observer_location =
                     Some(observer_location.clone());
+                updated_observer_location = Some(observer_location.clone());
                 info!("Telescope updated observer location");
                 locked_telescope_position.site_latitude = None;
                 locked_telescope_position.site_longitude = None;
@@ -4005,6 +3990,7 @@ impl MyCedar {
             // Write updated preferences to file.
             Self::write_preferences_file(&preferences_file, &prefs);
         }
+        updated_observer_location
     }
 
     fn set_server_time(

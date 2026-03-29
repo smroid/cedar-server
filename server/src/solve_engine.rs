@@ -53,7 +53,9 @@ type PreSolveCallback = Arc<
 >;
 
 // Post-solve callback: called after the plate solve to process the solution
-// result and update server/telescope state.
+// result and update server/telescope state. Returns an updated observer
+// location if one was received (e.g. from a telescope), so that the solve
+// engine can update its own state.
 type PostSolveCallback = Arc<
     dyn Fn(
             Option<ImageCoord>,
@@ -61,7 +63,7 @@ type PostSolveCallback = Arc<
             Option<PlateSolutionProto>,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<Output = ()> + Send,
+                dyn std::future::Future<Output = Option<LatLong>> + Send,
             >,
         > + Send
         + Sync,
@@ -727,12 +729,16 @@ impl SolveEngine {
 
         if plate_solution_proto.is_none() {
             if !align_mode {
-                post_solve_callback(
+                if let Some(observer_location) = post_solve_callback(
                     boresight_pixel,
                     Some(detect_result.clone()),
                     None,
                 )
-                .await;
+                .await
+                {
+                    state.lock().await.observer_location =
+                        Some(observer_location);
+                }
             }
         } else {
             let psp = plate_solution_proto.as_ref().unwrap();
@@ -749,12 +755,16 @@ impl SolveEngine {
 
             if !align_mode {
                 // Process the plate solution result (update motion estimator, etc).
-                post_solve_callback(
+                if let Some(observer_location) = post_solve_callback(
                     boresight_pixel.clone(),
                     Some(detect_result.clone()),
                     Some(psp.clone()),
                 )
-                .await;
+                .await
+                {
+                    state.lock().await.observer_location =
+                        Some(observer_location);
+                }
 
                 // If we're slewing, see if the boresight is close enough to
                 // the slew target that Cedar Aim should display an inset image
