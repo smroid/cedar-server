@@ -1180,8 +1180,9 @@ mod tests {
     async fn test_set_get_date_time_timezone() {
         let (mut controller, position_arc) = setup_controller().await;
 
-        let set_tz = controller.process_input(b":SG-08.0#").await;
-        assert_eq!(set_tz.as_deref(), Some("1"));
+        // Since LX200 protocol involves passing hours to UTC, flip the sign
+        let set_time_to_utc = controller.process_input(b":SG+08.0#").await;
+        assert_eq!(set_time_to_utc.as_deref(), Some("1"));
         assert_eq!(controller.timezone, Some("-0800".to_string()));
 
         let set_time = controller.process_input(b":SL10:30:00#").await;
@@ -1219,9 +1220,10 @@ mod tests {
             controller.process_input(b":GC#").await.as_deref(),
             Some("11/15/25#")
         );
+        // Sign flip here as well to match the LX200 protocol
         assert_eq!(
             controller.process_input(b":GG#").await.as_deref(),
-            Some("-08.0#")
+            Some("+08.0#")
         );
     }
 
