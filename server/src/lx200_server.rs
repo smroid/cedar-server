@@ -464,7 +464,7 @@ impl Lx200Controller {
         }
     }
 
-    fn set_hours_from_utc(&mut self, cmd: &str) -> String {
+    fn set_hours_to_utc(&mut self, cmd: &str) -> String {
         // The command is expected to be ":SGsXX.X" where s is +/-
         if cmd.len() < 8 {
             warn!("Unexpected tz length, cmd: {}", cmd);
@@ -819,8 +819,8 @@ impl Lx200Controller {
                     Some(self.set_date(in_data).await)
                 }
                 "SG" => {
-                    debug!("Received set hours from UTC command: {}", in_data);
-                    Some(self.set_hours_from_utc(in_data))
+                    debug!("Received set hours to UTC command: {}", in_data);
+                    Some(self.set_hours_to_utc(in_data))
                 }
                 "SL" => {
                     debug!("Received set time command: {}", in_data);
