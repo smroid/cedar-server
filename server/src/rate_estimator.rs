@@ -1,13 +1,12 @@
-// Copyright (c) 2024 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use std::time::{Duration, SystemTime};
+use std::time::Instant;
 
 use cedar_elements::reservoir_sampler::ReservoirSampler;
-use log::warn;
 
 struct DataPoint {
-    x: SystemTime,
+    x: Instant,
     y: f64,
 }
 
@@ -16,17 +15,17 @@ struct DataPoint {
 // and an estimate of the rate's uncertainty is derived from a measurement of
 // the data's noise.
 pub struct RateEstimation {
-    // Time of the first data point to be add()ed.
-    first: SystemTime,
+    // Time of the first data point that was add()ed.
+    first: Instant,
 
-    // Time of most recent data point to be add()ed.
-    last: SystemTime,
+    // Time of most recent data point that was add()ed.
+    last: Instant,
 
     // The retained subset of data points that have been add()ed.
     reservoir: ReservoirSampler<DataPoint>,
 
     // The linear regression's slope. This is the rate of change in y per
-    // second of SystemTime (x) change.
+    // second of elapsed time (x) change.
     slope: f64,
 
     // The linear regression's y intercept.
@@ -50,10 +49,10 @@ impl RateEstimation {
     // estimation. Note that even though we retain a finite number of points,
     // the estimated `slope` continues to improve over time as the time span of
     // added values increases.
-    pub fn new(capacity: usize, time: &SystemTime, value: f64) -> Self {
+    pub fn new(capacity: usize, time: &Instant, value: f64) -> Self {
         let mut re = RateEstimation {
             first: *time,
-            last: SystemTime::UNIX_EPOCH,
+            last: *time,
             reservoir: ReservoirSampler::<DataPoint>::new(capacity),
             slope: 0.0,
             intercept: 0.0,
@@ -67,37 +66,22 @@ impl RateEstimation {
         re
     }
 
-    // Successive calls to add() must have increasing `time` arg values.
-    pub fn add(&mut self, time: &SystemTime, value: f64, noise_estimate: f64) {
-        if *time <= self.last {
-            // This can happen when the client updates the server's system time.
-            if *time <= self.last - Duration::from_secs(10) {
-                warn!("Time arg regressed from {:?} to {:?}", self.last, time);
-            }
-            self.last = *time;
-            return;
-        }
+    // Successive calls to add() must have non-decreasing `time` arg values.
+    pub fn add(&mut self, time: &Instant, value: f64, noise_estimate: f64) {
         self.last = *time;
         let (added, removed) =
             self.reservoir.add(DataPoint { x: *time, y: value });
         if let Some(removed) = removed {
-            let x = removed
-                .x
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64();
+            let x = removed.x.duration_since(self.first).as_secs_f64();
             self.x_sum -= x;
             self.y_sum -= removed.y;
         }
         if added {
-            self.x_sum += time
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64();
+            self.x_sum += time.duration_since(self.first).as_secs_f64();
             self.y_sum += value;
         }
         let count = self.reservoir.count();
-        if count < 2 {
+        if count < 3 {
             return;
         }
         let count = count as f64;
@@ -107,29 +91,18 @@ impl RateEstimation {
         let mut num = 0.0_f64;
         let mut den = 0.0_f64;
         for sample in self.reservoir.samples() {
-            let x = sample
-                .x
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64();
+            let x = sample.x.duration_since(self.first).as_secs_f64();
             num += (x - x_mean) * (sample.y - y_mean);
-            den += (x - x_mean) * (x - x_mean);
+            den += (x - x_mean).powi(2);
         }
-        // `den` will be non-zero because we require the `time` arg to be
-        // non-stationary.
-        assert!(den > 0.0);
+        assert!(den > 0.0, "duplicate timestamps passed to add()");
         self.slope = num / den;
-        let first_x = self
-            .first
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
-        self.intercept = y_mean - self.slope * (x_mean - first_x);
+        self.intercept = y_mean - self.slope * x_mean;
 
+        // Second pass: compute residuals now that slope/intercept are known.
         let mut y_variance = 0.0_f64;
         for sample in self.reservoir.samples() {
-            let y_reg = self.estimate_value(&sample.x);
-            y_variance += (sample.y - y_reg) * (sample.y - y_reg);
+            y_variance += (sample.y - self.estimate_value(&sample.x)).powi(2);
         }
         let adjusted_y_variance =
             f64::max(y_variance, noise_estimate * noise_estimate);
@@ -143,17 +116,16 @@ impl RateEstimation {
     }
 
     // Returns the `time` of the most recent `add()` call.
-    pub fn last_time(&self) -> SystemTime {
+    pub fn last_time(&self) -> Instant {
         self.last
     }
 
     // Determines if the given data point is on-trend, within `sigma` multiple
     // of the model's noise.
-    // `time` must not be earlier than the first add()ed data point.
     // If count() is less than 3, returns true.
     pub fn fits_trend(
         &self,
-        time: &SystemTime,
+        time: &Instant,
         value: f64,
         sigma: f64,
     ) -> bool {
@@ -165,23 +137,21 @@ impl RateEstimation {
         deviation < sigma * self.y_noise
     }
 
-    fn estimate_value(&self, time: &SystemTime) -> f64 {
-        let x = time.duration_since(self.first).unwrap().as_secs_f64();
+    fn estimate_value(&self, time: &Instant) -> f64 {
+        let x = time.duration_since(self.first).as_secs_f64();
         self.intercept + x * self.slope
     }
 
     // Returns estimated rate of change in value per second of time.
-    // count() must be at least 2.
+    // Returns 0.0 if fewer than 3 points have been add()ed.
     pub fn slope(&self) -> f64 {
-        assert!(self.count() > 1);
-        self.slope
+        if self.count() < 3 { 0.0 } else { self.slope }
     }
 
-    // This bound is an estimate of the +/- range of slope() within which the
-    // true rate is likely to be.
+    // Returns an estimate of the +/- range within which the true rate likely
+    // falls. Returns 0.0 if fewer than 3 points have been add()ed.
     pub fn rate_interval_bound(&self) -> f64 {
-        assert!(self.count() > 2);
-        self.slope_noise
+        if self.count() < 3 { 0.0 } else { self.slope_noise }
     }
 }
 
@@ -189,12 +159,13 @@ impl RateEstimation {
 mod tests {
     extern crate approx;
     use approx::assert_abs_diff_eq;
+    use std::time::Duration;
 
     use super::*;
 
     #[test]
     fn test_rate_estimation() {
-        let mut time = SystemTime::now();
+        let mut time = Instant::now();
         // Create with first point.
         let mut re = RateEstimation::new(5, &time, 1.0);
         assert_eq!(re.count(), 1);
@@ -204,9 +175,9 @@ mod tests {
         assert!(re.fits_trend(&time, 1.1, /* sigma= */ 1.0));
         re.add(&time, 1.1, 0.1);
         assert_eq!(re.count(), 2);
-        assert_abs_diff_eq!(re.slope(), 0.1, epsilon = 0.001);
 
         // Add a third point, slightly displaced from the trend.
+        // slope() requires at least 3 points.
         time += Duration::from_secs(1);
         assert!(re.fits_trend(&time, 1.22, /* sigma= */ 1.0));
         re.add(&time, 1.22, 0.1);

@@ -3901,7 +3901,7 @@ impl MyCedar {
             telescope_position.lock().await.boresight_valid = false;
             if let Some(detect_result) = detect_result {
                 motion_estimator.lock().await.add(
-                    &detect_result.captured_image.readout_time,
+                    &detect_result.captured_image.readout_instant,
                     None,
                     None,
                 );
@@ -3918,10 +3918,11 @@ impl MyCedar {
             locked_telescope_position.boresight_ra = coords.ra;
             locked_telescope_position.boresight_dec = coords.dec;
             locked_telescope_position.boresight_valid = true;
-            let readout_time =
-                &detect_result.unwrap().captured_image.readout_time;
+            let captured_image = &detect_result.unwrap().captured_image;
+            let readout_time = &captured_image.readout_time;
+            let readout_instant = &captured_image.readout_instant;
             motion_estimator.lock().await.add(
-                readout_time,
+                readout_instant,
                 Some(coords.clone()),
                 Some(plate_solution.rmse),
             );
