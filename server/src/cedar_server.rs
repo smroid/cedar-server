@@ -312,6 +312,12 @@ struct CedarState {
 
     // When true, pairing mode will remain enabled indefinitely (not auto-exit).
     pairing_mode_forever: bool,
+
+    // Set to true when the client (mobile app) has provided the date/time via
+    // update_fixed_settings(). When true, time updates from the telescope
+    // (SkySafari/Stellarium) are ignored, since the client time is more
+    // reliable.
+    time_set_by_client: Arc<AtomicBool>,
 }
 
 #[tonic::async_trait]
@@ -383,7 +389,9 @@ impl Cedar for MyCedar {
                     .initialize_solar_system(SystemTime::now())
                     .await;
             }
-            info!("Updated server time to {:?}", Local::now());
+            self.state.lock().await.time_set_by_client
+                .store(true, AtomicOrdering::Relaxed);
+            info!("Updated server time from client to {:?}", Local::now());
             // Don't store the client time in our fixed_settings state, but
             // arrange to return our current time.
         }
@@ -3556,6 +3564,8 @@ impl MyCedar {
         let polar_analyzer =
             Arc::new(tokio::sync::Mutex::new(PolarAnalyzer::new()));
 
+        let time_set_by_client = Arc::new(AtomicBool::new(false));
+
         // Define callback invoked from SolveEngine().
         let closure_fixed_settings = fixed_settings.clone();
         let closure_preferences = shared_preferences.clone();
@@ -3621,6 +3631,7 @@ impl MyCedar {
         let post_solve_closure_telescope_position = closure_telescope_position.clone();
         let post_solve_motion_estimator = motion_estimator.clone();
         let post_solve_closure_polar_analyzer = closure_polar_analyzer.clone();
+        let post_solve_time_set_by_client = time_set_by_client.clone();
         let post_solve_callback = Arc::new(
             move |boresight_pixel: Option<ImageCoord>,
                   detect_result: Option<DetectResult>,
@@ -3640,6 +3651,7 @@ impl MyCedar {
                     post_solve_closure_telescope_position.clone(),
                     post_solve_motion_estimator.clone(),
                     post_solve_closure_polar_analyzer.clone(),
+                    post_solve_time_set_by_client.clone(),
                 ))
             },
         );
@@ -3711,6 +3723,7 @@ impl MyCedar {
                 args_display_sampling,
                 pairing_mode: Arc::new(tokio::sync::Mutex::new(false)),
                 pairing_mode_forever: false,
+                time_set_by_client,
             }))
         };
 
@@ -3879,6 +3892,7 @@ impl MyCedar {
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         motion_estimator: Arc<tokio::sync::Mutex<MotionEstimator>>,
         polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
+        time_set_by_client: Arc<AtomicBool>,
     ) -> Option<LatLong> {
         // Notice when solve engine has recently changed its boresight due
         // to the pre-solve callback function reporting a telescope sync.
@@ -3953,11 +3967,27 @@ impl MyCedar {
             // Has telescope reported the time?
             if let Some(dt) = locked_telescope_position.utc_date.take() {
                 if let Ok(duration) = dt.duration_since(std::time::UNIX_EPOCH) {
-                    _ = Self::set_server_time(TimeSpec::new(
-                        duration.as_secs() as i64,
-                        duration.subsec_nanos() as i64,
-                    ));
-                    info!("Updated server time to {:?}", Local::now());
+                    if time_set_by_client.load(AtomicOrdering::Relaxed) {
+                        let telescope_secs = duration.as_secs() as i64;
+                        if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
+                            if (cur_time.tv_sec() - telescope_secs).abs() > 60 {
+                                warn!("Ignoring telescope time update; times differ by more \
+                                       than a minute. Current time: {:?}, telescope time: {:?}",
+                                      Local::now(), dt);
+                            } else {
+                                info!("Ignoring telescope time update; client has already set the time");
+                            }
+                        } else {
+                            info!("Ignoring telescope time update; client has already set the time");
+                        }
+                    } else {
+                        _ = Self::set_server_time(TimeSpec::new(
+                            duration.as_secs() as i64,
+                            duration.subsec_nanos() as i64,
+                        ));
+                        info!("Updated server time from telescope to {:?}",
+                              Local::now());
+                    }
                 } else {
                     warn!("Unable to set server time to {:?}", dt);
                 }
@@ -4009,7 +4039,6 @@ impl MyCedar {
             }
             Err(Box::new(e))
         } else {
-            info!("Updated server time");
             Ok(())
         }
     }
