@@ -425,8 +425,7 @@ impl DetectEngine {
 
             let mut acquire_duration_secs = prev_exposure_duration_secs;
             if let Some(cpd) = camera_processing_duration {
-              acquire_duration_secs =
-                f64::max(acquire_duration_secs, cpd.as_secs_f64());
+              acquire_duration_secs = cpd.as_secs_f64();
             }
             state.lock().await.acquire_latency_stats.add_value(
                 acquire_duration_secs);
