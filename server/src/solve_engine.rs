@@ -496,6 +496,9 @@ impl SolveEngine {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .thread_name("solve_engine")
+                    // Single worker suffices: this runtime runs only the
+                    // sequential solve worker loop with no concurrent tasks.
+                    .worker_threads(1)
                     .build()
                     .unwrap();
                 runtime.block_on(async move {
@@ -998,7 +1001,6 @@ impl SolveEngine {
                     &solve_params,
                 )
                 .await;
-            let elapsed = process_start_time.elapsed();
 
             let (
                 fov_catalog_entries,
@@ -1017,6 +1019,8 @@ impl SolveEngine {
                 height,
             )
             .await;
+
+            let elapsed = process_start_time.elapsed();
             if state.lock().await.last_solve_attempt_time.is_some() {
                 state
                     .lock()

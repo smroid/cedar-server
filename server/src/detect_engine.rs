@@ -271,6 +271,9 @@ impl DetectEngine {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .thread_name("detect_engine")
+                    // Single worker suffices: this runtime runs only the
+                    // sequential detect worker loop with no concurrent tasks.
+                    .worker_threads(1)
                     .build().unwrap();
                 runtime.block_on(async move {
                     DetectEngine::worker(
