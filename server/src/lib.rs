@@ -11,4 +11,5 @@ pub mod motion_estimator;
 pub mod polar_analyzer;
 pub mod position_reporter;
 pub mod rate_estimator;
+pub mod serve_engine;
 pub mod solve_engine;
