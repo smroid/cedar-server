@@ -411,6 +411,21 @@ impl SolveEngine {
         locked_state.solve_interval_stats.reset_session();
     }
 
+    pub async fn estimate_delay(&self, prev_frame_id: Option<i32>) -> Option<Duration> {
+        let locked_state = self.state.lock().await;
+        if locked_state.plate_solution.is_some() &&
+            (prev_frame_id.is_none() ||
+             prev_frame_id.unwrap() !=
+             locked_state.plate_solution.as_ref().unwrap().detect_result.frame_id)
+        {
+            Some(Duration::ZERO)
+        } else if locked_state.eta.is_some() {
+            Some(locked_state.eta.unwrap().saturating_duration_since(Instant::now()))
+        } else {
+            None
+        }
+    }
+
     // TODO: arg specifying directory to save to.
     pub async fn save_image(&self) -> Result<(), CanonicalError> {
         // Grab most recent image.
