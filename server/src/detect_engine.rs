@@ -173,6 +173,11 @@ impl DetectEngine {
         // it finishes the current interval.
     }
 
+    pub async fn get_binning(&self) -> (u32, bool) {
+        let locked_state = self.state.lock().await;
+        (locked_state.binning, locked_state.display_sampling)
+    }
+
     pub async fn set_focus_mode(&mut self, enabled: bool) {
         let mut locked_state = self.state.lock().await;
         locked_state.focus_mode = enabled;
