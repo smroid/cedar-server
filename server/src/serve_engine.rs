@@ -41,8 +41,6 @@ pub struct ServeContext {
     pub imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     pub polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
     pub normalize_rows: bool,
-    pub binning: u32,
-    pub display_sampling: bool,
     pub is_color: bool,
     pub jpeg_quality: u8,
     pub landscape: bool,
@@ -64,6 +62,7 @@ struct ServeState {
     // Latency stats.
     serve_latency_stats: ValueStatsAccumulator,
 
+    // Image rotator used to display central square crop.
     // Persistent across frames: image rotator carries over on plate solve
     // dropout.
     image_rotator: ImageRotator,
@@ -106,6 +105,32 @@ impl ServeEngine {
     /// Called by cedar_server when relevant settings change.
     pub async fn update_context(&mut self, context: ServeContext) {
         self.state.lock().await.context = context;
+    }
+
+    /// Updates per-request render parameters. Called at the start of each
+    /// get_frame RPC since landscape and jpeg_quality are request-level values.
+    pub async fn update_render_params(&mut self, landscape: bool, jpeg_quality: u8) {
+        let mut locked_state = self.state.lock().await;
+        locked_state.context.landscape = landscape;
+        locked_state.context.jpeg_quality = jpeg_quality;
+    }
+
+    /// Updates the operation settings snapshot. Called by cedar_server after
+    /// any operation settings change so the serve engine polls the right engine.
+    pub async fn update_operation_settings(&mut self, operation_settings: OperationSettings) {
+        self.state.lock().await.context.operation_settings = operation_settings;
+    }
+
+    /// Updates the preferences snapshot. Called by cedar_server after
+    /// preferences change (mount_type affects slew direction calc).
+    pub async fn update_preferences(&mut self, preferences: Preferences) {
+        self.state.lock().await.context.preferences = preferences;
+    }
+
+    /// Updates the fixed settings snapshot. Called by cedar_server after
+    /// fixed settings change (observer_location affects alt/az calc).
+    pub async fn update_fixed_settings(&mut self, fixed_settings: FixedSettings) {
+        self.state.lock().await.context.fixed_settings = fixed_settings;
     }
 
     /// Returns the center peak position in rotated image coordinates, for use
@@ -316,6 +341,7 @@ impl ServeEngine {
                 detect_result,
                 plate_solution,
                 &solve_engine,
+                &detect_engine,
             )
             .await;
 
@@ -349,6 +375,7 @@ impl ServeEngine {
         detect_result: DetectResult,
         plate_solution: Option<PlateSolution>,
         solve_engine: &Arc<tokio::sync::Mutex<SolveEngine>>,
+        detect_engine: &Arc<tokio::sync::Mutex<DetectEngine>>,
     ) -> ServeResult {
         // Read context and persistent state (brief lock).
         let (
@@ -359,8 +386,6 @@ impl ServeEngine {
             ctx_imu_tracker,
             ctx_polar_analyzer,
             ctx_normalize_rows,
-            ctx_binning,
-            ctx_display_sampling,
             ctx_is_color,
             ctx_jpeg_quality,
             ctx_landscape,
@@ -377,8 +402,6 @@ impl ServeEngine {
                 ctx.imu_tracker.clone(),
                 ctx.polar_analyzer.clone(),
                 ctx.normalize_rows,
-                ctx.binning,
-                ctx.display_sampling,
                 ctx.is_color,
                 ctx.jpeg_quality,
                 ctx.landscape,
@@ -386,6 +409,9 @@ impl ServeEngine {
                 locked_state.center_peak_position.clone(),
             )
         };
+
+        let (ctx_binning, ctx_display_sampling) =
+            detect_engine.lock().await.get_binning().await;
 
         let plate_solution_proto =
             if let Some(ref ps) = plate_solution {
@@ -803,17 +829,13 @@ impl ServeEngine {
         } // plate_solution
 
         // Boresight position.
-        let boresight_position =
-            solve_engine.lock().await.boresight_pixel().await;
-        let (bs_x, bs_y) = if let Some(bs) = boresight_position {
-            (bs.x, bs.y)
-        } else {
-            (width as f64 / 2.0, height as f64 / 2.0)
-        };
-        frame_result.boresight_position = Some(ImageCoord {
-            x: bs_x,
-            y: bs_y,
-        });
+        frame_result.boresight_position = Some(
+            solve_engine.lock().await.boresight_pixel().await
+                .unwrap_or(ImageCoord {
+                    x: width as f64 / 2.0,
+                    y: height as f64 / 2.0,
+                })
+        );
 
         let operating_mode = ctx_operation_settings.operating_mode.unwrap();
         let focus_assist_mode = detect_result.focus_aid.is_some();
