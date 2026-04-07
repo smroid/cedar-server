@@ -42,6 +42,10 @@ pub struct DetectEngine {
     // than needed) but only a small amount to the low side.
     star_count_goal: i32,
 
+    // Minimum interval between loop iterations; worker sleeps if processing
+    // finishes sooner.
+    min_frame_interval: Duration,
+
     // Our state, shared between DetectEngine methods and the worker thread.
     state: Arc<tokio::sync::Mutex<DetectState>>,
 
@@ -114,6 +118,7 @@ impl DetectEngine {
                detection_min_sigma: f64,
                detection_sigma: f64,
                star_count_goal: i32,
+               min_frame_interval: Duration,
                camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                normalize_rows: bool,
                stats_capacity: usize)
@@ -125,6 +130,7 @@ impl DetectEngine {
             detection_min_sigma,
             detection_sigma,
             star_count_goal,
+            min_frame_interval,
             state: Arc::new(tokio::sync::Mutex::new(DetectState{
                 camera: camera.clone(),
                 autoexposure_enabled: true,
@@ -260,6 +266,7 @@ impl DetectEngine {
             let detection_min_sigma = self.detection_min_sigma;
             let detection_sigma = self.detection_sigma;
             let star_count_goal = self.star_count_goal;
+            let min_frame_interval = self.min_frame_interval;
             let cloned_state = self.state.clone();
             let cloned_done = self.worker_done.clone();
 
@@ -285,7 +292,8 @@ impl DetectEngine {
                         initial_exposure_duration,
                         min_exposure_duration, max_exposure_duration,
                         detection_min_sigma, detection_sigma,
-                        star_count_goal, cloned_state, cloned_done).await;
+                        star_count_goal, min_frame_interval,
+                        cloned_state, cloned_done).await;
                 });
             }));
         }
@@ -346,6 +354,7 @@ impl DetectEngine {
                     detection_min_sigma: f64,
                     detection_sigma: f64,
                     star_count_goal: i32,
+                    min_frame_interval: Duration,
                     state: Arc<tokio::sync::Mutex<DetectState>>,
                     done: Arc<AtomicBool>) {
         debug!("Starting detect engine");
@@ -812,6 +821,14 @@ impl DetectEngine {
                 detect_latency_stats:
                   locked_state.detect_latency_stats.value_stats.clone(),
             });
+            drop(locked_state);
+
+            // Rate-limit: sleep for any remaining time in the frame interval.
+            // This prevents the detect thread from pegging a CPU core when
+            // exposure times are short.
+            if let Some(remaining) = min_frame_interval.checked_sub(elapsed) {
+                tokio::time::sleep(remaining).await;
+            }
         }  // loop.
     }
 }

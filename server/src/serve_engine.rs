@@ -75,6 +75,9 @@ pub struct ServeEngine {
     state: Arc<tokio::sync::Mutex<ServeState>>,
     solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
+    // Minimum interval between loop iterations; worker sleeps if processing
+    // finishes sooner.
+    min_frame_interval: Duration,
     worker_thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -84,6 +87,7 @@ impl ServeEngine {
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         context: ServeContext,
         stats_capacity: usize,
+        min_frame_interval: Duration,
     ) -> Self {
         ServeEngine {
             state: Arc::new(tokio::sync::Mutex::new(ServeState {
@@ -97,6 +101,7 @@ impl ServeEngine {
             })),
             solve_engine,
             detect_engine,
+            min_frame_interval,
             worker_thread: None,
         }
     }
@@ -215,6 +220,7 @@ impl ServeEngine {
             let cloned_state = self.state.clone();
             let cloned_solve_engine = self.solve_engine.clone();
             let cloned_detect_engine = self.detect_engine.clone();
+            let min_frame_interval = self.min_frame_interval;
             self.worker_thread = Some(std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -229,6 +235,7 @@ impl ServeEngine {
                         cloned_state,
                         cloned_solve_engine,
                         cloned_detect_engine,
+                        min_frame_interval,
                     )
                     .await;
                 });
@@ -240,6 +247,7 @@ impl ServeEngine {
         state: Arc<tokio::sync::Mutex<ServeState>>,
         solve_engine: Arc<tokio::sync::Mutex<SolveEngine>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
+        min_frame_interval: Duration,
     ) {
         debug!("Starting serve engine");
         loop {
@@ -346,9 +354,9 @@ impl ServeEngine {
             .await;
 
             // Post the result.
+            let elapsed = serve_start.elapsed();
             {
                 let mut locked_state = state.lock().await;
-                let elapsed = serve_start.elapsed();
                 locked_state
                     .serve_latency_stats
                     .add_value(elapsed.as_secs_f64());
@@ -366,6 +374,13 @@ impl ServeEngine {
                 locked_state.image_rotator =
                     serve_result.image_rotator.clone();
                 locked_state.serve_result = Some(serve_result);
+            }
+
+            // Rate-limit: sleep for any remaining time in the frame interval.
+            // This prevents the serve thread from pegging a CPU core when
+            // exposure times are short.
+            if let Some(remaining) = min_frame_interval.checked_sub(elapsed) {
+                tokio::time::sleep(remaining).await;
             }
         }
     }
