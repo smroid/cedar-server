@@ -14,8 +14,6 @@ Mic button on keyboard for voice input. Can work offline? Good for
 Make polar advice data block tappable, zooms to larger dialog.
 * polar advice can just be an "idea" icon.
 
-"serve engine" pipeline stage. Moves some logic out of cedar_server.rs.
-
 Multiple scopes
 * FOV
 * saved alignment
@@ -100,16 +98,10 @@ remote ops, proxied via phone
 
 bug report
 
-interoperation with SkySafari
-* switch apps?
-* split screen?
-* picture-in-picture?
-
 vignetting calibration
 
 Wifi management
 * switching wifi mode-- setting in web UI?
-* bluetooth? disable if not using?
 
 FITS support for saved images? Other formats?
 
