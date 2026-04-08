@@ -832,6 +832,40 @@ impl Cedar for MyCedar {
                 .await?;
         }
         if let Some(demo_image_filename) = req.demo_image_filename {
+            // Load the demo image before acquiring the state lock, since
+            // file I/O and image decoding can be slow.
+            let demo_img_u8 = if !demo_image_filename.is_empty() {
+                let input_path = PathBuf::from("./demo_images")
+                    .join(demo_image_filename.clone());
+                let img_file = match ImageReader::open(&input_path) {
+                    Err(x) => {
+                        return Err(logged_status!(
+                            failed_precondition,
+                            format!(
+                                "Error opening image file {:?}: {:?}.",
+                                input_path, x
+                            )
+                        ));
+                    }
+                    Ok(img_file) => img_file,
+                };
+                let img = match img_file.decode() {
+                    Err(x) => {
+                        return Err(logged_status!(
+                            failed_precondition,
+                            format!(
+                                "Error decoding image file {:?}: {:?}.",
+                                input_path, x
+                            )
+                        ));
+                    }
+                    Ok(img) => img,
+                };
+                Some(img.to_luma8())
+            } else {
+                None
+            };
+
             let (
                 new_camera,
                 width,
@@ -862,33 +896,7 @@ impl Cedar for MyCedar {
                         locked_state.camera.lock().await.model()
                     );
                 } else {
-                    let input_path = PathBuf::from("./demo_images")
-                        .join(demo_image_filename.clone());
-                    let img_file = match ImageReader::open(&input_path) {
-                        Err(x) => {
-                            return Err(logged_status!(
-                                failed_precondition,
-                                format!(
-                                    "Error opening image file {:?}: {:?}.",
-                                    input_path, x
-                                )
-                            ));
-                        }
-                        Ok(img_file) => img_file,
-                    };
-                    let img = match img_file.decode() {
-                        Err(x) => {
-                            return Err(logged_status!(
-                                failed_precondition,
-                                format!(
-                                    "Error decoding image file {:?}: {:?}.",
-                                    input_path, x
-                                )
-                            ));
-                        }
-                        Ok(img) => img,
-                    };
-                    let img_u8 = img.to_luma8();
+                    let img_u8 = demo_img_u8.unwrap();
                     locked_state.camera = Arc::new(tokio::sync::Mutex::new(
                         Box::new(ImageCamera::new(img_u8).unwrap()),
                     ));
@@ -1095,10 +1103,6 @@ impl Cedar for MyCedar {
         }
         *locked_state.preferences.lock().await = our_prefs.clone();
 
-        // Write updated preferences to file. Note that this operation is
-        // guarded by our holding locked_state.
-        Self::write_preferences_file(&self.preferences_file, &our_prefs);
-
         // Handle skip_focus being cleared - exit skip-focus retry mode.
         if req.skip_focus == Some(false) && locked_state.skip_focus_active {
             info!("User cleared skip_focus preference, exiting skip-focus mode");
@@ -1145,6 +1149,7 @@ impl Cedar for MyCedar {
         let serve_engine_arc = locked_state.serve_engine.clone();
         let updated_op_settings = locked_state.operation_settings.clone();
         drop(locked_state);
+        Self::write_preferences_file(&self.preferences_file, &our_prefs);
         serve_engine_arc.lock().await
             .update_operation_settings(updated_op_settings).await;
         serve_engine_arc.lock().await
