@@ -3596,7 +3596,7 @@ struct AppArgs {
     test_image: Option<String>,
     min_exposure: Duration,
     max_exposure: Duration,
-    min_frame_interval: Duration,
+    min_frame_interval: Option<Duration>,
     star_count_goal: i32,
     sigma: f64,
     min_sigma: f64,
@@ -3644,7 +3644,7 @@ pub fn server_main(
       --test_image <path>
       --min_exposure NUMBER          0.00001
       --max_exposure NUMBER          1.0
-      --min_frame_interval NUMBER    0.020
+      --min_frame_interval NUMBER    0.020 (Hopper), 0.100 (Cedar-Box)
       --star_count_goal NUMBER       20
       --sigma NUMBER                 8.0
       --min_sigma NUMBER             5.0
@@ -3686,8 +3686,8 @@ pub fn server_main(
         // worker threads from pegging CPU cores when camera exposure times are
         // short, leaving headroom for gRPC handling and other tasks.
         min_frame_interval: pargs
-            .value_from_fn("--min_frame_interval", parse_duration)
-            .unwrap_or(parse_duration("0.020").unwrap()),
+            .opt_value_from_fn("--min_frame_interval", parse_duration)
+            .unwrap(),
         star_count_goal: pargs
             .value_from_str("--star_count_goal")
             .unwrap_or(20),
@@ -3744,6 +3744,18 @@ pub fn server_main(
     // Derive product name from device verification status (indicated by whether
     // cedar_sky is Some).
     let product_name = if cedar_sky.is_some() { "Hopper" } else { "Cedar-Box" };
+
+    // Resolve min_frame_interval default based on product: Hopper is faster
+    // hardware so we allow a tighter interval; Cedar-Box uses a more
+    // conservative default to keep cores available for gRPC.
+    let mut args = args;
+    args.min_frame_interval = Some(args.min_frame_interval.unwrap_or_else(|| {
+        if product_name == "Hopper" {
+            Duration::from_millis(20)
+        } else {
+            Duration::from_millis(100)
+        }
+    }));
 
     async_main(
         args,
@@ -4106,7 +4118,7 @@ async fn async_main(
         Duration::from_millis(100),
         args.min_exposure,
         args.max_exposure,
-        args.min_frame_interval,
+        args.min_frame_interval.unwrap(),
         activity_led.clone(),
         attached_camera,
         test_image_camera,
