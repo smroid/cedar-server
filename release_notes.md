@@ -324,13 +324,13 @@ Plus contributions from a member of the Cedar user community:
 
 * Support Bluetooth for SkySafari to connect to Cedar server.
 
-December 22 2025
+# December 22 2025
 
 * LX200 fixes and improvements.
 
 * Bluetooth fixes and improvements.
 
-February 20 2026
+# February 20 2026
 
 Cedar-server version: 0.18.0
 
@@ -354,7 +354,7 @@ Cedar-server version: 0.18.0
 
 * Reorganized connection loss/recovery dialog.
 
-April 9 2026
+# April 9 2026
 
 Cedar-server version: 1.0.3
 
