@@ -9,9 +9,8 @@ Cedar's user interface.
 ## Supported platforms
 
 These instructions are for building and running Cedar-server on a Raspberry Pi 4
-or 5 (or 3, but this model is a bit slow for Cedar) running Bookworm. For
-building, at least 4GB RAM is recommended; for running, at least 1GB RAM is
-recommended.
+or 5 running Bookworm. For building, at least 4GB RAM is recommended; for
+running, at least 1GB RAM is recommended.
 
 The Cedar-aim web app works with both Android and IOS devices (phones/tablets)
 and also laptops (Windows/Mac/Linux). Basically, anything with a modern web
@@ -26,7 +25,7 @@ started!
 ## Download and burn
 
 First: download the SD card image
-[cedar_rpi_2026_feb_20.img.gz](https://storage.googleapis.com/cedar-sdcard-images/cedar_rpi_2026_feb_20.img.gz)
+[cedar_rpi_2026_apr_09.img.gz](https://storage.googleapis.com/cedar-sdcard-images/cedar_rpi_2026_apr_09.img.gz)
 to your computer.
 
 Second: burn an SD card (32GB or larger) with the image file you just downloaded

@@ -353,3 +353,46 @@ Cedar-server version: 0.18.0
 * Picture-in-picture mode for Cedar Aim app (not Web app version).
 
 * Reorganized connection loss/recovery dialog.
+
+April 9 2026
+
+Cedar-server version: 1.0.3
+
+* Fix RPi camera for Raspberry Pi 5.
+
+* Allow imx290 to have shorter exposures.
+
+* Fix alignment confirmation popup "snack bar" to have darker theme.
+
+* Add button to connection dialog to show error.
+
+* Fix iOS layout issues.
+
+* Auto-navigate to map when location information is missing and user tries to select alt/az data.
+
+* Fix bug where restarting Hopper after update would lose the planets.
+
+* Bluetooth device name tracks changes to WiFi access point name.
+
+* Fix problem with SkySafari and Stellarium pairing to Bluetooth.
+
+* Add item under About to list client connections.
+
+* Darken black level in focus zoom window.
+
+* Remove camera exposure time limit preventing shorter exposures.
+
+* Use faster jpeg image encoder.
+
+* Propagate SkySafari and Stellarium observer location into SolveEngine for IMU use.
+
+* Don't enable Bluetooth pairing at Cedar startup. It must be explicitly enabled by user.
+
+* Fix LX200 timezone issues.
+
+* Fix server crash on time regression.
+
+* Favor client set time over telescope set time.
+
+* Guard pipeline processing stages from pegging CPU cores. This might have been causing connection timeouts.
+
