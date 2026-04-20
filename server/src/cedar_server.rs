@@ -516,13 +516,12 @@ impl Cedar for MyCedar {
                     // calibrated. Set gain (requires state
                     // access)
                     {
+                        let camera = self.state.lock().await.camera.clone();
+                        Self::set_gain(&camera, final_daylight_mode).await;
                         let mut locked_state = self.state.lock().await;
-                        Self::set_gain(&mut locked_state, final_daylight_mode)
-                            .await;
                         if final_focus_mode {
                             // In SETUP focus assist mode we run at full speed
-                            // with pre-calibrate
-                            // settings.
+                            // with pre-calibrate settings.
                             if let Err(x) = Self::set_update_interval(
                                 &locked_state,
                                 Duration::ZERO,
@@ -531,13 +530,18 @@ impl Cedar for MyCedar {
                             {
                                 return Err(tonic_status(x));
                             }
+                            let initial_exposure_duration =
+                                locked_state.initial_exposure_duration;
+                            drop(locked_state);
                             if let Err(x) = Self::set_pre_calibration_defaults(
-                                &mut locked_state,
+                                &camera,
+                                initial_exposure_duration,
                             )
                             .await
                             {
                                 return Err(tonic_status(x));
                             }
+                            locked_state = self.state.lock().await;
                         }
                         Self::reset_session_stats(locked_state.deref_mut())
                             .await;
@@ -588,13 +592,9 @@ impl Cedar for MyCedar {
                         // Transition into Operate mode from SETUP align mode.
                         // Already calibrated.
                         {
-                            let mut locked_state = self.state.lock().await;
-                            Self::set_gain(
-                                &mut locked_state,
-                                // daylight_mode=
-                                false,
-                            )
-                            .await;
+                            let camera = self.state.lock().await.camera.clone();
+                            Self::set_gain(&camera, false).await;
+                            let locked_state = self.state.lock().await;
                             let std_duration =
                                 Self::get_automatic_update_interval(
                                     &locked_state,
@@ -690,11 +690,10 @@ impl Cedar for MyCedar {
                             );
                             calibrating = true;
                         } else {
-                            Self::set_gain(
-                                &mut locked_state,
-                                new_daylight_mode,
-                            )
-                            .await;
+                            let camera = locked_state.camera.clone();
+                            drop(locked_state);
+                            Self::set_gain(&camera, new_daylight_mode).await;
+                            locked_state = self.state.lock().await;
                         }
                     }
                 }
@@ -742,14 +741,20 @@ impl Cedar for MyCedar {
                         {
                             return Err(tonic_status(x));
                         }
+                        let camera = locked_state.camera.clone();
+                        let initial_exposure_duration =
+                            locked_state.initial_exposure_duration;
+                        drop(locked_state);
                         if let Err(x) = Self::set_pre_calibration_defaults(
-                            &mut locked_state,
+                            &camera,
+                            initial_exposure_duration,
                         )
                         .await
                         {
                             return Err(tonic_status(x));
                         }
-                        Self::set_gain(&mut locked_state, daylight_mode).await;
+                        Self::set_gain(&camera, daylight_mode).await;
+                        locked_state = self.state.lock().await;
                     } else if !daylight_mode {
                         // Exiting focus assist mode, without daylight mode
                         // active.
@@ -883,7 +888,7 @@ impl Cedar for MyCedar {
                     locked_state.camera = get_camera(
                         &locked_state.attached_camera,
                         &self.test_image_camera,
-                    );
+                    ).await;
                     locked_state.operation_settings.demo_image_filename = None;
                     locked_state
                         .solve_engine
@@ -893,12 +898,12 @@ impl Cedar for MyCedar {
                         .await;
                     info!(
                         "Using camera {}",
-                        locked_state.camera.lock().await.model()
+                        locked_state.camera.lock().await.model().await
                     );
                 } else {
                     let img_u8 = demo_img_u8.unwrap();
                     locked_state.camera = Arc::new(tokio::sync::Mutex::new(
-                        Box::new(ImageCamera::new(img_u8).unwrap()),
+                        Box::new(ImageCamera::new(img_u8).await.unwrap()),
                     ));
                     locked_state
                         .solve_engine
@@ -911,7 +916,7 @@ impl Cedar for MyCedar {
                         Some(demo_image_filename);
                 }
                 let new_camera = locked_state.camera.clone();
-                let (width, height) = new_camera.lock().await.dimensions();
+                let (width, height) = new_camera.lock().await.dimensions().await;
 
                 let std_duration =
                     Self::get_automatic_update_interval(&locked_state);
@@ -1132,11 +1137,14 @@ impl Cedar for MyCedar {
             locked_state.operation_settings.operating_mode =
                 Some(OperatingMode::Setup as i32);
 
-            // Set pre-calibration defaults.
-            Self::set_pre_calibration_defaults(&mut locked_state)
+            let camera = locked_state.camera.clone();
+            let initial_exposure_duration = locked_state.initial_exposure_duration;
+            drop(locked_state);
+            Self::set_pre_calibration_defaults(&camera, initial_exposure_duration)
                 .await
                 .ok();
-            Self::set_gain(&mut locked_state, false).await;
+            Self::set_gain(&camera, false).await;
+            locked_state = self.state.lock().await;
 
             locked_state
                 .detect_engine
@@ -1280,7 +1288,7 @@ impl Cedar for MyCedar {
                 let camera_arc = locked_state.camera.clone();
                 drop(locked_state);
                 image_rotator = serve_engine_arc.lock().await.image_rotator().await;
-                (width, height) = camera_arc.lock().await.dimensions();
+                (width, height) = camera_arc.lock().await.dimensions().await;
             }
             (bsp.x, bsp.y) = image_rotator.transform_from_rotated(
                 bsp.x,
@@ -1440,7 +1448,7 @@ impl Cedar for MyCedar {
                     locked_state.detect_engine.clone(),
                 )
             };
-            let (width, height) = camera.lock().await.dimensions();
+            let (width, height) = camera.lock().await.dimensions().await;
             (dfr.x, dfr.y) = image_rotator.transform_from_rotated(
                 dfr.x,
                 dfr.y,
@@ -1875,8 +1883,9 @@ impl MyCedar {
 
         let calibration_solve_timeout = solver_arc.lock().await.default_timeout();
         {
+            let camera = state.lock().await.camera.clone();
+            Self::set_gain(&camera, /* daylight_mode= */ false).await;
             let mut locked_state = state.lock().await;
-            Self::set_gain(&mut locked_state, /* daylight_mode= */ false).await;
             // Snapshot the last serve result so we can show a frozen image
             // during calibration (ServeEngine results are not usable while
             // calibration is running).
@@ -1981,10 +1990,8 @@ impl MyCedar {
                 if !succeeded {
                     // Calibration failed or was cancelled. Stay in current
                     // mode.
-                    {
-                        let mut locked_state = state.lock().await;
-                        Self::set_gain(&mut locked_state, daylight_mode).await;
-                    }
+                    let camera = state.lock().await.camera.clone();
+                    Self::set_gain(&camera, daylight_mode).await;
                     let mut locked_detect_engine =
                         detect_engine_arc.lock().await;
                     locked_detect_engine.set_focus_mode(focus_mode).await;
@@ -1992,9 +1999,9 @@ impl MyCedar {
                 } else {
                     // Calibration completed.
                     {
+                        let camera = state.lock().await.camera.clone();
+                        Self::set_gain(&camera, new_daylight_mode).await;
                         let mut locked_state = state.lock().await;
-                        Self::set_gain(&mut locked_state, new_daylight_mode)
-                            .await;
                         locked_state.operation_settings.daylight_mode =
                             Some(new_daylight_mode);
                         locked_state.operation_settings.focus_assist_mode =
@@ -2231,24 +2238,24 @@ impl MyCedar {
             Some(CameraModel {
                 model: demo_image.to_string(),
                 model_detail: None,
-                image_width: locked_camera.dimensions().0,
-                image_height: locked_camera.dimensions().1,
+                image_width: locked_camera.dimensions().await.0,
+                image_height: locked_camera.dimensions().await.1,
             })
         } else if let Some(test_image_camera) = &self.test_image_camera {
             let locked_camera = test_image_camera.lock().await;
             Some(CameraModel {
-                model: locked_camera.model(),
+                model: locked_camera.model().await,
                 model_detail: None, // TODO: file path?
-                image_width: locked_camera.dimensions().0,
-                image_height: locked_camera.dimensions().1,
+                image_width: locked_camera.dimensions().await.0,
+                image_height: locked_camera.dimensions().await.1,
             })
         } else if let Some(attached_camera) = &attached_camera_arc {
             let locked_camera = attached_camera.lock().await;
             Some(CameraModel {
-                model: locked_camera.model(),
-                model_detail: locked_camera.model_detail(),
-                image_width: locked_camera.dimensions().0,
-                image_height: locked_camera.dimensions().1,
+                model: locked_camera.model().await,
+                model_detail: locked_camera.model_detail().await,
+                image_width: locked_camera.dimensions().await.0,
+                image_height: locked_camera.dimensions().await.1,
             })
         } else {
             None
@@ -2379,14 +2386,14 @@ impl MyCedar {
             attached_camera
                 .lock()
                 .await
-                .set_update_interval(update_interval)
+                .set_update_interval(update_interval).await
                 .unwrap();
         }
         state
             .camera
             .lock()
             .await
-            .set_update_interval(update_interval)
+            .set_update_interval(update_interval).await
     }
 
     async fn reset_session_stats(state: &mut CedarState) {
@@ -2397,24 +2404,28 @@ impl MyCedar {
 
     // Called when entering SETUP mode.
     async fn set_pre_calibration_defaults(
-        state: &mut CedarState,
+        camera: &Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+        initial_exposure_duration: Duration,
     ) -> Result<(), CanonicalError> {
-        let mut locked_camera = state.camera.lock().await;
-        locked_camera.set_exposure_duration(state.initial_exposure_duration)?;
-        if let Err(e) = locked_camera.set_offset(Offset::new(3)) {
+        let mut locked_camera = camera.lock().await;
+        locked_camera.set_exposure_duration(initial_exposure_duration).await?;
+        if let Err(e) = locked_camera.set_offset(Offset::new(3)).await {
             debug!("Could not set offset: {:?}", e);
         }
         Ok(())
     }
 
-    async fn set_gain(state: &mut CedarState, daylight_mode: bool) {
-        let mut locked_camera = state.camera.lock().await;
+    async fn set_gain(
+        camera: &Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+        daylight_mode: bool)
+    {
+        let mut locked_camera = camera.lock().await;
         let gain = if daylight_mode {
             Gain::new(0)
         } else {
-            locked_camera.optimal_gain()
+            locked_camera.optimal_gain().await
         };
-        locked_camera.set_gain(gain).unwrap();
+        locked_camera.set_gain(gain).await.unwrap();
     }
 
     // Called when entering OPERATE mode. The bool indicates whether the
@@ -2463,7 +2474,7 @@ impl MyCedar {
         {
             {
                 let locked_camera = camera.lock().await;
-                (width, height) = locked_camera.dimensions();
+                (width, height) = locked_camera.dimensions().await;
                 let _display_sampling;
                 (binning, _display_sampling) = Self::compute_binning(
                     &*state.lock().await,
@@ -2566,12 +2577,12 @@ impl MyCedar {
                 locked_calibration_data.lens_distortion = Some(distortion);
                 locked_calibration_data.match_max_error = Some(match_max_error);
                 let sensor_width_mm =
-                    camera.lock().await.sensor_size().0 as f64;
+                    camera.lock().await.sensor_size().await.0 as f64;
                 let lens_fl_mm =
                     sensor_width_mm / (2.0 * (fov / 2.0).to_radians()).tan();
                 locked_calibration_data.lens_fl_mm = Some(lens_fl_mm);
                 let pixel_width_mm =
-                    sensor_width_mm / camera.lock().await.dimensions().0 as f64;
+                    sensor_width_mm / camera.lock().await.dimensions().await.0 as f64;
                 locked_calibration_data.pixel_angular_size =
                     Some((pixel_width_mm / lens_fl_mm).atan().to_degrees());
 
@@ -2843,14 +2854,14 @@ impl MyCedar {
         let mut normalize_rows = false;
         if let Some(attached_camera) = &attached_camera {
             let locked_camera = attached_camera.lock().await;
-            if locked_camera.model() == "imx296"
+            let model = locked_camera.model().await;
+            if model == "imx296"
                 && processor_model.contains("Raspberry Pi Zero 2 W")
             {
                 normalize_rows = true;
-                info!("Normalizing camera rows for {}", locked_camera.model());
+                info!("Normalizing camera rows for {}", model);
             }
-            if locked_camera.model() == "ov5647"
-                || locked_camera.model() == "imx219"
+            if model == "ov5647" || model == "imx219"
             {
                 max_exposure_duration *= 3; // This camera is less sensitive.
             }
@@ -2981,7 +2992,7 @@ impl MyCedar {
                 }
             }
         }
-        let (width, height) = camera.lock().await.dimensions();
+        let (width, height) = camera.lock().await.dimensions().await;
         let inset = 16;
         if let Some(ref bsp) = preferences.boresight_pixel {
             // Validate boresight_pixel loaded from preferences, to make sure it
@@ -3246,15 +3257,19 @@ impl MyCedar {
             connection_counters: connection_counters.clone(),
         };
         // Set pre-calibration defaults on camera.
-        let mut locked_state = state.lock().await;
-        let (width, height) = locked_state.camera.lock().await.dimensions();
+        let locked_state = state.lock().await;
+        let (width, height) = locked_state.camera.lock().await.dimensions().await;
         let (binning, display_sampling) =
             Self::compute_binning(&locked_state, width as u32, height as u32);
+        let camera = locked_state.camera.clone();
+        let initial_exposure_duration = locked_state.initial_exposure_duration;
+        drop(locked_state);
         if let Err(x) =
-            Self::set_pre_calibration_defaults(&mut locked_state).await
+            Self::set_pre_calibration_defaults(&camera, initial_exposure_duration).await
         {
             warn!("Could not set default settings on camera {:?}", x);
         }
+        let mut locked_state = state.lock().await;
 
         {
             let mut detect_engine = locked_state.detect_engine.lock().await;
@@ -3590,7 +3605,7 @@ struct AppArgs {
     tetra3_script: String,
     tetra3_database: String,
     camera_interface: String,
-    camera_index: i32,
+    camera_index: usize,
     binning: Option<u32>,
     display_sampling: Option<bool>,
     test_image: Option<String>,
@@ -3770,14 +3785,14 @@ pub fn server_main(
     );
 }
 
-fn get_attached_camera(
+async fn get_attached_camera(
     camera_interface: Option<&CameraInterface>,
-    camera_index: i32,
+    camera_index: usize,
 ) -> Result<Box<dyn AbstractCamera + Send>, CanonicalError> {
-    select_camera(camera_interface, camera_index)
+    select_camera(camera_interface, camera_index).await
 }
 
-fn get_camera(
+async fn get_camera(
     attached_camera: &Option<
         Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
     >,
@@ -3799,7 +3814,7 @@ fn get_camera(
         GrayImage::from_vec(width as u32, height as u32, pixels).unwrap();
 
     Arc::new(tokio::sync::Mutex::new(Box::new(
-        ImageCamera::new(img_u8).unwrap(),
+        ImageCamera::new(img_u8).await.unwrap(),
     )))
 }
 
@@ -3992,7 +4007,7 @@ async fn async_main(
     };
 
     let attached_camera =
-        match get_attached_camera(camera_interface.as_ref(), args.camera_index)
+        match get_attached_camera(camera_interface.as_ref(), args.camera_index).await
         {
             Ok(cam) => Some(Arc::new(tokio::sync::Mutex::new(cam))),
             Err(e) => {
@@ -4010,7 +4025,7 @@ async fn async_main(
             let img_u8 = img.to_luma8();
             info!("Using test image {} instead of camera.", test_image_path);
             Some(Arc::new(tokio::sync::Mutex::new(Box::new(
-                ImageCamera::new(img_u8).unwrap(),
+                ImageCamera::new(img_u8).await.unwrap(),
             ))))
         }
         None => None,
@@ -4018,7 +4033,7 @@ async fn async_main(
 
     let feature_level = if product_name.eq_ignore_ascii_case("Hopper") {
         if let Some(attached_camera) = &attached_camera {
-            let camera_model = attached_camera.lock().await.model();
+            let camera_model = attached_camera.lock().await.model().await;
             if camera_model == "imx296" || camera_model == "imx290" {
                 FeatureLevel::Plus // Hopper.
             } else {
@@ -4044,14 +4059,14 @@ async fn async_main(
         }
     }
 
-    let camera = get_camera(&attached_camera, &test_image_camera);
+    let camera = get_camera(&attached_camera, &test_image_camera).await;
     {
         let locked_camera = camera.lock().await;
         info!(
             "Using camera {} {}x{}",
-            locked_camera.model(),
-            locked_camera.dimensions().0,
-            locked_camera.dimensions().1
+            locked_camera.model().await,
+            locked_camera.dimensions().await.0,
+            locked_camera.dimensions().await.1
         );
     }
 

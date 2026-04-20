@@ -66,12 +66,12 @@ impl Calibrator {
 
         // Set offset before changing exposure; if we can't set offset this
         // lets us avoid changing the exposure only to have to restore it.
-        self.camera.lock().await.set_offset(Offset::new(0))?;
+        self.camera.lock().await.set_offset(Offset::new(0)).await?;
 
         // Restore the exposure duration that we change here.
         let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
-        self.camera.lock().await.set_exposure_duration(Duration::from_millis(1))?;
-        let (width, height) = self.camera.lock().await.dimensions();
+        self.camera.lock().await.set_exposure_duration(Duration::from_millis(1)).await?;
+        let (width, height) = self.camera.lock().await.dimensions().await;
         let total_pixels = width * height;
 
         let max_offset = 20;
@@ -82,7 +82,7 @@ impl Calibrator {
                 restore_exposure.restore().await;
                 return Err(aborted_error("Cancelled during calibrate_offset()."));
             }
-            self.camera.lock().await.set_offset(Offset::new(offset))?;
+            self.camera.lock().await.set_offset(Offset::new(offset)).await?;
             let (captured_image, frame_id) =
                 Self::capture_image(self.camera.clone(), prev_frame_id).await?;
             prev_frame_id = Some(frame_id);
@@ -164,7 +164,7 @@ impl Calibrator {
         let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
 
         self.camera.lock().await.set_exposure_duration(
-            initial_exposure_duration).unwrap();
+            initial_exposure_duration).await.unwrap();
         let (_, mut exp_duration, mut stars, mut frame_id, mut histogram) =
             self.acquire_image_get_stars(
                 /*frame_id=*/None, detection_binning, detection_sigma).await.unwrap();
@@ -185,7 +185,7 @@ impl Calibrator {
         }
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
+            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
             return Ok(scaled_exp_duration);
         }
 
@@ -202,7 +202,7 @@ impl Calibrator {
             restore_exposure.restore().await;
             return Err(ExposureCalibrationError::Aborted);
         }
-        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
+        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
         (_, exp_duration, stars, frame_id, histogram) =
             self.acquire_image_get_stars(
                 Some(frame_id), detection_binning, detection_sigma).await.unwrap();
@@ -219,7 +219,7 @@ impl Calibrator {
         }
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
+            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
             return Ok(scaled_exp_duration);
         }
         if star_goal_fraction < 1.0 {
@@ -240,7 +240,7 @@ impl Calibrator {
             restore_exposure.restore().await;
             return Err(ExposureCalibrationError::Aborted);
         }
-        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
+        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
         (_, exp_duration, stars, _, histogram) =
             self.acquire_image_get_stars(
                 Some(frame_id), detection_binning, detection_sigma).await.unwrap();
@@ -257,7 +257,7 @@ impl Calibrator {
         }
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
+            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
             return Ok(scaled_exp_duration);
         }
         if star_goal_fraction < 1.0 {
@@ -278,7 +278,7 @@ impl Calibrator {
                   star_goal_fraction);
         }
 
-        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).unwrap();
+        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
         Ok(scaled_exp_duration)
     }
 
@@ -382,15 +382,21 @@ impl Calibrator {
     {
         let (captured_image, frame_id) =
             Self::capture_image(self.camera.clone(), frame_id).await?;
-        // Run CedarDetect on the image.
-        let image = &captured_image.image;
-        let noise_estimate = estimate_noise_from_image(image);
+        // Run CedarDetect on the image. Use spawn_blocking to avoid tying up
+        // tokio worker threads (and thus gRPC serving) during this CPU-intensive
+        // operation.
+        let image = captured_image.image.clone();
+        let normalize_rows = self.normalize_rows;
         let (stars, _, _, histogram) =
-            get_stars_from_image(image, noise_estimate, detection_sigma,
-                                 self.normalize_rows, detection_binning,
-                                 /*detect_hot_pixels*/true,
-                                 /*return_binned_image=*/false);
-        Ok((image.clone(), captured_image.capture_params.exposure_duration,
+            tokio::task::spawn_blocking(move || {
+                let noise_estimate = estimate_noise_from_image(&image);
+                get_stars_from_image(&image, noise_estimate, detection_sigma,
+                                     normalize_rows, detection_binning,
+                                     /*detect_hot_pixels*/true,
+                                     /*return_binned_image=*/false)
+            }).await.unwrap();
+        Ok((captured_image.image.clone(),
+            captured_image.capture_params.exposure_duration,
             stars, frame_id, histogram))
     }
 }
@@ -399,22 +405,16 @@ impl Calibrator {
 struct RestoreExposure {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
     exp_duration: Duration,
-    do_restore: bool,
 }
 impl RestoreExposure {
     async fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>) -> Self {
-        let locked_camera = camera.lock().await;
         RestoreExposure{
             camera: camera.clone(),
-            exp_duration: locked_camera.get_exposure_duration(),
-            do_restore: true,
+            exp_duration: camera.lock().await.get_exposure_duration().await,
         }
     }
 
     async fn restore(&mut self) {
-        if self.do_restore {
-            let mut locked_camera = self.camera.lock().await;
-            locked_camera.set_exposure_duration(self.exp_duration).unwrap();
-        }
+        self.camera.lock().await.set_exposure_duration(self.exp_duration).await.unwrap();
     }
 }

@@ -301,7 +301,7 @@ impl DetectEngine {
         // currently posted result is the same as the one the caller has already
         // obtained.
         loop {
-            let mut sleep_duration = Duration::from_millis(1);
+            let mut sleep_duration = Duration::from_millis(5);
             {
                 let locked_state = self.state.lock().await;
                 if locked_state.detect_result.is_some() &&
@@ -388,7 +388,7 @@ impl DetectEngine {
             let camera_processing_duration;
             {
                 let frame_id = state.lock().await.frame_id;
-                let delay_est = camera.lock().await.estimate_delay(frame_id);
+                let delay_est = camera.lock().await.estimate_delay(frame_id).await;
                 if let Some(delay_est) = delay_est {
                     state.lock().await.eta = Some(Instant::now() + delay_est);
                 }
@@ -406,8 +406,8 @@ impl DetectEngine {
                         }
                     };
                     if capture.is_none() {
-                        let short_delay = Duration::from_millis(1);
-                        let delay_est = camera.lock().await.estimate_delay(frame_id);
+                        let short_delay = Duration::from_millis(5);
+                        let delay_est = camera.lock().await.estimate_delay(frame_id).await;
                         if let Some(delay_est) = delay_est {
                             tokio::time::sleep(max(delay_est, short_delay)).await;
                         } else {
@@ -789,7 +789,7 @@ impl DetectEngine {
                 debug!("Setting new exposure duration {}s",
                        new_exposure_duration_secs);
                 let result = camera.lock().await.set_exposure_duration(
-                    Duration::from_secs_f64(new_exposure_duration_secs));
+                    Duration::from_secs_f64(new_exposure_duration_secs)).await;
                 match result {
                     Ok(()) => (),
                     Err(e) => {
