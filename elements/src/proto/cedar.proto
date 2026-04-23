@@ -345,7 +345,7 @@ enum MountType {
   ALT_AZ = 2;
 }
 
-// The orientation of the client's display.
+// The orientation of the client's display. Deprecated; see below.
 enum DisplayOrientation {
   ORIENTATION_UNSPECIFIED = 0;
   LANDSCAPE = 1;
@@ -369,6 +369,10 @@ message FrameRequest {
   // is towards the top of the image. When doing so, the server needs to know
   // the client's orientation for the displayed image.
   // If omitted, LANDSCAPE is assumed.
+  // Deprecated: Newer clients will always omit this field, causing the server
+  // to return the image as if for landscape, and the client will adjust for
+  // portrait as needed; eventually we can remove this field when all clients
+  // have been updated to not populate it.
   optional DisplayOrientation display_orientation = 3;
 }
 
