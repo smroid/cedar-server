@@ -6,6 +6,7 @@ edition = "2021"
 [[bin]] # Bin to run the Cedar Box gRPC server.
 name = "cedar-box-server"
 path = "src/bin/cedar_box_server.rs"
+required-features = ["tetra3", "cypress-solver"]
 
 [dependencies]
 approx = "0.5.1"
@@ -20,7 +21,7 @@ cedar-elements = { path = "../elements" }
 chrono = "0.4.31"
 clap = "4.5.23"
 ctrlc = "3.4.2"
-cypress-solver = { path = "../../cypress-astro/cypress-solver" }
+cypress-solver = { path = "../../cypress-astro/cypress-solver", optional = true }
 env_logger = "0.11.5"
 futures = "0.3.30"
 glob = "0.3.1"
@@ -32,7 +33,7 @@ nix = { version = "0.28.0", features = ["time"] }
 pico-args = "0.5.0"
 prost = "0.12.3"
 prost-types = "0.12.3"
-tetra3 = { git = "https://github.com/oakamil/olive-solve.git" }
+tetra3 = { git = "https://github.com/oakamil/olive-solve.git", optional = true }
 tetra3_server = { version = "0.1.0", path = "../../tetra3_server" }
 tokio = { version = "1.41.0", features = ["macros", "rt-multi-thread"] }
 tonic = "0.11"
