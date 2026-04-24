@@ -3659,7 +3659,7 @@ pub fn server_main(
       --test_image <path>
       --min_exposure NUMBER          0.00001
       --max_exposure NUMBER          1.0
-      --min_frame_interval NUMBER    0.020 (Hopper), 0.100 (Cedar-Box)
+      --min_frame_interval NUMBER    0.020 (Hopper), 0.030 (Cedar-Box)
       --star_count_goal NUMBER       20
       --sigma NUMBER                 8.0
       --min_sigma NUMBER             5.0
@@ -3768,7 +3768,7 @@ pub fn server_main(
         if product_name == "Hopper" {
             Duration::from_millis(20)
         } else {
-            Duration::from_millis(100)
+            Duration::from_millis(30)
         }
     }));
 
