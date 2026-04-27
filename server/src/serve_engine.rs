@@ -597,6 +597,7 @@ impl ServeEngine {
         // Zero hot pixels in the rotated output. Hot pixel coordinates are in
         // full-resolution image space; divide by binning_factor to get
         // resized_disp_image space, then transform into rotated output space.
+        // TODO: zero out 9x9 centered on the hot pixel transformed coordinate?
         if let Some(ref hpm) = ctx_hot_pixel_map {
             let hot_pixels = hpm.lock().await.get_hot_pixels();
             let bf = binning_factor as f64;
