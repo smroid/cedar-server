@@ -12,7 +12,8 @@ use canonical_error::CanonicalError;
 pub trait HotPixelTrait {
     // Classifies a list of detected stars (or hot pixels masquerading as stars)
     // against this hot pixel map. Returns the candidates that are classified as
-    // stars and the candidates that are classified as hot pixels.
+    // stars and the candidates that are classified as hot pixels. Order is
+    // preserved.
     // If is_ready() is false all candidates are returned as stars.
     fn classify_candidates(&self, candidates: &Vec<StarDescription>) ->
       (/*stars*/Vec<StarDescription>, /*hot_pixels*/Vec<StarDescription>);
@@ -29,7 +30,7 @@ pub trait HotPixelTrait {
     // is_ready() becomes true after a sufficient number of
     // update_hot_pixel_map() calls are made with sufficiently differing sky_pos
     // values.
-    fn update_hot_pixel_map(&self,
+    fn update_hot_pixel_map(&mut self,
                             candidates: &Vec<StarDescription>,
                             sky_pos: Option<CelestialCoord>);
 

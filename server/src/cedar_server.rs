@@ -2888,6 +2888,7 @@ impl MyCedar {
                 camera.clone(),
                 normalize_rows,
                 stats_capacity,
+                hot_pixel_map.clone(),
             )));
 
         // Set up initial Preferences to use if preferences file cannot be
@@ -3147,6 +3148,7 @@ impl MyCedar {
                 normalize_rows,
                 solver.clone(),
                 cedar_sky.clone(),
+                hot_pixel_map.clone(),
                 imu_tracker.clone(),
                 detect_engine.clone(),
                 stats_capacity,
@@ -3215,6 +3217,7 @@ impl MyCedar {
                 calibrator: Arc::new(tokio::sync::Mutex::new(Calibrator::new(
                     camera.clone(),
                     normalize_rows,
+                    hot_pixel_map.clone(),
                 ))),
                 telescope_position,
                 activity_led,

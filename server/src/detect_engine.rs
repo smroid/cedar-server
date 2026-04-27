@@ -17,6 +17,7 @@ use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram,
                                     stats_for_histogram};
+use cedar_elements::hot_pixel_trait::HotPixelTrait;
 use cedar_elements::image_utils::{
     normalize_rows_mut, scale_image_mut};
 use cedar_elements::value_stats::ValueStatsAccumulator;
@@ -54,6 +55,8 @@ pub struct DetectEngine {
 
     // Signaled at worker_thread exit.
     worker_done: Arc<AtomicBool>,
+
+    hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
 }
 
 // State shared between worker thread and the DetectEngine methods.
@@ -121,8 +124,9 @@ impl DetectEngine {
                min_frame_interval: Duration,
                camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
                normalize_rows: bool,
-               stats_capacity: usize)
-               -> Self {
+               stats_capacity: usize,
+               hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+    ) -> Self {
         DetectEngine{
             initial_exposure_duration,
             min_exposure_duration,
@@ -151,6 +155,7 @@ impl DetectEngine {
             })),
             worker_thread: None,
             worker_done: Arc::new(AtomicBool::new(false)),
+            hot_pixel_map,
         }
     }
 
@@ -269,6 +274,7 @@ impl DetectEngine {
             let min_frame_interval = self.min_frame_interval;
             let cloned_state = self.state.clone();
             let cloned_done = self.worker_done.clone();
+            let hot_pixel_map = self.hot_pixel_map.clone();
 
             // The DetectEngine::worker() function is async because it uses the
             // camera interface, which is async. Note however that worker()
@@ -293,7 +299,7 @@ impl DetectEngine {
                         min_exposure_duration, max_exposure_duration,
                         detection_min_sigma, detection_sigma,
                         star_count_goal, min_frame_interval,
-                        cloned_state, cloned_done).await;
+                        hot_pixel_map, cloned_state, cloned_done).await;
                 });
             }));
         }
@@ -355,6 +361,7 @@ impl DetectEngine {
                     detection_sigma: f64,
                     star_count_goal: i32,
                     min_frame_interval: Duration,
+                    hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
                     state: Arc<tokio::sync::Mutex<DetectState>>,
                     done: Arc<AtomicBool>) {
         debug!("Starting detect engine");
@@ -616,7 +623,7 @@ impl DetectEngine {
             }  // focus_mode || daylight_mode
 
             let mut binned_image: Option<Arc<GrayImage>> = None;
-            let mut stars: Vec<StarDescription> = vec![];
+            let mut star_candidates: Vec<StarDescription> = vec![];
             let mut hot_pixel_count = 0;
 
             // If the captured_image is up to date w.r.t. the camera settings,
@@ -637,20 +644,31 @@ impl DetectEngine {
                 let adjusted_sigma = f64::max(detection_sigma, detection_min_sigma);
                 let detect_binned_image;
                 let mut histogram;
-                (stars, hot_pixel_count, detect_binned_image, histogram) =
+                (star_candidates, hot_pixel_count, detect_binned_image, histogram) =
                     get_stars_from_image(
                         image, noise_estimate, adjusted_sigma,
                         normalize_rows, binning,
-                        /*detect_hot_pixels=*/true,
+                        /*detect_hot_pixels=*/hot_pixel_map.is_none(),
                         /*return_binned_image=*/binning != 1);
                 let stats = stats_for_histogram(&histogram);
                 binned_image = detect_binned_image.map(Arc::new);
+
+                // Filter hot pixels for auto-exposure and peak averaging.
+                // star_candidates in DetectResult retains the full unfiltered list.
+                let filtered_stars = if let Some(ref hpm) = hot_pixel_map {
+                    let (filtered, _) =
+                        hpm.lock().await.classify_candidates(&star_candidates);
+                    filtered
+                } else {
+                    star_candidates.clone()
+                };
+                let num_stars_detected = filtered_stars.len();
 
                 // Average the peak pixels of the N brightest stars.
                 let mut sum_peak: i32 = 0;
                 let mut num_peak = 0;
                 const NUM_PEAKS: i32 = 10;
-                for star in &stars {
+                for star in &filtered_stars {
                     sum_peak += star.peak_value as i32;
                     num_peak += 1;
                     if num_peak >= NUM_PEAKS {
@@ -696,7 +714,6 @@ impl DetectEngine {
                     baseline_exposure_duration_secs
                 };
 
-                let num_stars_detected = stars.len();
                 if num_stars_detected < 4 {
                     // We're likely slewing and thus detecting no stars.
                     // Don't update the moving average, and for safety use
@@ -807,7 +824,7 @@ impl DetectEngine {
                 frame_id: locked_state.frame_id.unwrap(),
                 captured_image,
                 binned_image,
-                star_candidates: stars,
+                star_candidates,
                 star_count_moving_average: locked_state.star_count_moving_average,
                 display_black_level: black_level,
                 noise_estimate,
@@ -847,7 +864,9 @@ pub struct DetectResult {
     pub binned_image: Option<Arc<GrayImage>>,
 
     // The star candidates detected by CedarDetect; ordered by highest
-    // StarDescription.mean_brightness first.
+    // StarDescription.mean_brightness first. If a hot pixel map is supplied,
+    // this list is NOT filtered, and can include hot pixels. The hot pixel map
+    // is applied prior to plate solving.
     pub star_candidates: Vec<StarDescription>,
 
     // The number of detected stars as a moving average of recent processing

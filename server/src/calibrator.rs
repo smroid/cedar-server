@@ -15,6 +15,7 @@ use canonical_error::{CanonicalError,
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
 use cedar_detect::histogram_funcs::stats_for_histogram;
+use cedar_elements::hot_pixel_trait::HotPixelTrait;
 use cedar_elements::solver_trait::{
     SolveExtension, SolveParams, SolverTrait};
 use cedar_elements::cedar::ImageCoord;
@@ -24,6 +25,8 @@ pub struct Calibrator {
 
     // Determines whether rows are normalized to have the same dark level.
     normalize_rows: bool,
+
+    hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
 }
 
 #[derive(Debug)]
@@ -37,8 +40,10 @@ pub enum ExposureCalibrationError {
 
 impl Calibrator {
     pub fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-               normalize_rows: bool) -> Self{
-        Calibrator{camera, normalize_rows}
+               normalize_rows: bool,
+               hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+    ) -> Self {
+        Calibrator{camera, normalize_rows, hot_pixel_map}
     }
 
     pub fn replace_camera(
@@ -372,8 +377,8 @@ impl Calibrator {
         Ok((fov, distortion, match_max_error, solve_duration))
     }
 
-    // Returns: acquired image, actual exposure duration, detected stars,
-    // frame_id, histogram.
+    // Returns: acquired image, actual exposure duration, detected stars
+    // (hot pixels filtered out), frame_id, histogram.
     async fn acquire_image_get_stars(
         &self, frame_id: Option<i32>,
         detection_binning: u32, detection_sigma: f64)
@@ -387,14 +392,21 @@ impl Calibrator {
         // operation.
         let image = captured_image.image.clone();
         let normalize_rows = self.normalize_rows;
+        let use_hot_pixel_map = self.hot_pixel_map.is_some();
         let (stars, _, _, histogram) =
             tokio::task::spawn_blocking(move || {
                 let noise_estimate = estimate_noise_from_image(&image);
                 get_stars_from_image(&image, noise_estimate, detection_sigma,
                                      normalize_rows, detection_binning,
-                                     /*detect_hot_pixels*/true,
+                                     /*detect_hot_pixels=*/!use_hot_pixel_map,
                                      /*return_binned_image=*/false)
             }).await.unwrap();
+        let stars = if let Some(hpm) = &self.hot_pixel_map {
+            let (filtered, _) = hpm.lock().await.classify_candidates(&stars);
+            filtered
+        } else {
+            stars
+        };
         Ok((captured_image.image.clone(),
             captured_image.capture_params.exposure_duration,
             stars, frame_id, histogram))

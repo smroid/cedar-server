@@ -401,6 +401,7 @@ impl ServeEngine {
             ctx_operation_settings,
             ctx_calibration_data_arc,
             ctx_imu_tracker,
+            ctx_hot_pixel_map,
             ctx_polar_analyzer,
             ctx_normalize_rows,
             ctx_is_color,
@@ -417,6 +418,7 @@ impl ServeEngine {
                 ctx.operation_settings.clone(),
                 ctx.calibration_data.clone(),
                 ctx.imu_tracker.clone(),
+                ctx.hot_pixel_map.clone(),
                 ctx.polar_analyzer.clone(),
                 ctx.normalize_rows,
                 ctx.is_color,
@@ -590,8 +592,29 @@ impl ServeEngine {
             };
 
         let irr = &image_rotator;
-        resize_result =
-            Arc::new(irr.rotate_image_and_crop(resized_disp_image));
+        let mut rotated = irr.rotate_image_and_crop(resized_disp_image);
+
+        // Zero hot pixels in the rotated output. Hot pixel coordinates are in
+        // full-resolution image space; divide by binning_factor to get
+        // resized_disp_image space, then transform into rotated output space.
+        if let Some(ref hpm) = ctx_hot_pixel_map {
+            let hot_pixels = hpm.lock().await.get_hot_pixels();
+            let bf = binning_factor as f64;
+            let (rot_w, rot_h) = rotated.dimensions();
+            for hp in hot_pixels {
+                let (rx, ry) = irr.transform_to_rotated(
+                    hp.x / bf, hp.y / bf, width, height);
+                let rx = rx.round() as i64;
+                let ry = ry.round() as i64;
+                if rx >= 0 && ry >= 0
+                    && rx < rot_w as i64 && ry < rot_h as i64
+                {
+                    rotated.put_pixel(rx as u32, ry as u32, image::Luma([0u8]));
+                }
+            }
+        }
+
+        resize_result = Arc::new(rotated);
         resized_disp_image = &resize_result;
         let disp_image_rectangle = irr.get_cropped_region(width, height);
 

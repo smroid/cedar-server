@@ -28,6 +28,7 @@ use cedar_elements::{
     cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering},
     cedar_sky_trait::CedarSkyTrait,
     image_utils::{normalize_rows_mut, scale_image_mut},
+    hot_pixel_trait::HotPixelTrait,
     imu_trait::{EquatorialCoordinates, ImuTrait},
     solver_trait::{SolveExtension, SolveParams, SolverTrait},
     value_stats::ValueStatsAccumulator,
@@ -82,6 +83,8 @@ pub struct SolveEngine {
 
     // Detect engine settings can be adjusted behind our back.
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
+
+    hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
 
     // Executes worker().
     worker_thread: Option<std::thread::JoinHandle<()>>,
@@ -150,6 +153,7 @@ impl SolveEngine {
         normalize_rows: bool,
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
+        hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         stats_capacity: usize,
@@ -192,6 +196,7 @@ impl SolveEngine {
                 logged_error: false,
             })),
             detect_engine,
+            hot_pixel_map,
             worker_thread: None,
             pre_solve_callback,
             post_solve_callback,
@@ -509,6 +514,7 @@ impl SolveEngine {
             let cloned_solver = self.solver.clone();
             let cloned_state = self.state.clone();
             let cloned_detect_engine = self.detect_engine.clone();
+            let hot_pixel_map = self.hot_pixel_map.clone();
             let min_frame_interval = self.min_frame_interval;
             let cloned_pre_solve_callback = self.pre_solve_callback.clone();
             let cloned_post_solve_callback = self.post_solve_callback.clone();
@@ -528,6 +534,7 @@ impl SolveEngine {
                         cloned_solver,
                         cloned_state,
                         cloned_detect_engine,
+                        hot_pixel_map,
                         min_frame_interval,
                         cloned_pre_solve_callback,
                         cloned_post_solve_callback,
@@ -544,13 +551,22 @@ impl SolveEngine {
         detect_result: &DetectResult,
         image_time: &SystemTime,
         minimum_stars: i32,
+        hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         solve_extension: &SolveExtension,
         solve_params: &SolveParams,
     ) -> (Option<PlateSolutionProto>, Option<SystemTime>) {
-        let mut star_centroids = Vec::<ImageCoord>::with_capacity(
-            detect_result.star_candidates.len(),
-        );
-        for sc in &detect_result.star_candidates {
+        // Filter out hot pixels before solving.
+        let filtered_candidates = if let Some(ref hpm) = hot_pixel_map {
+            let (stars, _hot_pixels) =
+                hpm.lock().await.classify_candidates(&detect_result.star_candidates);
+            stars
+        } else {
+            detect_result.star_candidates.clone()
+        };
+
+        let mut star_centroids =
+            Vec::<ImageCoord>::with_capacity(filtered_candidates.len());
+        for sc in &filtered_candidates {
             star_centroids.push(ImageCoord {
                 x: sc.centroid_x,
                 y: sc.centroid_y,
@@ -558,8 +574,7 @@ impl SolveEngine {
         }
 
         // Do we have enough stars to attempt a plate solution?
-        let have_stars =
-            detect_result.star_candidates.len() >= minimum_stars as usize;
+        let have_stars = filtered_candidates.len() >= minimum_stars as usize;
 
         // Is IMU tracker available and usable?
         let imu_tracker;
@@ -724,6 +739,7 @@ impl SolveEngine {
         detect_result: &DetectResult,
         plate_solution_proto: &Option<PlateSolutionProto>,
         post_solve_callback: &PostSolveCallback,
+        hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         slew_target: Option<CelestialCoord>,
         sync_coord: Option<CelestialCoord>,
         width: u32,
@@ -778,6 +794,15 @@ impl SolveEngine {
                 rotation_matrix[idx] = c;
             }
             state.lock().await.solve_success_stats.add_value(1.0);
+
+            // Update hot pixel map with the full (unfiltered) star candidates
+            // and the solved sky position.
+            if let Some(ref hpm) = hot_pixel_map {
+                hpm.lock().await.update_hot_pixel_map(
+                    &detect_result.star_candidates,
+                    Some(boresight_coords.clone()),
+                );
+            }
 
             if !align_mode {
                 // Process the plate solution result (update motion estimator, etc).
@@ -928,6 +953,7 @@ impl SolveEngine {
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
+        hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         min_frame_interval: Duration,
         pre_solve_callback: PreSolveCallback,
         post_solve_callback: PostSolveCallback,
@@ -1021,6 +1047,7 @@ impl SolveEngine {
                     &detect_result,
                     &detect_result.captured_image.readout_time,
                     minimum_stars,
+                    &hot_pixel_map,
                     &solve_extension,
                     &solve_params,
                 )
@@ -1037,6 +1064,7 @@ impl SolveEngine {
                 &detect_result,
                 &plate_solution_proto,
                 &post_solve_callback,
+                &hot_pixel_map,
                 slew_target.clone(),
                 sync_coord.clone(),
                 width,
