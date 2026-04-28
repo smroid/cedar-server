@@ -306,6 +306,11 @@ struct CedarState {
     // (SkySafari/Stellarium) are ignored, since the client time is more
     // reliable.
     time_set_by_client: Arc<AtomicBool>,
+
+    // Set to true when initiate_action is saving state prior to shutdown or
+    // restart, so the signal handler (triggered by the subsequent shutdown
+    // command) skips its own save_state calls and avoids a deadlock.
+    saving_state: Arc<AtomicBool>,
 }
 
 #[tonic::async_trait]
@@ -1363,9 +1368,15 @@ impl Cedar for MyCedar {
         }
         if req.shutdown_server.unwrap_or(false) {
             info!("Shutting down host system");
-            prepare_for_exit(&self.state.lock().await.imu_tracker.clone(),
-                             &self.state.lock().await.hot_pixel_map.clone());
-            let activity_led = self.state.lock().await.activity_led.clone();
+            let (imu_tracker, hot_pixel_map, saving_state, activity_led) = {
+                let locked_state = self.state.lock().await;
+                (locked_state.imu_tracker.clone(),
+                 locked_state.hot_pixel_map.clone(),
+                 locked_state.saving_state.clone(),
+                 locked_state.activity_led.clone())
+            };
+            saving_state.store(true, AtomicOrdering::Relaxed);
+            prepare_for_exit_async(&imu_tracker, &hot_pixel_map).await;
             activity_led.lock().await.stop().await;
             let output = Command::new("sudo")
                 .arg("shutdown")
@@ -1382,9 +1393,15 @@ impl Cedar for MyCedar {
         }
         if req.restart_server.unwrap_or(false) {
             info!("Restarting host system");
-            prepare_for_exit(&self.state.lock().await.imu_tracker.clone(),
-                             &self.state.lock().await.hot_pixel_map.clone());
-            let activity_led = self.state.lock().await.activity_led.clone();
+            let (imu_tracker, hot_pixel_map, saving_state, activity_led) = {
+                let locked_state = self.state.lock().await;
+                (locked_state.imu_tracker.clone(),
+                 locked_state.hot_pixel_map.clone(),
+                 locked_state.saving_state.clone(),
+                 locked_state.activity_led.clone())
+            };
+            saving_state.store(true, AtomicOrdering::Relaxed);
+            prepare_for_exit_async(&imu_tracker, &hot_pixel_map).await;
             activity_led.lock().await.stop().await;
             let output = Command::new("sudo")
                 .arg("reboot")
@@ -2862,6 +2879,7 @@ impl MyCedar {
         wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
         imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+        saving_state: Arc<AtomicBool>,
     ) -> Result<Self, CanonicalError> {
         let cedar_version = env!("CARGO_PKG_VERSION");
         let processor_model =
@@ -3274,6 +3292,7 @@ impl MyCedar {
                 pairing_mode: Arc::new(tokio::sync::Mutex::new(false)),
                 pairing_mode_forever: false,
                 time_set_by_client,
+                saving_state,
             }))
         };
 
@@ -3791,6 +3810,7 @@ pub fn server_main(
     let remaining = pargs.finish();
 
     let got_signal = Arc::new(AtomicBool::new(false));
+    let saving_state = Arc::new(AtomicBool::new(false));
 
     let (cedar_sky, wifi, imu_tracker, hot_pixel_map, solver) =
         get_dependencies(Arguments::from_vec(remaining));
@@ -3798,11 +3818,17 @@ pub fn server_main(
     // Handle both SIGINT and SIGTERM (the latter is sent by systemd on
     // `systemctl restart`, e.g. when the updater installs a new version).
     let got_signal2 = got_signal.clone();
+    let saving_state2 = saving_state.clone();
     let imu_for_signal = imu_tracker.clone();
     let hpm_for_signal = hot_pixel_map.clone();
     ctrlc::set_handler(move || {
-        info!("Got shutdown signal, saving state");
-        prepare_for_exit(&imu_for_signal, &hpm_for_signal);
+        if saving_state2.load(AtomicOrdering::Relaxed) {
+            // initiate_action already saved state; just exit.
+            info!("Got shutdown signal; state already saved, exiting");
+        } else {
+            info!("Got shutdown signal, saving state");
+            prepare_for_exit(&imu_for_signal, &hpm_for_signal);
+        }
         got_signal2.store(true, AtomicOrdering::Relaxed);
         std::thread::sleep(Duration::from_secs(1));
         info!("Exiting");
@@ -3832,6 +3858,7 @@ pub fn server_main(
         copyright,
         flutter_app_path,
         got_signal,
+        saving_state,
         cedar_sky,
         wifi,
         imu_tracker,
@@ -3841,6 +3868,7 @@ pub fn server_main(
 }
 
 /// Perform cleanup actions before process exit (signal, shutdown, or restart).
+/// Must only be called from outside a Tokio runtime (e.g. the signal handler).
 fn prepare_for_exit(
     imu_tracker: &Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
@@ -3852,6 +3880,23 @@ fn prepare_for_exit(
     }
     if let Some(hpm) = hot_pixel_map {
         if let Err(e) = hpm.blocking_lock().save_state() {
+            warn!("Failed to save hot pixel map state: {:?}", e);
+        }
+    }
+}
+
+/// Async version for use within a Tokio runtime (shutdown/restart RPC handlers).
+async fn prepare_for_exit_async(
+    imu_tracker: &Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
+    hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+) {
+    if let Some(imu) = imu_tracker {
+        if let Err(e) = imu.lock().await.save_state() {
+            warn!("Failed to save IMU state: {:?}", e);
+        }
+    }
+    if let Some(hpm) = hot_pixel_map {
+        if let Err(e) = hpm.lock().await.save_state() {
             warn!("Failed to save hot pixel map state: {:?}", e);
         }
     }
@@ -4052,6 +4097,7 @@ async fn async_main(
     copyright: &str,
     flutter_app_path: &str,
     got_signal: Arc<AtomicBool>,
+    saving_state: Arc<AtomicBool>,
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
@@ -4231,6 +4277,7 @@ async fn async_main(
         wifi,
         imu_tracker,
         hot_pixel_map,
+        saving_state,
     )
     .await
     .unwrap();
