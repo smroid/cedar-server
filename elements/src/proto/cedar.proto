@@ -376,7 +376,7 @@ message FrameRequest {
   optional DisplayOrientation display_orientation = 3;
 }
 
-// Next tag: 39.
+// Next tag: 40.
 message FrameResult {
   // If FrameRequest.non_blocking is omitted or false, this field will be
   // absent. If FrameRequest.non_blocking is true, this field will be true
@@ -425,6 +425,10 @@ message FrameResult {
   // the plate solution, with relative `brightness` values derived from
   // the star catalog magnitudes.
   repeated StarCentroid star_candidates = 4;
+
+  // The number of candidates that were rejected as hot pixels. These are not
+  // included in star_candidates.
+  int32 hot_pixel_count = 39;
 
   // The number of detected stars as a moving average of recent processing
   // cycles.

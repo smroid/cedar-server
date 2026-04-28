@@ -656,8 +656,9 @@ impl DetectEngine {
                 // Filter hot pixels for auto-exposure and peak averaging.
                 // star_candidates in DetectResult retains the full unfiltered list.
                 let filtered_stars = if let Some(ref hpm) = hot_pixel_map {
-                    let (filtered, _) =
+                    let (filtered, hot) =
                         hpm.lock().await.classify_candidates(&star_candidates);
+                    hot_pixel_count = hot.len() as i32;
                     filtered
                 } else {
                     star_candidates.clone()

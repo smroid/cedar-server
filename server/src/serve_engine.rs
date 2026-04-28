@@ -481,6 +481,7 @@ impl ServeEngine {
         frame_result.star_candidates = centroids;
         frame_result.star_count_moving_average =
             detect_result.star_count_moving_average;
+        frame_result.hot_pixel_count = detect_result.hot_pixel_count;
         frame_result.noise_estimate = detect_result.noise_estimate;
 
         let binning = ctx_binning;
