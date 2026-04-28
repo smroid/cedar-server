@@ -27,6 +27,8 @@ pub struct Calibrator {
     normalize_rows: bool,
 
     hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+
+    use_hot_pixel_map: bool,
 }
 
 #[derive(Debug)]
@@ -43,7 +45,15 @@ impl Calibrator {
                normalize_rows: bool,
                hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
     ) -> Self {
-        Calibrator{camera, normalize_rows, hot_pixel_map}
+        Calibrator{camera, normalize_rows,
+                   use_hot_pixel_map: hot_pixel_map.is_some(),
+                   hot_pixel_map}
+    }
+
+    pub fn set_use_hot_pixel_map(&mut self, enabled: bool) {
+        if self.hot_pixel_map.is_some() {
+            self.use_hot_pixel_map = enabled;
+        }
     }
 
     pub fn replace_camera(
@@ -392,7 +402,8 @@ impl Calibrator {
         // operation.
         let image = captured_image.image.clone();
         let normalize_rows = self.normalize_rows;
-        let use_hot_pixel_map = self.hot_pixel_map.is_some();
+        let effective_hpm = if self.use_hot_pixel_map { &self.hot_pixel_map } else { &None };
+        let use_hot_pixel_map = effective_hpm.is_some();
         let (stars, _, _, histogram) =
             tokio::task::spawn_blocking(move || {
                 let noise_estimate = estimate_noise_from_image(&image);
@@ -401,7 +412,7 @@ impl Calibrator {
                                      /*detect_hot_pixels=*/!use_hot_pixel_map,
                                      /*return_binned_image=*/false)
             }).await.unwrap();
-        let stars = if let Some(hpm) = &self.hot_pixel_map {
+        let stars = if let Some(hpm) = effective_hpm {
             let (filtered, _) = hpm.lock().await.classify_candidates(&stars);
             filtered
         } else {

@@ -202,6 +202,12 @@ message OperationSettings {
   // when plate solutions are unavailable.
   optional bool use_imu = 15;
 
+  // Controls whether the hot pixel map, if provided, is used for hot pixel
+  // detection. If false, or no hot pixel map is provided, the legacy hot pixel
+  // logic in Cedar Detect is used. The initial value of this field is true if
+  // a hot pixel map is provided.
+  optional bool use_hot_pixel_map = 16;
+
   // TODO: decrowd parameter for returned catalog entries?
 
   reserved 3, 5, 7, 8, 13;
