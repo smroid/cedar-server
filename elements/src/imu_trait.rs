@@ -105,6 +105,10 @@ pub struct TransformCalibration {
 
 #[async_trait]
 pub trait ImuTrait {
+    // Spawns the background worker. Must be called from within a Tokio runtime
+    // context, after new().
+    fn start(&self);
+
     // For all report_xxx() functions, the timestamp must be strictly non
     // decreasing for successive calls.
 
