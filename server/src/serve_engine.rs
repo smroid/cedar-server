@@ -956,6 +956,16 @@ impl ServeEngine {
             }
         }
 
+        // Hot pixel map count.
+        if let Some(ref hpm) = ctx_hot_pixel_map {
+            let locked_hpm = hpm.lock().await;
+            if locked_hpm.is_ready() {
+                let cal_data = frame_result.calibration_data.as_mut().unwrap();
+                cal_data.hot_pixel_map_count =
+                    Some(locked_hpm.get_hot_pixels().len() as i32);
+            }
+        }
+
         // Polar alignment advice.
         frame_result.polar_align_advice = Some(
             ctx_polar_analyzer
