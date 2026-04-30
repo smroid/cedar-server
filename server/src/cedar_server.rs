@@ -1529,6 +1529,61 @@ impl Cedar for MyCedar {
                 .set_daylight_focus_point((dfr.x, dfr.y))
                 .await;
         }
+        if req.calibrate_dark_frame.unwrap_or(false) {
+            // Precondition checks and extraction of needed arcs (no mutation yet).
+            let (calibrator, camera, detect_engine, fixed_settings_arc) = {
+                let locked_state = self.state.lock().await;
+                if locked_state.hot_pixel_map.is_none() {
+                    return Err(logged_status!(
+                        failed_precondition,
+                        "No hot pixel map is configured."
+                    ));
+                }
+                if !locked_state.operation_settings.use_hot_pixel_map
+                    .unwrap_or(false)
+                {
+                    return Err(logged_status!(
+                        failed_precondition,
+                        "Hot pixel map is not enabled."
+                    ));
+                }
+                (
+                    locked_state.calibrator.clone(),
+                    locked_state.camera.clone(),
+                    locked_state.detect_engine.clone(),
+                    locked_state.fixed_settings.clone(),
+                )
+            }; // State lock released here!
+
+            // Compute duration before begin_calibration so the estimate is accurate.
+            let max_exposure_duration = std::time::Duration::try_from(
+                fixed_settings_arc.lock().await.max_exposure_time
+                    .clone().unwrap()).unwrap();
+            let (width, height) = camera.lock().await.dimensions().await;
+            let (detection_binning, _) = Self::compute_binning(
+                &*self.state.lock().await, width as u32, height as u32);
+            let detection_sigma =
+                detect_engine.lock().await.get_detection_sigma();
+
+            if !Self::begin_calibration(&self.state, max_exposure_duration * 2).await {
+                return Err(logged_status!(
+                    failed_precondition,
+                    "Calibration already in progress."
+                ));
+            }
+            let state = self.state.clone();
+            let _task_handle: tokio::task::JoinHandle<()> =
+                tokio::task::spawn(async move {
+                    Self::set_gain(&camera, /* daylight_mode= */ false).await;
+                    if let Err(e) = calibrator.lock().await.calibrate_dark_frame(
+                        max_exposure_duration,
+                        detection_binning, detection_sigma,
+                    ).await {
+                        warn!("Dark frame calibration failed: {:?}", e);
+                    }
+                    state.lock().await.calibrating = false;
+                });
+        }
         if req.crash_server.unwrap_or(false) {
             log::info!("Received crash_server action request.");
             std::process::exit(1);
@@ -1918,6 +1973,38 @@ impl MyCedar {
         (binning, display_sampling)
     }
 
+    /// Atomically checks that calibration is not already in progress, snapshots
+    /// the frozen image for display during calibration, and sets
+    /// `calibrating = true`. Returns true if calibration was started, false if
+    /// it was already in progress.
+    async fn begin_calibration(
+        state: &Arc<tokio::sync::Mutex<CedarState>>,
+        duration_estimate: Duration) -> bool
+    {
+        let mut locked_state = state.lock().await;
+        if locked_state.calibrating {
+            return false;
+        }
+        // Snapshot the last serve result so we can show a frozen image during
+        // calibration (ServeEngine results are not usable while calibration is
+        // running). Locking serve_engine while holding the state lock is safe
+        // because ServeEngine never acquires the CedarState lock; the lock
+        // ordering is always CedarState -> ServeEngine, never the reverse.
+        let serve_engine_arc = locked_state.serve_engine.clone();
+        if let Some(sr) = serve_engine_arc.lock().await
+            .get_next_result(None, /* non_blocking= */ true).await
+        {
+            locked_state.scaled_image = sr.scaled_image;
+            locked_state.scaled_image_binning_factor =
+                sr.scaled_image_binning_factor;
+            locked_state.scaled_image_frame_id = sr.scaled_image_frame_id;
+        }
+        locked_state.calibrating = true;
+        locked_state.calibration_start = Instant::now();
+        locked_state.calibration_duration_estimate = duration_estimate;
+        true
+    }
+
     /// Runs a single calibration attempt. Returns true if calibration succeeded.
     /// Handles all setup (gain, autoexposure, timing) and cleanup (autoexposure
     /// restore). Does NOT handle mode transitions on success/failure - caller
@@ -1925,12 +2012,10 @@ impl MyCedar {
     async fn run_calibration_attempt(
         state: Arc<tokio::sync::Mutex<CedarState>>,
     ) -> bool {
-        // Setup phase.
+        // Setup phase: query solver timeout before begin_calibration so the
+        // duration estimate is accurate.
         let (solver_arc, calibration_data_arc, detect_engine_arc) = {
             let locked_state = state.lock().await;
-            if locked_state.calibrating {
-                return false; // Already in flight.
-            }
             (
                 locked_state.solver.clone(),
                 locked_state.calibration_data.clone(),
@@ -1939,27 +2024,14 @@ impl MyCedar {
         }; // State lock released here!
 
         let calibration_solve_timeout = solver_arc.lock().await.default_timeout();
+        let camera = state.lock().await.camera.clone();
+        Self::set_gain(&camera, /* daylight_mode= */ false).await;
+
+        if !Self::begin_calibration(
+            &state, Duration::from_secs(5) + calibration_solve_timeout).await
         {
-            let camera = state.lock().await.camera.clone();
-            Self::set_gain(&camera, /* daylight_mode= */ false).await;
-            let mut locked_state = state.lock().await;
-            // Snapshot the last serve result so we can show a frozen image
-            // during calibration (ServeEngine results are not usable while
-            // calibration is running).
-            let serve_engine_arc = locked_state.serve_engine.clone();
-            if let Some(sr) = serve_engine_arc.lock().await
-                .get_next_result(None, /* non_blocking= */ true).await
-            {
-                locked_state.scaled_image = sr.scaled_image;
-                locked_state.scaled_image_binning_factor =
-                    sr.scaled_image_binning_factor;
-                locked_state.scaled_image_frame_id = sr.scaled_image_frame_id;
-            }
-            locked_state.calibrating = true;
-            locked_state.calibration_start = Instant::now();
-            locked_state.calibration_duration_estimate =
-                Duration::from_secs(5) + calibration_solve_timeout;
-        } // State lock released here!
+            return false; // Already in flight.
+        }
 
         calibration_data_arc.lock().await.calibration_time =
             Some(prost_types::Timestamp::from(SystemTime::now()));

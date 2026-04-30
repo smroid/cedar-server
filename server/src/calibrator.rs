@@ -182,7 +182,8 @@ impl Calibrator {
             initial_exposure_duration).await.unwrap();
         let (_, mut exp_duration, mut stars, mut frame_id, mut histogram) =
             self.acquire_image_get_stars(
-                /*frame_id=*/None, detection_binning, detection_sigma).await.unwrap();
+                /*frame_id=*/None, detection_binning, detection_sigma,
+                /*detect_hot_pixels=*/true).await.unwrap();
         let mut stats = stats_for_histogram(&histogram);
 
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
@@ -220,7 +221,8 @@ impl Calibrator {
         self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
         (_, exp_duration, stars, frame_id, histogram) =
             self.acquire_image_get_stars(
-                Some(frame_id), detection_binning, detection_sigma).await.unwrap();
+                Some(frame_id), detection_binning, detection_sigma,
+                /*detect_hot_pixels=*/true).await.unwrap();
         stats = stats_for_histogram(&histogram);
         star_goal_fraction =
             f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
@@ -258,7 +260,8 @@ impl Calibrator {
         self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
         (_, exp_duration, stars, _, histogram) =
             self.acquire_image_get_stars(
-                Some(frame_id), detection_binning, detection_sigma).await.unwrap();
+                Some(frame_id), detection_binning, detection_sigma,
+                /*detect_hot_pixels=*/true).await.unwrap();
         stats = stats_for_histogram(&histogram);
         star_goal_fraction =
             f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
@@ -297,6 +300,40 @@ impl Calibrator {
         Ok(scaled_exp_duration)
     }
 
+    // Captures a dark frame (lens cap on) at `max_exposure_duration` and uses
+    // all detected candidates to definitively replace the hot pixel map, then
+    // saves the map.
+    // Errors:
+    //   FailedPrecondition: no hot pixel map configured or use_hot_pixel_map
+    //     is false.
+    pub async fn calibrate_dark_frame(
+        &self,
+        max_exposure_duration: Duration,
+        detection_binning: u32, detection_sigma: f64,
+    ) -> Result<(), CanonicalError> {
+        if !self.use_hot_pixel_map {
+            return Err(failed_precondition_error(
+                "Hot pixel map is not enabled."));
+        }
+        let hpm = match &self.hot_pixel_map {
+            Some(h) => h,
+            None => return Err(failed_precondition_error(
+                "No hot pixel map is configured.")),
+        };
+        let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
+        self.camera.lock().await
+            .set_exposure_duration(max_exposure_duration).await?;
+        let (_, _, candidates, _, _) = self.acquire_image_get_stars(
+            /*frame_id=*/None, detection_binning, detection_sigma,
+            /*detect_hot_pixels=*/false).await?;
+        restore_exposure.restore().await;
+
+        // sky_pos=None signals dark frame: candidates replace the map immediately.
+        hpm.lock().await.update_hot_pixel_map(&candidates, /*sky_pos=*/None);
+        hpm.lock().await.save_state()?;
+        Ok(())
+    }
+
     // Exposure duration is the result of calibrate_exposure_duration().
     // Result is (FOV (degrees), lens distortion, match_max_error,
     //            solve duration).
@@ -327,7 +364,8 @@ impl Calibrator {
         //   match_max_error to obtain a representative solution time.
 
         let (image, _, stars, _, _) = self.acquire_image_get_stars(
-            /*frame_id=*/None, detection_binning, detection_sigma).await?;
+            /*frame_id=*/None, detection_binning, detection_sigma,
+            /*detect_hot_pixels=*/true).await?;
         let (width, height) = image.dimensions();
         if *cancel_calibration.lock().await {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
@@ -387,11 +425,17 @@ impl Calibrator {
         Ok((fov, distortion, match_max_error, solve_duration))
     }
 
-    // Returns: acquired image, actual exposure duration, detected stars
-    // (hot pixels filtered out), frame_id, histogram.
+    // Returns: acquired image, actual exposure duration, detected stars,
+    // frame_id, histogram.
+    // If detect_hot_pixels is true, hot pixels are suppressed from the returned
+    // stars: via the hot pixel map if configured and enabled, otherwise via the
+    // fallback hot pixel detection in get_stars_from_image.
+    // If detect_hot_pixels is false, no hot pixel processing is applied and all
+    // candidates are returned as stars.
     async fn acquire_image_get_stars(
         &self, frame_id: Option<i32>,
-        detection_binning: u32, detection_sigma: f64)
+        detection_binning: u32, detection_sigma: f64,
+        detect_hot_pixels: bool)
         -> Result<(Arc<GrayImage>, Duration, Vec<StarDescription>, i32, [u32; 256]),
                   CanonicalError>
     {
@@ -402,14 +446,18 @@ impl Calibrator {
         // operation.
         let image = captured_image.image.clone();
         let normalize_rows = self.normalize_rows;
-        let effective_hpm = if self.use_hot_pixel_map { &self.hot_pixel_map } else { &None };
+        let effective_hpm = if detect_hot_pixels && self.use_hot_pixel_map {
+            &self.hot_pixel_map
+        } else {
+            &None
+        };
         let use_hot_pixel_map = effective_hpm.is_some();
         let (stars, _, _, histogram) =
             tokio::task::spawn_blocking(move || {
                 let noise_estimate = estimate_noise_from_image(&image);
                 get_stars_from_image(&image, noise_estimate, detection_sigma,
                                      normalize_rows, detection_binning,
-                                     /*detect_hot_pixels=*/!use_hot_pixel_map,
+                                     /*detect_hot_pixels=*/detect_hot_pixels && !use_hot_pixel_map,
                                      /*return_binned_image=*/false)
             }).await.unwrap();
         let stars = if let Some(hpm) = effective_hpm {

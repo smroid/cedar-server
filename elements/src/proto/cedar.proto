@@ -464,6 +464,8 @@ message FrameResult {
   // are omitted. Fields present are: server_information, fixed_settings,
   // preferences, operation_settings, image, calibrating, and
   // calibration_progress.
+  // This field also becomes true when ActionRequest.calibrate_dark_frame is
+  // carried out.
   bool calibrating = 22;
 
   // When `calibrating` is true, this field is an estimate of the progress of
@@ -921,6 +923,11 @@ message ActionRequest {
   // wants magnified for focusing. The image coordinates are in full resolution
   // within FrameResult.image.
   optional ImageCoord designate_daylight_focus_region = 11;
+
+  // Initiate calibration of dark frame(s). The user must have closed the lens
+  // cap. FrameResult.calibrating will be true during the dark calibration
+  // process.
+  optional bool calibrate_dark_frame = 13;
 
   // Causes the Cedar server to panic. For testing.
   optional bool crash_server = 12;
