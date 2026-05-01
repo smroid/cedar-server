@@ -929,6 +929,11 @@ message ActionRequest {
   // process.
   optional bool calibrate_dark_frame = 13;
 
+  // Discards the hot pixel map and any partial state towards building it.
+  // After this action, CalibrationData.hot_pixel_map_count will be absent
+  // until the map is rebuilt.
+  optional bool reset_hot_pixel_map = 14;
+
   // Causes the Cedar server to panic. For testing.
   optional bool crash_server = 12;
 }

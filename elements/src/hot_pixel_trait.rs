@@ -41,6 +41,10 @@ pub trait HotPixelTrait {
     // Returns this map's hot pixels. If is_ready() is false returns empty list.
     fn get_hot_pixels(&self) -> Vec<ImageCoord>;
 
+    // Discards all accumulated state, including any partial state towards
+    // generating the hot pixel map. After this call, is_ready() returns false.
+    fn reset(&mut self);
+
     // Saves the hot pixel map. This call blocks on IO.
     fn save_state(&self) -> Result<(), CanonicalError>;
 }

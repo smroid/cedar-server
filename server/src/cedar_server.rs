@@ -1584,6 +1584,25 @@ impl Cedar for MyCedar {
                     state.lock().await.calibrating = false;
                 });
         }
+        if req.reset_hot_pixel_map.unwrap_or(false) {
+            let hot_pixel_map =
+                self.state.lock().await.hot_pixel_map.clone();
+            match hot_pixel_map {
+                None => {
+                    return Err(logged_status!(
+                        failed_precondition,
+                        "No hot pixel map is configured."
+                    ));
+                }
+                Some(hpm) => {
+                    let mut locked_hpm = hpm.lock().await;
+                    locked_hpm.reset();
+                    if let Err(e) = locked_hpm.save_state() {
+                        return Err(tonic_status(e));
+                    }
+                }
+            }
+        }
         if req.crash_server.unwrap_or(false) {
             log::info!("Received crash_server action request.");
             std::process::exit(1);
