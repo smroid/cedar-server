@@ -803,12 +803,15 @@ impl SolveEngine {
             state.lock().await.solve_success_stats.add_value(1.0);
 
             // Update hot pixel map with the full (unfiltered) star candidates
-            // and the solved sky position.
+            // and the solved sky position. Skip IMU estimate, which occurs when
+            // the image does not have good stars.
             if let Some(ref hpm) = hot_pixel_map {
-                hpm.lock().await.update_hot_pixel_map(
-                    &detect_result.star_candidates,
-                    Some(boresight_coords.clone()),
-                );
+                if !psp.solution_from_imu {
+                    hpm.lock().await.update_hot_pixel_map(
+                        &detect_result.star_candidates,
+                        Some(boresight_coords.clone()),
+                    );
+                }
             }
 
             if !align_mode {
