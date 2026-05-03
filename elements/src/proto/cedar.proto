@@ -434,7 +434,7 @@ message FrameResult {
 
   // The number of candidates that were rejected as hot pixels. These are not
   // included in star_candidates.
-  int32 hot_pixel_count = 39;
+  optional int32 hot_pixel_count = 39;
 
   // The number of detected stars as a moving average of recent processing
   // cycles.
