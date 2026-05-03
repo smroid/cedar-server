@@ -3923,7 +3923,11 @@ pub fn server_main(
         got_signal2.store(true, AtomicOrdering::Relaxed);
         std::thread::sleep(Duration::from_secs(1));
         info!("Exiting");
-        std::process::exit(-1);
+        // Use _exit() rather than exit() to skip C++ static destructors.
+        // exit() triggers libcamera's static unordered_map destructors while
+        // the Tokio runtime may still have live camera handles making libcamera
+        // calls, causing an intermittent unordered_map::at crash.
+        unsafe { libc::_exit(0); }
     })
     .unwrap();
 
