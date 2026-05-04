@@ -220,6 +220,10 @@ struct MyCedar {
     serial_number: String,
 
     connection_counters: Arc<ConnectionCounters>,
+
+    // Cached CPU temperature and when it was last read, to avoid reading it on
+    // every getFrame() call.
+    cpu_temperature: Arc<tokio::sync::Mutex<(f32, Instant)>>,
 }
 
 struct CedarState {
@@ -1530,9 +1534,23 @@ impl Cedar for MyCedar {
                 .await;
         }
         if req.calibrate_dark_frame.unwrap_or(false) {
+            if self.test_image_camera.is_some() {
+                return Err(logged_status!(
+                    failed_precondition,
+                    "Dark frame calibration is not available with a test image."
+                ));
+            }
             // Precondition checks and extraction of needed arcs (no mutation yet).
             let (calibrator, camera, detect_engine, fixed_settings_arc) = {
                 let locked_state = self.state.lock().await;
+                if locked_state.operation_settings.demo_image_filename
+                    .as_deref().unwrap_or("").len() > 0
+                {
+                    return Err(logged_status!(
+                        failed_precondition,
+                        "Dark frame calibration is not available in demo image mode."
+                    ));
+                }
                 if locked_state.hot_pixel_map.is_none() {
                     return Err(logged_status!(
                         failed_precondition,
@@ -1555,15 +1573,14 @@ impl Cedar for MyCedar {
                 )
             }; // State lock released here!
 
-            // Compute duration before begin_calibration so the estimate is accurate.
+            // Read max_exposure_duration before begin_calibration to set an
+            // accurate duration estimate. Camera and detect_engine locks are
+            // deferred to the spawned task: they may be held by the serve loop
+            // during a long exposure, and begin_calibration stops the serve
+            // loop (calibrating=true) so the spawned task acquires them quickly.
             let max_exposure_duration = std::time::Duration::try_from(
                 fixed_settings_arc.lock().await.max_exposure_time
                     .clone().unwrap()).unwrap();
-            let (width, height) = camera.lock().await.dimensions().await;
-            let (detection_binning, _) = Self::compute_binning(
-                &*self.state.lock().await, width as u32, height as u32);
-            let detection_sigma =
-                detect_engine.lock().await.get_detection_sigma();
 
             if !Self::begin_calibration(&self.state, max_exposure_duration * 2).await {
                 return Err(logged_status!(
@@ -1574,6 +1591,11 @@ impl Cedar for MyCedar {
             let state = self.state.clone();
             let _task_handle: tokio::task::JoinHandle<()> =
                 tokio::task::spawn(async move {
+                    let (width, height) = camera.lock().await.dimensions().await;
+                    let (detection_binning, _) = Self::compute_binning(
+                        &*state.lock().await, width as u32, height as u32);
+                    let detection_sigma =
+                        detect_engine.lock().await.get_detection_sigma();
                     Self::set_gain(&camera, /* daylight_mode= */ false).await;
                     if let Err(e) = calibrator.lock().await.calibrate_dark_frame(
                         max_exposure_duration,
@@ -2485,12 +2507,18 @@ impl MyCedar {
             });
         }
 
-        // Get system info (file I/O outside locks).
-        let temp_str =
-            fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
-                .unwrap();
-        server_info.cpu_temperature =
-            temp_str.trim().parse::<f32>().unwrap() / 1000.0;
+        // Get CPU temperature, reading from sysfs at most once per minute.
+        let mut cached = self.cpu_temperature.lock().await;
+        if cached.1.elapsed() >= Duration::from_secs(60) {
+            if let Ok(temp_str) = tokio::fs::read_to_string(
+                "/sys/class/thermal/thermal_zone0/temp").await {
+                if let Ok(temp_millideg) = temp_str.trim().parse::<f32>() {
+                    cached.0 = temp_millideg / 1000.0;
+                }
+            }
+            cached.1 = Instant::now();
+        }
+        server_info.cpu_temperature = cached.0;
         server_info.server_time =
             Some(prost_types::Timestamp::from(SystemTime::now()));
 
@@ -3412,6 +3440,10 @@ impl MyCedar {
             os_version,
             serial_number,
             connection_counters: connection_counters.clone(),
+            // Timestamp in the past so the first getFrame call triggers a read.
+            cpu_temperature: Arc::new(tokio::sync::Mutex::new(
+                (0.0_f32, Instant::now() - Duration::from_secs(120))
+            )),
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;
