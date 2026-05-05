@@ -1594,7 +1594,9 @@ impl Cedar for MyCedar {
                     let (width, height) = camera.lock().await.dimensions().await;
                     let (detection_binning, _) = Self::compute_binning(
                         &*state.lock().await, width as u32, height as u32);
-                    let detection_sigma =
+                    // Use slightly larger sigma value to reduce the number of
+                    // hot pixels detected.
+                    let detection_sigma = 1.1 *
                         detect_engine.lock().await.get_detection_sigma();
                     Self::set_gain(&camera, /* daylight_mode= */ false).await;
                     if let Err(e) = calibrator.lock().await.calibrate_dark_frame(
