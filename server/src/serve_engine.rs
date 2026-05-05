@@ -595,23 +595,28 @@ impl ServeEngine {
         let irr = &image_rotator;
         let mut rotated = irr.rotate_image_and_crop(resized_disp_image);
 
-        // Zero hot pixels in the rotated output. Hot pixel coordinates are in
-        // full-resolution image space; divide by binning_factor to get
-        // resized_disp_image space, then transform into rotated output space.
+        // Zero hot pixels in the rotated output. Skip in daylight modes
+        // (focus and align), we don't want dark spots and anyway those
+        // exposures are short so hot pixels won't be visible much.
+        // Hot pixel coordinates are in full-resolution image space; divide by
+        // binning_factor to get resized_disp_image space, then transform into
+        // rotated output space.
         // TODO: zero out 9x9 centered on the hot pixel transformed coordinate?
-        if let Some(ref hpm) = ctx_hot_pixel_map {
-            let hot_pixels = hpm.lock().await.get_hot_pixels();
-            let bf = binning_factor as f64;
-            let (rot_w, rot_h) = rotated.dimensions();
-            for hp in hot_pixels {
-                let (rx, ry) = irr.transform_to_rotated(
-                    hp.x / bf, hp.y / bf, width, height);
-                let rx = rx.round() as i64;
-                let ry = ry.round() as i64;
-                if rx >= 0 && ry >= 0
-                    && rx < rot_w as i64 && ry < rot_h as i64
-                {
-                    rotated.put_pixel(rx as u32, ry as u32, image::Luma([0u8]));
+        if !daylight_mode {
+            if let Some(ref hpm) = ctx_hot_pixel_map {
+                let hot_pixels = hpm.lock().await.get_hot_pixels();
+                let bf = binning_factor as f64;
+                let (rot_w, rot_h) = rotated.dimensions();
+                for hp in hot_pixels {
+                    let (rx, ry) = irr.transform_to_rotated(
+                        hp.x / bf, hp.y / bf, width, height);
+                    let rx = rx.round() as i64;
+                    let ry = ry.round() as i64;
+                    if rx >= 0 && ry >= 0
+                        && rx < rot_w as i64 && ry < rot_h as i64
+                    {
+                        rotated.put_pixel(rx as u32, ry as u32, image::Luma([0u8]));
+                    }
                 }
             }
         }
