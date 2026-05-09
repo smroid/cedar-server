@@ -595,27 +595,53 @@ impl ServeEngine {
         let irr = &image_rotator;
         let mut rotated = irr.rotate_image_and_crop(resized_disp_image);
 
-        // Zero hot pixels in the rotated output. Skip in daylight modes
-        // (focus and align), we don't want dark spots and anyway those
-        // exposures are short so hot pixels won't be visible much.
+        // Replace hot pixels in the rotated display image with the mean of
+        // their 3x3 surround.
         // Hot pixel coordinates are in full-resolution image space; divide by
         // binning_factor to get resized_disp_image space, then transform into
         // rotated output space.
-        // TODO: zero out 9x9 centered on the hot pixel transformed coordinate?
-        if !daylight_mode {
+        if ctx_operation_settings.use_hot_pixel_map.unwrap_or(false) {
             if let Some(ref hpm) = ctx_hot_pixel_map {
                 let hot_pixels = hpm.lock().await.get_hot_pixels();
                 let bf = binning_factor as f64;
+                // Divide width/height by binning_factor to match the binned
+                // coordinate space of hp.x/bf, hp.y/bf.
+                let bw = (width as f64 / bf) as u32;
+                let bh = (height as f64 / bf) as u32;
                 let (rot_w, rot_h) = rotated.dimensions();
-                for hp in hot_pixels {
+                for hp in &hot_pixels {
                     let (rx, ry) = irr.transform_to_rotated(
-                        hp.x / bf, hp.y / bf, width, height);
+                        hp.x / bf, hp.y / bf, bw, bh);
                     let rx = rx.round() as i64;
                     let ry = ry.round() as i64;
-                    if rx >= 0 && ry >= 0
-                        && rx < rot_w as i64 && ry < rot_h as i64
+                    if rx < 0 || ry < 0
+                        || rx >= rot_w as i64 || ry >= rot_h as i64
                     {
-                        rotated.put_pixel(rx as u32, ry as u32, image::Luma([0u8]));
+                        continue;
+                    }
+                    // Compute mean of the 3x3 surround (excluding center).
+                    let mut sum = 0u32;
+                    let mut count = 0u32;
+                    for dy in -1_i64..=1 {
+                        for dx in -1_i64..=1 {
+                            if dx == 0 && dy == 0 {
+                                continue;  // Skip center.
+                            }
+                            let px = rx + dx;
+                            let py = ry + dy;
+                            if px >= 0 && py >= 0
+                                && px < rot_w as i64 && py < rot_h as i64
+                            {
+                                sum += rotated.get_pixel(
+                                    px as u32, py as u32).0[0] as u32;
+                                count += 1;
+                            }
+                        }
+                    }
+                    if count > 0 {
+                        rotated.put_pixel(
+                            rx as u32, ry as u32,
+                            image::Luma([(sum / count) as u8]));
                     }
                 }
             }
