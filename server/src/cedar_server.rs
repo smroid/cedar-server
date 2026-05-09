@@ -1595,7 +1595,7 @@ impl Cedar for MyCedar {
                     let (detection_binning, _) = Self::compute_binning(
                         &*state.lock().await, width as u32, height as u32);
                     // Use slightly larger sigma value to reduce the number of
-                    // hot pixels detected.
+                    // hot pixels detected with the long exposure time.
                     let detection_sigma = 1.1 *
                         detect_engine.lock().await.get_detection_sigma();
                     Self::set_gain(&camera, /* daylight_mode= */ false).await;
@@ -2989,7 +2989,6 @@ impl MyCedar {
         telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
         base_star_count_goal: i32,
         base_detection_sigma: f64,
-        min_detection_sigma: f64,
         stats_capacity: usize,
         preferences_file: PathBuf,
         log_file: PathBuf,
@@ -3052,7 +3051,6 @@ impl MyCedar {
                 initial_exposure_duration,
                 min_exposure_duration,
                 max_exposure_duration,
-                min_detection_sigma,
                 base_detection_sigma,
                 base_star_count_goal,
                 min_frame_interval,
@@ -3805,7 +3803,6 @@ struct AppArgs {
     min_frame_interval: Option<Duration>,
     star_count_goal: i32,
     sigma: f64,
-    min_sigma: f64,
     ui_prefs: String,
     log_dir: String,
     log_file: String,
@@ -3854,7 +3851,6 @@ pub fn server_main(
       --min_frame_interval NUMBER    0.020 (Hopper), 0.100 (Cedar-Box)
       --star_count_goal NUMBER       20
       --sigma NUMBER                 8.0
-      --min_sigma NUMBER             5.0
       --ui_prefs <path>              ./cedar_ui_prefs.binpb
       --log_dir <path>               .
       --log_file <file>              cedar_log.txt
@@ -3899,7 +3895,6 @@ pub fn server_main(
             .value_from_str("--star_count_goal")
             .unwrap_or(20),
         sigma: pargs.value_from_str("--sigma").unwrap_or(8.0),
-        min_sigma: pargs.value_from_str("--min_sigma").unwrap_or(5.0),
         ui_prefs: pargs
             .value_from_str("--ui_prefs")
             .unwrap_or("./cedar_ui_prefs.binpb".to_string()),
@@ -4393,7 +4388,6 @@ async fn async_main(
         shared_telescope_position.clone(),
         args.star_count_goal,
         args.sigma,
-        args.min_sigma,
         // TODO: arg for this?
         // stats_capacity=
         100,

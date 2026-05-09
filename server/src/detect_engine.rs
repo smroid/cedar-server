@@ -33,7 +33,6 @@ pub struct DetectEngine {
     max_exposure_duration: Duration,
 
     // Parameters for star detection algorithm.
-    detection_min_sigma: f64,
     detection_sigma: f64,
 
     // In align mode and operate mode (`focus_mode` is false), the
@@ -122,7 +121,6 @@ impl DetectEngine {
     pub fn new(initial_exposure_duration: Duration,
                min_exposure_duration: Duration,
                max_exposure_duration: Duration,
-               detection_min_sigma: f64,
                detection_sigma: f64,
                star_count_goal: i32,
                min_frame_interval: Duration,
@@ -135,7 +133,6 @@ impl DetectEngine {
             initial_exposure_duration,
             min_exposure_duration,
             max_exposure_duration,
-            detection_min_sigma,
             detection_sigma,
             star_count_goal,
             min_frame_interval,
@@ -278,7 +275,6 @@ impl DetectEngine {
             let initial_exposure_duration = self.initial_exposure_duration;
             let min_exposure_duration = self.min_exposure_duration;
             let max_exposure_duration = self.max_exposure_duration;
-            let detection_min_sigma = self.detection_min_sigma;
             let detection_sigma = self.detection_sigma;
             let star_count_goal = self.star_count_goal;
             let min_frame_interval = self.min_frame_interval;
@@ -307,8 +303,7 @@ impl DetectEngine {
                     DetectEngine::worker(
                         initial_exposure_duration,
                         min_exposure_duration, max_exposure_duration,
-                        detection_min_sigma, detection_sigma,
-                        star_count_goal, min_frame_interval,
+                        detection_sigma, star_count_goal, min_frame_interval,
                         hot_pixel_map, cloned_state, cloned_done).await;
                 });
             }));
@@ -367,7 +362,6 @@ impl DetectEngine {
     async fn worker(initial_exposure_duration: Duration,
                     min_exposure_duration: Duration,
                     max_exposure_duration: Duration,
-                    detection_min_sigma: f64,
                     detection_sigma: f64,
                     star_count_goal: i32,
                     min_frame_interval: Duration,
@@ -653,14 +647,13 @@ impl DetectEngine {
                         locked_state.eta = Some(Instant::now() + detect_duration);
                     }
                 }
-                let adjusted_sigma = f64::max(detection_sigma, detection_min_sigma);
                 let detect_binned_image;
                 let mut histogram;
                 let effective_hpm = if use_hot_pixel_map { hot_pixel_map.as_ref() }
                                     else { None };
                 (star_candidates, hot_pixel_count, detect_binned_image, histogram) =
                     get_stars_from_image(
-                        image, noise_estimate, adjusted_sigma,
+                        image, noise_estimate, detection_sigma,
                         normalize_rows, binning,
                         /*detect_hot_pixels=*/effective_hpm.is_none(),
                         /*return_binned_image=*/binning != 1);
