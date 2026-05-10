@@ -595,8 +595,7 @@ impl ServeEngine {
         let irr = &image_rotator;
         let mut rotated = irr.rotate_image_and_crop(resized_disp_image);
 
-        // Replace hot pixels in the rotated display image with the mean of
-        // their 3x3 surround.
+        // Replace hot pixels in the rotated display image.
         // Hot pixel coordinates are in full-resolution image space; divide by
         // binning_factor to get resized_disp_image space, then transform into
         // rotated output space.
@@ -612,36 +611,12 @@ impl ServeEngine {
                 for hp in &hot_pixels {
                     let (rx, ry) = irr.transform_to_rotated(
                         hp.x / bf, hp.y / bf, bw, bh);
-                    let rx = rx.round() as i64;
-                    let ry = ry.round() as i64;
-                    if rx < 0 || ry < 0
-                        || rx >= rot_w as i64 || ry >= rot_h as i64
+                    let rx = rx.round() as i32;
+                    let ry = ry.round() as i32;
+                    if rx >= 0 && ry >= 0
+                        && rx < rot_w as i32 && ry < rot_h as i32
                     {
-                        continue;
-                    }
-                    // Compute mean of the 3x3 surround (excluding center).
-                    let mut sum = 0u32;
-                    let mut count = 0u32;
-                    for dy in -1_i64..=1 {
-                        for dx in -1_i64..=1 {
-                            if dx == 0 && dy == 0 {
-                                continue;  // Skip center.
-                            }
-                            let px = rx + dx;
-                            let py = ry + dy;
-                            if px >= 0 && py >= 0
-                                && px < rot_w as i64 && py < rot_h as i64
-                            {
-                                sum += rotated.get_pixel(
-                                    px as u32, py as u32).0[0] as u32;
-                                count += 1;
-                            }
-                        }
-                    }
-                    if count > 0 {
-                        rotated.put_pixel(
-                            rx as u32, ry as u32,
-                            image::Luma([(sum / count) as u8]));
+                        Self::fix_hot_pixel(&mut rotated, rx, ry);
                     }
                 }
             }
@@ -1031,6 +1006,42 @@ impl ServeEngine {
         compressor.set_quality(jpeg_quality as i32).unwrap();
         compressor.set_subsamp(turbojpeg::Subsamp::Gray).unwrap();
         compressor.compress_to_vec(image).unwrap()
+    }
+
+    // Repairs a hot pixel at (rx, ry) in `image`. Finds the 3 brightest of
+    // the 8 surrounding pixels and computes the mean of the remaining 5.
+    // Replaces the 3 brightest neighbors with that mean, and also replaces
+    // the center pixel if it is brighter than the mean.
+    fn fix_hot_pixel(image: &mut GrayImage, rx: i32, ry: i32) {
+        let (w, h) = image.dimensions();
+        let mut neighbors: Vec<(u32, u32, u8)> = Vec::with_capacity(8);
+        for dy in -1_i32..=1 {
+            for dx in -1_i32..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let px = rx + dx;
+                let py = ry + dy;
+                if px >= 0 && py >= 0 && px < w as i32 && py < h as i32 {
+                    let v = image.get_pixel(px as u32, py as u32).0[0];
+                    neighbors.push((px as u32, py as u32, v));
+                }
+            }
+        }
+        if neighbors.len() != 8 {
+            return;
+        }
+        // Sort descending; the 3 brightest are likely hot-pixel bleed.
+        neighbors.sort_unstable_by(|a, b| b.2.cmp(&a.2));
+        let dim_sum: u32 = neighbors[3..].iter().map(|&(_, _, v)| v as u32).sum();
+        let dim_mean = (dim_sum / 5) as u8;
+        for &(px, py, _) in &neighbors[..3] {
+            image.put_pixel(px, py, image::Luma([dim_mean]));
+        }
+        let center_v = image.get_pixel(rx as u32, ry as u32).0[0];
+        if center_v > dim_mean {
+            image.put_pixel(rx as u32, ry as u32, image::Luma([dim_mean]));
+        }
     }
 }
 
