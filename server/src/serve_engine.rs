@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cedar_detect::image_funcs::bin_and_histogram_2x2;
+use cedar_detect::image_funcs::{bin_2x2, bin_and_histogram_2x2};
 use cedar_elements::{
     astro_util::{
         alt_az_from_equatorial, equatorial_from_alt_az,
@@ -505,16 +505,12 @@ impl ServeEngine {
             );
             resized_disp_image = &resize_result;
             if binning == 4 {
-                resize_result = Arc::new(
-                    bin_and_histogram_2x2(&resize_result, false).binned,
-                );
+                resize_result = Arc::new(bin_2x2(&resize_result));
                 resized_disp_image = &resize_result;
             }
         }
         if display_sampling {
-            resize_result = Arc::new(
-                bin_and_histogram_2x2(resized_disp_image, false).binned,
-            );
+            resize_result = Arc::new(bin_2x2(resized_disp_image));
             resized_disp_image = &resize_result;
             // Adjust peak_value; binning can make point sources dimmer.
             peak_value /= 4;
@@ -646,7 +642,7 @@ impl ServeEngine {
                 (&fa.peak_image, &fa.peak_image_region)
             {
                 let (cp_binning_factor, center_peak_jpg_buf) = if ctx_is_color {
-                    let binned = Self::bin_2x2(center_peak_image);
+                    let binned = bin_2x2(center_peak_image);
                     (2, Self::jpeg_encode(&binned, ctx_jpeg_quality))
                 } else {
                     (1, Self::jpeg_encode(center_peak_image, ctx_jpeg_quality))
@@ -669,7 +665,7 @@ impl ServeEngine {
             {
                 let (df_binning_factor, daylight_focus_jpg_buf) =
                     if ctx_is_color {
-                        let binned = Self::bin_2x2(daylight_focus_image);
+                        let binned = bin_2x2(daylight_focus_image);
                         (2, Self::jpeg_encode(&binned, ctx_jpeg_quality))
                     } else {
                         (
@@ -731,7 +727,7 @@ impl ServeEngine {
             if let Some(boresight_image) = &ps.boresight_image {
                 let (bs_binning_factor, resized_boresight_image) =
                     if ctx_is_color {
-                        (2, Self::bin_2x2(boresight_image))
+                        (2, bin_2x2(boresight_image))
                     } else {
                         (1, boresight_image.clone())
                     };
@@ -987,10 +983,6 @@ impl ServeEngine {
             scaled_image_binning_factor: binning_factor,
             scaled_image_frame_id,
         }
-    }
-
-    fn bin_2x2(image: &GrayImage) -> GrayImage {
-        bin_and_histogram_2x2(image, /* normalize_rows= */ false).binned
     }
 
     fn jpeg_encode(img: &GrayImage, jpeg_quality: u8) -> Vec<u8> {
