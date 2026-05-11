@@ -938,8 +938,8 @@ impl Cedar for MyCedar {
                 }
                 let (binning, display_sampling) = Self::compute_binning(
                     &locked_state,
-                    width as u32,
-                    height as u32,
+                    width,
+                    height,
                 );
 
                 (
@@ -1334,8 +1334,8 @@ impl Cedar for MyCedar {
             (bsp.x, bsp.y) = image_rotator.transform_from_rotated(
                 bsp.x,
                 bsp.y,
-                width as u32,
-                height as u32,
+                width,
+                height,
             );
 
             let distance_from_center = ((width as f64 / 2.0 - bsp.x)
@@ -1505,8 +1505,8 @@ impl Cedar for MyCedar {
             (dfr.x, dfr.y) = image_rotator.transform_from_rotated(
                 dfr.x,
                 dfr.y,
-                width as u32,
-                height as u32,
+                width,
+                height,
             );
             // Check that the point is within reasonable bounds.
             if dfr.x < 0.0
@@ -1585,7 +1585,7 @@ impl Cedar for MyCedar {
                 tokio::task::spawn(async move {
                     let (width, height) = camera.lock().await.dimensions().await;
                     let (detection_binning, _) = Self::compute_binning(
-                        &*state.lock().await, width as u32, height as u32);
+                        &*state.lock().await, width, height);
                     // Use slightly larger sigma value to reduce the number of
                     // hot pixels detected with the long exposure time.
                     let detection_sigma = 1.1 *
@@ -2411,24 +2411,24 @@ impl MyCedar {
             Some(CameraModel {
                 model: demo_image.to_string(),
                 model_detail: None,
-                image_width: locked_camera.dimensions().await.0,
-                image_height: locked_camera.dimensions().await.1,
+                image_width: locked_camera.dimensions().await.0 as i32,
+                image_height: locked_camera.dimensions().await.1 as i32,
             })
         } else if let Some(test_image_camera) = &self.test_image_camera {
             let locked_camera = test_image_camera.lock().await;
             Some(CameraModel {
                 model: locked_camera.model().await,
                 model_detail: None, // TODO: file path?
-                image_width: locked_camera.dimensions().await.0,
-                image_height: locked_camera.dimensions().await.1,
+                image_width: locked_camera.dimensions().await.0 as i32,
+                image_height: locked_camera.dimensions().await.1 as i32,
             })
         } else if let Some(attached_camera) = &attached_camera_arc {
             let locked_camera = attached_camera.lock().await;
             Some(CameraModel {
                 model: locked_camera.model().await,
                 model_detail: locked_camera.model_detail().await,
-                image_width: locked_camera.dimensions().await.0,
-                image_height: locked_camera.dimensions().await.1,
+                image_width: locked_camera.dimensions().await.0 as i32,
+                image_height: locked_camera.dimensions().await.1 as i32,
             })
         } else {
             None
@@ -2657,8 +2657,8 @@ impl MyCedar {
                 let _display_sampling;
                 (binning, _display_sampling) = Self::compute_binning(
                     &*state.lock().await,
-                    width as u32,
-                    height as u32,
+                    width,
+                    height,
                 );
             }
 
@@ -3450,7 +3450,7 @@ impl MyCedar {
         let locked_state = state.lock().await;
         let (width, height) = locked_state.camera.lock().await.dimensions().await;
         let (binning, display_sampling) =
-            Self::compute_binning(&locked_state, width as u32, height as u32);
+            Self::compute_binning(&locked_state, width, height);
         let camera = locked_state.camera.clone();
         let initial_exposure_duration = locked_state.initial_exposure_duration;
         drop(locked_state);
