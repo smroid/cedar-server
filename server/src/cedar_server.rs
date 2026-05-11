@@ -440,9 +440,7 @@ impl Cedar for MyCedar {
         let mut our_prefs = preferences_arc.lock().await.clone();
         our_prefs.observer_location = None;
         *preferences_arc.lock().await = our_prefs.clone();
-
-        // Write updated preferences to file.
-        Self::write_preferences_file(&self.preferences_file, &our_prefs);
+        self.save_preferences(serve_engine_arc, our_prefs).await;
 
         info!("Cleared observer location");
         Ok(tonic::Response::new(EmptyMessage {}))
@@ -1202,11 +1200,9 @@ impl Cedar for MyCedar {
         let serve_engine_arc = locked_state.serve_engine.clone();
         let updated_op_settings = locked_state.operation_settings.clone();
         drop(locked_state);
-        Self::write_preferences_file(&self.preferences_file, &our_prefs);
         serve_engine_arc.lock().await
             .update_operation_settings(updated_op_settings).await;
-        serve_engine_arc.lock().await
-            .update_preferences(our_prefs.clone()).await;
+        self.save_preferences(serve_engine_arc, our_prefs.clone()).await;
 
         Ok(tonic::Response::new(our_prefs))
     }
@@ -1484,18 +1480,14 @@ impl Cedar for MyCedar {
             }
         }
         if req.clear_dont_show_items.unwrap_or(false) {
-            let prefs_to_write = {
-                let preferences_arc =
-                    self.state.lock().await.preferences.clone();
+            let (prefs_to_write, serve_engine_arc) = {
+                let locked_state = self.state.lock().await;
+                let preferences_arc = locked_state.preferences.clone();
                 let mut locked_prefs = preferences_arc.lock().await;
                 locked_prefs.dont_show_items.clear();
-                locked_prefs.clone()
+                (locked_prefs.clone(), locked_state.serve_engine.clone())
             };
-            // Write updated preferences to file.
-            Self::write_preferences_file(
-                &self.preferences_file,
-                &prefs_to_write,
-            );
+            self.save_preferences(serve_engine_arc, prefs_to_write).await;
         }
         if let Some(mut dfr) = req.designate_daylight_focus_region {
             let (image_rotator, camera, detect_engine) = {
@@ -2383,6 +2375,15 @@ impl MyCedar {
                 &scratch_path, &prefs_path, e
             );
         }
+    }
+
+    async fn save_preferences(
+        &self,
+        serve_engine_arc: Arc<tokio::sync::Mutex<ServeEngine>>,
+        preferences: Preferences,
+    ) {
+        Self::write_preferences_file(&self.preferences_file, &preferences);
+        serve_engine_arc.lock().await.update_preferences(preferences).await;
     }
 
     async fn get_server_information(&self) -> ServerInformation {
