@@ -4030,8 +4030,9 @@ async fn prepare_for_exit_async(
 async fn get_attached_camera(
     camera_interface: Option<&CameraInterface>,
     camera_index: usize,
+    prefer_binned: bool,
 ) -> Result<Box<dyn AbstractCamera + Send>, CanonicalError> {
-    select_camera(camera_interface, camera_index).await
+    select_camera(camera_interface, camera_index, prefer_binned).await
 }
 
 async fn get_camera(
@@ -4255,7 +4256,8 @@ async fn async_main(
     };
 
     let attached_camera =
-        match get_attached_camera(camera_interface.as_ref(), args.camera_index).await
+        match get_attached_camera(camera_interface.as_ref(), args.camera_index,
+                                  /*prefer_binned=*/false).await
         {
             Ok(cam) => Some(Arc::new(tokio::sync::Mutex::new(cam))),
             Err(e) => {
