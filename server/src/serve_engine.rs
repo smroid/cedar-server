@@ -44,6 +44,7 @@ pub struct ServeContext {
     pub polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
     pub normalize_rows: bool,
     pub is_color: bool,
+    pub camera_binning: u32,
     pub jpeg_quality: u8,
     pub landscape: bool,
 }
@@ -405,6 +406,7 @@ impl ServeEngine {
             ctx_polar_analyzer,
             ctx_normalize_rows,
             ctx_is_color,
+            ctx_camera_binning,
             ctx_jpeg_quality,
             ctx_landscape,
             prev_image_rotator,
@@ -422,6 +424,7 @@ impl ServeEngine {
                 ctx.polar_analyzer.clone(),
                 ctx.normalize_rows,
                 ctx.is_color,
+                ctx.camera_binning,
                 ctx.jpeg_quality,
                 ctx.landscape,
                 locked_state.image_rotator.clone(),
@@ -429,8 +432,8 @@ impl ServeEngine {
             )
         };
 
-        let (ctx_binning, ctx_display_sampling) =
-            detect_engine.lock().await.get_binning().await;
+        let (detect_binning, display_sampling) =
+            detect_engine.lock().await.get_detect_binning().await;
 
         let plate_solution_proto =
             if let Some(ref ps) = plate_solution {
@@ -484,9 +487,6 @@ impl ServeEngine {
         frame_result.hot_pixel_count = Some(detect_result.hot_pixel_count);
         frame_result.noise_estimate = detect_result.noise_estimate;
 
-        let binning = ctx_binning;
-        let display_sampling = ctx_display_sampling;
-
         // Build display image.
         let mut disp_image = &captured_image.image;
         let mut resized_disp_image = disp_image;
@@ -497,14 +497,14 @@ impl ServeEngine {
         if detect_result.binned_image.is_some() {
             disp_image = detect_result.binned_image.as_ref().unwrap();
             resized_disp_image = disp_image;
-        } else if binning > 1 {
+        } else if detect_binning > 1 {
             // This can happen in focus mode, wherein detect engine is skipping
             // Cedar detect and thus not creating a binned image.
             resize_result = Arc::new(
                 bin_and_histogram_2x2(disp_image, ctx_normalize_rows).binned,
             );
             resized_disp_image = &resize_result;
-            if binning == 4 {
+            if detect_binning == 4 {
                 resize_result = Arc::new(bin_2x2(&resize_result));
                 resized_disp_image = &resize_result;
             }
@@ -518,7 +518,7 @@ impl ServeEngine {
         if black_level > peak_value {
             black_level = peak_value;
         }
-        let binning_factor = binning * if display_sampling { 2 } else { 1 };
+        let binning_factor = detect_binning * if display_sampling { 2 } else { 1 };
 
         // Location-based info (alt/az, zenith roll) from plate solution.
         if let Some(ref psp) = plate_solution_proto {
@@ -641,12 +641,13 @@ impl ServeEngine {
             if let (Some(center_peak_image), Some(peak_image_region)) =
                 (&fa.peak_image, &fa.peak_image_region)
             {
-                let (cp_binning_factor, center_peak_jpg_buf) = if ctx_is_color {
-                    let binned = bin_2x2(center_peak_image);
-                    (2, Self::jpeg_encode(&binned, ctx_jpeg_quality))
-                } else {
-                    (1, Self::jpeg_encode(center_peak_image, ctx_jpeg_quality))
-                };
+                let (cp_binning_factor, center_peak_jpg_buf) =
+                    if ctx_is_color && ctx_camera_binning == 1 {
+                        let binned = bin_2x2(center_peak_image);
+                        (2_i32, Self::jpeg_encode(&binned, ctx_jpeg_quality))
+                    } else {
+                        (ctx_camera_binning as i32, Self::jpeg_encode(center_peak_image, ctx_jpeg_quality))
+                    };
                 frame_result.center_peak_image = Some(Image {
                     binning_factor: cp_binning_factor,
                     rotation_size_ratio: 1.0,
@@ -664,17 +665,11 @@ impl ServeEngine {
                 (&fa.daylight_focus_zoom_image, &fa.daylight_focus_zoom_region)
             {
                 let (df_binning_factor, daylight_focus_jpg_buf) =
-                    if ctx_is_color {
+                    if ctx_is_color && ctx_camera_binning == 1 {
                         let binned = bin_2x2(daylight_focus_image);
-                        (2, Self::jpeg_encode(&binned, ctx_jpeg_quality))
+                        (2_i32, Self::jpeg_encode(&binned, ctx_jpeg_quality))
                     } else {
-                        (
-                            1,
-                            Self::jpeg_encode(
-                                daylight_focus_image,
-                                ctx_jpeg_quality,
-                            ),
-                        )
+                        (ctx_camera_binning as i32, Self::jpeg_encode(daylight_focus_image, ctx_jpeg_quality))
                     };
                 frame_result.daylight_focus_zoom_image = Some(Image {
                     binning_factor: df_binning_factor,
@@ -726,10 +721,10 @@ impl ServeEngine {
 
             if let Some(boresight_image) = &ps.boresight_image {
                 let (bs_binning_factor, resized_boresight_image) =
-                    if ctx_is_color {
-                        (2, bin_2x2(boresight_image))
+                    if ctx_is_color && ctx_camera_binning == 1 {
+                        (2_i32, bin_2x2(boresight_image))
                     } else {
-                        (1, boresight_image.clone())
+                        (ctx_camera_binning as i32, boresight_image.clone())
                     };
                 let rotated_boresight_image =
                     irr.rotate_image_and_crop(&resized_boresight_image);

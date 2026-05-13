@@ -886,7 +886,7 @@ impl Cedar for MyCedar {
                 new_camera,
                 width,
                 height,
-                binning,
+                detect_binning,
                 display_sampling,
                 detect_engine_arc,
                 solve_engine_arc,
@@ -927,7 +927,8 @@ impl Cedar for MyCedar {
                         Some(demo_image_filename);
                 }
                 let new_camera = locked_state.camera.clone();
-                let (width, height) = new_camera.lock().await.dimensions().await;
+                let (width, height, camera_binning) =
+                    Self::camera_geometry(&new_camera).await;
 
                 let std_duration =
                     Self::get_automatic_update_interval(&locked_state);
@@ -936,17 +937,18 @@ impl Cedar for MyCedar {
                 {
                     return Err(tonic_status(x));
                 }
-                let (binning, display_sampling) = Self::compute_binning(
+                let (detect_binning, display_sampling) = Self::compute_binning(
                     &locked_state,
                     width,
                     height,
+                    camera_binning,
                 );
 
                 (
                     new_camera,
                     width,
                     height,
-                    binning,
+                    detect_binning,
                     display_sampling,
                     locked_state.detect_engine.clone(),
                     locked_state.solve_engine.clone(),
@@ -959,7 +961,7 @@ impl Cedar for MyCedar {
             detect_engine_arc
                 .lock()
                 .await
-                .set_binning(binning, display_sampling)
+                .set_detect_binning(detect_binning, display_sampling)
                 .await;
             detect_engine_arc
                 .lock()
@@ -1583,9 +1585,10 @@ impl Cedar for MyCedar {
             let state = self.state.clone();
             let _task_handle: tokio::task::JoinHandle<()> =
                 tokio::task::spawn(async move {
-                    let (width, height) = camera.lock().await.dimensions().await;
+                    let (width, height, camera_binning) =
+                        Self::camera_geometry(&camera).await;
                     let (detection_binning, _) = Self::compute_binning(
-                        &*state.lock().await, width, height);
+                        &*state.lock().await, width, height, camera_binning);
                     // Use slightly larger sigma value to reduce the number of
                     // hot pixels detected with the long exposure time.
                     let detection_sigma = 1.1 *
@@ -1966,46 +1969,59 @@ impl MyCedar {
     }
 
     // See "About Resolutions" below.
-    // Computes (binning, display_sampling) for camera, taking optional command
-    // line overrides into account.
+    // Computes (detect_binning, display_sampling) for camera, taking optional
+    // command line overrides into account.
     // Returns:
-    // binning: u32; whether (and how much, 2x2 or 4x4) the acquired image
-    //     is binned prior to CedarDetect and sending to the UI.
+    // detect_binning: u32; whether (and how much, 2x2 or 4x4) the acquired
+    //     image is binned prior to CedarDetect and sending to the UI.
     // display_sampling: bool; whether (possibly binned) image is to be 2x
     //     sampled when sending to the
     fn compute_binning(
         state: &CedarState,
         width: u32,
         height: u32,
+        camera_binning: u32,
     ) -> (u32, bool) {
         let args_binning = state.args_binning;
         let args_display_sampling = state.args_display_sampling;
+        // Use sensor dimensions to determine total binning needed.
         let mpix = (width * height) as f64 / 1000000.0;
-        // Initialize binning/sampling parameters based on sensor resolution.
-        let mut binning = 1_u32;
+        let mut total_binning = 1_u32;
         let mut display_sampling = false;
         if mpix <= 0.75 {
             // Use initial values.
         } else if mpix <= 3.0 {
-            binning = 2;
+            total_binning = 2;
         } else if mpix <= 12.0 {
-            binning = 4;
+            total_binning = 4;
         } else {
-            binning = 4;
+            total_binning = 4;
             display_sampling = true;
         }
         // Allow command-line overrides of sampling/binning parameters.
         if let Some(ba) = args_binning {
-            binning = ba;
+            total_binning = ba;
         }
         if let Some(dsa) = args_display_sampling {
             display_sampling = dsa;
         }
+        // Camera has already applied camera_binning; CedarDetect only needs
+        // to apply the remainder.
+        let detect_binning = (total_binning / camera_binning).max(1);
         debug!(
-            "For {:.1}mpix, binning {}, display_sampling {}",
-            mpix, binning, display_sampling
+            "For {:.1}mpix, camera_binning {}, total_binning {}, detect_binning {}, display_sampling {}",
+            mpix, camera_binning, total_binning, detect_binning, display_sampling
         );
-        (binning, display_sampling)
+        (detect_binning, display_sampling)
+    }
+
+    async fn camera_geometry(
+        camera: &Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>
+    ) -> (u32, u32, u32) {
+        let locked = camera.lock().await;
+        let (width, height) = locked.dimensions().await;
+        let camera_binning = locked.binning();
+        (width, height, camera_binning)
     }
 
     /// Atomically checks that calibration is not already in progress, snapshots
@@ -2615,7 +2631,7 @@ impl MyCedar {
     ) -> Result<bool, CanonicalError> {
         let initial_exposure_duration;
         let max_exposure_duration;
-        let binning;
+        let detect_binning;
         let detection_sigma;
         let star_count_goal;
         let camera;
@@ -2652,13 +2668,15 @@ impl MyCedar {
 
         {
             {
-                let locked_camera = camera.lock().await;
-                (width, height) = locked_camera.dimensions().await;
+                let camera_binning;
+                (width, height, camera_binning) =
+                    Self::camera_geometry(&camera).await;
                 let _display_sampling;
-                (binning, _display_sampling) = Self::compute_binning(
+                (detect_binning, _display_sampling) = Self::compute_binning(
                     &*state.lock().await,
                     width,
                     height,
+                    camera_binning,
                 );
             }
 
@@ -2695,7 +2713,7 @@ impl MyCedar {
                 initial_exposure_duration,
                 max_exposure_duration,
                 star_count_goal,
-                binning,
+                detect_binning,
                 detection_sigma,
                 cancel_calibration.clone(),
             )
@@ -2742,7 +2760,7 @@ impl MyCedar {
             .await
             .calibrate_optical(
                 solver.clone(),
-                binning,
+                detect_binning,
                 detection_sigma,
                 cancel_calibration.clone(),
             )
@@ -3349,6 +3367,7 @@ impl MyCedar {
             polar_analyzer: closure_polar_analyzer.clone(),
             normalize_rows,
             is_color: camera.lock().await.is_color(),
+            camera_binning: camera.lock().await.binning(),
             jpeg_quality: 95,
             landscape: false,
         };
@@ -3448,10 +3467,13 @@ impl MyCedar {
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;
-        let (width, height) = locked_state.camera.lock().await.dimensions().await;
-        let (binning, display_sampling) =
-            Self::compute_binning(&locked_state, width, height);
         let camera = locked_state.camera.clone();
+        drop(locked_state);
+        let (width, height, camera_binning) =
+            Self::camera_geometry(&camera).await;
+        let locked_state = state.lock().await;
+        let (detect_binning, display_sampling) =
+            Self::compute_binning(&locked_state, width, height, camera_binning);
         let initial_exposure_duration = locked_state.initial_exposure_duration;
         drop(locked_state);
         if let Err(x) =
@@ -3463,7 +3485,7 @@ impl MyCedar {
 
         {
             let mut detect_engine = locked_state.detect_engine.lock().await;
-            detect_engine.set_binning(binning, display_sampling).await;
+            detect_engine.set_detect_binning(detect_binning, display_sampling).await;
             detect_engine
                 .set_focus_mode(
                     locked_state.operation_settings.focus_assist_mode.unwrap(),
@@ -4257,7 +4279,7 @@ async fn async_main(
 
     let attached_camera =
         match get_attached_camera(camera_interface.as_ref(), args.camera_index,
-                                  /*prefer_binned=*/false).await
+                                  /*prefer_binned=*/hot_pixel_map.is_some()).await
         {
             Ok(cam) => Some(Arc::new(tokio::sync::Mutex::new(cam))),
             Err(e) => {

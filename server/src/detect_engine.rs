@@ -85,11 +85,12 @@ struct DetectState {
     // image coordinates. None if no point has been designated.
     daylight_focus_point: Option<(f64, f64)>,
 
-    // When running CedarDetect, this supplies the `binning` value used.
+    // When running CedarDetect, this supplies the `detect_binning` value used.
     // See "About Resolutions" in cedar_server.rs.
-    binning: u32,
+    detect_binning: u32,
 
-    // Together with 'binning', this is used to adjust central peak image size.
+    // Together with 'detect_binning', this is used to adjust central peak image
+    // size.
     display_sampling: bool,
 
     // When using auto exposure in operate mode or setup align mode, this is the
@@ -145,7 +146,7 @@ impl DetectEngine {
                 daylight_mode: false,
                 use_hot_pixel_map: true,
                 daylight_focus_point: None,
-                binning: 1,
+                detect_binning: 1,
                 display_sampling: false,
                 calibrated_exposure_duration: None,
                 auto_exposure_duration: None,
@@ -178,17 +179,18 @@ impl DetectEngine {
         locked_state.auto_exposure_duration = None;
     }
 
-    pub async fn set_binning(&mut self, binning: u32, display_sampling: bool) {
+    pub async fn set_detect_binning(&mut self, detect_binning: u32,
+                                    display_sampling: bool) {
         let mut locked_state = self.state.lock().await;
-        locked_state.binning = binning;
+        locked_state.detect_binning = detect_binning;
         locked_state.display_sampling = display_sampling;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
 
-    pub async fn get_binning(&self) -> (u32, bool) {
+    pub async fn get_detect_binning(&self) -> (u32, bool) {
         let locked_state = self.state.lock().await;
-        (locked_state.binning, locked_state.display_sampling)
+        (locked_state.detect_binning, locked_state.display_sampling)
     }
 
     pub async fn set_focus_mode(&mut self, enabled: bool) {
@@ -376,7 +378,7 @@ impl DetectEngine {
             let daylight_mode: bool;
             let use_hot_pixel_map: bool;
             let daylight_focus_point: Option<(f64, f64)>;
-            let binning: u32;
+            let detect_binning: u32;
             let display_sampling: bool;
             let calibrated_exposure_duration: Option<Duration>;
             let auto_exposure_duration: Option<Duration>;
@@ -388,7 +390,7 @@ impl DetectEngine {
                 daylight_mode = locked_state.daylight_mode;
                 use_hot_pixel_map = locked_state.use_hot_pixel_map;
                 daylight_focus_point = locked_state.daylight_focus_point;
-                binning = locked_state.binning;
+                detect_binning = locked_state.detect_binning;
                 display_sampling = locked_state.display_sampling;
                 calibrated_exposure_duration =
                     locked_state.calibrated_exposure_duration;
@@ -446,7 +448,7 @@ impl DetectEngine {
 
             // To avoid edge when centroiding and creating central peak image,
             // inset the ROI a little.
-            let adjusted_binning = binning * if display_sampling { 2 } else { 1 };
+            let adjusted_binning = detect_binning * if display_sampling { 2 } else { 1 };
             let inset = 8 * adjusted_binning as i32;
 
             let noise_estimate = estimate_noise_from_image(image);
@@ -654,9 +656,9 @@ impl DetectEngine {
                 (star_candidates, hot_pixel_count, detect_binned_image, histogram) =
                     get_stars_from_image(
                         image, noise_estimate, detection_sigma,
-                        normalize_rows, binning,
+                        normalize_rows, detect_binning,
                         /*detect_hot_pixels=*/effective_hpm.is_none(),
-                        /*return_binned_image=*/binning != 1);
+                        /*return_binned_image=*/detect_binning != 1);
                 let stats = stats_for_histogram(&histogram);
                 binned_image = detect_binned_image.map(Arc::new);
 
