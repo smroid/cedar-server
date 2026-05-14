@@ -38,7 +38,11 @@ pub trait HotPixelTrait {
     // classify_candidates() to be effective.
     fn is_ready(&self) -> bool;
 
-    // Returns this map's hot pixels. If is_ready() is false returns empty list.
+    // Returns this map's hot pixels as image coordinates in the same pixel
+    // space as the StarDescription centroids passed to update_hot_pixel_map()
+    // (i.e. the coordinate space of the image supplied to
+    // get_stars_from_image(), which may be full sensor resolution or
+    // camera-binned). If is_ready() is false returns empty list.
     fn get_hot_pixels(&self) -> Vec<ImageCoord>;
 
     // Discards all accumulated state, including any partial state towards
