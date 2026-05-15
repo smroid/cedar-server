@@ -90,6 +90,7 @@ message CameraModel {
   optional string model_detail = 4;
   int32 image_width = 2;
   int32 image_height = 3;
+  // TODO: add binning, color.
 }
 
 enum ImuTrackerState {
@@ -281,9 +282,10 @@ message Preferences {
   // 0: normal; -1: smaller; +1: bigger.
   optional int32 text_size_index = 18;
 
-  // Saved boresight position. On server startup we use this to initialize the
-  // internal state which appears at FrameResult.boresight_position. Note: do
-  // not update this via UpdatePreferences().
+  // Saved boresight position, in full sensor resolution coordinates. On server
+  // startup we use this to initialize the internal state which appears at
+  // FrameResult.boresight_position. Note: do not update this via
+  // UpdatePreferences().
   optional ImageCoord boresight_pixel = 19;
 
   // Whether UI buttons and such are positioned on right side of screen.
