@@ -886,6 +886,7 @@ impl Cedar for MyCedar {
                 new_camera,
                 width,
                 height,
+                camera_binning,
                 detect_binning,
                 display_sampling,
                 detect_engine_arc,
@@ -948,6 +949,7 @@ impl Cedar for MyCedar {
                     new_camera,
                     width,
                     height,
+                    camera_binning,
                     detect_binning,
                     display_sampling,
                     locked_state.detect_engine.clone(),
@@ -974,26 +976,33 @@ impl Cedar for MyCedar {
                 .await
                 .replace_camera(new_camera.clone());
 
-            // Validate boresight_pixel, to make sure it is still within the
-            // image area
+            // Validate boresight_pixel (full-sensor coords) against the new
+            // camera's image area, then re-apply to solve_engine in
+            // post-camera-binning coords for the new camera.
             let boresight_pixel_value =
                 preferences_arc.lock().await.boresight_pixel.clone();
-            if let Some(bsp) = boresight_pixel_value {
-                let inset = 16;
+            let cb = camera_binning as f64;
+            let inset = 16;
+            let new_boresight = if let Some(bsp) = boresight_pixel_value {
                 if bsp.x < inset as f64
                     || bsp.x > (width - inset) as f64
                     || bsp.y < inset as f64
                     || bsp.y > (height - inset) as f64
                 {
                     preferences_arc.lock().await.boresight_pixel = None;
-                    solve_engine_arc
-                        .lock()
-                        .await
-                        .set_boresight_pixel(None)
-                        .await
-                        .unwrap();
+                    None
+                } else {
+                    Some(ImageCoord { x: bsp.x / cb, y: bsp.y / cb })
                 }
+            } else {
+                None
             };
+            solve_engine_arc
+                .lock()
+                .await
+                .set_boresight_pixel(new_boresight)
+                .await
+                .unwrap();
         }
         if let Some(use_imu) = req.use_imu {
             let solve_engine_arc = {
@@ -1307,8 +1316,13 @@ impl Cedar for MyCedar {
                     {
                         return Err(tonic_status(x));
                     }
+                    // bsp is in post-camera-binning coords; convert to full-sensor
+                    // for storage in preferences.
+                    let cb =
+                        self.state.lock().await.camera.lock().await.binning() as f64;
+                    let bsp_full = ImageCoord { x: bsp.x * cb, y: bsp.y * cb };
                     preferences = Preferences {
-                        boresight_pixel: Some(bsp.clone()),
+                        boresight_pixel: Some(bsp_full),
                         ..Default::default()
                     };
                 } else {
@@ -1325,27 +1339,38 @@ impl Cedar for MyCedar {
             let image_rotator;
             let width;
             let height;
+            let camera_binning;
             {
                 let locked_state = self.state.lock().await;
                 let serve_engine_arc = locked_state.serve_engine.clone();
                 let camera_arc = locked_state.camera.clone();
                 drop(locked_state);
                 image_rotator = serve_engine_arc.lock().await.image_rotator().await;
-                (width, height) = camera_arc.lock().await.dimensions().await;
+                let locked_camera = camera_arc.lock().await;
+                (width, height) = locked_camera.dimensions().await;
+                camera_binning = locked_camera.binning();
             }
+            // Client sends bsp in full-sensor space; convert to post-camera-binning
+            // space before transform_from_rotated and storage in solve_engine.
+            let cb = camera_binning as u32;
+            let binned_width = width / cb;
+            let binned_height = height / cb;
+            let cbf = camera_binning as f64;
+            bsp.x /= cbf;
+            bsp.y /= cbf;
             (bsp.x, bsp.y) = image_rotator.transform_from_rotated(
                 bsp.x,
                 bsp.y,
-                width,
-                height,
+                binned_width,
+                binned_height,
             );
 
-            let distance_from_center = ((width as f64 / 2.0 - bsp.x)
-                * (width as f64 / 2.0 - bsp.x)
-                + (height as f64 / 2.0 - bsp.y)
-                    * (height as f64 / 2.0 - bsp.y))
+            let distance_from_center = ((binned_width as f64 / 2.0 - bsp.x)
+                * (binned_width as f64 / 2.0 - bsp.x)
+                + (binned_height as f64 / 2.0 - bsp.y)
+                    * (binned_height as f64 / 2.0 - bsp.y))
                 .sqrt();
-            if distance_from_center > height as f64 / 2.0 {
+            if distance_from_center > binned_height as f64 / 2.0 {
                 return Err(logged_status!(
                     failed_precondition,
                     "Too far from center".to_string()
@@ -1361,8 +1386,11 @@ impl Cedar for MyCedar {
             {
                 return Err(tonic_status(x));
             };
+            // bsp is in post-camera-binning coords; convert to full-sensor for
+            // storage in preferences.
+            let bsp_full = ImageCoord { x: bsp.x * cbf, y: bsp.y * cbf };
             let preferences = Preferences {
-                boresight_pixel: Some(bsp.clone()),
+                boresight_pixel: Some(bsp_full),
                 ..Default::default()
             };
             self.update_preferences(tonic::Request::new(preferences))
@@ -1503,18 +1531,27 @@ impl Cedar for MyCedar {
                     locked_state.detect_engine.clone(),
                 )
             };
-            let (width, height) = camera.lock().await.dimensions().await;
+            let locked_camera = camera.lock().await;
+            let (width, height) = locked_camera.dimensions().await;
+            let camera_binning = locked_camera.binning();
+            drop(locked_camera);
+            let binned_width = width / camera_binning;
+            let binned_height = height / camera_binning;
+            // Client sends dfr in full-sensor space; convert to post-camera-binning
+            // space before transform_from_rotated.
+            dfr.x /= camera_binning as f64;
+            dfr.y /= camera_binning as f64;
             (dfr.x, dfr.y) = image_rotator.transform_from_rotated(
                 dfr.x,
                 dfr.y,
-                width,
-                height,
+                binned_width,
+                binned_height,
             );
             // Check that the point is within reasonable bounds.
             if dfr.x < 0.0
-                || dfr.x >= width as f64
+                || dfr.x >= binned_width as f64
                 || dfr.y < 0.0
-                || dfr.y >= height as f64
+                || dfr.y >= binned_height as f64
             {
                 return Err(logged_status!(
                     failed_precondition,
@@ -1524,7 +1561,7 @@ impl Cedar for MyCedar {
             detect_engine
                 .lock()
                 .await
-                .set_daylight_focus_point((dfr.x, dfr.y))
+                .set_daylight_focus_point(dfr.clone())
                 .await;
         }
         if req.calibrate_dark_frame.unwrap_or(false) {
@@ -2402,6 +2439,26 @@ impl MyCedar {
         serve_engine_arc.lock().await.update_preferences(preferences).await;
     }
 
+    async fn camera_model_from_arc(
+        camera_arc: &Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+        model_override: Option<String>,
+        include_detail: bool,
+    ) -> CameraModel {
+        let locked = camera_arc.lock().await;
+        let (w, h) = locked.dimensions().await;
+        let model = match model_override {
+            Some(m) => m,
+            None => locked.model().await,
+        };
+        let model_detail = if include_detail { locked.model_detail().await } else { None };
+        CameraModel {
+            model,
+            model_detail,
+            image_width: w as i32,
+            image_height: h as i32,
+        }
+    }
+
     async fn get_server_information(&self) -> ServerInformation {
         // Extract all data we need first, then release state lock.
         let (
@@ -2421,31 +2478,16 @@ impl MyCedar {
             )
         }; // State lock released here!
 
-        // Process camera info (outside state lock).
+        // Process camera info.
         let camera = if let Some(demo_image) = &demo_image {
-            let locked_camera = camera_arc.lock().await;
-            Some(CameraModel {
-                model: demo_image.to_string(),
-                model_detail: None,
-                image_width: locked_camera.dimensions().await.0 as i32,
-                image_height: locked_camera.dimensions().await.1 as i32,
-            })
+            Some(Self::camera_model_from_arc(
+                &camera_arc, Some(demo_image.to_string()), /*include_detail=*/false).await)
         } else if let Some(test_image_camera) = &self.test_image_camera {
-            let locked_camera = test_image_camera.lock().await;
-            Some(CameraModel {
-                model: locked_camera.model().await,
-                model_detail: None, // TODO: file path?
-                image_width: locked_camera.dimensions().await.0 as i32,
-                image_height: locked_camera.dimensions().await.1 as i32,
-            })
+            Some(Self::camera_model_from_arc(
+                test_image_camera, None, /*include_detail=*/false).await)
         } else if let Some(attached_camera) = &attached_camera_arc {
-            let locked_camera = attached_camera.lock().await;
-            Some(CameraModel {
-                model: locked_camera.model().await,
-                model_detail: locked_camera.model_detail().await,
-                image_width: locked_camera.dimensions().await.0 as i32,
-                image_height: locked_camera.dimensions().await.1 as i32,
-            })
+            Some(Self::camera_model_from_arc(
+                attached_camera, None, /*include_detail=*/true).await)
         } else {
             None
         };
@@ -3193,9 +3235,9 @@ impl MyCedar {
         let (width, height) = camera.lock().await.dimensions().await;
         let inset = 16;
         if let Some(ref bsp) = preferences.boresight_pixel {
-            // Validate boresight_pixel loaded from preferences, to make sure it
-            // is within the image area. This could be violated if e.g. we
-            // changed camera since the preferences were saved.
+            // Validate boresight_pixel loaded from preferences (full-sensor coords),
+            // to make sure it is within the image area. This could be violated if
+            // e.g. we changed camera since the preferences were saved.
             if bsp.x < inset as f64
                 || bsp.x > (width - inset) as f64
                 || bsp.y < inset as f64
@@ -3366,8 +3408,6 @@ impl MyCedar {
             hot_pixel_map: hot_pixel_map.clone(),
             polar_analyzer: closure_polar_analyzer.clone(),
             normalize_rows,
-            is_color: camera.lock().await.is_color(),
-            camera_binning: camera.lock().await.binning(),
             jpeg_quality: 95,
             landscape: false,
         };
@@ -3506,10 +3546,27 @@ impl MyCedar {
                 .await;
             solve_engine.set_align_mode(true).await;
             if let Some(bsp) = &copied_preferences.boresight_pixel {
-                solve_engine
-                    .set_boresight_pixel(Some(ImageCoord { x: bsp.x, y: bsp.y }))
-                    .await
-                    .unwrap();
+                // Preferences stores full-sensor coords; convert to post-camera-binning.
+                let cb = camera_binning as f64;
+                let binned_bsp = ImageCoord { x: bsp.x / cb, y: bsp.y / cb };
+                let binned_width = width / camera_binning;
+                let binned_height = height / camera_binning;
+                let inset = 16;
+                // Sanity check: converted coords must be within the binned image.
+                // Fails if e.g. the saved value was in a different coordinate space.
+                if binned_bsp.x >= inset as f64
+                    && binned_bsp.x <= (binned_width - inset) as f64
+                    && binned_bsp.y >= inset as f64
+                    && binned_bsp.y <= (binned_height - inset) as f64
+                {
+                    solve_engine
+                        .set_boresight_pixel(Some(binned_bsp))
+                        .await
+                        .unwrap();
+                } else {
+                    warn!("Saved boresight_pixel {:?} is out of range after \
+                           converting to post-camera-binning space; ignoring.", bsp);
+                }
             }
         }
 
@@ -3617,13 +3674,17 @@ impl MyCedar {
         let mut prefs_to_save: Option<Preferences> = None;
         let mut updated_observer_location: Option<LatLong> = None;
         if let Some(bp) = boresight_pixel {
-            let cedar_bp = ImageCoord { x: bp.x, y: bp.y };
+            // Convert from post-camera-binning to full-sensor coords for storage.
+            let cb = detect_result.as_ref()
+                .map(|dr| dr.captured_image.binning)
+                .unwrap_or(1) as f64;
+            let cedar_bp = ImageCoord { x: bp.x * cb, y: bp.y * cb };
             let mut locked_preferences = preferences.lock().await;
             if locked_preferences.boresight_pixel.is_none()
                 || cedar_bp
                     != *locked_preferences.boresight_pixel.as_ref().unwrap()
             {
-                // Save in preferences.
+                // Save in preferences (full-sensor coords).
                 locked_preferences.boresight_pixel = Some(cedar_bp);
                 // Flag updated preferences to write to file below.
                 prefs_to_save = Some(locked_preferences.clone());

@@ -21,7 +21,7 @@ use cedar_elements::hot_pixel_trait::HotPixelTrait;
 use cedar_elements::image_utils::{
     normalize_rows_mut, scale_image_mut};
 use cedar_elements::value_stats::ValueStatsAccumulator;
-use cedar_elements::cedar::ValueStats;
+use cedar_elements::cedar::{ImageCoord, ValueStats};
 
 pub struct DetectEngine {
     // Initial exposure duration, prior to doing any calibrations. Setup mode
@@ -81,9 +81,9 @@ struct DetectState {
     // hot pixel detection is used instead.
     use_hot_pixel_map: bool,
 
-    // User-designated focus point for daylight focus mode. In full resolution
+    // User-designated focus point for daylight focus mode. In post-camera-binning
     // image coordinates. None if no point has been designated.
-    daylight_focus_point: Option<(f64, f64)>,
+    daylight_focus_point: Option<ImageCoord>,
 
     // When running CedarDetect, this supplies the `detect_binning` value used.
     // See "About Resolutions" in cedar_server.rs.
@@ -219,7 +219,9 @@ impl DetectEngine {
         locked_state.use_hot_pixel_map = enabled;
     }
 
-    pub async fn set_daylight_focus_point(&mut self, point: (f64, f64)) {
+    // Sets the daylight focus point. `point` must be in post-camera-binning
+    // image coordinates.
+    pub async fn set_daylight_focus_point(&mut self, point: ImageCoord) {
         let mut locked_state = self.state.lock().await;
         locked_state.daylight_focus_point = Some(point);
     }
@@ -377,7 +379,7 @@ impl DetectEngine {
             let focus_mode: bool;
             let daylight_mode: bool;
             let use_hot_pixel_map: bool;
-            let daylight_focus_point: Option<(f64, f64)>;
+            let daylight_focus_point: Option<ImageCoord>;
             let detect_binning: u32;
             let display_sampling: bool;
             let calibrated_exposure_duration: Option<Duration>;
@@ -389,7 +391,7 @@ impl DetectEngine {
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
                 use_hot_pixel_map = locked_state.use_hot_pixel_map;
-                daylight_focus_point = locked_state.daylight_focus_point;
+                daylight_focus_point = locked_state.daylight_focus_point.clone();
                 detect_binning = locked_state.detect_binning;
                 display_sampling = locked_state.display_sampling;
                 calibrated_exposure_duration =
@@ -398,7 +400,6 @@ impl DetectEngine {
                     locked_state.auto_exposure_duration;
                 locked_state.eta = None;
             }
-
             let captured_image;
             let camera_processing_duration;
             {
@@ -447,7 +448,9 @@ impl DetectEngine {
             let image_region = Rect::at(0, 0).of_size(width, height);
 
             // To avoid edge when centroiding and creating central peak image,
-            // inset the ROI a little.
+            // inset the ROI a little. These sizes are in post-camera-binning
+            // image space, so only detect_binning and display_sampling apply;
+            // camera_binning is already baked into the image coordinate space.
             let adjusted_binning = detect_binning * if display_sampling { 2 } else { 1 };
             let inset = 8 * adjusted_binning as i32;
 
@@ -536,11 +539,11 @@ impl DetectEngine {
                     // Get a small sub-image centered on the peak coordinates.
                     let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
                     debug!("peak at x/y {}/{}", peak_position.0, peak_position.1);
-                    let sub_image_size = 15 * adjusted_binning as i32;
-                    assert!(sub_image_size < 2 * inset);
+                    let sub_image_size = height as i32 / 30;
+                    let half_size = sub_image_size / 2;
                     let peak_region =
-                        Rect::at((peak_position.0 as i32 - sub_image_size/2) as i32,
-                                 (peak_position.1 as i32 - sub_image_size/2) as i32)
+                        Rect::at((peak_position.0 as i32 - half_size) as i32,
+                                 (peak_position.1 as i32 - half_size) as i32)
                         .of_size(sub_image_size as u32, sub_image_size as u32);
                     let peak_region = peak_region.intersect(image_region).unwrap();
                     let mut peak_image = image.view(peak_region.left() as u32,
@@ -575,15 +578,20 @@ impl DetectEngine {
                         daylight_focus_zoom_region: None,
                     });
                 } else {
-                    // Generate daylight focus zoom image
-                    let focus_point = daylight_focus_point.unwrap_or_else(|| {
-                        // Default to roi_region center if no point designated.
-                        (roi_region.left() as f64 + roi_region.width() as f64 / 2.0,
-                         roi_region.top() as f64 + roi_region.height() as f64 / 2.0)
-                    });
+                    // Generate daylight focus zoom image.
+                    let roi_center = (roi_region.left() as f64 + roi_region.width() as f64 / 2.0,
+                                      roi_region.top() as f64 + roi_region.height() as f64 / 2.0);
+                    let focus_point = match daylight_focus_point {
+                        None => roi_center,
+                        Some(ref p) if p.x < roi_region.left() as f64
+                                || p.x >= roi_region.right() as f64
+                                || p.y < roi_region.top() as f64
+                                || p.y >= roi_region.bottom() as f64 => roi_center,
+                        Some(p) => (p.x, p.y),
+                    };
 
                     // Calculate region size similar to existing focus logic.
-                    let sub_image_size = 30 * adjusted_binning as i32;
+                    let sub_image_size = height as i32 / 15;
                     let half_size = sub_image_size / 2;
 
                     // Create region centered on focus point, bounded by roi_region.
@@ -842,6 +850,7 @@ impl DetectEngine {
                 peak_value,
                 focus_aid,
                 daylight_mode,
+                detect_binning,
                 processing_duration: elapsed,
                 acquire_latency_stats:
                   locked_state.acquire_latency_stats.value_stats.clone(),
@@ -865,8 +874,8 @@ pub struct DetectResult {
     // See the corresponding field in cedar.FrameResult proto message.
     pub frame_id: i32,
 
-    // The full-resolution camera image used to produce the information in this
-    // detect result.
+    // The camera image used to produce the information in this detect result.
+    // May be full sensor resolution or camera-binned (see CapturedImage.binning).
     pub captured_image: CapturedImage,
 
     // If binning was applied prior to detect, this is the 2x2 or 4x4 binned
@@ -888,7 +897,7 @@ pub struct DetectResult {
     // background level.
     pub display_black_level: u8,
 
-    // Estimate of the RMS noise of the full-resolution image.
+    // Estimate of the RMS noise of the captured image (post-camera-binning).
     pub noise_estimate: f64,
 
     // The number of hot pixels detected by CedarDetect.
@@ -905,6 +914,9 @@ pub struct DetectResult {
     // Indicates whether daylight_mode was in effect for this result.
     pub daylight_mode: bool,
 
+    // The detect_binning value in effect when this result was produced.
+    pub detect_binning: u32,
+
     // Time taken to produce this DetectResult, excluding the time taken to
     // acquire the image.
     pub processing_duration: std::time::Duration,
@@ -920,23 +932,30 @@ pub struct DetectResult {
 
 #[derive(Clone)]
 pub struct FocusAid {
-    // See the corresponding field in FrameResult. Only present in non-daylight focus mode.
-    pub center_peak_position: Option<(f64, f64)>,
+    // All coordinates and regions in this struct are in post-camera-binning
+    // image space (i.e. the coordinate space of CapturedImage.image). Serve
+    // engine multiplies by camera_binning to convert coordinates to full-sensor
+    // space for cedar.proto.
 
-    // See the corresponding field in FrameResult. Only present in non-daylight focus mode.
+    // See the corresponding field in FrameResult. Only present in non-daylight
+    // focus mode.
+    pub center_peak_position: Option<(f64, f64)>,
     pub center_peak_value: Option<u8>,
 
     // A small crop of `captured_image` centered at `center_peak_position`.
-    // Brightness scaled to full range for visibility. Only present in non-daylight focus mode.
+    // Brightness scaled to full range for visibility. Only present in
+    // non-daylight focus mode.
     pub peak_image: Option<GrayImage>,
 
-    // The location of `peak_image`. Only present in non-daylight focus mode.
+    // The location of `peak_image` in post-camera-binning image coordinates.
+    // Only present in non-daylight focus mode.
     pub peak_image_region: Option<Rect>,
 
     // A small crop of `captured_image` centered at user-designated position
     // for daylight focus mode. Only present in daylight mode.
     pub daylight_focus_zoom_image: Option<GrayImage>,
 
-    // The location of `daylight_focus_zoom_image`. Only present in daylight mode.
+    // The location of `daylight_focus_zoom_image` in post-camera-binning image
+    // coordinates. Only present in daylight mode.
     pub daylight_focus_zoom_region: Option<Rect>,
 }

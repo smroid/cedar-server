@@ -43,8 +43,6 @@ pub struct ServeContext {
     pub hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
     pub polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
     pub normalize_rows: bool,
-    pub is_color: bool,
-    pub camera_binning: u32,
     pub jpeg_quality: u8,
     pub landscape: bool,
 }
@@ -405,8 +403,6 @@ impl ServeEngine {
             ctx_hot_pixel_map,
             ctx_polar_analyzer,
             ctx_normalize_rows,
-            ctx_is_color,
-            ctx_camera_binning,
             ctx_jpeg_quality,
             ctx_landscape,
             prev_image_rotator,
@@ -423,8 +419,6 @@ impl ServeEngine {
                 ctx.hot_pixel_map.clone(),
                 ctx.polar_analyzer.clone(),
                 ctx.normalize_rows,
-                ctx.is_color,
-                ctx.camera_binning,
                 ctx.jpeg_quality,
                 ctx.landscape,
                 locked_state.image_rotator.clone(),
@@ -443,6 +437,8 @@ impl ServeEngine {
             };
 
         let captured_image = &detect_result.captured_image;
+        let camera_binning = captured_image.binning;
+        let is_color = captured_image.is_color;
         let (width, height) = captured_image.image.dimensions();
 
         let mut frame_result = FrameResult {
@@ -518,7 +514,6 @@ impl ServeEngine {
         if black_level > peak_value {
             black_level = peak_value;
         }
-        let binning_factor = detect_binning * if display_sampling { 2 } else { 1 };
 
         // Location-based info (alt/az, zenith roll) from plate solution.
         if let Some(ref psp) = plate_solution_proto {
@@ -592,21 +587,20 @@ impl ServeEngine {
         let mut rotated = irr.rotate_image_and_crop(resized_disp_image);
 
         // Replace hot pixels in the rotated display image.
-        // Hot pixel coordinates are in full-resolution image space; divide by
-        // binning_factor to get resized_disp_image space, then transform into
-        // rotated output space.
         if ctx_operation_settings.use_hot_pixel_map.unwrap_or(false) {
             if let Some(ref hpm) = ctx_hot_pixel_map {
                 let hot_pixels = hpm.lock().await.get_hot_pixels();
-                let bf = binning_factor as f64;
-                // Divide width/height by binning_factor to match the binned
-                // coordinate space of hp.x/bf, hp.y/bf.
-                let bw = (width as f64 / bf) as u32;
-                let bh = (height as f64 / bf) as u32;
+                // Hot pixel coords are in post-camera-binning space. Divide by
+                // display_factor to get display-image space, using post-camera-binning
+                // dimensions for the transform.
+                let display_factor =
+                    (detect_binning * if display_sampling { 2 } else { 1 }) as f64;
+                let bw = (width as f64 / display_factor) as u32;
+                let bh = (height as f64 / display_factor) as u32;
                 let (rot_w, rot_h) = rotated.dimensions();
                 for hp in &hot_pixels {
                     let (rx, ry) = irr.transform_to_rotated(
-                        hp.x / bf, hp.y / bf, bw, bh);
+                        hp.x / display_factor, hp.y / display_factor, bw, bh);
                     let rx = rx.round() as i32;
                     let ry = ry.round() as i32;
                     if rx >= 0 && ry >= 0
@@ -617,10 +611,13 @@ impl ServeEngine {
                 }
             }
         }
-
         resize_result = Arc::new(rotated);
         resized_disp_image = &resize_result;
-        let disp_image_rectangle = irr.get_cropped_region(width, height);
+
+        let binning_factor =
+            camera_binning * detect_binning * if display_sampling { 2 } else { 1 };
+        let cb_i = camera_binning as i32;
+        let cb_f = camera_binning as f64;
 
         // Focus assist / center peak handling.
         if let Some(fa) = &detect_result.focus_aid {
@@ -631,6 +628,8 @@ impl ServeEngine {
                 };
                 (ic.x, ic.y) =
                     irr.transform_to_rotated(ic.x, ic.y, width, height);
+                ic.x *= cb_f;
+                ic.y *= cb_f;
                 *center_peak_position_arc.lock().await = Some(ic.clone());
                 frame_result.center_peak_position = Some(ic);
             }
@@ -642,20 +641,25 @@ impl ServeEngine {
                 (&fa.peak_image, &fa.peak_image_region)
             {
                 let (cp_binning_factor, center_peak_jpg_buf) =
-                    if ctx_is_color && ctx_camera_binning == 1 {
+                    // For color cameras with no other binning in effect, bin_2x2
+                    // collapses the Bayer pattern to produce a monochrome image.
+                    // When camera_binning or detect_binning is already >= 2, the
+                    // Bayer pattern has already been collapsed and no extra bin is needed.
+                    if is_color && camera_binning == 1 && detect_binning == 1 {
                         let binned = bin_2x2(center_peak_image);
                         (2_i32, Self::jpeg_encode(&binned, ctx_jpeg_quality))
                     } else {
-                        (ctx_camera_binning as i32, Self::jpeg_encode(center_peak_image, ctx_jpeg_quality))
+                        (cb_i,
+                         Self::jpeg_encode(center_peak_image, ctx_jpeg_quality))
                     };
                 frame_result.center_peak_image = Some(Image {
                     binning_factor: cp_binning_factor,
                     rotation_size_ratio: 1.0,
                     rectangle: Some(Rectangle {
-                        origin_x: peak_image_region.left(),
-                        origin_y: peak_image_region.top(),
-                        width: peak_image_region.width() as i32,
-                        height: peak_image_region.height() as i32,
+                        origin_x: peak_image_region.left() * cb_i,
+                        origin_y: peak_image_region.top() * cb_i,
+                        width: peak_image_region.width() as i32 * cb_i,
+                        height: peak_image_region.height() as i32 * cb_i,
                     }),
                     image_data: center_peak_jpg_buf,
                 });
@@ -665,20 +669,22 @@ impl ServeEngine {
                 (&fa.daylight_focus_zoom_image, &fa.daylight_focus_zoom_region)
             {
                 let (df_binning_factor, daylight_focus_jpg_buf) =
-                    if ctx_is_color && ctx_camera_binning == 1 {
+                    // See color bin_2x2 comment above for center_peak_image.
+                    if is_color && camera_binning == 1 && detect_binning == 1 {
                         let binned = bin_2x2(daylight_focus_image);
                         (2_i32, Self::jpeg_encode(&binned, ctx_jpeg_quality))
                     } else {
-                        (ctx_camera_binning as i32, Self::jpeg_encode(daylight_focus_image, ctx_jpeg_quality))
+                        (cb_i,
+                         Self::jpeg_encode(daylight_focus_image, ctx_jpeg_quality))
                     };
                 frame_result.daylight_focus_zoom_image = Some(Image {
                     binning_factor: df_binning_factor,
                     rotation_size_ratio: 1.0,
                     rectangle: Some(Rectangle {
-                        origin_x: daylight_focus_region.left(),
-                        origin_y: daylight_focus_region.top(),
-                        width: daylight_focus_region.width() as i32,
-                        height: daylight_focus_region.height() as i32,
+                        origin_x: daylight_focus_region.left() * cb_i,
+                        origin_y: daylight_focus_region.top() * cb_i,
+                        width: daylight_focus_region.width() as i32 * cb_i,
+                        height: daylight_focus_region.height() as i32 * cb_i,
                     }),
                     image_data: daylight_focus_jpg_buf,
                 });
@@ -686,6 +692,9 @@ impl ServeEngine {
         } else {
             *center_peak_position_arc.lock().await = None;
         }
+
+        let disp_image_rectangle = irr.get_cropped_region(
+            width * camera_binning, height * camera_binning);
 
         // Scale and encode main display image.
         let gamma = if daylight_mode { 1.0 } else { 0.7 };
@@ -721,10 +730,12 @@ impl ServeEngine {
 
             if let Some(boresight_image) = &ps.boresight_image {
                 let (bs_binning_factor, resized_boresight_image) =
-                    if ctx_is_color && ctx_camera_binning == 1 {
+                    // See color bin_2x2 comment above for center_peak_image.
+                    if is_color && camera_binning == 1 && detect_binning == 1 {
                         (2_i32, bin_2x2(boresight_image))
                     } else {
-                        (ctx_camera_binning as i32, boresight_image.clone())
+                        (cb_i,
+                         boresight_image.clone())
                     };
                 let rotated_boresight_image =
                     irr.rotate_image_and_crop(&resized_boresight_image);
@@ -737,10 +748,10 @@ impl ServeEngine {
                     binning_factor: bs_binning_factor,
                     rotation_size_ratio: 1.0,
                     rectangle: Some(Rectangle {
-                        origin_x: bsi_rect.left(),
-                        origin_y: bsi_rect.top(),
-                        width: bsi_rect.width() as i32,
-                        height: bsi_rect.height() as i32,
+                        origin_x: bsi_rect.left() * cb_i,
+                        origin_y: bsi_rect.top() * cb_i,
+                        width: bsi_rect.width() as i32 * cb_i,
+                        height: bsi_rect.height() as i32 * cb_i,
                     }),
                     image_data: jpg_buf,
                 });
@@ -760,8 +771,8 @@ impl ServeEngine {
                     {
                         let slew_target_image_pos =
                             slew_request.image_pos.as_mut().unwrap();
-                        slew_target_image_pos.x = rx;
-                        slew_target_image_pos.y = ry;
+                        slew_target_image_pos.x = rx * cb_f;
+                        slew_target_image_pos.y = ry * cb_f;
                     } else {
                         slew_request.image_pos = None;
                     }
@@ -844,6 +855,8 @@ impl ServeEngine {
                     let pos = fce.image_pos.as_mut().unwrap();
                     (pos.x, pos.y) =
                         irr.transform_to_rotated(pos.x, pos.y, width, height);
+                    pos.x *= cb_f;
+                    pos.y *= cb_f;
                     frame_result.labeled_catalog_entries.push(fce.clone());
                 }
             }
@@ -856,6 +869,8 @@ impl ServeEngine {
                     let pos = fce.image_pos.as_mut().unwrap();
                     (pos.x, pos.y) =
                         irr.transform_to_rotated(pos.x, pos.y, width, height);
+                    pos.x *= cb_f;
+                    pos.y *= cb_f;
                     frame_result
                         .unlabeled_catalog_entries
                         .push(fce.clone());
@@ -910,11 +925,17 @@ impl ServeEngine {
         }
 
         // Transform boresight and star centroid coordinates.
+        // Multiply by camera_binning to convert from post-camera-binning
+        // space to full-sensor space, which the client expects.
         let bp = frame_result.boresight_position.as_mut().unwrap();
         (bp.x, bp.y) = irr.transform_to_rotated(bp.x, bp.y, width, height);
+        bp.x *= cb_f;
+        bp.y *= cb_f;
         for star_centroid in &mut frame_result.star_candidates {
             let cp = star_centroid.centroid_position.as_mut().unwrap();
             (cp.x, cp.y) = irr.transform_to_rotated(cp.x, cp.y, width, height);
+            cp.x *= cb_f;
+            cp.y *= cb_f;
         }
 
         // Setup align mode: augment detections with catalog items.
