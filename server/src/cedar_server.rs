@@ -1026,38 +1026,6 @@ impl Cedar for MyCedar {
                 .await;
         }
 
-        if let Some(use_hot_pixel_map) = req.use_hot_pixel_map {
-            let (detect_engine_arc, solve_engine_arc, calibrator_arc) = {
-                let mut locked_state = self.state.lock().await;
-                if locked_state.hot_pixel_map.is_none() {
-                    return Err(logged_status!(
-                        failed_precondition,
-                        "Hot pixel map not available on this system"
-                    ));
-                }
-                locked_state.operation_settings.use_hot_pixel_map =
-                    Some(use_hot_pixel_map);
-                (locked_state.detect_engine.clone(),
-                 locked_state.solve_engine.clone(),
-                 locked_state.calibrator.clone())
-            }; // State lock released here!
-
-            detect_engine_arc
-                .lock()
-                .await
-                .set_use_hot_pixel_map(use_hot_pixel_map)
-                .await;
-            solve_engine_arc
-                .lock()
-                .await
-                .set_use_hot_pixel_map(use_hot_pixel_map)
-                .await;
-            calibrator_arc
-                .lock()
-                .await
-                .set_use_hot_pixel_map(use_hot_pixel_map);
-        }
-
         let locked_state = self.state.lock().await;
         let updated_op_settings = locked_state.operation_settings.clone();
         let serve_engine_arc = locked_state.serve_engine.clone();
@@ -1586,14 +1554,6 @@ impl Cedar for MyCedar {
                     return Err(logged_status!(
                         failed_precondition,
                         "No hot pixel map is configured."
-                    ));
-                }
-                if !locked_state.operation_settings.use_hot_pixel_map
-                    .unwrap_or(false)
-                {
-                    return Err(logged_status!(
-                        failed_precondition,
-                        "Hot pixel map is not enabled."
                     ));
                 }
                 (
@@ -3438,7 +3398,6 @@ impl MyCedar {
                         .clone(),
                     demo_image_filename: None,
                     use_imu: Some(imu_tracker.is_some()),
-                    use_hot_pixel_map: Some(hot_pixel_map.is_some()),
                 },
                 calibration_data: shared_calibration_data,
                 detect_engine: detect_engine.clone(),

@@ -19,7 +19,6 @@ use cedar_elements::hot_pixel_trait::HotPixelTrait;
 use cedar_elements::solver_trait::{
     SolveExtension, SolveParams, SolverTrait};
 use cedar_elements::cedar::ImageCoord;
-
 pub struct Calibrator {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
 
@@ -28,7 +27,6 @@ pub struct Calibrator {
 
     hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
 
-    use_hot_pixel_map: bool,
 }
 
 #[derive(Debug)]
@@ -45,15 +43,7 @@ impl Calibrator {
                normalize_rows: bool,
                hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
     ) -> Self {
-        Calibrator{camera, normalize_rows,
-                   use_hot_pixel_map: hot_pixel_map.is_some(),
-                   hot_pixel_map}
-    }
-
-    pub fn set_use_hot_pixel_map(&mut self, enabled: bool) {
-        if self.hot_pixel_map.is_some() {
-            self.use_hot_pixel_map = enabled;
-        }
+        Calibrator{camera, normalize_rows, hot_pixel_map}
     }
 
     pub fn replace_camera(
@@ -304,17 +294,12 @@ impl Calibrator {
     // all detected candidates to definitively replace the hot pixel map, then
     // saves the map.
     // Errors:
-    //   FailedPrecondition: no hot pixel map configured or use_hot_pixel_map
-    //     is false.
+    //   FailedPrecondition: no hot pixel map configured.
     pub async fn calibrate_dark_frame(
         &self,
         max_exposure_duration: Duration,
         detection_binning: u32, detection_sigma: f64,
     ) -> Result<(), CanonicalError> {
-        if !self.use_hot_pixel_map {
-            return Err(failed_precondition_error(
-                "Hot pixel map is not enabled."));
-        }
         let hpm = match &self.hot_pixel_map {
             Some(h) => h,
             None => return Err(failed_precondition_error(
@@ -446,19 +431,17 @@ impl Calibrator {
         // operation.
         let image = captured_image.image.clone();
         let normalize_rows = self.normalize_rows;
-        let effective_hpm = if detect_hot_pixels && self.use_hot_pixel_map {
-            &self.hot_pixel_map
-        } else {
-            &None
-        };
+        let effective_hpm =
+            if detect_hot_pixels { &self.hot_pixel_map } else { &None };
         let use_hot_pixel_map = effective_hpm.is_some();
         let (stars, _, _, histogram) =
             tokio::task::spawn_blocking(move || {
                 let noise_estimate = estimate_noise_from_image(&image);
-                get_stars_from_image(&image, noise_estimate, detection_sigma,
-                                     normalize_rows, detection_binning,
-                                     /*detect_hot_pixels=*/detect_hot_pixels && !use_hot_pixel_map,
-                                     /*return_binned_image=*/false)
+                get_stars_from_image(
+                    &image, noise_estimate, detection_sigma,
+                    normalize_rows, detection_binning,
+                    /*detect_hot_pixels=*/detect_hot_pixels && !use_hot_pixel_map,
+                    /*return_binned_image=*/false)
             }).await.unwrap();
         let stars = if let Some(hpm) = effective_hpm {
             let (filtered, _) = hpm.lock().await.classify_candidates(&stars);

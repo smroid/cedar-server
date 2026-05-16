@@ -110,7 +110,6 @@ struct SolveState {
 
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     use_imu_tracker: bool,
-    use_hot_pixel_map: bool,
     observer_location: Option<LatLong>,
 
     frame_id: Option<i32>,
@@ -174,7 +173,6 @@ impl SolveEngine {
                 catalog_entry_match: None,
                 imu_tracker: imu_tracker.clone(),
                 use_imu_tracker: imu_tracker.is_some(),
-                use_hot_pixel_map: hot_pixel_map.is_some(),
                 observer_location,
                 frame_id: None,
                 minimum_stars: 4,
@@ -354,11 +352,6 @@ impl SolveEngine {
                 imu_tracker.lock().await.reset().await;
             }
         }
-    }
-
-    pub async fn set_use_hot_pixel_map(&mut self, enabled: bool) {
-        let mut locked_state = self.state.lock().await;
-        locked_state.use_hot_pixel_map = enabled;
     }
 
     pub async fn clear_plate_solution(&mut self) {
@@ -975,7 +968,6 @@ impl SolveEngine {
         loop {
             let minimum_stars;
             let frame_id;
-            let use_hot_pixel_map;
             let mut solve_extension = SolveExtension::default();
             let mut solve_params = SolveParams::default();
 
@@ -990,8 +982,6 @@ impl SolveEngine {
 
                 minimum_stars = locked_state.minimum_stars;
                 frame_id = locked_state.frame_id;
-                use_hot_pixel_map = locked_state.use_hot_pixel_map;
-
                 // Set up solve arguments.
                 if let Some(fov) = locked_state.fov_estimate {
                     solve_params.fov_estimate = Some((fov, fov / 10.0));
@@ -1054,7 +1044,7 @@ impl SolveEngine {
             let (width, height) = image.dimensions();
 
             // Plate-solve using the recently detected stars.
-            let effective_hpm = if use_hot_pixel_map { &hot_pixel_map } else { &None };
+            let effective_hpm = &hot_pixel_map;
             let process_start_time = Instant::now();
             let (plate_solution_proto, solve_finish_time) =
                 Self::attempt_plate_solve(

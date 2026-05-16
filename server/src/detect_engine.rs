@@ -77,10 +77,6 @@ struct DetectState {
     // Affects auto-exposure and turns off focus aids and star detection.
     daylight_mode: bool,
 
-    // When false, the hot pixel map is ignored and CedarDetect's built-in
-    // hot pixel detection is used instead.
-    use_hot_pixel_map: bool,
-
     // User-designated focus point for daylight focus mode. In post-camera-binning
     // image coordinates. None if no point has been designated.
     daylight_focus_point: Option<ImageCoord>,
@@ -144,7 +140,6 @@ impl DetectEngine {
                 frame_id: None,
                 focus_mode: false,
                 daylight_mode: false,
-                use_hot_pixel_map: true,
                 daylight_focus_point: None,
                 detect_binning: 1,
                 display_sampling: false,
@@ -212,11 +207,6 @@ impl DetectEngine {
         locked_state.auto_exposure_duration = None;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
-    }
-
-    pub async fn set_use_hot_pixel_map(&mut self, enabled: bool) {
-        let mut locked_state = self.state.lock().await;
-        locked_state.use_hot_pixel_map = enabled;
     }
 
     // Sets the daylight focus point. `point` must be in post-camera-binning
@@ -378,7 +368,6 @@ impl DetectEngine {
             let normalize_rows;
             let focus_mode: bool;
             let daylight_mode: bool;
-            let use_hot_pixel_map: bool;
             let daylight_focus_point: Option<ImageCoord>;
             let detect_binning: u32;
             let display_sampling: bool;
@@ -390,7 +379,6 @@ impl DetectEngine {
                 normalize_rows = locked_state.normalize_rows;
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
-                use_hot_pixel_map = locked_state.use_hot_pixel_map;
                 daylight_focus_point = locked_state.daylight_focus_point.clone();
                 detect_binning = locked_state.detect_binning;
                 display_sampling = locked_state.display_sampling;
@@ -659,8 +647,7 @@ impl DetectEngine {
                 }
                 let detect_binned_image;
                 let mut histogram;
-                let effective_hpm = if use_hot_pixel_map { hot_pixel_map.as_ref() }
-                                    else { None };
+                let effective_hpm = hot_pixel_map.as_ref();
                 (star_candidates, hot_pixel_count, detect_binned_image, histogram) =
                     get_stars_from_image(
                         image, noise_estimate, detection_sigma,

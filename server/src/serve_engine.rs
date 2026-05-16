@@ -587,27 +587,25 @@ impl ServeEngine {
         let mut rotated = irr.rotate_image_and_crop(resized_disp_image);
 
         // Replace hot pixels in the rotated display image.
-        if ctx_operation_settings.use_hot_pixel_map.unwrap_or(false) {
-            if let Some(ref hpm) = ctx_hot_pixel_map {
-                let hot_pixels = hpm.lock().await.get_hot_pixels();
-                // Hot pixel coords are in post-camera-binning space. Divide by
-                // display_factor to get display-image space, using post-camera-binning
-                // dimensions for the transform.
-                let display_factor =
-                    (detect_binning * if display_sampling { 2 } else { 1 }) as f64;
-                let bw = (width as f64 / display_factor) as u32;
-                let bh = (height as f64 / display_factor) as u32;
-                let (rot_w, rot_h) = rotated.dimensions();
-                for hp in &hot_pixels {
-                    let (rx, ry) = irr.transform_to_rotated(
-                        hp.x / display_factor, hp.y / display_factor, bw, bh);
-                    let rx = rx.round() as i32;
-                    let ry = ry.round() as i32;
-                    if rx >= 0 && ry >= 0
-                        && rx < rot_w as i32 && ry < rot_h as i32
-                    {
-                        Self::fix_hot_pixel(&mut rotated, rx, ry);
-                    }
+        if let Some(ref hpm) = ctx_hot_pixel_map {
+            let hot_pixels = hpm.lock().await.get_hot_pixels();
+            // Hot pixel coords are in post-camera-binning space. Divide by
+            // display_factor to get display-image space, using post-camera-binning
+            // dimensions for the transform.
+            let display_factor =
+                (detect_binning * if display_sampling { 2 } else { 1 }) as f64;
+            let bw = (width as f64 / display_factor) as u32;
+            let bh = (height as f64 / display_factor) as u32;
+            let (rot_w, rot_h) = rotated.dimensions();
+            for hp in &hot_pixels {
+                let (rx, ry) = irr.transform_to_rotated(
+                    hp.x / display_factor, hp.y / display_factor, bw, bh);
+                let rx = rx.round() as i32;
+                let ry = ry.round() as i32;
+                if rx >= 0 && ry >= 0
+                    && rx < rot_w as i32 && ry < rot_h as i32
+                {
+                    Self::fix_hot_pixel(&mut rotated, rx, ry);
                 }
             }
         }
