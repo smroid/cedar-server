@@ -574,6 +574,11 @@ message StarCentroid {
 
   // Count of saturated pixel values.
   int32 num_saturated = 6;
+
+  // Apparent magnitude. Usually absent, except when
+  // FrameResult.star_candidates is populated in SETUP alignment mode,
+  // in which case the magnitudes are present.
+  optional double magnitude = 7;
 }
 
 message ImageCoord {

@@ -917,6 +917,7 @@ impl ServeEngine {
                             star.mag as f64,
                         ),
                         num_saturated: 0,
+                        magnitude: Some(star.mag as f64),
                     });
                 }
             }

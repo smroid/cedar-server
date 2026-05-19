@@ -555,6 +555,7 @@ pub fn fill_in_detections(
                     centroid_position: Some(cat_coord.clone()),
                     brightness,
                     num_saturated: 0,
+                    magnitude: Some(catalog_mag),
                 });
             }
         }
