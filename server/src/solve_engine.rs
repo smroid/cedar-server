@@ -868,8 +868,6 @@ impl SolveEngine {
             if let Some(sky) = &cedar_sky {
                 let mut catalog_entry_match =
                     state.lock().await.catalog_entry_match.clone().unwrap();
-                catalog_entry_match.match_catalog_label = false;
-                catalog_entry_match.match_object_type_label = false;
                 if align_mode {
                     // Replace catalog_entry_match.
                     catalog_entry_match = CatalogEntryMatch {
