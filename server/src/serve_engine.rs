@@ -475,6 +475,7 @@ impl ServeEngine {
                 }),
                 brightness: star.brightness,
                 num_saturated: star.num_saturated as i32,
+                magnitude: None,
             });
         }
         frame_result.star_candidates = centroids;
