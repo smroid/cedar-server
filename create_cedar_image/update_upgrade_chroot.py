@@ -46,6 +46,9 @@ def mount_context(rootfs_path):
             ('sys', os.path.join(rootfs_path, 'sys'), ['--rbind', '/sys'], True),
             ('dev', os.path.join(rootfs_path, 'dev'), ['--rbind', '/dev'], True),
             ('run', os.path.join(rootfs_path, 'run'), ['--rbind', '/run'], True),
+            # Bind the FAT boot partition so kernel post-install scripts write
+            # to the correct location rather than the empty ext4 mountpoint.
+            ('boot/firmware', os.path.join(rootfs_path, 'boot/firmware'), ['--bind', '/mnt/part1'], False),
         ]
 
         # Perform mounts
