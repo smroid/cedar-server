@@ -742,7 +742,7 @@ impl DetectEngine {
                         // don't exceed a brightness limit. Note: this should be
                         // the same value as in
                         // Calibrator::calibrate_exposure_duration().
-                        const BRIGHTNESS_LIMIT: u8 = 192;
+                        const BRIGHTNESS_LIMIT: u8 = 224;
                         // >1 if we have more stars than goal; <1 if fewer stars than
                         // goal.
                         let star_goal_fraction =
