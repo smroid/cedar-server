@@ -375,7 +375,7 @@ message FrameRequest {
   optional DisplayOrientation display_orientation = 3;
 }
 
-// Next tag: 40.
+// Next tag: 43.
 message FrameResult {
   // If FrameRequest.non_blocking is omitted or false, this field will be
   // absent. If FrameRequest.non_blocking is true, this field will be true
@@ -521,11 +521,25 @@ message FrameResult {
   // fixed criteria are used (bright named stars and planets).
   // Empty if `plate_solution` is absent or failed or if Cedar Sky is not
   // present.
+
   // The FOV catalog entries that dominate their crowd and should be labelled.
   repeated FovCatalogEntry labeled_catalog_entries = 31;
   // The decrowded FOV catalog entries that the UI can display, but should
   // not label to avoid clutter.
   repeated FovCatalogEntry unlabeled_catalog_entries = 33;
+
+  // The displayed catalog entry (labeled_catalog_entries +
+  // unlabeled_catalog_entries) that is closest to the boresight. Can be omitted
+  // if no catalog entries are currently visible in the display.
+  optional FovCatalogEntry boresight_catalog_entry = 40;
+
+  // If we have a boresight_catalog_entry, this field gives its distance from
+  // the boresight, as a multiple of the eyepiece FOV radius.
+  optional float boresight_catalog_entry_distance = 42;
+
+  // The constellation of the catalog entry closest to the boresight (even if
+  // not displayed).
+  optional cedar_sky.Constellation boresight_constellation = 41;
 
   // alerts
   // * prolonged loss of stars; need setup mode?
