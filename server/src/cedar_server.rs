@@ -29,7 +29,7 @@ use cedar_camera::{
     select_camera::{select_camera, CameraInterface},
 };
 use cedar_elements::{
-    astro_util::alt_az_from_equatorial,
+    astro_util::{alt_az_from_equatorial, celestial_coord_to_j2000},
     cedar::{
         cedar_server::{Cedar, CedarServer},
         ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
@@ -1434,6 +1434,7 @@ impl Cedar for MyCedar {
                     "Need observer location for goto with alt-az mount"
                 ));
             }
+            let slew_coord = celestial_coord_to_j2000(&slew_coord);
             let mut telescope = telescope_position_arc.lock().await;
             telescope.slew_target_ra = slew_coord.ra;
             telescope.slew_target_dec = slew_coord.dec;
@@ -3276,6 +3277,7 @@ impl MyCedar {
                         Some(CelestialCoord {
                             ra: locked_telescope_position.slew_target_ra,
                             dec: locked_telescope_position.slew_target_dec,
+                            epoch: None,
                         })
                     } else {
                         None
@@ -3286,6 +3288,7 @@ impl MyCedar {
                         Some(CelestialCoord {
                             ra: locked_telescope_position.sync_ra.unwrap(),
                             dec: locked_telescope_position.sync_dec.unwrap(),
+                            epoch: None,
                         })
                     } else {
                         None

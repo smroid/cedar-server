@@ -16,9 +16,9 @@ use cedar_detect::histogram_funcs::{
 };
 use cedar_elements::{
     astro_util::{
-        angular_separation, equatorial_from_horizon_camera,
-        horizon_from_equatorial_camera, position_angle,
-        transform_to_image_coord,
+        angular_separation, celestial_coord_to_j2000,
+        equatorial_from_horizon_camera, horizon_from_equatorial_camera,
+        position_angle, transform_to_image_coord,
     },
     cedar::{
         FovCatalogEntry, ImageCoord, LatLong,
@@ -840,10 +840,12 @@ impl SolveEngine {
                 // the slew target that Cedar Aim should display an inset image
                 // of the region around the boresight.
                 if let Some(target_coords) = &slew_target {
+                    let target_coords_j2000 =
+                        celestial_coord_to_j2000(target_coords);
                     (slew_request, boresight_image_region, boresight_image) =
                         Self::handle_slew(
                             &cedar_sky,
-                            &target_coords,
+                            &target_coords_j2000,
                             image,
                             &boresight_coords,
                             &boresight_pixel,
@@ -861,6 +863,7 @@ impl SolveEngine {
                     // the telescope boresight. We update the boresight pixel
                     // accordingly.
                     // First, translate `sync_coord` to image coordinates.
+                    let sync_coord = celestial_coord_to_j2000(&sync_coord);
                     let xy = transform_to_image_coord(
                         &[sync_coord.ra, sync_coord.dec],
                         width as usize,

@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
 // Definitions shared between cedar.proto and cedar_sky.proto, to avoid
@@ -9,6 +9,10 @@ syntax = "proto3";
 package cedar_common;
 
 message CelestialCoord {
-  double ra = 1;  // Degrees, 0..360.
+  double ra = 1;   // Degrees, 0..360.
   double dec = 2;  // Degrees, -90..90.
+
+  // Epoch as a Julian year (e.g. 2000.0 for J2000). Defaults to 2000.0 if
+  // omitted.
+  optional double epoch = 3;
 }

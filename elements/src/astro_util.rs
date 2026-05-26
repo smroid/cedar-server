@@ -398,6 +398,28 @@ pub fn magnitude_intensity_ratio(m1: f64, m2: f64) -> f64 {
     2.512f64.powf(m1 - m2)
 }
 
+/// Normalize a CelestialCoord to J2000 (epoch 2000.0), applying precession if
+/// the coord's epoch field is set and differs from 2000.0.
+pub fn celestial_coord_to_j2000(
+    coord: &crate::cedar_common::CelestialCoord,
+) -> crate::cedar_common::CelestialCoord {
+    let from_epoch = coord.epoch.unwrap_or(2000.0);
+    if (from_epoch - 2000.0).abs() < 1e-10 {
+        return coord.clone();
+    }
+    let (ra, dec) = precess(
+        coord.ra.to_radians(),
+        coord.dec.to_radians(),
+        from_epoch,
+        2000.0,
+    );
+    crate::cedar_common::CelestialCoord {
+        ra: ra.to_degrees(),
+        dec: dec.to_degrees(),
+        epoch: None,
+    }
+}
+
 /// Precess celestial coordinates from one epoch to another.
 /// Uses the IAU 1976 precession model.
 ///
@@ -877,18 +899,21 @@ mod tests {
                 centroid_position: Some(ImageCoord { x: 12.0, y: 15.0 }),
                 brightness: 1200.0,
                 num_saturated: 0,
+                magnitude: None,
             },
             // d2.
             StarCentroid {
                 centroid_position: Some(ImageCoord { x: 22.0, y: 35.0 }),
                 brightness: 900.0,
                 num_saturated: 0,
+                magnitude: None,
             },
             // d3.
             StarCentroid {
                 centroid_position: Some(ImageCoord { x: 42.0, y: 350.0 }),
                 brightness: 700.0,
                 num_saturated: 0,
+                magnitude: None,
             },
         ];
         let catalog_entries = vec![
@@ -896,7 +921,7 @@ mod tests {
                 entry: Some(CatalogEntry {
                     catalog_label: "PL".to_string(),
                     catalog_entry: "jupiter".to_string(),
-                    coord: Some(CelestialCoord { ra: 0.0, dec: 0.0 }),
+                    coord: Some(CelestialCoord { ra: 0.0, dec: 0.0, epoch: None }),
                     constellation: None,
                     object_type: Some(ObjectType {
                         label: "xx".to_string(),
@@ -913,7 +938,7 @@ mod tests {
                 entry: Some(CatalogEntry {
                     catalog_label: "IAU".to_string(),
                     catalog_entry: "some_star".to_string(),
-                    coord: Some(CelestialCoord { ra: 0.0, dec: 0.0 }),
+                    coord: Some(CelestialCoord { ra: 0.0, dec: 0.0, epoch: None }),
                     constellation: None,
                     object_type: Some(ObjectType {
                         label: "xx".to_string(),
