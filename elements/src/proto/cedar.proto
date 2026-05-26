@@ -815,10 +815,6 @@ message SlewRequest {
   // The Cedar Sky catalog entry, if any, for `target`.
   optional cedar_sky.CatalogEntry target_catalog_entry = 8;
 
-  // If `target_catalog_entry` is given, this field is the distance, in
-  // degrees, between `target` and `target_catalog_entry.coord`.
-  optional double target_catalog_entry_distance = 9;
-
   // The distance, in degrees, between the boresight and the target. Omitted
   // if there is no valid plate solution.
   optional double target_distance = 2;
@@ -852,7 +848,7 @@ message SlewRequest {
   // plate solution.
   optional ImageCoord image_pos = 4;
 
-  reserved 7;
+  reserved 7, 9;
 }
 
 // Estimate of alt/az offset of mount's polar axis from celestial pole. Not

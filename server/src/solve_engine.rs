@@ -1195,13 +1195,11 @@ impl SolveEngine {
         } // loop.
     } // worker
 
-    // Given a target, finds the closest catalog entry within 1 arcmin. Returns
-    // the closest catalog entry, if any, and the distance in degrees between
-    // the catalog entry and the target.
+    // Given a target, finds the closest catalog entry within 1 arcmin.
     async fn get_catalog_entry_for_target(
         cedar_sky: &Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>,
         target_coords: &CelestialCoord,
-    ) -> (Option<CatalogEntry>, Option<f64>) {
+    ) -> Option<CatalogEntry> {
         let query_result = cedar_sky
             .lock()
             .await
@@ -1236,22 +1234,11 @@ impl SolveEngine {
             .await;
         if let Err(e) = query_result {
             warn!("Error querying sky catalog: {:?}", e);
-            return (None, None);
+            return None;
         }
         let (selected_catalog_entries, _overflow) = query_result.unwrap();
-        if selected_catalog_entries.is_empty() {
-            return (None, None);
-        }
-        let closest_entry = selected_catalog_entries[0].entry.clone().unwrap();
-        let (target_ra, target_dec) =
-            (target_coords.ra.to_radians(), target_coords.dec.to_radians());
-        let entry_coord = closest_entry.coord.as_ref().unwrap();
-        let (entry_ra, entry_dec) =
-            (entry_coord.ra.to_radians(), entry_coord.dec.to_radians());
-        let distance =
-            angular_separation(target_ra, target_dec, entry_ra, entry_dec)
-                .to_degrees();
-        (Some(closest_entry), Some(distance))
+        selected_catalog_entries.into_iter().next()
+            .map(|sce| sce.entry.unwrap())
     }
 
     async fn handle_slew(
@@ -1290,11 +1277,9 @@ impl SolveEngine {
         if let Some(cedar_sky) = cedar_sky {
             // See if Cedar-sky has a catalog object corresponding to the slew
             // target's RA/Dec.
-            let (catalog_entry, distance) =
+            slew_request.target_catalog_entry =
                 Self::get_catalog_entry_for_target(cedar_sky, target_coords)
                     .await;
-            slew_request.target_catalog_entry = catalog_entry;
-            slew_request.target_catalog_entry_distance = distance;
         }
 
         if plate_solution.target_pixel.is_empty() {
