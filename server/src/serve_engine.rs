@@ -879,6 +879,16 @@ impl ServeEngine {
             if let Some(ref psp) = ps.plate_solution {
                 frame_result.plate_solution = Some(psp.clone());
             }
+            if let Some(ref mut bce) = ps.boresight_catalog_entry {
+                let pos = bce.image_pos.as_mut().unwrap();
+                (pos.x, pos.y) =
+                    irr.transform_to_rotated(pos.x, pos.y, width, height);
+                pos.x *= cb_f;
+                pos.y *= cb_f;
+            }
+            frame_result.boresight_catalog_entry = ps.boresight_catalog_entry.clone();
+            frame_result.boresight_catalog_entry_distance = ps.boresight_catalog_entry_distance;
+            frame_result.boresight_constellation = ps.boresight_constellation.clone();
         } // plate_solution
 
         // Boresight position.

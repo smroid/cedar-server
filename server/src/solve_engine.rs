@@ -25,7 +25,7 @@ use cedar_elements::{
         PlateSolution as PlateSolutionProto, SlewRequest, ValueStats,
     },
     cedar_common::CelestialCoord,
-    cedar_sky::{CatalogEntry, CatalogEntryMatch, Ordering},
+    cedar_sky::{CatalogEntry, CatalogEntryMatch, Constellation, Ordering},
     cedar_sky_trait::CedarSkyTrait,
     image_utils::{normalize_rows_mut, scale_image_mut},
     hot_pixel_trait::HotPixelTrait,
@@ -107,6 +107,7 @@ struct SolveState {
 
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     catalog_entry_match: Option<CatalogEntryMatch>,
+    eyepiece_fov: f64,  // Degrees; diameter.
 
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     use_imu_tracker: bool,
@@ -171,6 +172,7 @@ impl SolveEngine {
                 normalize_rows,
                 cedar_sky,
                 catalog_entry_match: None,
+                eyepiece_fov: 1.0,
                 imu_tracker: imu_tracker.clone(),
                 use_imu_tracker: imu_tracker.is_some(),
                 observer_location,
@@ -217,6 +219,10 @@ impl SolveEngine {
     ) {
         let mut locked_state = self.state.lock().await;
         locked_state.catalog_entry_match = catalog_entry_match;
+    }
+
+    pub async fn set_eyepiece_fov(&mut self, eyepiece_fov: f64) {
+        self.state.lock().await.eyepiece_fov = eyepiece_fov;
     }
 
     pub async fn set_fov_estimate(
@@ -750,6 +756,9 @@ impl SolveEngine {
     ) -> (
         Option<Vec<FovCatalogEntry>>,
         Option<Vec<FovCatalogEntry>>,
+        Option<FovCatalogEntry>,
+        Option<f32>,
+        Option<Constellation>,
         Option<SlewRequest>,
         Option<GrayImage>,
         Option<Rect>,
@@ -757,16 +766,20 @@ impl SolveEngine {
         let mut fov_catalog_entries: Option<Vec<FovCatalogEntry>> = None;
         let mut decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>> =
             None;
+        let mut boresight_catalog_entry: Option<FovCatalogEntry> = None;
+        let mut boresight_catalog_entry_distance: Option<f32> = None;
+        let mut boresight_constellation: Option<Constellation> = None;
         let mut slew_request = None;
         let mut boresight_image: Option<GrayImage> = None;
         let mut boresight_image_region: Option<Rect> = None;
 
-        let (align_mode, boresight_pixel, cedar_sky) = {
+        let (align_mode, boresight_pixel, cedar_sky, eyepiece_fov) = {
             let locked_state = state.lock().await;
             (
                 locked_state.align_mode,
                 locked_state.boresight_pixel.clone(),
                 locked_state.cedar_sky.clone(),
+                locked_state.eyepiece_fov,
             )
         };
 
@@ -838,6 +851,7 @@ impl SolveEngine {
                             state.lock().await.normalize_rows,
                             width,
                             height,
+                            eyepiece_fov,
                         )
                         .await;
                 }
@@ -897,12 +911,73 @@ impl SolveEngine {
                 .await;
                 (fov_catalog_entries, decrowded_fov_catalog_entries) =
                     (Some(result.0), Some(result.1));
+
+                // Find the displayed catalog entry closest to the boresight.
+                // Coordinates are in post-camera-binning pixel space, matching
+                // boresight_pixel.
+                let center = ImageCoord {
+                    x: width as f64 / 2.0,
+                    y: height as f64 / 2.0,
+                };
+                let bp = boresight_pixel.as_ref().unwrap_or(&center);
+                let eyepiece_fov_radius_px =
+                    (eyepiece_fov / 2.0) / (psp.fov / width as f64);
+                let mut best_dist_sq = f64::MAX;
+                let all_displayed_entries = fov_catalog_entries.iter().flatten()
+                    .chain(decrowded_fov_catalog_entries.iter().flatten());
+                for fce in all_displayed_entries {
+                    if let Some(pos) = &fce.image_pos {
+                        let dx = pos.x - bp.x;
+                        let dy = pos.y - bp.y;
+                        let dist_sq = dx * dx + dy * dy;
+                        if dist_sq < best_dist_sq {
+                            best_dist_sq = dist_sq;
+                            boresight_catalog_entry = Some(fce.clone());
+                        }
+                    }
+                }
+                if boresight_catalog_entry.is_some() {
+                    boresight_catalog_entry_distance = Some(
+                        (best_dist_sq.sqrt() / eyepiece_fov_radius_px) as f32
+                    );
+                }
+
+                // Use boresight_catalog_entry's constellation if available;
+                // otherwise query with no filters for a reliable identification.
+                if let Some(bce) = &boresight_catalog_entry {
+                    boresight_constellation = bce.entry.as_ref().unwrap().constellation.clone();
+                } else {
+                    let query_result = sky.lock().await.query_catalog_entries(
+                        Some(psp.fov / 2.0),  // max_distance; guaranteed to contain an entry.
+                        None,                  // min_elevation
+                        None,                  // faintest_magnitude; no filter.
+                        false,                 // match_catalog_label; no filter.
+                        &[],                   // catalog_label
+                        false,                 // match_object_type_label; no filter.
+                        &[],                   // object_type_label
+                        None,                  // text_search
+                        Some(Ordering::SkyLocation),  // nearest first.
+                        None,                  // decrowd_distance
+                        Some(1),               // limit_result; only need the nearest.
+                        Some(boresight_coords.clone()),
+                        None,                  // location_info
+                    ).await;
+                    if let Ok((entries, _)) = query_result {
+                        if let Some(nearest) = entries.into_iter().next() {
+                            boresight_constellation =
+                                nearest.entry.unwrap().constellation;
+                        }
+                    }
+                }
             }
         }
 
         (
             fov_catalog_entries,
             decrowded_fov_catalog_entries,
+            boresight_catalog_entry,
+            boresight_catalog_entry_distance,
+            boresight_constellation,
             slew_request,
             boresight_image,
             boresight_image_region,
@@ -915,6 +990,9 @@ impl SolveEngine {
         plate_solution_proto: Option<PlateSolutionProto>,
         fov_catalog_entries: Option<Vec<FovCatalogEntry>>,
         decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>>,
+        boresight_catalog_entry: Option<FovCatalogEntry>,
+        boresight_catalog_entry_distance: Option<f32>,
+        boresight_constellation: Option<Constellation>,
         slew_request: Option<SlewRequest>,
         boresight_image: Option<GrayImage>,
         boresight_image_region: Option<Rect>,
@@ -941,6 +1019,9 @@ impl SolveEngine {
             plate_solution: plate_solution_proto,
             fov_catalog_entries,
             decrowded_fov_catalog_entries,
+            boresight_catalog_entry,
+            boresight_catalog_entry_distance,
+            boresight_constellation,
             slew_request,
             boresight_image,
             boresight_image_region,
@@ -1060,6 +1141,9 @@ impl SolveEngine {
             let (
                 fov_catalog_entries,
                 decrowded_fov_catalog_entries,
+                boresight_catalog_entry,
+                boresight_catalog_entry_distance,
+                boresight_constellation,
                 slew_request,
                 boresight_image,
                 boresight_image_region,
@@ -1091,6 +1175,9 @@ impl SolveEngine {
                 plate_solution_proto,
                 fov_catalog_entries,
                 decrowded_fov_catalog_entries,
+                boresight_catalog_entry,
+                boresight_catalog_entry_distance,
+                boresight_constellation,
                 slew_request,
                 boresight_image,
                 boresight_image_region,
@@ -1177,6 +1264,7 @@ impl SolveEngine {
         normalize_rows: bool,
         width: u32,
         height: u32,
+        eyepiece_fov: f64,
     ) -> (Option<SlewRequest>, Option<Rect>, Option<GrayImage>) {
         let mut slew_request = SlewRequest {
             target: Some(target_coords.clone()),
@@ -1232,7 +1320,8 @@ impl SolveEngine {
                 y: height as f64 / 2.0,
             };
         }
-        let target_close_threshold = min(width, height) as f64 / 16.0;
+        let target_close_threshold =
+            (eyepiece_fov / 2.0) / (plate_solution.fov / width as f64);
         let target_boresight_distance = ((target_image_coord.x
             - boresight_pos.x)
             * (target_image_coord.x - boresight_pos.x)
@@ -1378,7 +1467,7 @@ impl SolveEngine {
                 // decrowd_distance=
                 Some(3600.0 * fov / 15.0), // Arcsec.
                 // limit_result
-                Some(50),
+                None,
                 // sky_location
                 Some(boresight_coords.clone()),
                 // location_info=
@@ -1436,6 +1525,18 @@ pub struct PlateSolution {
     // None if there is no Cedar Sky implementation.
     pub fov_catalog_entries: Option<Vec<FovCatalogEntry>>,
     pub decrowded_fov_catalog_entries: Option<Vec<FovCatalogEntry>>,
+
+    // The displayed catalog entry closest to the boresight.
+    pub boresight_catalog_entry: Option<FovCatalogEntry>,
+
+    // Distance of boresight_catalog_entry from the boresight, as a multiple
+    // of the eyepiece FOV radius.
+    pub boresight_catalog_entry_distance: Option<f32>,
+
+    // The constellation of the catalog entry nearest to the boresight,
+    // queried with no filters so it is always populated when a plate solution
+    // and Cedar Sky are available.
+    pub boresight_constellation: Option<Constellation>,
 
     // If the TelescopePosition has an active slew request, we populate
     // `slew_request` with its information.

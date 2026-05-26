@@ -1053,6 +1053,7 @@ impl Cedar for MyCedar {
         }
         if let Some(eyepiece_fov) = req.eyepiece_fov {
             our_prefs.eyepiece_fov = Some(eyepiece_fov);
+            locked_state.solve_engine.lock().await.set_eyepiece_fov(eyepiece_fov).await;
         }
         if let Some(night_vision) = req.night_vision_theme {
             our_prefs.night_vision_theme = Some(night_vision);
@@ -3503,6 +3504,9 @@ impl MyCedar {
                     copied_preferences.catalog_entry_match.clone(),
                 )
                 .await;
+            if let Some(eyepiece_fov) = copied_preferences.eyepiece_fov {
+                solve_engine.set_eyepiece_fov(eyepiece_fov).await;
+            }
             solve_engine.set_align_mode(true).await;
             if let Some(bsp) = &copied_preferences.boresight_pixel {
                 // Preferences stores full-sensor coords; convert to post-camera-binning.
