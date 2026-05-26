@@ -11,9 +11,6 @@ Base python scripting support for working with Cedar grpc server.
 Mic button on keyboard for voice input. Can work offline? Good for
 "en gee cee oh five six" utterances?
 
-Make polar advice data block tappable, zooms to larger dialog.
-* polar advice can just be an "idea" icon.
-
 Multiple scopes
 * FOV
 * saved alignment
@@ -33,24 +30,6 @@ time display:
 * time to sunset/sunrise, astro twilight
 * moonrise/set
 * display all? selectable?
-
-Catalog
-* text search: preprocess input, e.g. the following should all locate
-  NGC0426 (and maybe others):
-  NGC0426
-  NGC426
-  NGC 426
-  NGC 0426
-  N426
-  N 426
-
-visual feedback on camera errors
-visual feedback on connectivity errors
-visual feedback on SkySafari connection
-
-Refresh rate: Go full speed; when dwelling for more than N
-seconds drop to 2hz. Use accelerometer to quickly detect resumption of
-motion.
 
 eq vs alt/az setting
 * convey to SkySafari
@@ -83,18 +62,10 @@ Remaining work:
 * way to add new solar system object, e.g. comet
   - cloud-based?
 * meridian ordering (advanced)
-* identify constellation of boresight
 * identify constellation of planet
 * constellation lines
 
 Push-to ra/dec button: pops up text entry field
-
-remote ops, proxied via phone
-* download logs
-* send bug reports
-
-"advanced" mode enable
-* polar alignment advice
 
 bug report
 
@@ -115,5 +86,3 @@ motion classification
 UI:
 * operation controls
   - save image: add confirmation+rename
-
-Sounds for various actions/events in app?
