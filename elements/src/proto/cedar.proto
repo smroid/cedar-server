@@ -652,13 +652,21 @@ message ProcessingStats {
   // pixel format.
   ValueStats acquire_latency = 9;
 
-  // How much time (in seconds) is spent detecting/centroiding stars.
+  // How much time (in seconds) is spent in get_stars_from_image().
   ValueStats detect_latency = 3;
+
+  // How much time (in seconds) is spent on other detect-engine processing,
+  // excluding image acquisition and get_stars_from_image().
+  ValueStats detect_other_latency = 10;
 
   // The following items are omitted in SETUP mode.
 
-  // How much time (in seconds) is spent plate solving (when attempted).
+  // How much time (in seconds) is spent in attempt_plate_solve() (when attempted).
   ValueStats solve_latency = 4;
+
+  // How much time (in seconds) is spent in process_plate_solution_result()
+  // (when a plate solve is attempted).
+  ValueStats solve_other_latency = 11;
 
   // The fraction of images on which a plate solution is attempted. If too few
   // stars are detected we skip solving. Only the 'mean' is meaningful.
