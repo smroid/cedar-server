@@ -715,11 +715,13 @@ impl ServeEngine {
         });
         let stats = frame_result.processing_stats.as_mut().unwrap();
         stats.acquire_latency = Some(detect_result.acquire_latency_stats);
-        stats.detect_latency = Some(detect_result.detect_latency_stats);
+        stats.detect_latency = Some(detect_result.detect_duration_stats);
+        stats.detect_other_latency = Some(detect_result.other_duration_stats);
         // serve_latency is populated in the worker after timing completes.
 
         if let Some(mut ps) = plate_solution {
-            stats.solve_latency = Some(ps.solve_latency_stats.clone());
+            stats.solve_latency = Some(ps.solve_duration_stats.clone());
+            stats.solve_other_latency = Some(ps.solve_other_duration_stats.clone());
             stats.solve_attempt_fraction =
                 Some(ps.solve_attempt_stats.clone());
             stats.solve_success_fraction =

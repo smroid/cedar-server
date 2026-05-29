@@ -134,7 +134,8 @@ struct SolveState {
     // Set if currently slewing to a target.
     slew_target: Option<CelestialCoord>,
 
-    solve_latency_stats: ValueStatsAccumulator,
+    solve_duration_stats: ValueStatsAccumulator,
+    solve_other_duration_stats: ValueStatsAccumulator,
     solve_attempt_stats: ValueStatsAccumulator,
     solve_success_stats: ValueStatsAccumulator,
     solve_interval_stats: ValueStatsAccumulator,
@@ -187,7 +188,8 @@ impl SolveEngine {
                 match_max_error: 0.005,
                 return_matches: true,
                 slew_target: None,
-                solve_latency_stats: ValueStatsAccumulator::new(stats_capacity),
+                solve_duration_stats: ValueStatsAccumulator::new(stats_capacity),
+                solve_other_duration_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_attempt_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_interval_stats: ValueStatsAccumulator::new(
@@ -425,7 +427,8 @@ impl SolveEngine {
 
     pub async fn reset_session_stats(&mut self) {
         let mut locked_state = self.state.lock().await;
-        locked_state.solve_latency_stats.reset_session();
+        locked_state.solve_duration_stats.reset_session();
+        locked_state.solve_other_duration_stats.reset_session();
         locked_state.solve_attempt_stats.reset_session();
         locked_state.solve_success_stats.reset_session();
         locked_state.solve_interval_stats.reset_session();
@@ -652,7 +655,7 @@ impl SolveEngine {
                 locked_state.last_solve_attempt_time = Some(now);
                 locked_state.solve_attempt_stats.add_value(1.0);
                 if let Some(recent_stats) =
-                    &locked_state.solve_latency_stats.value_stats.recent
+                    &locked_state.solve_duration_stats.value_stats.recent
                 {
                     let solve_duration =
                         Duration::from_secs_f64(recent_stats.min);
@@ -1003,14 +1006,16 @@ impl SolveEngine {
         processing_duration: std::time::Duration,
     ) {
         let (
-            solve_latency_stats,
+            solve_duration_stats,
+            solve_other_duration_stats,
             solve_attempt_stats,
             solve_success_stats,
             solve_interval_stats,
         ) = {
             let locked_state = state.lock().await;
             (
-                locked_state.solve_latency_stats.value_stats.clone(),
+                locked_state.solve_duration_stats.value_stats.clone(),
+                locked_state.solve_other_duration_stats.value_stats.clone(),
                 locked_state.solve_attempt_stats.value_stats.clone(),
                 locked_state.solve_success_stats.value_stats.clone(),
                 locked_state.solve_interval_stats.value_stats.clone(),
@@ -1030,7 +1035,8 @@ impl SolveEngine {
             boresight_image_region,
             solve_finish_time,
             processing_duration,
-            solve_latency_stats,
+            solve_duration_stats,
+            solve_other_duration_stats,
             solve_attempt_stats,
             solve_success_stats,
             solve_interval_stats,
@@ -1140,6 +1146,7 @@ impl SolveEngine {
                     &solve_params,
                 )
                 .await;
+            let solve_duration = process_start_time.elapsed();
 
             let (
                 fov_catalog_entries,
@@ -1165,11 +1172,11 @@ impl SolveEngine {
 
             let elapsed = process_start_time.elapsed();
             if state.lock().await.last_solve_attempt_time.is_some() {
-                state
-                    .lock()
-                    .await
-                    .solve_latency_stats
-                    .add_value(elapsed.as_secs_f64());
+                let mut locked_state = state.lock().await;
+                locked_state.solve_duration_stats
+                    .add_value(solve_duration.as_secs_f64());
+                locked_state.solve_other_duration_stats
+                    .add_value(elapsed.saturating_sub(solve_duration).as_secs_f64());
             }
 
             Self::finalize_and_post_result(
@@ -1545,11 +1552,15 @@ pub struct PlateSolution {
     pub solve_finish_time: Option<SystemTime>,
 
     // Time taken to produce this PlateSolution, excluding the time taken to
-    // detect stars.
+    // detect stars. Encompasses both attempt_plate_solve and
+    // process_plate_solution_result.
     pub processing_duration: std::time::Duration,
 
-    // Distribution of `processing_duration` values.
-    pub solve_latency_stats: ValueStats,
+    // Distribution of attempt_plate_solve() durations.
+    pub solve_duration_stats: ValueStats,
+
+    // Distribution of process_plate_solution_result() durations.
+    pub solve_other_duration_stats: ValueStats,
 
     // Fraction of cycles in which a plate solve was attempted.
     pub solve_attempt_stats: ValueStats,

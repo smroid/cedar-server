@@ -106,7 +106,8 @@ struct DetectState {
     star_count_moving_average: f64,
 
     acquire_latency_stats: ValueStatsAccumulator,
-    detect_latency_stats: ValueStatsAccumulator,
+    detect_duration_stats: ValueStatsAccumulator,
+    other_duration_stats: ValueStatsAccumulator,
 
     // Estimated time at which `detect_result` will next be updated.
     eta: Option<Instant>,
@@ -147,7 +148,8 @@ impl DetectEngine {
                 auto_exposure_duration: None,
                 star_count_moving_average: 0.0,
                 acquire_latency_stats: ValueStatsAccumulator::new(stats_capacity),
-                detect_latency_stats: ValueStatsAccumulator::new(stats_capacity),
+                detect_duration_stats: ValueStatsAccumulator::new(stats_capacity),
+                other_duration_stats: ValueStatsAccumulator::new(stats_capacity),
                 eta: None,
                 detect_result: None,
             })),
@@ -335,7 +337,8 @@ impl DetectEngine {
     pub async fn reset_session_stats(&mut self) {
         let mut state = self.state.lock().await;
         state.acquire_latency_stats.reset_session();
-        state.detect_latency_stats.reset_session();
+        state.detect_duration_stats.reset_session();
+        state.other_duration_stats.reset_session();
     }
 
     pub async fn estimate_delay(&self, prev_frame_id: Option<i32>) -> Option<Duration> {
@@ -629,6 +632,7 @@ impl DetectEngine {
             let mut binned_image: Option<Arc<GrayImage>> = None;
             let mut star_candidates: Vec<StarDescription> = vec![];
             let mut hot_pixel_count = 0;
+            let mut detect_duration = Duration::ZERO;
 
             // If the captured_image is up to date w.r.t. the camera settings,
             // we can use it to influence our new exposure.
@@ -639,7 +643,7 @@ impl DetectEngine {
                 {
                     let mut locked_state = state.lock().await;
                     if let Some(recent_stats) =
-                        &locked_state.detect_latency_stats.value_stats.recent
+                        &locked_state.detect_duration_stats.value_stats.recent
                     {
                         let detect_duration = Duration::from_secs_f64(recent_stats.min);
                         locked_state.eta = Some(Instant::now() + detect_duration);
@@ -648,12 +652,14 @@ impl DetectEngine {
                 let detect_binned_image;
                 let mut histogram;
                 let effective_hpm = hot_pixel_map.as_ref();
+                let detect_start_time = Instant::now();
                 (star_candidates, hot_pixel_count, detect_binned_image, histogram) =
                     get_stars_from_image(
                         image, noise_estimate, detection_sigma,
                         normalize_rows, detect_binning,
                         /*detect_hot_pixels=*/effective_hpm.is_none(),
                         /*return_binned_image=*/detect_binning != 1);
+                detect_duration = detect_start_time.elapsed();
                 let stats = stats_for_histogram(&histogram);
                 binned_image = detect_binned_image.map(Arc::new);
 
@@ -796,7 +802,13 @@ impl DetectEngine {
                 }
             }  // !daylight_mode && !focus_mode
             let elapsed = process_start_time.elapsed();
-            state.lock().await.detect_latency_stats.add_value(elapsed.as_secs_f64());
+            {
+                let mut locked_state = state.lock().await;
+                locked_state.detect_duration_stats.add_value(
+                    detect_duration.as_secs_f64());
+                locked_state.other_duration_stats.add_value(
+                    elapsed.saturating_sub(detect_duration).as_secs_f64());
+            }
 
             // Update camera exposure time if auto-exposure calls for an
             // adjustment.
@@ -838,11 +850,14 @@ impl DetectEngine {
                 focus_aid,
                 daylight_mode,
                 detect_binning,
-                processing_duration: elapsed,
+                detect_duration,
+                other_duration: elapsed.saturating_sub(detect_duration),
                 acquire_latency_stats:
                   locked_state.acquire_latency_stats.value_stats.clone(),
-                detect_latency_stats:
-                  locked_state.detect_latency_stats.value_stats.clone(),
+                detect_duration_stats:
+                  locked_state.detect_duration_stats.value_stats.clone(),
+                other_duration_stats:
+                  locked_state.other_duration_stats.value_stats.clone(),
             });
             drop(locked_state);
 
@@ -904,17 +919,23 @@ pub struct DetectResult {
     // The detect_binning value in effect when this result was produced.
     pub detect_binning: u32,
 
-    // Time taken to produce this DetectResult, excluding the time taken to
-    // acquire the image.
-    pub processing_duration: std::time::Duration,
+    // Time taken by get_stars_from_image() for this frame.
+    pub detect_duration: std::time::Duration,
+
+    // Time taken by all other processing for this frame, excluding image
+    // acquisition and get_stars_from_image().
+    pub other_duration: std::time::Duration,
 
     // How much time (in seconds) is spent acquiring the image. This is the max
     // of the camera exposure time and the (pipelined) time taken to convert the
     // pixel format.
     pub acquire_latency_stats: ValueStats,
 
-    // Distribution of `processing_duration` values.
-    pub detect_latency_stats: ValueStats,
+    // Distribution of `detect_duration` values.
+    pub detect_duration_stats: ValueStats,
+
+    // Distribution of `other_duration` values.
+    pub other_duration_stats: ValueStats,
 }
 
 #[derive(Clone)]
