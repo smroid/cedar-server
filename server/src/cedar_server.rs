@@ -3883,6 +3883,9 @@ pub fn server_main(
         Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>,
     ),
+    // Default total binning to use when --binning is not passed on the command
+    // line.
+    default_total_binning: Option<u32>,
 ) {
     const HELP: &str = "\
     FLAGS:
@@ -3893,7 +3896,7 @@ pub fn server_main(
       --tetra3_database <name>       default_database
       --camera_interface asi|rpi
       --camera_index NUMBER
-      --binning 1|2|4
+      --binning 1|2|4|8
       --display_sampling true|false
       --test_image <path>
       --min_exposure NUMBER          0.00001
@@ -4038,6 +4041,7 @@ pub fn server_main(
         imu_tracker,
         hot_pixel_map,
         solver,
+        default_total_binning,
     );
 }
 
@@ -4280,6 +4284,7 @@ async fn async_main(
     injected_solver: Option<
         Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
     >,
+    default_total_binning: Option<u32>,
 ) {
     // If any thread panics, bail out.
     std::panic::set_hook(Box::new(|panic_info| {
@@ -4345,12 +4350,13 @@ async fn async_main(
         FeatureLevel::Diy
     };
 
-    if let Some(binning_arg) = args.binning {
+    let effective_binning = args.binning.or(default_total_binning);
+    if let Some(binning_arg) = effective_binning {
         match binning_arg {
-            1 | 2 | 4 => (),
+            1 | 2 | 4 | 8 => (),
             _ => {
                 error!(
-                    "Invalid binning argument {}, must be 1, 2, or 4",
+                    "Invalid binning argument {}, must be 1, 2, 4, or 8",
                     binning_arg
                 );
                 std::process::exit(1);
@@ -4426,7 +4432,7 @@ async fn async_main(
     let path: PathBuf = [args.log_dir, args.log_file].iter().collect();
     let cedar = MyCedar::new(
         solver,
-        args.binning,
+        effective_binning,
         args.display_sampling,
         // initial_exposure_duration=
         Duration::from_millis(100),
