@@ -881,7 +881,7 @@ pub struct DetectResult {
     pub captured_image: CapturedImage,
 
     // If binning was applied prior to detect, this is the 2x2 or 4x4 binned
-    // (and hot pixel removed) image.
+    // image.
     pub binned_image: Option<Arc<GrayImage>>,
 
     // The star candidates detected by CedarDetect; ordered by highest
