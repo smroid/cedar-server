@@ -18,8 +18,7 @@ use cedar_detect::histogram_funcs::{average_top_values,
                                     remove_stars_from_histogram,
                                     stats_for_histogram};
 use cedar_elements::hot_pixel_trait::HotPixelTrait;
-use cedar_elements::image_utils::{
-    normalize_rows_mut, scale_image_mut};
+use cedar_elements::image_utils::scale_image_mut;
 use cedar_elements::value_stats::ValueStatsAccumulator;
 use cedar_elements::cedar::{ImageCoord, ValueStats};
 
@@ -65,9 +64,6 @@ struct DetectState {
 
     // Cedar server disables autoexposure during calibrations.
     autoexposure_enabled: bool,
-
-    // Determines whether rows are normalized to have the same dark level.
-    normalize_rows: bool,
 
     frame_id: Option<i32>,
 
@@ -123,7 +119,6 @@ impl DetectEngine {
                star_count_goal: i32,
                min_frame_interval: Duration,
                camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-               normalize_rows: bool,
                stats_capacity: usize,
                hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
     ) -> Self {
@@ -137,7 +132,6 @@ impl DetectEngine {
             state: Arc::new(tokio::sync::Mutex::new(DetectState{
                 camera: camera.clone(),
                 autoexposure_enabled: true,
-                normalize_rows,
                 frame_id: None,
                 focus_mode: false,
                 daylight_mode: false,
@@ -368,7 +362,6 @@ impl DetectEngine {
         debug!("Starting detect engine");
         loop {
             let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>;
-            let normalize_rows;
             let focus_mode: bool;
             let daylight_mode: bool;
             let daylight_focus_point: Option<ImageCoord>;
@@ -379,7 +372,6 @@ impl DetectEngine {
             {
                 let mut locked_state = state.lock().await;
                 camera = locked_state.camera.clone();
-                normalize_rows = locked_state.normalize_rows;
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
                 daylight_focus_point = locked_state.daylight_focus_point.clone();
@@ -541,9 +533,6 @@ impl DetectEngine {
                                                     peak_region.top() as u32,
                                                     peak_region.width() as u32,
                                                     peak_region.height() as u32).to_image();
-                    if normalize_rows {
-                        normalize_rows_mut(&mut peak_image);
-                    }
 
                     // Find min/max for display stretching.
                     let mut histogram: [u32; 256] = [0_u32; 256];
@@ -656,7 +645,7 @@ impl DetectEngine {
                 (star_candidates, hot_pixel_count, detect_binned_image, histogram) =
                     get_stars_from_image(
                         image, noise_estimate, detection_sigma,
-                        normalize_rows, detect_binning,
+                        detect_binning,
                         /*detect_hot_pixels=*/effective_hpm.is_none(),
                         /*return_binned_image=*/detect_binning != 1);
                 detect_duration = detect_start_time.elapsed();

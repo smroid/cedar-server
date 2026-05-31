@@ -21,12 +21,7 @@ use cedar_elements::solver_trait::{
 use cedar_elements::cedar::ImageCoord;
 pub struct Calibrator {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-
-    // Determines whether rows are normalized to have the same dark level.
-    normalize_rows: bool,
-
     hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
-
 }
 
 #[derive(Debug)]
@@ -40,10 +35,9 @@ pub enum ExposureCalibrationError {
 
 impl Calibrator {
     pub fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-               normalize_rows: bool,
                hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
     ) -> Self {
-        Calibrator{camera, normalize_rows, hot_pixel_map}
+        Calibrator{camera, hot_pixel_map}
     }
 
     pub fn replace_camera(
@@ -432,7 +426,6 @@ impl Calibrator {
         // tokio worker threads (and thus gRPC serving) during this CPU-intensive
         // operation.
         let image = captured_image.image.clone();
-        let normalize_rows = self.normalize_rows;
         let effective_hpm =
             if detect_hot_pixels { &self.hot_pixel_map } else { &None };
         let use_hot_pixel_map = effective_hpm.is_some();
@@ -441,7 +434,7 @@ impl Calibrator {
                 let noise_estimate = estimate_noise_from_image(&image);
                 get_stars_from_image(
                     &image, noise_estimate, detection_sigma,
-                    normalize_rows, detection_binning,
+                    detection_binning,
                     /*detect_hot_pixels=*/detect_hot_pixels && !use_hot_pixel_map,
                     /*return_binned_image=*/false)
             }).await.unwrap();

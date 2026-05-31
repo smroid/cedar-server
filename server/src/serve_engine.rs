@@ -42,7 +42,6 @@ pub struct ServeContext {
     pub imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     pub hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
     pub polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
-    pub normalize_rows: bool,
     pub jpeg_quality: u8,
     pub landscape: bool,
 }
@@ -402,7 +401,6 @@ impl ServeEngine {
             ctx_imu_tracker,
             ctx_hot_pixel_map,
             ctx_polar_analyzer,
-            ctx_normalize_rows,
             ctx_jpeg_quality,
             ctx_landscape,
             prev_image_rotator,
@@ -418,7 +416,6 @@ impl ServeEngine {
                 ctx.imu_tracker.clone(),
                 ctx.hot_pixel_map.clone(),
                 ctx.polar_analyzer.clone(),
-                ctx.normalize_rows,
                 ctx.jpeg_quality,
                 ctx.landscape,
                 locked_state.image_rotator.clone(),
@@ -497,8 +494,7 @@ impl ServeEngine {
         } else if detect_binning > 1 {
             // This can happen in focus mode, wherein detect engine is skipping
             // Cedar detect and thus not creating a binned image.
-            resize_result = Arc::new(
-                bin_and_histogram_2x2(disp_image, ctx_normalize_rows).binned,
+            resize_result = Arc::new(bin_and_histogram_2x2(disp_image).binned,
             );
             resized_disp_image = &resize_result;
         }

@@ -3054,16 +3054,9 @@ impl MyCedar {
         );
         info!("Processor serial number {}", &serial_number);
 
-        let mut normalize_rows = false;
         if let Some(attached_camera) = &attached_camera {
             let locked_camera = attached_camera.lock().await;
             let model = locked_camera.model().await;
-            if model == "imx296"
-                && processor_model.contains("Raspberry Pi Zero 2 W")
-            {
-                normalize_rows = true;
-                info!("Normalizing camera rows for {}", model);
-            }
             if model == "ov5647" || model == "imx219"
             {
                 max_exposure_duration *= 3; // This camera is less sensitive.
@@ -3079,7 +3072,6 @@ impl MyCedar {
                 base_star_count_goal,
                 min_frame_interval,
                 camera.clone(),
-                normalize_rows,
                 stats_capacity,
                 hot_pixel_map.clone(),
             )));
@@ -3340,7 +3332,6 @@ impl MyCedar {
 
         let solve_engine = Arc::new(tokio::sync::Mutex::new(
             SolveEngine::new(
-                normalize_rows,
                 solver.clone(),
                 cedar_sky.clone(),
                 hot_pixel_map.clone(),
@@ -3372,7 +3363,6 @@ impl MyCedar {
             imu_tracker: imu_tracker.clone(),
             hot_pixel_map: hot_pixel_map.clone(),
             polar_analyzer: closure_polar_analyzer.clone(),
-            normalize_rows,
             jpeg_quality: 95,
             landscape: false,
         };
@@ -3410,7 +3400,6 @@ impl MyCedar {
                 serve_engine: serve_engine.clone(),
                 calibrator: Arc::new(tokio::sync::Mutex::new(Calibrator::new(
                     camera.clone(),
-                    normalize_rows,
                     hot_pixel_map.clone(),
                 ))),
                 telescope_position,

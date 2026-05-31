@@ -27,7 +27,7 @@ use cedar_elements::{
     cedar_common::CelestialCoord,
     cedar_sky::{CatalogEntry, CatalogEntryMatch, Constellation, Ordering},
     cedar_sky_trait::CedarSkyTrait,
-    image_utils::{normalize_rows_mut, scale_image_mut},
+    image_utils::scale_image_mut,
     hot_pixel_trait::HotPixelTrait,
     imu_trait::{EquatorialCoordinates, ImuTrait},
     solver_trait::{SolveExtension, SolveParams, SolverTrait},
@@ -102,9 +102,6 @@ struct SolveState {
     // retrieve bright planets and IAU stars for the solved FOV.
     align_mode: bool,
 
-    // Determines whether rows are normalized to have the same dark level.
-    normalize_rows: bool,
-
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     catalog_entry_match: Option<CatalogEntryMatch>,
     eyepiece_fov: f64,  // Degrees; diameter.
@@ -153,7 +150,6 @@ struct SolveState {
 
 impl SolveEngine {
     pub fn new(
-        normalize_rows: bool,
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
         hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
@@ -170,7 +166,6 @@ impl SolveEngine {
             min_frame_interval,
             state: Arc::new(tokio::sync::Mutex::new(SolveState {
                 align_mode: false,
-                normalize_rows,
                 cedar_sky,
                 catalog_entry_match: None,
                 eyepiece_fov: 1.0,
@@ -853,7 +848,6 @@ impl SolveEngine {
                             &boresight_coords,
                             &boresight_pixel,
                             psp,
-                            state.lock().await.normalize_rows,
                             width,
                             height,
                             eyepiece_fov,
@@ -1258,7 +1252,6 @@ impl SolveEngine {
         boresight_coords: &CelestialCoord,
         boresight_pixel: &Option<ImageCoord>,
         plate_solution: &PlateSolutionProto,
-        normalize_rows: bool,
         width: u32,
         height: u32,
         eyepiece_fov: f64,
@@ -1355,9 +1348,6 @@ impl SolveEngine {
                 )
                 .to_image(),
         );
-        if normalize_rows {
-            normalize_rows_mut(boresight_image.as_mut().unwrap());
-        }
         let mut histogram: [u32; 256] = [0_u32; 256];
         for pixel_value in boresight_image.as_ref().unwrap().pixels() {
             histogram[pixel_value.0[0] as usize] += 1;
