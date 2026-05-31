@@ -880,8 +880,9 @@ pub struct DetectResult {
     // May be full sensor resolution or camera-binned (see CapturedImage.binning).
     pub captured_image: CapturedImage,
 
-    // If binning was applied prior to detect, this is the 2x2 or 4x4 binned
-    // image.
+    // If binning was applied prior to detect, this is the 2x2 binned image.
+    // Note that even if detect_binning>2, only 2x2 binned image is returned
+    // here.
     pub binned_image: Option<Arc<GrayImage>>,
 
     // The star candidates detected by CedarDetect; ordered by highest

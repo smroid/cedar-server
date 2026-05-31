@@ -1971,10 +1971,11 @@ impl MyCedar {
     // Computes (detect_binning, display_sampling) for camera, taking optional
     // command line overrides into account.
     // Returns:
-    // detect_binning: u32; whether (and how much, 2x2 or 4x4) the acquired
-    //     image is binned prior to CedarDetect and sending to the UI.
-    // display_sampling: bool; whether (possibly binned) image is to be 2x
-    //     sampled when sending to the
+    // detect_binning: u32; whether (and how much) the acquired image is binned
+    //     prior to CedarDetect. Note: when detect_binning >= 2, the display
+    //     image sent to the UI is always 2x binned regardless of detect_binning.
+    // display_sampling: bool; whether (possibly binned) image is to be further
+    //     2x downsampled when sending to the UI.
     fn compute_binning(
         state: &CedarState,
         width: u32,

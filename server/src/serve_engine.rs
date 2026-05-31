@@ -501,10 +501,6 @@ impl ServeEngine {
                 bin_and_histogram_2x2(disp_image, ctx_normalize_rows).binned,
             );
             resized_disp_image = &resize_result;
-            if detect_binning == 4 {
-                resize_result = Arc::new(bin_2x2(&resize_result));
-                resized_disp_image = &resize_result;
-            }
         }
         if display_sampling {
             resize_result = Arc::new(bin_2x2(resized_disp_image));
@@ -587,14 +583,20 @@ impl ServeEngine {
         let irr = &image_rotator;
         let mut rotated = irr.rotate_image_and_crop(resized_disp_image);
 
+        // The detect engine's binned image is always 2x binned when
+        // detect_binning >= 2.
+        let detect_image_binning = if detect_binning >= 2 { 2 } else { 1 };
+
         // Replace hot pixels in the rotated display image.
         if let Some(ref hpm) = ctx_hot_pixel_map {
             let hot_pixels = hpm.lock().await.get_hot_pixels();
             // Hot pixel coords are in post-camera-binning space. Divide by
             // display_factor to get display-image space, using post-camera-binning
-            // dimensions for the transform.
+            // dimensions for the transform. The detect engine's binned image is
+            // always 2x binned when detect_binning >= 2 (regardless of
+            // detect_binning value).
             let display_factor =
-                (detect_binning * if display_sampling { 2 } else { 1 }) as f64;
+                (detect_image_binning * if display_sampling { 2 } else { 1 }) as f64;
             let bw = (width as f64 / display_factor) as u32;
             let bh = (height as f64 / display_factor) as u32;
             let (rot_w, rot_h) = rotated.dimensions();
@@ -614,7 +616,7 @@ impl ServeEngine {
         resized_disp_image = &resize_result;
 
         let binning_factor =
-            camera_binning * detect_binning * if display_sampling { 2 } else { 1 };
+            camera_binning * detect_image_binning * if display_sampling { 2 } else { 1 };
         let cb_i = camera_binning as i32;
         let cb_f = camera_binning as f64;
 
