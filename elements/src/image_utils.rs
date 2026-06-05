@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 use image::{GrayImage, Luma};
 use image::imageops;
-use imageproc::geometric_transformations::{Interpolation, rotate_about_center};
+use imageproc::geometric_transformations::{Border, Interpolation, rotate_about_center};
 
 use crate::cedar::Rectangle;
 
@@ -115,7 +115,7 @@ impl ImageRotator {
             -(self.angle_rad as f32),
             // Almost as fast as Nearest, with much higher visual quality.
             Interpolation::Bilinear,
-            Luma::<u8>([0]));
+            Border::Constant(Luma::<u8>([0])));
 
         // Take central crop of rotated image.
         let center_x = w / 2;
