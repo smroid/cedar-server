@@ -425,7 +425,7 @@ message FrameResult {
   // star catalog magnitudes.
   repeated StarCentroid star_candidates = 4;
 
-  // The number of candidates that were rejected as hot pixels. These are not
+  // The number of candidates that were rejected as hot pixels. These are
   // included in star_candidates.
   optional int32 hot_pixel_count = 39;
 
