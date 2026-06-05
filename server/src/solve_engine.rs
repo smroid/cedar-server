@@ -561,7 +561,7 @@ impl SolveEngine {
         hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         solve_extension: &SolveExtension,
         solve_params: &SolveParams,
-    ) -> (Option<PlateSolutionProto>, Option<SystemTime>) {
+    ) -> (Option<PlateSolutionProto>, Option<SystemTime>, Duration) {
         // Filter out hot pixels before solving.
         let filtered_candidates = if let Some(ref hpm) = hot_pixel_map {
             let (stars, _hot_pixels) =
@@ -635,6 +635,7 @@ impl SolveEngine {
         let mut plate_solution_proto: Option<PlateSolutionProto> = None;
         let mut solve_finish_time: Option<SystemTime> = None;
         let mut got_plate_solution_from_stars = false;
+        let mut solver_duration = Duration::ZERO;
 
         if have_stars || imu_estimate.is_some() {
             {
@@ -657,7 +658,8 @@ impl SolveEngine {
                     locked_state.eta = Some(Instant::now() + solve_duration);
                 }
             }
-            match Self::solve_with_solver(
+            let t_before_solve = Instant::now();
+            let solve_result = Self::solve_with_solver(
                 solver.clone(),
                 &star_centroids,
                 detect_result.captured_image.image.dimensions().0 as usize,
@@ -666,7 +668,9 @@ impl SolveEngine {
                 &solve_params,
                 imu_estimate,
             )
-            .await
+            .await;
+            solver_duration = t_before_solve.elapsed();
+            match solve_result
             {
                 Err(e) => {
                     // Let's not spam the log with solver failures. If the
@@ -738,7 +742,7 @@ impl SolveEngine {
             }
         }
 
-        (plate_solution_proto, solve_finish_time)
+        (plate_solution_proto, solve_finish_time, solver_duration)
     }
 
     async fn process_plate_solution_result(
@@ -1127,8 +1131,8 @@ impl SolveEngine {
 
             // Plate-solve using the recently detected stars.
             let effective_hpm = &hot_pixel_map;
-            let process_start_time = Instant::now();
-            let (plate_solution_proto, solve_finish_time) =
+            let frame_start_time = Instant::now();
+            let (plate_solution_proto, solve_finish_time, solver_duration) =
                 Self::attempt_plate_solve(
                     solver.clone(),
                     state.clone(),
@@ -1140,7 +1144,6 @@ impl SolveEngine {
                     &solve_params,
                 )
                 .await;
-            let solve_duration = process_start_time.elapsed();
 
             let (
                 fov_catalog_entries,
@@ -1164,13 +1167,13 @@ impl SolveEngine {
             )
             .await;
 
-            let elapsed = process_start_time.elapsed();
+            let elapsed = frame_start_time.elapsed();
             if state.lock().await.last_solve_attempt_time.is_some() {
                 let mut locked_state = state.lock().await;
                 locked_state.solve_duration_stats
-                    .add_value(solve_duration.as_secs_f64());
+                    .add_value(solver_duration.as_secs_f64());
                 locked_state.solve_other_duration_stats
-                    .add_value(elapsed.saturating_sub(solve_duration).as_secs_f64());
+                    .add_value(elapsed.saturating_sub(solver_duration).as_secs_f64());
             }
 
             Self::finalize_and_post_result(
