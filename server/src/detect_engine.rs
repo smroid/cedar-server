@@ -13,6 +13,7 @@ use imageproc::rect::Rect;
 use log::{debug, error};
 use cedar_detect::algorithm::{StarDescription, estimate_noise_from_image,
                               get_stars_from_image, summarize_region_of_interest};
+use cedar_detect::image_funcs::histogram_from_region;
 use cedar_detect::histogram_funcs::{average_top_values,
                                     get_level_for_fraction,
                                     remove_stars_from_histogram,
@@ -639,18 +640,29 @@ impl DetectEngine {
                     }
                 }
                 let detect_binned_image;
-                let mut histogram;
                 let effective_hpm = hot_pixel_map.as_ref();
                 let detect_start_time = Instant::now();
-                (star_candidates, hot_pixel_count, detect_binned_image, histogram) =
+                (star_candidates, hot_pixel_count, detect_binned_image) =
                     get_stars_from_image(
                         image, noise_estimate, detection_sigma,
                         detect_binning,
                         /*detect_hot_pixels=*/effective_hpm.is_none(),
                         /*return_binned_image=*/detect_binning != 1);
                 detect_duration = detect_start_time.elapsed();
-                let stats = stats_for_histogram(&histogram);
                 binned_image = detect_binned_image.map(Arc::new);
+                // Histogram the center of the binned image (or full-res if
+                // binning==1) for auto-exposure and display level computation.
+                let histo_image: &GrayImage = match &binned_image {
+                    Some(b) => b.as_ref(),
+                    None => image,
+                };
+                let (hw, hh) = histo_image.dimensions();
+                let side = (hh * 3 / 4) as i32;
+                let histo_region = Rect::at((hw as i32 - side) / 2,
+                                            (hh as i32 - side) / 2)
+                    .of_size(side as u32, side as u32);
+                let mut histogram = histogram_from_region(histo_image, &histo_region);
+                let stats = stats_for_histogram(&histogram);
 
                 // Filter hot pixels for auto-exposure and peak averaging.
                 // star_candidates in DetectResult retains the full unfiltered list.

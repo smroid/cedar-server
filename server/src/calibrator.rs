@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use image::GrayImage;
-use imageproc::stats::histogram;
 use log::{debug, warn};
 
 use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage, Offset};
@@ -15,6 +14,8 @@ use canonical_error::{CanonicalError,
 use cedar_detect::algorithm::{StarDescription,
                               estimate_noise_from_image, get_stars_from_image};
 use cedar_detect::histogram_funcs::stats_for_histogram;
+use cedar_detect::image_funcs::histogram_from_region;
+use imageproc::rect::Rect;
 use cedar_elements::hot_pixel_trait::HotPixelTrait;
 use cedar_elements::solver_trait::{
     SolveExtension, SolveParams, SolverTrait};
@@ -85,8 +86,8 @@ impl Calibrator {
             let (captured_image, frame_id) =
                 Self::capture_image(self.camera.clone(), prev_frame_id).await?;
             prev_frame_id = Some(frame_id);
-            let channel_histogram = histogram(captured_image.image.deref());
-            let histo = channel_histogram.channels[0];
+            let img = captured_image.image.deref();
+            let histo = full_image_histogram(img);
             num_zero_pixels = histo[0];
             if num_zero_pixels < (total_pixels / 1000) as u32 {
                 if offset < max_offset {
@@ -164,11 +165,11 @@ impl Calibrator {
 
         self.camera.lock().await.set_exposure_duration(
             initial_exposure_duration).await.unwrap();
-        let (_, mut exp_duration, mut stars, mut frame_id, mut histogram) =
+        let (mut image, mut exp_duration, mut stars, mut frame_id) =
             self.acquire_image_get_stars(
                 /*frame_id=*/None, detection_binning, detection_sigma,
                 /*detect_hot_pixels=*/true).await.unwrap();
-        let mut stats = stats_for_histogram(&histogram);
+        let mut stats = stats_for_histogram(&full_image_histogram(&image));
 
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
         let mut star_goal_fraction =
@@ -205,11 +206,11 @@ impl Calibrator {
             return Err(ExposureCalibrationError::Aborted);
         }
         self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
-        (_, exp_duration, stars, frame_id, histogram) =
+        (image, exp_duration, stars, frame_id) =
             self.acquire_image_get_stars(
                 Some(frame_id), detection_binning, detection_sigma,
                 /*detect_hot_pixels=*/true).await.unwrap();
-        stats = stats_for_histogram(&histogram);
+        stats = stats_for_histogram(&full_image_histogram(&image));
         star_goal_fraction =
             f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
         debug!("2: exp {:?}, {} stars, pix mean {:.2} ",
@@ -244,11 +245,11 @@ impl Calibrator {
             return Err(ExposureCalibrationError::Aborted);
         }
         self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
-        (_, exp_duration, stars, _, histogram) =
+        (image, exp_duration, stars, _) =
             self.acquire_image_get_stars(
                 Some(frame_id), detection_binning, detection_sigma,
                 /*detect_hot_pixels=*/true).await.unwrap();
-        stats = stats_for_histogram(&histogram);
+        stats = stats_for_histogram(&full_image_histogram(&image));
         star_goal_fraction =
             f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
         debug!("3: exp {:?}, {} stars, pix mean {:.2} ",
@@ -304,7 +305,7 @@ impl Calibrator {
         let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
         self.camera.lock().await
             .set_exposure_duration(max_exposure_duration).await?;
-        let (_, _, candidates, _, _) = self.acquire_image_get_stars(
+        let (_, _, candidates, _) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma,
             /*detect_hot_pixels=*/false).await?;
         restore_exposure.restore().await;
@@ -344,7 +345,7 @@ impl Calibrator {
         // * Do another plate solution with the known FOV, lens distortion, and
         //   match_max_error to obtain a representative solution time.
 
-        let (image, _, stars, _, _) = self.acquire_image_get_stars(
+        let (image, _, stars, _) = self.acquire_image_get_stars(
             /*frame_id=*/None, detection_binning, detection_sigma,
             /*detect_hot_pixels=*/true).await?;
         let (width, height) = image.dimensions();
@@ -406,8 +407,7 @@ impl Calibrator {
         Ok((fov, distortion, match_max_error, solve_duration))
     }
 
-    // Returns: acquired image, actual exposure duration, detected stars,
-    // frame_id, histogram.
+    // Returns: acquired image, actual exposure duration, detected stars, frame_id.
     // If detect_hot_pixels is true, hot pixels are suppressed from the returned
     // stars: via the hot pixel map if configured and enabled, otherwise via the
     // fallback hot pixel detection in get_stars_from_image.
@@ -417,7 +417,7 @@ impl Calibrator {
         &self, frame_id: Option<i32>,
         detection_binning: u32, detection_sigma: f64,
         detect_hot_pixels: bool)
-        -> Result<(Arc<GrayImage>, Duration, Vec<StarDescription>, i32, [u32; 256]),
+        -> Result<(Arc<GrayImage>, Duration, Vec<StarDescription>, i32),
                   CanonicalError>
     {
         let (captured_image, frame_id) =
@@ -429,7 +429,7 @@ impl Calibrator {
         let effective_hpm =
             if detect_hot_pixels { &self.hot_pixel_map } else { &None };
         let use_hot_pixel_map = effective_hpm.is_some();
-        let (stars, _, _, histogram) =
+        let (stars, _, _) =
             tokio::task::spawn_blocking(move || {
                 let noise_estimate = estimate_noise_from_image(&image);
                 get_stars_from_image(
@@ -446,8 +446,14 @@ impl Calibrator {
         };
         Ok((captured_image.image.clone(),
             captured_image.capture_params.exposure_duration,
-            stars, frame_id, histogram))
+            stars, frame_id))
     }
+}
+
+fn full_image_histogram(image: &GrayImage) -> [u32; 256] {
+    let (w, h) = image.dimensions();
+    let region = Rect::at(0, 0).of_size(w, h);
+    histogram_from_region(image, &region)
 }
 
 // Convenience for saving/restoring camera exposure time.

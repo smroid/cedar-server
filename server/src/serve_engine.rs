@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cedar_detect::image_funcs::{bin_2x2, bin_and_histogram_2x2};
+use cedar_detect::image_funcs::bin_2x2;
 use cedar_elements::{
     astro_util::{
         alt_az_from_equatorial, equatorial_from_alt_az,
@@ -494,8 +494,7 @@ impl ServeEngine {
         } else if detect_binning > 1 {
             // This can happen in focus mode, wherein detect engine is skipping
             // Cedar detect and thus not creating a binned image.
-            resize_result = Arc::new(bin_and_histogram_2x2(disp_image).binned,
-            );
+            resize_result = Arc::new(bin_2x2(disp_image));
             resized_disp_image = &resize_result;
         }
         if display_sampling {
