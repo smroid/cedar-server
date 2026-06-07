@@ -548,10 +548,12 @@ message FrameResult {
 
 message Image {
   // Whether the image is binned/sampled or full resolution. Values:
-  // 1: full resolution image from camera sensor.
-  // 2: 2x lower resolution than camera sensor (in both x and y axes).
-  // 4: 4x lower resolution than camera sensor.
-  // 8: 8x lower resolution than camera sensor.
+  // 1: full resolution image as delivered by the camera driver (which may
+  //    already apply 2x2 software binning during raw conversion, e.g. for
+  //    colour Bayer sensors or low-resolution modes).
+  // 2: 2x lower resolution than camera driver output (in both x and y axes).
+  // 4: 4x lower resolution than camera driver output.
+  // 8: 8x lower resolution than camera driver output.
   int32 binning_factor = 1;
 
   // Specifies what part of the camera sensor this Image corresponds to, in full
