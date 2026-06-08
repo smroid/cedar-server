@@ -657,7 +657,7 @@ impl DetectEngine {
                     None => image,
                 };
                 let (hw, hh) = histo_image.dimensions();
-                let side = (hh * 3 / 4) as i32;
+                let side = (hh / 2) as i32;
                 let histo_region = Rect::at((hw as i32 - side) / 2,
                                             (hh as i32 - side) / 2)
                     .of_size(side as u32, side as u32);
