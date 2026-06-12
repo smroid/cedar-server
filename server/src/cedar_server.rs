@@ -3880,7 +3880,7 @@ pub fn server_main(
         star_count_goal: pargs
             .value_from_str("--star_count_goal")
             .unwrap_or(20),
-        sigma: pargs.value_from_str("--sigma").unwrap_or(7.0),
+        sigma: pargs.value_from_str("--sigma").unwrap_or(8.0),
         ui_prefs: pargs
             .value_from_str("--ui_prefs")
             .unwrap_or("./cedar_ui_prefs.binpb".to_string()),
