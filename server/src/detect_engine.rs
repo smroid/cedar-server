@@ -74,8 +74,9 @@ struct DetectState {
     // Affects auto-exposure and turns off focus aids and star detection.
     daylight_mode: bool,
 
-    // User-designated focus point for daylight focus mode. In post-camera-binning
-    // image coordinates. None if no point has been designated.
+    // User-designated focus point for daylight focus mode. In image coordinates
+    // (coordinate space of CapturedImage.image). None if no point has been
+    // designated.
     daylight_focus_point: Option<ImageCoord>,
 
     // When running CedarDetect, this supplies the `detect_binning` value used.
@@ -206,8 +207,8 @@ impl DetectEngine {
         // it finishes the current interval.
     }
 
-    // Sets the daylight focus point. `point` must be in post-camera-binning
-    // image coordinates.
+    // Sets the daylight focus point. `point` must be in image coordinates
+    // (coordinate space of CapturedImage.image).
     pub async fn set_daylight_focus_point(&mut self, point: ImageCoord) {
         let mut locked_state = self.state.lock().await;
         locked_state.daylight_focus_point = Some(point);
@@ -432,10 +433,9 @@ impl DetectEngine {
             let image_region = Rect::at(0, 0).of_size(width, height);
 
             // To avoid edge when centroiding and creating central peak image,
-            // inset the ROI a little. These sizes are in post-camera-binning
-            // image space, so only detect_binning and display_sampling apply;
-            // camera_binning is already baked into the image coordinate space.
-            let adjusted_binning = detect_binning * if display_sampling { 2 } else { 1 };
+            // inset the ROI a little. These sizes are in image coordinates.
+            let adjusted_binning =
+                detect_binning * if display_sampling { 2 } else { 1 };
             let inset = 8 * adjusted_binning as i32;
 
             let noise_estimate = estimate_noise_from_image(image);
@@ -463,6 +463,10 @@ impl DetectEngine {
                     .of_size(square_roi_size - 2 * inset as u32,
                              square_roi_size - 2 * inset as u32);
 
+                // NOTE: summarize_region_of_interest must run on the full-res
+                // image; binning would dilute hot pixels and break the
+                // single-pixel-spike detection that classify_pixel relies on to
+                // exclude them from the peak.
                 let roi_summary = summarize_region_of_interest(
                     image, &roi_region, noise_estimate, detection_sigma);
                 let roi_histogram = roi_summary.histogram;
@@ -619,7 +623,6 @@ impl DetectEngine {
                 }
             }  // focus_mode || daylight_mode
 
-            let mut binned_image: Option<Arc<GrayImage>> = None;
             let mut star_candidates: Vec<StarDescription> = vec![];
             let mut hot_pixel_count = 0;
             let mut detect_duration = Duration::ZERO;
@@ -639,22 +642,22 @@ impl DetectEngine {
                         locked_state.eta = Some(Instant::now() + detect_duration);
                     }
                 }
-                let detect_binned_image;
                 let effective_hpm = hot_pixel_map.as_ref();
                 let detect_start_time = Instant::now();
-                (star_candidates, hot_pixel_count, detect_binned_image) =
+                let precomputed_binned =
+                    if detect_binning != 1 { Some(captured_image.binned_image.clone()) }
+                    else { None };
+                (star_candidates, hot_pixel_count, _) =
                     get_stars_from_image(
-                        image, noise_estimate, detection_sigma,
-                        detect_binning,
-                        /*detect_hot_pixels=*/effective_hpm.is_none(),
-                        /*return_binned_image=*/detect_binning != 1);
+                        image, precomputed_binned, noise_estimate, detection_sigma,
+                        detect_binning, /*return_binned_image=*/false);
                 detect_duration = detect_start_time.elapsed();
-                binned_image = detect_binned_image.map(Arc::new);
                 // Histogram the center of the binned image (or full-res if
                 // binning==1) for auto-exposure and display level computation.
-                let histo_image: &GrayImage = match &binned_image {
-                    Some(b) => b.as_ref(),
-                    None => image,
+                let histo_image: &GrayImage = if detect_binning != 1 {
+                    &captured_image.binned_image
+                } else {
+                    image
                 };
                 let (hw, hh) = histo_image.dimensions();
                 let side = (hh / 2) as i32;
@@ -664,7 +667,7 @@ impl DetectEngine {
                 let mut histogram = histogram_from_region(histo_image, &histo_region);
                 let stats = stats_for_histogram(&histogram);
 
-                // Filter hot pixels for auto-exposure and peak averaging.
+                // Filter mapped hot pixels for auto-exposure and peak averaging.
                 // star_candidates in DetectResult retains the full unfiltered list.
                 let filtered_stars = if let Some(ref hpm) = effective_hpm {
                     let (filtered, hot) =
@@ -841,7 +844,6 @@ impl DetectEngine {
             locked_state.detect_result = Some(DetectResult{
                 frame_id: locked_state.frame_id.unwrap(),
                 captured_image,
-                binned_image,
                 star_candidates,
                 star_count_moving_average: locked_state.star_count_moving_average,
                 display_black_level: black_level,
@@ -878,13 +880,7 @@ pub struct DetectResult {
     pub frame_id: i32,
 
     // The camera image used to produce the information in this detect result.
-    // May be full sensor resolution or camera-binned (see CapturedImage.binning).
     pub captured_image: CapturedImage,
-
-    // If binning was applied prior to detect, this is the 2x2 binned image.
-    // Note that even if detect_binning>2, only 2x2 binned image is returned
-    // here.
-    pub binned_image: Option<Arc<GrayImage>>,
 
     // The star candidates detected by CedarDetect; ordered by highest
     // StarDescription.mean_brightness first. If a hot pixel map is supplied,
@@ -901,7 +897,7 @@ pub struct DetectResult {
     // background level.
     pub display_black_level: u8,
 
-    // Estimate of the RMS noise of the captured image (post-camera-binning).
+    // Estimate of the RMS noise of the captured image.
     pub noise_estimate: f64,
 
     // The number of hot pixels detected by CedarDetect.
@@ -942,30 +938,29 @@ pub struct DetectResult {
 
 #[derive(Clone)]
 pub struct FocusAid {
-    // All coordinates and regions in this struct are in post-camera-binning
-    // image space (i.e. the coordinate space of CapturedImage.image). Serve
-    // engine multiplies by camera_binning to convert coordinates to full-sensor
-    // space for cedar.proto.
+    // All coordinates and regions in this struct are in image coordinates
+    // (i.e. the coordinate space of CapturedImage.image).
 
     // See the corresponding field in FrameResult. Only present in non-daylight
     // focus mode.
     pub center_peak_position: Option<(f64, f64)>,
     pub center_peak_value: Option<u8>,
 
-    // A small crop of `captured_image` centered at `center_peak_position`.
-    // Brightness scaled to full range for visibility. Only present in
-    // non-daylight focus mode.
+    // A small full-resolution crop of `captured_image` centered at
+    // `center_peak_position`. Brightness scaled to full range for visibility.
+    // Only present in non-daylight focus mode.
     pub peak_image: Option<GrayImage>,
 
-    // The location of `peak_image` in post-camera-binning image coordinates.
+    // The location of `peak_image` in image coordinates.
     // Only present in non-daylight focus mode.
     pub peak_image_region: Option<Rect>,
 
-    // A small crop of `captured_image` centered at user-designated position
-    // for daylight focus mode. Only present in daylight mode.
+    // A small full-resolution crop of `captured_image` centered at the
+    // user-designated position for daylight focus mode. Only present in
+    // daylight mode.
     pub daylight_focus_zoom_image: Option<GrayImage>,
 
-    // The location of `daylight_focus_zoom_image` in post-camera-binning image
-    // coordinates. Only present in daylight mode.
+    // The location of `daylight_focus_zoom_image` in image coordinates.
+    // Only present in daylight mode.
     pub daylight_focus_zoom_region: Option<Rect>,
 }

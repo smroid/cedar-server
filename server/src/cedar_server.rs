@@ -886,7 +886,6 @@ impl Cedar for MyCedar {
                 new_camera,
                 width,
                 height,
-                camera_binning,
                 detect_binning,
                 display_sampling,
                 detect_engine_arc,
@@ -928,8 +927,7 @@ impl Cedar for MyCedar {
                         Some(demo_image_filename);
                 }
                 let new_camera = locked_state.camera.clone();
-                let (width, height, camera_binning) =
-                    Self::camera_geometry(&new_camera).await;
+                let (width, height) = Self::camera_geometry(&new_camera).await;
 
                 let std_duration =
                     Self::get_automatic_update_interval(&locked_state);
@@ -942,14 +940,12 @@ impl Cedar for MyCedar {
                     &locked_state,
                     width,
                     height,
-                    camera_binning,
                 );
 
                 (
                     new_camera,
                     width,
                     height,
-                    camera_binning,
                     detect_binning,
                     display_sampling,
                     locked_state.detect_engine.clone(),
@@ -977,11 +973,9 @@ impl Cedar for MyCedar {
                 .replace_camera(new_camera.clone());
 
             // Validate boresight_pixel (full-sensor coords) against the new
-            // camera's image area, then re-apply to solve_engine in
-            // post-camera-binning coords for the new camera.
+            // camera's image area, then re-apply to solve_engine.
             let boresight_pixel_value =
                 preferences_arc.lock().await.boresight_pixel.clone();
-            let cb = camera_binning as f64;
             let inset = 16;
             let new_boresight = if let Some(bsp) = boresight_pixel_value {
                 if bsp.x < inset as f64
@@ -992,7 +986,7 @@ impl Cedar for MyCedar {
                     preferences_arc.lock().await.boresight_pixel = None;
                     None
                 } else {
-                    Some(ImageCoord { x: bsp.x / cb, y: bsp.y / cb })
+                    Some(bsp)
                 }
             } else {
                 None
@@ -1285,13 +1279,8 @@ impl Cedar for MyCedar {
                     {
                         return Err(tonic_status(x));
                     }
-                    // bsp is in post-camera-binning coords; convert to full-sensor
-                    // for storage in preferences.
-                    let cb =
-                        self.state.lock().await.camera.lock().await.binning() as f64;
-                    let bsp_full = ImageCoord { x: bsp.x * cb, y: bsp.y * cb };
                     preferences = Preferences {
-                        boresight_pixel: Some(bsp_full),
+                        boresight_pixel: Some(bsp),
                         ..Default::default()
                     };
                 } else {
@@ -1308,38 +1297,27 @@ impl Cedar for MyCedar {
             let image_rotator;
             let width;
             let height;
-            let camera_binning;
             {
                 let locked_state = self.state.lock().await;
                 let serve_engine_arc = locked_state.serve_engine.clone();
                 let camera_arc = locked_state.camera.clone();
                 drop(locked_state);
                 image_rotator = serve_engine_arc.lock().await.image_rotator().await;
-                let locked_camera = camera_arc.lock().await;
-                (width, height) = locked_camera.dimensions().await;
-                camera_binning = locked_camera.binning();
+                (width, height) = camera_arc.lock().await.dimensions().await;
             }
-            // Client sends bsp in full-sensor space; convert to post-camera-binning
-            // space before transform_from_rotated and storage in solve_engine.
-            let cb = camera_binning as u32;
-            let binned_width = width / cb;
-            let binned_height = height / cb;
-            let cbf = camera_binning as f64;
-            bsp.x /= cbf;
-            bsp.y /= cbf;
             (bsp.x, bsp.y) = image_rotator.transform_from_rotated(
                 bsp.x,
                 bsp.y,
-                binned_width,
-                binned_height,
+                width,
+                height,
             );
 
-            let distance_from_center = ((binned_width as f64 / 2.0 - bsp.x)
-                * (binned_width as f64 / 2.0 - bsp.x)
-                + (binned_height as f64 / 2.0 - bsp.y)
-                    * (binned_height as f64 / 2.0 - bsp.y))
+            let distance_from_center = ((width as f64 / 2.0 - bsp.x)
+                * (width as f64 / 2.0 - bsp.x)
+                + (height as f64 / 2.0 - bsp.y)
+                    * (height as f64 / 2.0 - bsp.y))
                 .sqrt();
-            if distance_from_center > binned_height as f64 / 2.0 {
+            if distance_from_center > height as f64 / 2.0 {
                 return Err(logged_status!(
                     failed_precondition,
                     "Too far from center".to_string()
@@ -1355,11 +1333,8 @@ impl Cedar for MyCedar {
             {
                 return Err(tonic_status(x));
             };
-            // bsp is in post-camera-binning coords; convert to full-sensor for
-            // storage in preferences.
-            let bsp_full = ImageCoord { x: bsp.x * cbf, y: bsp.y * cbf };
             let preferences = Preferences {
-                boresight_pixel: Some(bsp_full),
+                boresight_pixel: Some(bsp.clone()),
                 ..Default::default()
             };
             self.update_preferences(tonic::Request::new(preferences))
@@ -1501,27 +1476,18 @@ impl Cedar for MyCedar {
                     locked_state.detect_engine.clone(),
                 )
             };
-            let locked_camera = camera.lock().await;
-            let (width, height) = locked_camera.dimensions().await;
-            let camera_binning = locked_camera.binning();
-            drop(locked_camera);
-            let binned_width = width / camera_binning;
-            let binned_height = height / camera_binning;
-            // Client sends dfr in full-sensor space; convert to post-camera-binning
-            // space before transform_from_rotated.
-            dfr.x /= camera_binning as f64;
-            dfr.y /= camera_binning as f64;
+            let (width, height) = camera.lock().await.dimensions().await;
             (dfr.x, dfr.y) = image_rotator.transform_from_rotated(
                 dfr.x,
                 dfr.y,
-                binned_width,
-                binned_height,
+                width,
+                height,
             );
             // Check that the point is within reasonable bounds.
             if dfr.x < 0.0
-                || dfr.x >= binned_width as f64
+                || dfr.x >= width as f64
                 || dfr.y < 0.0
-                || dfr.y >= binned_height as f64
+                || dfr.y >= height as f64
             {
                 return Err(logged_status!(
                     failed_precondition,
@@ -1584,10 +1550,9 @@ impl Cedar for MyCedar {
             let state = self.state.clone();
             let _task_handle: tokio::task::JoinHandle<()> =
                 tokio::task::spawn(async move {
-                    let (width, height, camera_binning) =
-                        Self::camera_geometry(&camera).await;
+                    let (width, height) = Self::camera_geometry(&camera).await;
                     let (detection_binning, _) = Self::compute_binning(
-                        &*state.lock().await, width, height, camera_binning);
+                        &*state.lock().await, width, height);
                     // Use slightly larger sigma value to reduce the number of
                     // hot pixels detected with the long exposure time.
                     let detection_sigma = 1.1 *
@@ -1980,7 +1945,6 @@ impl MyCedar {
         state: &CedarState,
         width: u32,
         height: u32,
-        camera_binning: u32,
     ) -> (u32, bool) {
         let args_binning = state.args_binning;
         let args_display_sampling = state.args_display_sampling;
@@ -2005,23 +1969,18 @@ impl MyCedar {
         if let Some(dsa) = args_display_sampling {
             display_sampling = dsa;
         }
-        // Camera has already applied camera_binning; CedarDetect only needs
-        // to apply the remainder.
-        let detect_binning = (total_binning / camera_binning).max(1);
         debug!(
-            "For {:.1}mpix, camera_binning {}, total_binning {}, detect_binning {}, display_sampling {}",
-            mpix, camera_binning, total_binning, detect_binning, display_sampling
+            "For {:.1}mpix, total_binning {}, display_sampling {}",
+            mpix, total_binning, display_sampling
         );
-        (detect_binning, display_sampling)
+        (total_binning, display_sampling)
     }
 
     async fn camera_geometry(
         camera: &Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>
-    ) -> (u32, u32, u32) {
+    ) -> (u32, u32) {
         let locked = camera.lock().await;
-        let (width, height) = locked.dimensions().await;
-        let camera_binning = locked.binning();
-        (width, height, camera_binning)
+        locked.dimensions().await
     }
 
     /// Atomically checks that calibration is not already in progress, snapshots
@@ -2673,15 +2632,12 @@ impl MyCedar {
 
         {
             {
-                let camera_binning;
-                (width, height, camera_binning) =
-                    Self::camera_geometry(&camera).await;
+                (width, height) = Self::camera_geometry(&camera).await;
                 let _display_sampling;
                 (detect_binning, _display_sampling) = Self::compute_binning(
                     &*state.lock().await,
                     width,
                     height,
-                    camera_binning,
                 );
             }
 
@@ -3462,11 +3418,10 @@ impl MyCedar {
         let locked_state = state.lock().await;
         let camera = locked_state.camera.clone();
         drop(locked_state);
-        let (width, height, camera_binning) =
-            Self::camera_geometry(&camera).await;
+        let (width, height) = Self::camera_geometry(&camera).await;
         let locked_state = state.lock().await;
         let (detect_binning, display_sampling) =
-            Self::compute_binning(&locked_state, width, height, camera_binning);
+            Self::compute_binning(&locked_state, width, height);
         let initial_exposure_duration = locked_state.initial_exposure_duration;
         drop(locked_state);
         if let Err(x) =
@@ -3502,26 +3457,18 @@ impl MyCedar {
             }
             solve_engine.set_align_mode(true).await;
             if let Some(bsp) = &copied_preferences.boresight_pixel {
-                // Preferences stores full-sensor coords; convert to post-camera-binning.
-                let cb = camera_binning as f64;
-                let binned_bsp = ImageCoord { x: bsp.x / cb, y: bsp.y / cb };
-                let binned_width = width / camera_binning;
-                let binned_height = height / camera_binning;
                 let inset = 16;
-                // Sanity check: converted coords must be within the binned image.
-                // Fails if e.g. the saved value was in a different coordinate space.
-                if binned_bsp.x >= inset as f64
-                    && binned_bsp.x <= (binned_width - inset) as f64
-                    && binned_bsp.y >= inset as f64
-                    && binned_bsp.y <= (binned_height - inset) as f64
+                if bsp.x >= inset as f64
+                    && bsp.x <= (width - inset) as f64
+                    && bsp.y >= inset as f64
+                    && bsp.y <= (height - inset) as f64
                 {
                     solve_engine
-                        .set_boresight_pixel(Some(binned_bsp))
+                        .set_boresight_pixel(Some(bsp.clone()))
                         .await
                         .unwrap();
                 } else {
-                    warn!("Saved boresight_pixel {:?} is out of range after \
-                           converting to post-camera-binning space; ignoring.", bsp);
+                    warn!("Saved boresight_pixel {:?} is out of range; ignoring.", bsp);
                 }
             }
         }
@@ -3630,11 +3577,7 @@ impl MyCedar {
         let mut prefs_to_save: Option<Preferences> = None;
         let mut updated_observer_location: Option<LatLong> = None;
         if let Some(bp) = boresight_pixel {
-            // Convert from post-camera-binning to full-sensor coords for storage.
-            let cb = detect_result.as_ref()
-                .map(|dr| dr.captured_image.binning)
-                .unwrap_or(1) as f64;
-            let cedar_bp = ImageCoord { x: bp.x * cb, y: bp.y * cb };
+            let cedar_bp = bp.clone();
             let mut locked_preferences = preferences.lock().await;
             if locked_preferences.boresight_pixel.is_none()
                 || cedar_bp
@@ -3937,7 +3880,7 @@ pub fn server_main(
         star_count_goal: pargs
             .value_from_str("--star_count_goal")
             .unwrap_or(20),
-        sigma: pargs.value_from_str("--sigma").unwrap_or(8.0),
+        sigma: pargs.value_from_str("--sigma").unwrap_or(7.0),
         ui_prefs: pargs
             .value_from_str("--ui_prefs")
             .unwrap_or("./cedar_ui_prefs.binpb".to_string()),
@@ -4073,9 +4016,8 @@ async fn prepare_for_exit_async(
 async fn get_attached_camera(
     camera_interface: Option<&CameraInterface>,
     camera_index: usize,
-    prefer_binned: bool,
 ) -> Result<Box<dyn AbstractCamera + Send>, CanonicalError> {
-    select_camera(camera_interface, camera_index, prefer_binned).await
+    select_camera(camera_interface, camera_index).await
 }
 
 async fn get_camera(
@@ -4300,8 +4242,7 @@ async fn async_main(
     };
 
     let attached_camera =
-        match get_attached_camera(camera_interface.as_ref(), args.camera_index,
-                                  /*prefer_binned=*/hot_pixel_map.is_some()).await
+        match get_attached_camera(camera_interface.as_ref(), args.camera_index).await
         {
             Ok(cam) => Some(Arc::new(tokio::sync::Mutex::new(cam))),
             Err(e) => {

@@ -122,7 +122,7 @@ struct SolveState {
     match_radius: f64,
     match_threshold: f64,
     solve_timeout: Duration,
-    // In post-camera-binning image coordinates.
+    // In image coordinates (coordinate space of CapturedImage.image).
     boresight_pixel: Option<ImageCoord>,
     distortion: f64,
     match_max_error: f64,
@@ -242,8 +242,8 @@ impl SolveEngine {
         Ok(())
     }
 
-    // Sets the boresight pixel. `boresight_pixel` must be in post-camera-binning
-    // image coordinates.
+    // Sets the boresight pixel. `boresight_pixel` must be in image coordinates
+    // (coordinate space of CapturedImage.image).
     pub async fn set_boresight_pixel(
         &mut self,
         boresight_pixel: Option<ImageCoord>,
@@ -917,8 +917,7 @@ impl SolveEngine {
                     (Some(result.0), Some(result.1));
 
                 // Find the displayed catalog entry closest to the boresight.
-                // Coordinates are in post-camera-binning pixel space, matching
-                // boresight_pixel.
+                // Coordinates are in image coordinates, matching boresight_pixel.
                 let center = ImageCoord {
                     x: width as f64 / 2.0,
                     y: height as f64 / 2.0,
@@ -1530,10 +1529,9 @@ pub struct PlateSolution {
     // `slew_request` with its information.
     pub slew_request: Option<SlewRequest>,
 
-    // A small crop of `detect_result.captured_image` (in post-camera-binning
-    // space) centered at the boresight. Brightness scaled to full range for
-    // visibility. This is present if `slew_request` is present and the slew
-    // target is close to the boresight.
+    // A small crop of `detect_result.captured_image` centered at the boresight.
+    // Brightness scaled to full range for visibility. This is present if
+    // `slew_request` is present and the slew target is close to the boresight.
     pub boresight_image: Option<GrayImage>,
 
     // The location of `boresight_image`. Omitted if `boresight_image` is
