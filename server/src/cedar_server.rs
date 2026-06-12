@@ -3834,7 +3834,7 @@ pub fn server_main(
       --test_image <path>
       --min_exposure NUMBER          0.00001
       --max_exposure NUMBER          1.0
-      --min_frame_interval NUMBER    0.020 (Hopper), 0.100 (Cedar-Box)
+      --min_frame_interval NUMBER    0.016 (Hopper), 0.100 (Cedar-Box)
       --star_count_goal NUMBER       20
       --sigma NUMBER                 8.0
       --ui_prefs <path>              ./cedar_ui_prefs.binpb
@@ -3956,7 +3956,7 @@ pub fn server_main(
     let mut args = args;
     args.min_frame_interval = Some(args.min_frame_interval.unwrap_or_else(|| {
         if product_name == "Hopper" {
-            Duration::from_millis(20)
+            Duration::from_millis(16)
         } else {
             Duration::from_millis(100)
         }
