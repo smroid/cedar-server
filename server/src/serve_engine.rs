@@ -477,7 +477,7 @@ impl ServeEngine {
         frame_result.star_candidates = centroids;
         frame_result.star_count_moving_average =
             detect_result.star_count_moving_average;
-        frame_result.hot_pixel_count = Some(detect_result.hot_pixel_count);
+        frame_result.hot_pixel_count = Some(detect_result.detected_hot_pixels.len() as i32);
         frame_result.noise_estimate = detect_result.noise_estimate;
 
         // Build display image.
@@ -580,23 +580,34 @@ impl ServeEngine {
             disp_image_binning * if display_sampling { 2 } else { 1 };
 
         // Replace hot pixels in the rotated display image.
+        // Hot pixel coords are in full-res image coordinates. Divide by
+        // binning_factor to get display-image space.
+        let bf = binning_factor as f64;
+        let bw = (width as f64 / bf) as u32;
+        let bh = (height as f64 / bf) as u32;
+        let (rot_w, rot_h) = rotated.dimensions();
+        // Algorithmically detected single-pixel hot pixels: write the
+        // pre-computed replacement value directly.
+        for hp in &detect_result.detected_hot_pixels {
+            let (rx, ry) = irr.transform_to_rotated(
+                hp.x as f64 / bf, hp.y as f64 / bf, bw, bh);
+            let rx = rx.round() as i32;
+            let ry = ry.round() as i32;
+            if rx >= 0 && ry >= 0 && rx < rot_w as i32 && ry < rot_h as i32 {
+                rotated.put_pixel(rx as u32, ry as u32,
+                                  image::Luma([hp.replacement_value]));
+            }
+        }
+        // Mapped bright spots: use fix_bright_spot to also cover bleed neighbors.
         if let Some(ref hpm) = ctx_hot_pixel_map {
             let hot_pixels = hpm.lock().await.get_hot_pixels();
-            // Hot pixel coords are in image coordinates. Divide by
-            // binning_factor to get display-image space.
-            let bf = binning_factor as f64;
-            let bw = (width as f64 / bf) as u32;
-            let bh = (height as f64 / bf) as u32;
-            let (rot_w, rot_h) = rotated.dimensions();
             for hp in &hot_pixels {
                 let (rx, ry) = irr.transform_to_rotated(
                     hp.x / bf, hp.y / bf, bw, bh);
                 let rx = rx.round() as i32;
                 let ry = ry.round() as i32;
-                if rx >= 0 && ry >= 0
-                    && rx < rot_w as i32 && ry < rot_h as i32
-                {
-                    Self::fix_hot_pixel(&mut rotated, rx, ry);
+                if rx >= 0 && ry >= 0 && rx < rot_w as i32 && ry < rot_h as i32 {
+                    Self::fix_bright_spot(&mut rotated, rx, ry);
                 }
             }
         }
@@ -958,7 +969,7 @@ impl ServeEngine {
             let locked_hpm = hpm.lock().await;
             if locked_hpm.is_ready() {
                 let cal_data = frame_result.calibration_data.as_mut().unwrap();
-                cal_data.hot_pixel_map_count =
+                cal_data.bright_spot_map_count =
                     Some(locked_hpm.get_hot_pixels().len() as i32);
             }
         }
@@ -995,11 +1006,11 @@ impl ServeEngine {
         compressor.compress_to_vec(image).unwrap()
     }
 
-    // Repairs a hot pixel at (rx, ry) in `image`. Finds the 3 brightest of
+    // Repairs a bright spot at (rx, ry) in `image`. Finds the 3 brightest of
     // the 8 surrounding pixels and computes the mean of the remaining 5.
     // Replaces the 3 brightest neighbors with that mean, and also replaces
     // the center pixel if it is brighter than the mean.
-    fn fix_hot_pixel(image: &mut GrayImage, rx: i32, ry: i32) {
+    fn fix_bright_spot(image: &mut GrayImage, rx: i32, ry: i32) {
         let (w, h) = image.dimensions();
         let mut neighbors: Vec<(u32, u32, u8)> = Vec::with_capacity(8);
         for dy in -1_i32..=1 {
@@ -1018,7 +1029,7 @@ impl ServeEngine {
         if neighbors.len() != 8 {
             return;
         }
-        // Sort descending; the 3 brightest are likely hot-pixel bleed.
+        // Sort descending; the 3 brightest are likely bright spot bleed.
         neighbors.sort_unstable_by(|a, b| b.2.cmp(&a.2));
         let dim_sum: u32 = neighbors[3..].iter().map(|&(_, _, v)| v as u32).sum();
         let dim_mean = (dim_sum / 5) as u8;

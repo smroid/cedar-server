@@ -433,7 +433,7 @@ impl Calibrator {
                 let noise_estimate = estimate_noise_from_image(&image);
                 get_stars_from_image(
                     &image, precomputed_binned, noise_estimate, detection_sigma,
-                    detection_binning, /*return_binned_image=*/false)
+                    detection_binning)
             }).await.unwrap();
         let stars = if use_hot_pixel_map {
             if let Some(hpm) = &self.hot_pixel_map {

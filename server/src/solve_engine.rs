@@ -558,22 +558,12 @@ impl SolveEngine {
         detect_result: &DetectResult,
         image_time: &SystemTime,
         minimum_stars: i32,
-        hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         solve_extension: &SolveExtension,
         solve_params: &SolveParams,
     ) -> (Option<PlateSolutionProto>, Option<SystemTime>, Duration) {
-        // Filter out hot pixels before solving.
-        let filtered_candidates = if let Some(ref hpm) = hot_pixel_map {
-            let (stars, _hot_pixels) =
-                hpm.lock().await.classify_candidates(&detect_result.star_candidates);
-            stars
-        } else {
-            detect_result.star_candidates.clone()
-        };
-
         let mut star_centroids =
-            Vec::<ImageCoord>::with_capacity(filtered_candidates.len());
-        for sc in &filtered_candidates {
+            Vec::<ImageCoord>::with_capacity(detect_result.star_candidates.len());
+        for sc in &detect_result.star_candidates {
             star_centroids.push(ImageCoord {
                 x: sc.centroid_x,
                 y: sc.centroid_y,
@@ -581,7 +571,7 @@ impl SolveEngine {
         }
 
         // Do we have enough stars to attempt a plate solution?
-        let have_stars = filtered_candidates.len() >= minimum_stars as usize;
+        let have_stars = detect_result.star_candidates.len() >= minimum_stars as usize;
 
         // Is IMU tracker available and usable?
         let imu_tracker;
@@ -1138,7 +1128,6 @@ impl SolveEngine {
                     &detect_result,
                     &detect_result.captured_image.readout_time,
                     minimum_stars,
-                    effective_hpm,
                     &solve_extension,
                     &solve_params,
                 )

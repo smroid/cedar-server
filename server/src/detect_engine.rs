@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use image::{GenericImageView, GrayImage};
 use imageproc::rect::Rect;
 use log::{debug, error};
-use cedar_detect::algorithm::{StarDescription, estimate_noise_from_image,
+use cedar_detect::algorithm::{HotPixel, StarDescription, estimate_noise_from_image,
                               get_stars_from_image, summarize_region_of_interest};
 use cedar_detect::image_funcs::histogram_from_region;
 use cedar_detect::histogram_funcs::{average_top_values,
@@ -624,7 +624,7 @@ impl DetectEngine {
             }  // focus_mode || daylight_mode
 
             let mut star_candidates: Vec<StarDescription> = vec![];
-            let mut hot_pixel_count = 0;
+            let mut detected_hot_pixels: Vec<HotPixel> = vec![];
             let mut detect_duration = Duration::ZERO;
 
             // If the captured_image is up to date w.r.t. the camera settings,
@@ -647,10 +647,10 @@ impl DetectEngine {
                 let precomputed_binned =
                     if detect_binning != 1 { Some(captured_image.binned_image.clone()) }
                     else { None };
-                (star_candidates, hot_pixel_count, _) =
+                (star_candidates, detected_hot_pixels, _) =
                     get_stars_from_image(
                         image, precomputed_binned, noise_estimate, detection_sigma,
-                        detect_binning, /*return_binned_image=*/false);
+                        detect_binning);
                 detect_duration = detect_start_time.elapsed();
                 // Histogram the center of the binned image (or full-res if
                 // binning==1) for auto-exposure and display level computation.
@@ -667,23 +667,19 @@ impl DetectEngine {
                 let mut histogram = histogram_from_region(histo_image, &histo_region);
                 let stats = stats_for_histogram(&histogram);
 
-                // Filter mapped hot pixels for auto-exposure and peak averaging.
-                // star_candidates in DetectResult retains the full unfiltered list.
-                let filtered_stars = if let Some(ref hpm) = effective_hpm {
-                    let (filtered, hot) =
+                // Filter mapped bright spots; star_candidates holds the clean list.
+                if let Some(ref hpm) = effective_hpm {
+                    let (filtered, _) =
                         hpm.lock().await.classify_candidates(&star_candidates);
-                    hot_pixel_count = hot.len() as i32;
-                    filtered
-                } else {
-                    star_candidates.clone()
-                };
-                let num_stars_detected = filtered_stars.len();
+                    star_candidates = filtered;
+                }
+                let num_stars_detected = star_candidates.len();
 
                 // Average the peak pixels of the N brightest stars.
                 let mut sum_peak: i32 = 0;
                 let mut num_peak = 0;
                 const NUM_PEAKS: i32 = 10;
-                for star in &filtered_stars {
+                for star in &star_candidates {
                     sum_peak += star.peak_value as i32;
                     num_peak += 1;
                     if num_peak >= NUM_PEAKS {
@@ -848,7 +844,7 @@ impl DetectEngine {
                 star_count_moving_average: locked_state.star_count_moving_average,
                 display_black_level: black_level,
                 noise_estimate,
-                hot_pixel_count,
+                detected_hot_pixels,
                 peak_value,
                 focus_aid,
                 daylight_mode,
@@ -883,9 +879,8 @@ pub struct DetectResult {
     pub captured_image: CapturedImage,
 
     // The star candidates detected by CedarDetect; ordered by highest
-    // StarDescription.mean_brightness first. If a hot pixel map is supplied,
-    // this list is NOT filtered, and can include hot pixels. The hot pixel map
-    // is applied prior to plate solving.
+    // StarDescription.mean_brightness first. Hot pixels (both algorithmically
+    // detected and hot pixel map entries) are excluded.
     pub star_candidates: Vec<StarDescription>,
 
     // The number of detected stars as a moving average of recent processing
@@ -900,8 +895,8 @@ pub struct DetectResult {
     // Estimate of the RMS noise of the captured image.
     pub noise_estimate: f64,
 
-    // The number of hot pixels detected by CedarDetect.
-    pub hot_pixel_count: i32,
+    // Isolated hot pixels detected by CedarDetect, in image coordinates.
+    pub detected_hot_pixels: Vec<HotPixel>,
 
     // The peak pixel value of star_candidates. If star_candidates is empty,
     // this value is fixed to 255. If daylight_mode, this is the value of the

@@ -425,8 +425,8 @@ message FrameResult {
   // star catalog magnitudes.
   repeated StarCentroid star_candidates = 4;
 
-  // The number of candidates that were rejected as hot pixels. These are
-  // included in star_candidates.
+  // The number of candidates that were rejected as isolated hot pixels. These
+  // are not included in star_candidates.
   optional int32 hot_pixel_count = 39;
 
   // The number of detected stars as a moving average of recent processing
@@ -772,7 +772,7 @@ message CalibrationData {
 
   // The number of entries in the hot pixel map. Omitted if a hot pixel map is
   // not being used or is not yet ready.
-  optional int32 hot_pixel_map_count = 23;
+  optional int32 bright_spot_map_count = 23;
 
   reserved 9, 10, 13, 14;
 }
@@ -946,7 +946,7 @@ message ActionRequest {
   optional bool calibrate_dark_frame = 13;
 
   // Discards the hot pixel map and any partial state towards building it.
-  // After this action, CalibrationData.hot_pixel_map_count will be absent
+  // After this action, CalibrationData.bright_spot_map_count will be absent
   // until the map is rebuilt.
   optional bool reset_hot_pixel_map = 14;
 
