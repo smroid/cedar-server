@@ -1283,6 +1283,9 @@ impl Cedar for MyCedar {
                         boresight_pixel: Some(bsp),
                         ..Default::default()
                     };
+                    if let Some(hpm) = self.state.lock().await.hot_pixel_map.clone() {
+                        hpm.lock().await.reset();
+                    }
                 } else {
                     return Err(logged_status!(
                         failed_precondition,
@@ -1333,6 +1336,9 @@ impl Cedar for MyCedar {
             {
                 return Err(tonic_status(x));
             };
+            if let Some(hpm) = self.state.lock().await.hot_pixel_map.clone() {
+                hpm.lock().await.reset();
+            }
             let preferences = Preferences {
                 boresight_pixel: Some(bsp.clone()),
                 ..Default::default()
