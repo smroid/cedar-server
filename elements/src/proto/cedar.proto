@@ -770,8 +770,8 @@ message CalibrationData {
   optional string camera_up_gyro_axis = 21;  // +X, -X, +Y, -Y, +Z, -Z.
   optional double camera_up_misalignment = 22;  // Degrees.
 
-  // The number of entries in the hot pixel map. Omitted if a hot pixel map is
-  // not being used or is not yet ready.
+  // The number of entries in the bright spot map. Omitted if a bright spot map
+  // is not being used or is not yet ready.
   optional int32 bright_spot_map_count = 23;
 
   reserved 9, 10, 13, 14;
