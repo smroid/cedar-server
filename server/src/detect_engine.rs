@@ -304,7 +304,7 @@ impl DetectEngine {
         // currently posted result is the same as the one the caller has already
         // obtained.
         loop {
-            let mut sleep_duration = Duration::from_millis(5);
+            let mut sleep_duration = Duration::from_millis(1);
             {
                 let locked_state = self.state.lock().await;
                 if locked_state.detect_result.is_some() &&
