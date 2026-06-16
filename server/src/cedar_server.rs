@@ -1201,6 +1201,7 @@ impl Cedar for MyCedar {
         let fr = Self::get_next_frame(
             self.state.clone(),
             req.prev_frame_id,
+            req.prev_solution_id,
             non_blocking,
             landscape,
             is_bluetooth,
@@ -2008,7 +2009,7 @@ impl MyCedar {
         // ordering is always CedarState -> ServeEngine, never the reverse.
         let serve_engine_arc = locked_state.serve_engine.clone();
         if let Some(sr) = serve_engine_arc.lock().await
-            .get_next_result(None, /* non_blocking= */ true).await
+            .get_next_result(None, None, /* non_blocking= */ true).await
         {
             locked_state.scaled_image = sr.scaled_image;
             locked_state.scaled_image_binning_factor =
@@ -2820,6 +2821,7 @@ impl MyCedar {
     async fn get_next_frame(
         state: Arc<tokio::sync::Mutex<CedarState>>,
         prev_frame_id: Option<i32>,
+        prev_solution_id: Option<i32>,
         non_blocking: bool,
         landscape: bool,
         is_bluetooth: bool,
@@ -2943,7 +2945,7 @@ impl MyCedar {
         let serve_result = serve_engine
             .lock()
             .await
-            .get_next_result(prev_frame_id, non_blocking)
+            .get_next_result(prev_frame_id, prev_solution_id, non_blocking)
             .await;
         if serve_result.is_none() {
             return None;

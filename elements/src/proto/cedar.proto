@@ -358,10 +358,20 @@ message FrameRequest {
   // server's current FrameResult.
   optional int32 prev_frame_id = 1;
 
+  // Alternative to prev_frame_id for clients that want updates on every plate
+  // solution. If provided, GetFrame() will block until FrameResult.solution_id
+  // differs from this value; this field takes precedence over prev_frame_id.
+  // When an IMU is available, solution_id advances on IMU interpolations
+  // between camera frames, so updates arrive at the IMU interpolation rate
+  // during motion.
+  // Without an IMU, solution_id advances only on camera frames, so behavior is
+  // identical to using prev_frame_id.
+  optional int32 prev_solution_id = 4;
+
   // If true, GetFrame() returns immediately. If the requested frame (a new frame
-  // different from 'prev_frame_id' or the current frame if 'prev_frame_id' is
-  // omitted) is available, the returned FrameResult.has_result field will be
-  // true.
+  // different from 'prev_frame_id'/'prev_solution_id', or the current
+  // frame/solution if neither is provided) is available, the returned
+  // FrameResult.has_result field will be true.
   optional bool non_blocking = 2;
 
   // In most modes, Cedar adjusts the returned image rotation so that the zenith
@@ -375,7 +385,7 @@ message FrameRequest {
   optional DisplayOrientation display_orientation = 3;
 }
 
-// Next tag: 43.
+// Next tag: 44.
 message FrameResult {
   // If FrameRequest.non_blocking is omitted or false, this field will be
   // absent. If FrameRequest.non_blocking is true, this field will be true
@@ -387,6 +397,13 @@ message FrameResult {
   // Identifies this FrameResult. A client can include this in its next
   // FrameRequest to block until a new FrameResult is available.
   int32 frame_id = 1;
+
+  // Identifies the plate solution that produced this FrameResult. Increments
+  // on every solution posted by the solve engine, including IMU interpolations
+  // between camera frames. Without an IMU, advances in lockstep with frame_id.
+  // A client can include this in FrameRequest.prev_solution_id to be notified
+  // of every solution, not just new camera frames.
+  int32 solution_id = 43;
 
   // Information about Cedar-server.
   ServerInformation server_information = 32;

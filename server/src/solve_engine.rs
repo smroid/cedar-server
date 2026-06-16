@@ -40,6 +40,12 @@ use log::{debug, warn};
 
 use crate::detect_engine::{DetectEngine, DetectResult};
 
+const IMU_INTERPOLATION_INTERVAL: Duration = Duration::from_millis(100);
+const MINIMUM_STARS: usize = 4;
+// Minimum angular velocity (degrees/sec) below which we suppress IMU
+// interpolation when the scope is at rest.
+const IMU_MOTION_THRESHOLD_DEG_PER_SEC: f64 = 0.2;
+
 // Pre-solve callback: called before the plate solve to get any active slew
 // target and/or sync coordinates. Returns (slew_target, sync_coord).
 type PreSolveCallback = Arc<
@@ -112,10 +118,6 @@ struct SolveState {
 
     frame_id: Option<i32>,
 
-    // Required number of detected stars, below which we don't attempt a plate
-    // solution.
-    minimum_stars: i32,
-
     // Parameters for plate solver. See documentation of Tetra3's
     // solve_from_centroids() function for a description of these items.
     fov_estimate: Option<f64>,
@@ -144,6 +146,10 @@ struct SolveState {
     // Estimated time at which `plate_solution` will next be updated.
     eta: Option<Instant>,
 
+    // Monotonically increasing counter assigned to each PlateSolution,
+    // including IMU interpolations. Used by consumers to detect new solutions
+    // independently of frame_id (which only advances on new camera frames).
+    next_solution_id: i32,
     plate_solution: Option<PlateSolution>,
     logged_error: bool,
 }
@@ -173,7 +179,6 @@ impl SolveEngine {
                 use_imu_tracker: imu_tracker.is_some(),
                 observer_location,
                 frame_id: None,
-                minimum_stars: 4,
                 fov_estimate: None,
                 match_radius: 0.01,
                 match_threshold: 1e-5, // TODO: pass in from cmdline arg.
@@ -192,6 +197,7 @@ impl SolveEngine {
                 ),
                 last_solve_attempt_time: None,
                 eta: None,
+                next_solution_id: 0,
                 plate_solution: None,
                 logged_error: false,
             })),
@@ -299,26 +305,6 @@ impl SolveEngine {
         Ok(())
     }
 
-    pub async fn set_minimum_stars(
-        &mut self,
-        minimum_stars: i32,
-    ) -> Result<(), CanonicalError> {
-        if minimum_stars < 4 {
-            return Err(invalid_argument_error(
-                format!(
-                    "minimum_stars must be at least 4; got {}",
-                    minimum_stars
-                )
-                .as_str(),
-            ));
-        }
-        let mut locked_state = self.state.lock().await;
-        locked_state.minimum_stars = minimum_stars;
-        // Don't need to do anything, worker thread will pick up the change when
-        // it finishes the current interval.
-        Ok(())
-    }
-
     pub async fn set_solve_timeout(
         &mut self,
         solve_timeout: Duration,
@@ -371,15 +357,15 @@ impl SolveEngine {
     /// the result of solving the most recently completed star detection.
     /// This function does not "consume" the information that it returns;
     /// multiple callers will receive the current solve result (or next solve
-    /// result, if there is not yet a current result) if `prev_frame_id` is
+    /// result, if there is not yet a current result) if `prev_solution_id` is
     /// omitted.
-    /// If `prev_frame_id` is supplied, the call blocks while the current result
-    /// has the same id value.
-    /// Returns: the processed result along with its frame_id value. Returns
-    ///     None if non_blocking and a suitable result is not yet available.
+    /// If `prev_solution_id` is supplied, the call blocks while the current
+    /// result has the same solution_id.
+    /// Returns: the processed result. Returns None if non_blocking and a
+    ///     suitable result is not yet available.
     pub async fn get_next_result(
         &mut self,
-        prev_frame_id: Option<i32>,
+        prev_solution_id: Option<i32>,
         non_blocking: bool,
     ) -> Option<PlateSolution> {
         // Start worker thread if terminated or not yet started.
@@ -393,14 +379,13 @@ impl SolveEngine {
             {
                 let locked_state = self.state.lock().await;
                 if locked_state.plate_solution.is_some()
-                    && (prev_frame_id.is_none()
-                        || prev_frame_id.unwrap()
+                    && (prev_solution_id.is_none()
+                        || prev_solution_id.unwrap()
                             != locked_state
                                 .plate_solution
                                 .as_ref()
                                 .unwrap()
-                                .detect_result
-                                .frame_id)
+                                .solution_id)
                 {
                     // Don't consume it, other clients may want it.
                     return Some(locked_state.plate_solution.clone().unwrap());
@@ -429,12 +414,12 @@ impl SolveEngine {
         locked_state.solve_interval_stats.reset_session();
     }
 
-    pub async fn estimate_delay(&self, prev_frame_id: Option<i32>) -> Option<Duration> {
+    pub async fn estimate_delay(&self, prev_solution_id: Option<i32>) -> Option<Duration> {
         let locked_state = self.state.lock().await;
         if locked_state.plate_solution.is_some() &&
-            (prev_frame_id.is_none() ||
-             prev_frame_id.unwrap() !=
-             locked_state.plate_solution.as_ref().unwrap().detect_result.frame_id)
+            (prev_solution_id.is_none() ||
+             prev_solution_id.unwrap() !=
+             locked_state.plate_solution.as_ref().unwrap().solution_id)
         {
             Some(Duration::ZERO)
         } else if locked_state.eta.is_some() {
@@ -557,21 +542,23 @@ impl SolveEngine {
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_result: &DetectResult,
         image_time: &SystemTime,
-        minimum_stars: i32,
         solve_extension: &SolveExtension,
         solve_params: &SolveParams,
+        skip_stars: bool,
     ) -> (Option<PlateSolutionProto>, Option<SystemTime>, Duration) {
         let mut star_centroids =
             Vec::<ImageCoord>::with_capacity(detect_result.star_candidates.len());
-        for sc in &detect_result.star_candidates {
-            star_centroids.push(ImageCoord {
-                x: sc.centroid_x,
-                y: sc.centroid_y,
-            });
+        if !skip_stars {
+            for sc in &detect_result.star_candidates {
+                star_centroids.push(ImageCoord {
+                    x: sc.centroid_x,
+                    y: sc.centroid_y,
+                });
+            }
         }
 
         // Do we have enough stars to attempt a plate solution?
-        let have_stars = detect_result.star_candidates.len() >= minimum_stars as usize;
+        let have_stars = star_centroids.len() >= MINIMUM_STARS;
 
         // Is IMU tracker available and usable?
         let imu_tracker;
@@ -628,7 +615,7 @@ impl SolveEngine {
         let mut solver_duration = Duration::ZERO;
 
         if have_stars || imu_estimate.is_some() {
-            {
+            if !skip_stars {
                 let mut locked_state = state.lock().await;
                 // Record interval since last solve attempt.
                 let now = Instant::now();
@@ -670,16 +657,13 @@ impl SolveEngine {
                     // Empirically, solutions are possible at 12 centroids,
                     // and are ~reliable at 20 or more centroids. For logging,
                     // we split the difference.
-                    if star_centroids.len() >= 16 {
+                    if !skip_stars && star_centroids.len() >= 16 {
                         let mut locked_state = state.lock().await;
                         // Secondly, don't log the error if we've just logged
                         // one.
                         if !locked_state.logged_error {
-                            warn!(
-                                "Solver error {:?} with {} centroids",
-                                e,
-                                star_centroids.len()
-                            );
+                            warn!("Solver error {:?} with {} centroids",
+                                  e, star_centroids.len());
                             locked_state.logged_error = true;
                         }
                     }
@@ -714,7 +698,7 @@ impl SolveEngine {
                 }
             }
             solve_finish_time = Some(SystemTime::now());
-        } else if !have_stars {
+        } else if !have_stars && !skip_stars {
             // Not enough stars for solve attempt - clear last attempt time
             // so we don't include non-solving periods in interval stats.
             let mut locked_state = state.lock().await;
@@ -733,6 +717,55 @@ impl SolveEngine {
         }
 
         (plate_solution_proto, solve_finish_time, solver_duration)
+    }
+
+    async fn process_and_post(
+        state: Arc<tokio::sync::Mutex<SolveState>>,
+        detect_result: &DetectResult,
+        plate_solution_proto: Option<PlateSolutionProto>,
+        post_solve_callback: &PostSolveCallback,
+        hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+        slew_target: Option<CelestialCoord>,
+        sync_coord: Option<CelestialCoord>,
+        solve_finish_time: Option<SystemTime>,
+    ) {
+        let (width, height) = detect_result.captured_image.image.dimensions();
+        let (
+            fov_catalog_entries,
+            decrowded_fov_catalog_entries,
+            boresight_catalog_entry,
+            boresight_catalog_entry_distance,
+            boresight_constellation,
+            slew_request,
+            boresight_image,
+            boresight_image_region,
+        ) = Self::process_plate_solution_result(
+            state.clone(),
+            detect_result,
+            &plate_solution_proto,
+            post_solve_callback,
+            hot_pixel_map,
+            slew_target,
+            sync_coord,
+            width,
+            height,
+        )
+        .await;
+        Self::finalize_and_post_result(
+            state,
+            detect_result.clone(),
+            plate_solution_proto,
+            fov_catalog_entries,
+            decrowded_fov_catalog_entries,
+            boresight_catalog_entry,
+            boresight_catalog_entry_distance,
+            boresight_constellation,
+            slew_request,
+            boresight_image,
+            boresight_image_region,
+            solve_finish_time,
+        )
+        .await;
     }
 
     async fn process_plate_solution_result(
@@ -801,7 +834,9 @@ impl SolveEngine {
             for (idx, &c) in psp.rotation_matrix.iter().enumerate() {
                 rotation_matrix[idx] = c;
             }
-            state.lock().await.solve_success_stats.add_value(1.0);
+            if !psp.solution_from_imu {
+                state.lock().await.solve_success_stats.add_value(1.0);
+            }
 
             // Update hot pixel map with the full (unfiltered) star candidates
             // and the solved sky position. Skip IMU estimate, which occurs when
@@ -990,7 +1025,6 @@ impl SolveEngine {
         boresight_image: Option<GrayImage>,
         boresight_image_region: Option<Rect>,
         solve_finish_time: Option<SystemTime>,
-        processing_duration: std::time::Duration,
     ) {
         let (
             solve_duration_stats,
@@ -1009,7 +1043,11 @@ impl SolveEngine {
             )
         };
 
-        state.lock().await.plate_solution = Some(PlateSolution {
+        let mut locked_state = state.lock().await;
+        let solution_id = locked_state.next_solution_id;
+        locked_state.next_solution_id = solution_id.wrapping_add(1);
+        locked_state.plate_solution = Some(PlateSolution {
+            solution_id,
             detect_result,
             plate_solution: plate_solution_proto,
             fov_catalog_entries,
@@ -1021,7 +1059,6 @@ impl SolveEngine {
             boresight_image,
             boresight_image_region,
             solve_finish_time,
-            processing_duration,
             solve_duration_stats,
             solve_other_duration_stats,
             solve_attempt_stats,
@@ -1040,153 +1077,164 @@ impl SolveEngine {
         post_solve_callback: PostSolveCallback,
     ) {
         debug!("Starting solve engine");
+        let mut last_detect_result: Option<DetectResult> = None;
+
+        let mut slew_target: Option<CelestialCoord> = None;
+        let mut sync_coord: Option<CelestialCoord> = None;
+        let mut solve_extension = SolveExtension::default();
+        let mut solve_params = SolveParams::default();
+        let effective_hpm = &hot_pixel_map;
         loop {
-            let minimum_stars;
-            let frame_id;
-            let mut solve_extension = SolveExtension::default();
-            let mut solve_params = SolveParams::default();
+            // Check for a new detect result without blocking.
+            let frame_id = state.lock().await.frame_id;
+            let new_detect_result = detect_engine
+                .lock()
+                .await
+                .get_next_result(frame_id, /* non_blocking= */ true)
+                .await;
 
-            // Call pre-solve callback to get current slew target and sync
-            // coords.
-            let (slew_target, sync_coord) = pre_solve_callback().await;
+            if let Some(detect_result) = new_detect_result {
+                // New camera frame: full star-based solve.
+                state.lock().await.deref_mut().frame_id =
+                    Some(detect_result.frame_id);
 
-            {
-                let mut locked_state = state.lock().await;
-                locked_state.eta = None;
-                locked_state.slew_target = slew_target.clone();
+                // Call pre-solve callback to get current slew target and sync
+                // coords.
+                (slew_target, sync_coord) = pre_solve_callback().await;
 
-                minimum_stars = locked_state.minimum_stars;
-                frame_id = locked_state.frame_id;
-                // Set up solve arguments.
-                if let Some(fov) = locked_state.fov_estimate {
-                    solve_params.fov_estimate = Some((fov, fov / 10.0));
-                }
-                solve_params.match_radius = Some(locked_state.match_radius);
-                solve_params.match_threshold =
-                    Some(locked_state.match_threshold);
-                solve_params.solve_timeout = Some(locked_state.solve_timeout);
-                if let Some(boresight_pixel) = &locked_state.boresight_pixel {
-                    solve_extension.target_pixel =
-                        Some(vec![boresight_pixel.clone()]);
-                }
-                if let Some(st) = &slew_target {
-                    solve_extension.target_sky_coord = Some(vec![st.clone()]);
-                }
-                solve_params.distortion = Some(locked_state.distortion);
-                solve_params.match_max_error =
-                    Some(locked_state.match_max_error);
-                solve_extension.return_matches = locked_state.return_matches;
-                solve_extension.return_catalog = true;
-                solve_extension.return_rotation_matrix = true;
-            }
-            // Get the most recent star detection result.
-            if let Some(delay_est) =
-                detect_engine.lock().await.estimate_delay(frame_id).await
-            {
-                state.lock().await.eta = Some(Instant::now() + delay_est);
-            }
+                {
+                    let mut locked_state = state.lock().await;
+                    locked_state.eta = None;
+                    locked_state.slew_target = slew_target.clone();
 
-            // Don't hold detect engine lock for the entirety of the time
-            // waiting for the next result.
-            let detect_result;
-            loop {
-                let dr = detect_engine
-                    .lock()
-                    .await
-                    .get_next_result(frame_id, /* non_blocking= */ true)
-                    .await;
-                if dr.is_none() {
-                    let short_delay = Duration::from_millis(1);
-                    let delay_est = detect_engine
-                        .lock()
-                        .await
-                        .estimate_delay(frame_id)
-                        .await;
-                    if let Some(delay_est) = delay_est {
-                        tokio::time::sleep(max(delay_est, short_delay)).await;
-                    } else {
-                        tokio::time::sleep(short_delay).await;
+                    // Set up solve arguments.
+                    solve_extension = SolveExtension::default();
+                    solve_params = SolveParams::default();
+                    if let Some(fov) = locked_state.fov_estimate {
+                        solve_params.fov_estimate = Some((fov, fov / 10.0));
                     }
-                    continue;
+                    solve_params.match_radius = Some(locked_state.match_radius);
+                    solve_params.match_threshold =
+                        Some(locked_state.match_threshold);
+                    solve_params.solve_timeout = Some(locked_state.solve_timeout);
+                    if let Some(boresight_pixel) = &locked_state.boresight_pixel {
+                        solve_extension.target_pixel =
+                            Some(vec![boresight_pixel.clone()]);
+                    }
+                    if let Some(st) = &slew_target {
+                        solve_extension.target_sky_coord = Some(vec![st.clone()]);
+                    }
+                    solve_params.distortion = Some(locked_state.distortion);
+                    solve_params.match_max_error =
+                        Some(locked_state.match_max_error);
+                    solve_extension.return_matches = locked_state.return_matches;
+                    solve_extension.return_catalog = true;
+                    solve_extension.return_rotation_matrix = true;
                 }
-                detect_result = dr.unwrap();
-                break;
-            }
-            state.lock().await.deref_mut().frame_id =
-                Some(detect_result.frame_id);
 
-            let image: &GrayImage = &detect_result.captured_image.image;
-            let (width, height) = image.dimensions();
+                let frame_start_time = Instant::now();
+                let (plate_solution_proto, solve_finish_time, solver_duration) =
+                    Self::attempt_plate_solve(
+                        solver.clone(),
+                        state.clone(),
+                        &detect_result,
+                        &detect_result.captured_image.readout_time,
+                        &solve_extension,
+                        &solve_params,
+                        /* skip_stars= */ false,
+                    )
+                    .await;
 
-            // Plate-solve using the recently detected stars.
-            let effective_hpm = &hot_pixel_map;
-            let frame_start_time = Instant::now();
-            let (plate_solution_proto, solve_finish_time, solver_duration) =
-                Self::attempt_plate_solve(
-                    solver.clone(),
+                let elapsed = frame_start_time.elapsed();
+                if state.lock().await.last_solve_attempt_time.is_some() {
+                    let mut locked_state = state.lock().await;
+                    locked_state.solve_duration_stats
+                        .add_value(solver_duration.as_secs_f64());
+                    locked_state.solve_other_duration_stats
+                        .add_value(elapsed.saturating_sub(solver_duration).as_secs_f64());
+                }
+
+                Self::process_and_post(
                     state.clone(),
                     &detect_result,
-                    &detect_result.captured_image.readout_time,
-                    minimum_stars,
-                    &solve_extension,
-                    &solve_params,
+                    plate_solution_proto,
+                    &post_solve_callback,
+                    effective_hpm,
+                    slew_target.clone(),
+                    sync_coord.clone(),
+                    solve_finish_time,
                 )
                 .await;
 
-            let (
-                fov_catalog_entries,
-                decrowded_fov_catalog_entries,
-                boresight_catalog_entry,
-                boresight_catalog_entry_distance,
-                boresight_constellation,
-                slew_request,
-                boresight_image,
-                boresight_image_region,
-            ) = Self::process_plate_solution_result(
-                state.clone(),
-                &detect_result,
-                &plate_solution_proto,
-                &post_solve_callback,
-                effective_hpm,
-                slew_target.clone(),
-                sync_coord.clone(),
-                width,
-                height,
-            )
-            .await;
-
-            let elapsed = frame_start_time.elapsed();
-            if state.lock().await.last_solve_attempt_time.is_some() {
-                let mut locked_state = state.lock().await;
-                locked_state.solve_duration_stats
-                    .add_value(solver_duration.as_secs_f64());
-                locked_state.solve_other_duration_stats
-                    .add_value(elapsed.saturating_sub(solver_duration).as_secs_f64());
+                last_detect_result = Some(detect_result);
+            } else if let Some(ref detect_result) = last_detect_result {
+                // No new camera frame; post an IMU-only update if IMU is usable
+                // and the scope is moving (to avoid sawtooth drift at rest).
+                let imu_tracker = {
+                    let locked_state = state.lock().await;
+                    if locked_state.use_imu_tracker
+                        && locked_state.imu_tracker.is_some()
+                        && locked_state.observer_location.is_some()
+                    {
+                        locked_state.imu_tracker.clone()
+                    } else {
+                        None
+                    }
+                };
+                let do_imu_interpolation = if let Some(ref tracker) = imu_tracker {
+                    match tracker.lock().await.get_angular_velocity_magnitude().await {
+                        Ok((v, _)) => {
+                            v >= IMU_MOTION_THRESHOLD_DEG_PER_SEC
+                        }
+                        Err(_e) => {
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+                if do_imu_interpolation {
+                    let (imu_plate_solution_proto, imu_solve_finish_time, _) =
+                        Self::attempt_plate_solve(
+                            solver.clone(),
+                            state.clone(),
+                            detect_result,
+                            &SystemTime::now(),
+                            &solve_extension,
+                            &solve_params,
+                            /* skip_stars= */ true,
+                        )
+                        .await;
+                    Self::process_and_post(
+                        state.clone(),
+                        detect_result,
+                        imu_plate_solution_proto,
+                        &post_solve_callback,
+                        effective_hpm,
+                        slew_target.clone(),
+                        sync_coord.clone(),
+                        imu_solve_finish_time,
+                    )
+                    .await;
+                }
             }
 
-            Self::finalize_and_post_result(
-                state.clone(),
-                detect_result,
-                plate_solution_proto,
-                fov_catalog_entries,
-                decrowded_fov_catalog_entries,
-                boresight_catalog_entry,
-                boresight_catalog_entry_distance,
-                boresight_constellation,
-                slew_request,
-                boresight_image,
-                boresight_image_region,
-                solve_finish_time,
-                elapsed,
-            )
-            .await;
-
-            // Rate-limit: sleep for any remaining time in the frame interval.
-            // This prevents the solve thread from pegging a CPU core when
-            // exposure times are short.
-            if let Some(remaining) = min_frame_interval.checked_sub(elapsed) {
-                tokio::time::sleep(remaining).await;
-            }
+            // Sleep until the next camera frame is expected or the IMU
+            // interpolation interval elapses, whichever comes first.
+            let current_frame_id = state.lock().await.frame_id;
+            let sleep_duration = if let Some(eta) = detect_engine
+                .lock()
+                .await
+                .estimate_delay(current_frame_id)
+                .await
+            {
+                eta.min(IMU_INTERPOLATION_INTERVAL)
+            } else {
+                IMU_INTERPOLATION_INTERVAL
+            };
+            // Always sleep at least min_frame_interval to prevent spinning when
+            // exposure times are very short.
+            tokio::time::sleep(sleep_duration.max(min_frame_interval)).await;
         } // loop.
     } // worker
 
@@ -1489,6 +1537,11 @@ impl SolveEngine {
 
 #[derive(Clone)]
 pub struct PlateSolution {
+    // Monotonically increasing ID, incremented on every post including IMU
+    // interpolations. Used by consumers to detect any new result regardless
+    // of whether the underlying camera frame changed.
+    pub solution_id: i32,
+
     // The detect result used to produce the information in this solve result.
     pub detect_result: DetectResult,
 
@@ -1530,11 +1583,6 @@ pub struct PlateSolution {
     // Time at which the plate solve completed. Omitted if a solve was not
     // attempted.
     pub solve_finish_time: Option<SystemTime>,
-
-    // Time taken to produce this PlateSolution, excluding the time taken to
-    // detect stars. Encompasses both attempt_plate_solve and
-    // process_plate_solution_result.
-    pub processing_duration: std::time::Duration,
 
     // Distribution of attempt_plate_solve() durations.
     pub solve_duration_stats: ValueStats,

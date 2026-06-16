@@ -49,6 +49,7 @@ pub struct ServeContext {
 // State shared between the worker thread and ServeEngine methods.
 struct ServeState {
     frame_id: Option<i32>,
+    solution_id: Option<i32>,
 
     // Most recently produced result.
     serve_result: Option<ServeResult>,
@@ -92,6 +93,7 @@ impl ServeEngine {
         ServeEngine {
             state: Arc::new(tokio::sync::Mutex::new(ServeState {
                 frame_id: None,
+                solution_id: None,
                 serve_result: None,
                 eta: None,
                 context,
@@ -157,13 +159,15 @@ impl ServeEngine {
     }
 
     /// Returns the most recent serve result, waiting for a new one if the
-    /// caller's prev_frame_id matches the current result's frame_id.
+    /// caller's prev_solution_id or prev_frame_id matches the current result.
+    /// prev_solution_id takes precedence when both are provided.
     ///
     /// Does not consume the result; multiple callers receive the same result.
     /// Returns None if non_blocking and no suitable result is available yet.
     pub async fn get_next_result(
         &mut self,
         prev_frame_id: Option<i32>,
+        prev_solution_id: Option<i32>,
         non_blocking: bool,
     ) -> Option<ServeResult> {
         self.start();
@@ -173,9 +177,13 @@ impl ServeEngine {
             {
                 let locked_state = self.state.lock().await;
                 if let Some(ref sr) = locked_state.serve_result {
-                    if prev_frame_id.is_none()
-                        || prev_frame_id.unwrap() != sr.frame_result.frame_id
-                    {
+                    let is_new = if let Some(psid) = prev_solution_id {
+                        sr.frame_result.solution_id != psid
+                    } else {
+                        prev_frame_id.is_none()
+                            || prev_frame_id.unwrap() != sr.frame_result.frame_id
+                    };
+                    if is_new {
                         // Clone the result for the caller without consuming it.
                         return Some(ServeResult {
                             frame_result: sr.frame_result.clone(),
@@ -252,10 +260,12 @@ impl ServeEngine {
         debug!("Starting serve engine");
         loop {
             let frame_id;
+            let solution_id;
             {
                 let mut locked_state = state.lock().await;
                 locked_state.eta = None;
                 frame_id = locked_state.frame_id;
+                solution_id = locked_state.solution_id;
             }
 
             // Determine mode from config (read briefly, release lock).
@@ -309,7 +319,7 @@ impl ServeEngine {
                     if let Some(delay_est) = solve_engine
                         .lock()
                         .await
-                        .estimate_delay(frame_id)
+                        .estimate_delay(solution_id)
                         .await
                     {
                         state.lock().await.eta =
@@ -319,7 +329,7 @@ impl ServeEngine {
                         let ps = solve_engine
                             .lock()
                             .await
-                            .get_next_result(frame_id, /* non_blocking= */ true)
+                            .get_next_result(solution_id, /* non_blocking= */ true)
                             .await;
                         if let Some(ps) = ps {
                             let dr = ps.detect_result.clone();
@@ -329,7 +339,7 @@ impl ServeEngine {
                         let delay_est = solve_engine
                             .lock()
                             .await
-                            .estimate_delay(frame_id)
+                            .estimate_delay(solution_id)
                             .await;
                         tokio::time::sleep(
                             delay_est.map_or(short_delay, |d| max(d, short_delay)),
@@ -338,8 +348,14 @@ impl ServeEngine {
                     }
                 };
 
-            // Update our frame_id now that we have a new result.
-            state.lock().await.frame_id = Some(detect_result.frame_id);
+            // Update our frame_id and solution_id now that we have a new result.
+            {
+                let mut locked_state = state.lock().await;
+                locked_state.frame_id = Some(detect_result.frame_id);
+                if let Some(ref ps) = plate_solution {
+                    locked_state.solution_id = Some(ps.solution_id);
+                }
+            }
 
             let serve_start = Instant::now();
 
@@ -373,6 +389,9 @@ impl ServeEngine {
                 }
                 locked_state.image_rotator =
                     serve_result.image_rotator.clone();
+                if let Some(sid) = locked_state.solution_id {
+                    serve_result.frame_result.solution_id = sid;
+                }
                 locked_state.serve_result = Some(serve_result);
             }
 
