@@ -3021,9 +3021,15 @@ impl MyCedar {
         if let Some(attached_camera) = &attached_camera {
             let locked_camera = attached_camera.lock().await;
             let model = locked_camera.model().await;
-            if model == "ov5647" || model == "imx219"
-            {
+            if model == "ov5647" || model == "imx219" {
                 max_exposure_duration *= 3; // This camera is less sensitive.
+            }
+            if model == "imx219" {
+                // IMX219 VBLANK tops out at 65535 lines with PPL=3448, giving
+                // ~1.24s max. Cap here so the auto-exposure loop doesn't waste
+                // time requesting exposures the sensor cannot deliver.
+                max_exposure_duration =
+                    max_exposure_duration.min(Duration::from_millis(1240));
             }
         }
 
