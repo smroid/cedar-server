@@ -706,7 +706,7 @@ impl SolveEngine {
             locked_state.solve_attempt_stats.add_value(0.0);
         }
 
-        if !got_plate_solution_from_stars {
+        if !got_plate_solution_from_stars && !skip_stars {
             if let Some(ref tracker) = imu_tracker {
                 tracker
                     .lock()
