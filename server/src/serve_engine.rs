@@ -210,11 +210,14 @@ impl ServeEngine {
     }
 
     pub async fn reset_session_stats(&mut self) {
-        self.state
-            .lock()
-            .await
-            .serve_latency_stats
-            .reset_session();
+        let mut locked_state = self.state.lock().await;
+        locked_state.serve_latency_stats.reset_session();
+        // Clear solution_id so the next serve result emits solution_id=0,
+        // causing the client to fall back to prev_frame_id. This avoids a
+        // hang on OPERATE->SETUP transition: in focus mode the serve engine
+        // polls detect (not solve), so solution_id would never advance past
+        // the last value the client already saw.
+        locked_state.solution_id = None;
     }
 
     fn start(&mut self) {
