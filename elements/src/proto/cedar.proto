@@ -364,11 +364,8 @@ message FrameRequest {
   // When an IMU is available, solution_id advances on IMU interpolations
   // between camera frames, so updates arrive at the IMU interpolation rate
   // during motion.
-  // Without an IMU, solution_id advances only on camera frames, so behavior is
-  // identical to using prev_frame_id.
-  // In non-OPERATE modes (Setup/Focus), FrameResult.solution_id is always 0;
-  // clients should fall back to prev_frame_id in those modes (i.e., not send
-  // prev_solution_id when the previous response had solution_id == 0).
+  // Without an IMU, or in non-OPERATE modes, solution_id advances once per
+  // camera frame, so behavior is identical to using prev_frame_id.
   optional int32 prev_solution_id = 4;
 
   // If true, GetFrame() returns immediately. If the requested frame (a new frame
@@ -401,13 +398,11 @@ message FrameResult {
   // FrameRequest to block until a new FrameResult is available.
   int32 frame_id = 1;
 
-  // Identifies the plate solution that produced this FrameResult. Increments
-  // on every solution posted by the solve engine, including IMU interpolations
-  // between camera frames. Without an IMU, advances in lockstep with frame_id.
-  // A client can include this in FrameRequest.prev_solution_id to be notified
-  // of every solution, not just new camera frames.
-  // Set to 0 in non-OPERATE modes (Setup/Focus); clients must not send
-  // prev_solution_id when this field is 0 — use prev_frame_id instead.
+  // Identifies the solution that produced this FrameResult. Always advances
+  // on every new result. In OPERATE mode with an IMU, also advances on IMU
+  // interpolations between camera frames, so updates arrive at the IMU rate
+  // during motion. A client can include this in FrameRequest.prev_solution_id
+  // to be notified of every solution, not just new camera frames.
   int32 solution_id = 43;
 
   // Information about Cedar-server.

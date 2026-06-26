@@ -49,7 +49,14 @@ pub struct ServeContext {
 // State shared between the worker thread and ServeEngine methods.
 struct ServeState {
     frame_id: Option<i32>,
-    solution_id: Option<i32>,
+    // The last solve engine solution_id we consumed; used to poll the solve
+    // engine for the next result in OPERATE mode.
+    last_solve_solution_id: Option<i32>,
+    // Stamped on every posted result; advances on every new frame regardless
+    // of mode. In OPERATE mode, replaced by the solve engine's solution_id
+    // so IMU interpolations (which advance the solve engine counter between
+    // camera frames) also wake clients polling on prevSolutionId.
+    next_solution_id: i32,
 
     // Most recently produced result.
     serve_result: Option<ServeResult>,
@@ -93,7 +100,8 @@ impl ServeEngine {
         ServeEngine {
             state: Arc::new(tokio::sync::Mutex::new(ServeState {
                 frame_id: None,
-                solution_id: None,
+                last_solve_solution_id: None,
+                next_solution_id: 1,  // 0 is the proto default/"not set" sentinel
                 serve_result: None,
                 eta: None,
                 context,
@@ -210,14 +218,7 @@ impl ServeEngine {
     }
 
     pub async fn reset_session_stats(&mut self) {
-        let mut locked_state = self.state.lock().await;
-        locked_state.serve_latency_stats.reset_session();
-        // Clear solution_id so the next serve result emits solution_id=0,
-        // causing the client to fall back to prev_frame_id. This avoids a
-        // hang on OPERATE->SETUP transition: in focus mode the serve engine
-        // polls detect (not solve), so solution_id would never advance past
-        // the last value the client already saw.
-        locked_state.solution_id = None;
+        self.state.lock().await.serve_latency_stats.reset_session();
     }
 
     fn start(&mut self) {
@@ -263,12 +264,12 @@ impl ServeEngine {
         debug!("Starting serve engine");
         loop {
             let frame_id;
-            let solution_id;
+            let last_solve_solution_id;
             {
                 let mut locked_state = state.lock().await;
                 locked_state.eta = None;
                 frame_id = locked_state.frame_id;
-                solution_id = locked_state.solution_id;
+                last_solve_solution_id = locked_state.last_solve_solution_id;
             }
 
             // Determine mode from config (read briefly, release lock).
@@ -322,7 +323,7 @@ impl ServeEngine {
                     if let Some(delay_est) = solve_engine
                         .lock()
                         .await
-                        .estimate_delay(solution_id)
+                        .estimate_delay(last_solve_solution_id)
                         .await
                     {
                         state.lock().await.eta =
@@ -332,7 +333,7 @@ impl ServeEngine {
                         let ps = solve_engine
                             .lock()
                             .await
-                            .get_next_result(solution_id, /* non_blocking= */ true)
+                            .get_next_result(last_solve_solution_id, /* non_blocking= */ true)
                             .await;
                         if let Some(ps) = ps {
                             let dr = ps.detect_result.clone();
@@ -342,7 +343,7 @@ impl ServeEngine {
                         let delay_est = solve_engine
                             .lock()
                             .await
-                            .estimate_delay(solution_id)
+                            .estimate_delay(last_solve_solution_id)
                             .await;
                         tokio::time::sleep(
                             delay_est.map_or(short_delay, |d| max(d, short_delay)),
@@ -351,14 +352,24 @@ impl ServeEngine {
                     }
                 };
 
-            // Update our frame_id and solution_id now that we have a new result.
-            {
+            // Update frame_id and assign a solution_id for this result.
+            // In OPERATE mode, use the solve engine's solution_id directly so
+            // that IMU interpolations (which advance the solve engine's counter
+            // between camera frames) still wake clients polling prevSolutionId.
+            // In all other modes, use our own counter so solution_id always
+            // advances regardless of whether the solve engine is running.
+            let solution_id = {
                 let mut locked_state = state.lock().await;
                 locked_state.frame_id = Some(detect_result.frame_id);
                 if let Some(ref ps) = plate_solution {
-                    locked_state.solution_id = Some(ps.solution_id);
+                    locked_state.last_solve_solution_id = Some(ps.solution_id);
+                    ps.solution_id
+                } else {
+                    let sid = locked_state.next_solution_id;
+                    locked_state.next_solution_id = sid.wrapping_add(1);
+                    sid
                 }
-            }
+            };
 
             let serve_start = Instant::now();
 
@@ -392,9 +403,7 @@ impl ServeEngine {
                 }
                 locked_state.image_rotator =
                     serve_result.image_rotator.clone();
-                if let Some(sid) = locked_state.solution_id {
-                    serve_result.frame_result.solution_id = sid;
-                }
+                serve_result.frame_result.solution_id = solution_id;
                 locked_state.serve_result = Some(serve_result);
             }
 
