@@ -44,7 +44,7 @@ const IMU_INTERPOLATION_INTERVAL: Duration = Duration::from_millis(100);
 const MINIMUM_STARS: usize = 4;
 // Minimum angular velocity (degrees/sec) below which we suppress IMU
 // interpolation when the scope is at rest.
-const IMU_MOTION_THRESHOLD_DEG_PER_SEC: f64 = 0.2;
+const IMU_MOTION_THRESHOLD_DEG_PER_SEC: f64 = 0.5;
 
 // Pre-solve callback: called before the plate solve to get any active slew
 // target and/or sync coordinates. Returns (slew_target, sync_coord).
