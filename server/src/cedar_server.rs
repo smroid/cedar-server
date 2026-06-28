@@ -2536,11 +2536,14 @@ impl MyCedar {
         let mut cached_proc = self.cedar_process_load.lock().await;
         if cached_proc.2.elapsed() >= Duration::from_secs(60) {
             if let Ok(stat_str) = tokio::fs::read_to_string("/proc/self/stat").await {
-                let fields: Vec<&str> = stat_str.split_whitespace().collect();
-                // Fields 13 and 14 (0-indexed) are utime and stime in clock ticks.
-                if fields.len() > 14 {
-                    if let (Ok(utime), Ok(stime)) = (fields[13].parse::<u64>(),
-                                                     fields[14].parse::<u64>()) {
+                // Skip past the process name field "(name)" which may contain
+                // spaces. utime/stime are fields 13/14 (0-indexed) in the full
+                // line, i.e. indices 11/12 after the closing ')'.
+                let after_comm = stat_str.find(')').map(|i| &stat_str[i+1..]);
+                let fields: Vec<&str> = after_comm.unwrap_or("").split_whitespace().collect();
+                if fields.len() > 12 {
+                    if let (Ok(utime), Ok(stime)) = (fields[11].parse::<u64>(),
+                                                     fields[12].parse::<u64>()) {
                         let ticks = utime + stime;
                         let elapsed = cached_proc.2.elapsed().as_secs_f32();
                         let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f32;
