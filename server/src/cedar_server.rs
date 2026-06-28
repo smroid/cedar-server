@@ -221,9 +221,14 @@ struct MyCedar {
 
     connection_counters: Arc<ConnectionCounters>,
 
-    // Cached CPU temperature and when it was last read, to avoid reading it on
-    // every getFrame() call.
+    // Cached CPU temperature and load average, read at most once per minute.
     cpu_temperature: Arc<tokio::sync::Mutex<(f32, Instant)>>,
+    cpu_load_average: Arc<tokio::sync::Mutex<(f32, Instant)>>,
+
+    cpu_core_count: i32,
+
+    // Process CPU usage: cached result, and previous (ticks, Instant) sample.
+    cedar_process_load: Arc<tokio::sync::Mutex<(f32, u64, Instant)>>,
 }
 
 struct CedarState {
@@ -2442,6 +2447,9 @@ impl MyCedar {
                 lx200_bluetooth: self.connection_counters.lx200_bluetooth.load(AtomicOrdering::Relaxed) as i32,
             }),
             demo_image_names: self.demo_images.clone(),
+            system_load_average: 0.0,
+            cpu_core_count: 0,
+            cedar_load_average: 0.0,
         };
 
         // Process IMU info (outside state lock).
@@ -2507,6 +2515,47 @@ impl MyCedar {
             cached.1 = Instant::now();
         }
         server_info.cpu_temperature = cached.0;
+
+        // Get 1-minute load average, reading /proc/loadavg at most once per minute.
+        let mut cached_load = self.cpu_load_average.lock().await;
+        if cached_load.1.elapsed() >= Duration::from_secs(60) {
+            if let Ok(loadavg_str) = tokio::fs::read_to_string("/proc/loadavg").await {
+                if let Some(first) = loadavg_str.split_whitespace().next() {
+                    if let Ok(load) = first.parse::<f32>() {
+                        cached_load.0 = load;
+                    }
+                }
+            }
+            cached_load.1 = Instant::now();
+        }
+        server_info.system_load_average = cached_load.0;
+        server_info.cpu_core_count = self.cpu_core_count;
+
+        // Get cedar process CPU usage by sampling /proc/self/stat at most once
+        // per minute and computing delta ticks / delta time.
+        let mut cached_proc = self.cedar_process_load.lock().await;
+        if cached_proc.2.elapsed() >= Duration::from_secs(60) {
+            if let Ok(stat_str) = tokio::fs::read_to_string("/proc/self/stat").await {
+                let fields: Vec<&str> = stat_str.split_whitespace().collect();
+                // Fields 13 and 14 (0-indexed) are utime and stime in clock ticks.
+                if fields.len() > 14 {
+                    if let (Ok(utime), Ok(stime)) = (fields[13].parse::<u64>(),
+                                                     fields[14].parse::<u64>()) {
+                        let ticks = utime + stime;
+                        let elapsed = cached_proc.2.elapsed().as_secs_f32();
+                        let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f32;
+                        if clk_tck > 0.0 && elapsed > 0.0 && cached_proc.1 > 0 {
+                            cached_proc.0 = (ticks.saturating_sub(cached_proc.1)) as f32
+                                / clk_tck / elapsed;
+                        }
+                        cached_proc.1 = ticks;
+                    }
+                }
+            }
+            cached_proc.2 = Instant::now();
+        }
+        server_info.cedar_load_average = cached_proc.0;
+
         server_info.server_time =
             Some(prost_types::Timestamp::from(SystemTime::now()));
 
@@ -3421,10 +3470,18 @@ impl MyCedar {
             os_version,
             serial_number,
             connection_counters: connection_counters.clone(),
-            // Timestamp in the past so the first getFrame call triggers a read.
+            // Timestamps in the past so the first call triggers a read.
             cpu_temperature: Arc::new(tokio::sync::Mutex::new(
                 (0.0_f32, Instant::now() - Duration::from_secs(120))
             )),
+            cpu_load_average: Arc::new(tokio::sync::Mutex::new(
+                (0.0_f32, Instant::now() - Duration::from_secs(120))
+            )),
+            cedar_process_load: Arc::new(tokio::sync::Mutex::new(
+                (0.0_f32, 0_u64, Instant::now() - Duration::from_secs(120))
+            )),
+            cpu_core_count: std::thread::available_parallelism()
+                .map(|n| n.get() as i32).unwrap_or(0),
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;

@@ -52,6 +52,9 @@ message ServerInformation {
   FeatureLevel feature_level = 4;
 
   string processor_model = 5;  // Which Rpi model.
+  // Number of logical CPU cores.
+  int32 cpu_core_count = 19;
+
   string os_version = 6;
   string serial_number = 12;
 
@@ -83,6 +86,13 @@ message ServerInformation {
 
   // Filenames of image(s) found in run/demo_images directory.
   repeated string demo_image_names = 11;
+
+  // Recent system load average (number of runnable/waiting processes).
+  float system_load_average = 18;
+
+  // Recent CPU usage of the cedar server process, in cores (e.g. 1.0 = one full
+  // core).
+  float cedar_load_average = 20;
 }
 
 message CameraModel {
