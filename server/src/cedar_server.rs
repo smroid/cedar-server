@@ -2447,9 +2447,9 @@ impl MyCedar {
                 lx200_bluetooth: self.connection_counters.lx200_bluetooth.load(AtomicOrdering::Relaxed) as i32,
             }),
             demo_image_names: self.demo_images.clone(),
-            system_load_average: 0.0,
-            cpu_core_count: 0,
-            cedar_load_average: 0.0,
+            system_load_average: None,
+            cpu_core_count: None,
+            cedar_load_average: None,
         };
 
         // Process IMU info (outside state lock).
@@ -2528,8 +2528,8 @@ impl MyCedar {
             }
             cached_load.1 = Instant::now();
         }
-        server_info.system_load_average = cached_load.0;
-        server_info.cpu_core_count = self.cpu_core_count;
+        server_info.system_load_average = Some(cached_load.0);
+        server_info.cpu_core_count = Some(self.cpu_core_count);
 
         // Get cedar process CPU usage by sampling /proc/self/stat at most once
         // per minute and computing delta ticks / delta time.
@@ -2554,7 +2554,7 @@ impl MyCedar {
             }
             cached_proc.2 = Instant::now();
         }
-        server_info.cedar_load_average = cached_proc.0;
+        server_info.cedar_load_average = Some(cached_proc.0);
 
         server_info.server_time =
             Some(prost_types::Timestamp::from(SystemTime::now()));
