@@ -7,6 +7,17 @@ edition = "2021"
 name = "cedar-box-server"
 path = "src/bin/cedar_box_server.rs"
 
+[features]
+# By default no hardware camera backend is compiled, so the server builds on
+# x86_64 and runs against the fake ImageCamera (see --test-image). Enable a
+# backend on the target device:
+#   rpi-camera: Raspberry Pi camera (libcamera)
+#   asi-camera: ZWO ASI camera (ARM-only static lib)
+default = []
+rpi-camera = ["cedar-camera/rpi"]
+asi-camera = ["cedar-camera/asi"]
+hardware = ["cedar-camera/hardware"]
+
 [dependencies]
 approx = "0.5.1"
 ascom-alpaca = { version = "=1.0.0-beta.3", features = ["server", "telescope"] }
@@ -14,7 +25,7 @@ async-trait = "0.1.77"
 axum = "0.6.20"
 bluer = { version = "0.17.4", features = ["bluetoothd", "rfcomm"] }
 canonical-error = "0.1.0"
-cedar-camera = { version = "0.4.0", path = "../../cedar-camera" }
+cedar-camera = { version = "0.4.0", path = "../../cedar-camera", default-features = false }
 cedar_detect = { version = "0.8.0", path = "../../cedar-detect" }
 cedar-elements = { path = "../elements" }
 chrono = "0.4.31"

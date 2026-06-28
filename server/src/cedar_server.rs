@@ -3139,14 +3139,16 @@ impl MyCedar {
         saving_state: Arc<AtomicBool>,
     ) -> Result<Self, CanonicalError> {
         let cedar_version = env!("CARGO_PKG_VERSION");
+        // These device-tree files exist only on Raspberry Pi; on x86 dev hosts
+        // they are absent, so default to empty rather than panicking.
         let processor_model =
             fs::read_to_string("/sys/firmware/devicetree/base/model")
-                .unwrap()
+                .unwrap_or_default()
                 .trim_end_matches('\0')
                 .to_string();
         let serial_number =
             fs::read_to_string("/sys/firmware/devicetree/base/serial-number")
-                .unwrap()
+                .unwrap_or_default()
                 .trim_end_matches('\0')
                 .to_string();
         let reader = BufReader::new(fs::File::open("/etc/os-release").unwrap());
@@ -4558,8 +4560,18 @@ async fn async_main(
             "cedar".to_string()
         };
         drop(state);
-        if let Err(e) = set_adapter_name(&bt_name).await {
-            warn!("Failed to set Bluetooth adapter name during startup: {:?}", e);
+        // Bound this so a host without a Bluetooth adapter / bluetoothd (e.g. an
+        // x86 dev machine) doesn't hang startup before the server binds its
+        // ports. Bluetooth itself remains best-effort via the spawned BT tasks.
+        match tokio::time::timeout(
+            Duration::from_secs(5), set_adapter_name(&bt_name)).await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) =>
+                warn!("Failed to set Bluetooth adapter name during startup: {:?}", e),
+            Err(_) =>
+                warn!("Timed out setting Bluetooth adapter name during startup \
+                       (no Bluetooth adapter?); continuing"),
         }
     }
 
