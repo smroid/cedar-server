@@ -192,7 +192,7 @@ impl Calibrator {
 
         // Note: this should be the same value as in DetectEngine's auto
         // exposure logic in the worker.
-        const BRIGHTNESS_LIMIT: f64 = 224.0;
+        const BRIGHTNESS_LIMIT: f64 = 240.0;
         if star_goal_fraction < 1.0 && stats.mean > BRIGHTNESS_LIMIT {
             // We are increasing exposure if necessary to increase star count.
             // Don't exceed a brightness limit.
