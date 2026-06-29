@@ -3015,7 +3015,6 @@ impl MyCedar {
         initial_exposure_duration: Duration,
         min_exposure_duration: Duration,
         mut max_exposure_duration: Duration,
-        min_frame_interval: Duration,
         activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
         attached_camera: Option<
             Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
@@ -3090,7 +3089,6 @@ impl MyCedar {
                 max_exposure_duration,
                 base_detection_sigma,
                 base_star_count_goal,
-                min_frame_interval,
                 camera.clone(),
                 stats_capacity,
                 hot_pixel_map.clone(),
@@ -3358,7 +3356,6 @@ impl MyCedar {
                 imu_tracker.clone(),
                 detect_engine.clone(),
                 stats_capacity,
-                min_frame_interval,
                 pre_solve_callback,
                 post_solve_callback,
                 copied_preferences.observer_location.clone(),
@@ -3392,7 +3389,6 @@ impl MyCedar {
                 detect_engine.clone(),
                 initial_serve_context,
                 stats_capacity,
-                min_frame_interval,
             ),
         ));
 
@@ -3855,7 +3851,6 @@ struct AppArgs {
     test_image: Option<String>,
     min_exposure: Duration,
     max_exposure: Duration,
-    min_frame_interval: Option<Duration>,
     star_count_goal: i32,
     sigma: f64,
     ui_prefs: String,
@@ -3906,7 +3901,6 @@ pub fn server_main(
       --test_image <path>
       --min_exposure NUMBER          0.00001
       --max_exposure NUMBER          1.0
-      --min_frame_interval NUMBER    0.016 (Hopper), 0.100 (Cedar-Box)
       --star_count_goal NUMBER       20
       --sigma NUMBER                 8.0
       --ui_prefs <path>              ./cedar_ui_prefs.binpb
@@ -3941,14 +3935,6 @@ pub fn server_main(
         max_exposure: pargs
             .value_from_fn("--max_exposure", parse_duration)
             .unwrap_or(parse_duration("1.0").unwrap()),
-        // min_frame_interval sets a floor on how fast the detect, solve, and
-        // serve pipeline stages cycle. If a stage finishes processing in less
-        // than this time, it sleeps for the remainder. This prevents pipeline
-        // worker threads from pegging CPU cores when camera exposure times are
-        // short, leaving headroom for gRPC handling and other tasks.
-        min_frame_interval: pargs
-            .opt_value_from_fn("--min_frame_interval", parse_duration)
-            .unwrap(),
         star_count_goal: pargs
             .value_from_str("--star_count_goal")
             .unwrap_or(20),
@@ -4022,17 +4008,6 @@ pub fn server_main(
     // cedar_sky is Some).
     let product_name = if cedar_sky.is_some() { "Hopper" } else { "Cedar-Box" };
 
-    // Resolve min_frame_interval default based on product: Hopper is faster
-    // hardware so we allow a tighter interval; Cedar-Box uses a more
-    // conservative default to keep cores available for gRPC.
-    let mut args = args;
-    args.min_frame_interval = Some(args.min_frame_interval.unwrap_or_else(|| {
-        if product_name == "Hopper" {
-            Duration::from_millis(16)
-        } else {
-            Duration::from_millis(100)
-        }
-    }));
 
     async_main(
         args,
@@ -4441,7 +4416,6 @@ async fn async_main(
         Duration::from_millis(100),
         args.min_exposure,
         args.max_exposure,
-        args.min_frame_interval.unwrap(),
         activity_led.clone(),
         attached_camera,
         test_image_camera,

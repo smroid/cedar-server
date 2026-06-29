@@ -83,10 +83,6 @@ pub struct SolveEngine {
     // Our state, shared between SolveEngine methods and the worker thread.
     state: Arc<tokio::sync::Mutex<SolveState>>,
 
-    // Minimum interval between loop iterations; worker sleeps if processing
-    // finishes sooner.
-    min_frame_interval: Duration,
-
     // Detect engine settings can be adjusted behind our back.
     detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
 
@@ -162,14 +158,12 @@ impl SolveEngine {
         imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         stats_capacity: usize,
-        min_frame_interval: Duration,
         pre_solve_callback: PreSolveCallback,
         post_solve_callback: PostSolveCallback,
         observer_location: Option<LatLong>,
     ) -> Result<Self, CanonicalError> {
         Ok(SolveEngine {
             solver,
-            min_frame_interval,
             state: Arc::new(tokio::sync::Mutex::new(SolveState {
                 align_mode: false,
                 cedar_sky,
@@ -507,7 +501,7 @@ impl SolveEngine {
             let cloned_state = self.state.clone();
             let cloned_detect_engine = self.detect_engine.clone();
             let hot_pixel_map = self.hot_pixel_map.clone();
-            let min_frame_interval = self.min_frame_interval;
+
             let cloned_pre_solve_callback = self.pre_solve_callback.clone();
             let cloned_post_solve_callback = self.post_solve_callback.clone();
             // Allocate a thread for concurrent execution of solver with
@@ -527,7 +521,6 @@ impl SolveEngine {
                         cloned_state,
                         cloned_detect_engine,
                         hot_pixel_map,
-                        min_frame_interval,
                         cloned_pre_solve_callback,
                         cloned_post_solve_callback,
                     )
@@ -1072,7 +1065,6 @@ impl SolveEngine {
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
-        min_frame_interval: Duration,
         pre_solve_callback: PreSolveCallback,
         post_solve_callback: PostSolveCallback,
     ) {
@@ -1232,9 +1224,7 @@ impl SolveEngine {
             } else {
                 IMU_INTERPOLATION_INTERVAL
             };
-            // Always sleep at least min_frame_interval to prevent spinning when
-            // exposure times are very short.
-            tokio::time::sleep(sleep_duration.max(min_frame_interval)).await;
+            tokio::time::sleep(sleep_duration.max(Duration::from_millis(1))).await;
         } // loop.
     } // worker
 
