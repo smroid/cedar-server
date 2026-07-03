@@ -16,7 +16,7 @@ use cedar_detect::histogram_funcs::{
 };
 use cedar_elements::{
     astro_util::{
-        angular_separation, celestial_coord_to_j2000,
+        alt_az_from_equatorial, angular_separation, celestial_coord_to_j2000,
         equatorial_from_horizon_camera, horizon_from_equatorial_camera,
         position_angle, transform_to_image_coord,
     },
@@ -1458,6 +1458,14 @@ impl SolveEngine {
         let mut answer = Vec::<FovCatalogEntry>::new(); // Decrowd survivors.
         let mut culled = Vec::<FovCatalogEntry>::new(); // Decrowd victims.
 
+        // Extract lat/long/time for alt/az computation on decrowded entries,
+        // before location_info is consumed by query_catalog_entries.
+        let observer_alt_az_params = location_info.as_ref().map(|loc| (
+            loc.observer_location.latitude.to_radians(),
+            loc.observer_location.longitude.to_radians(),
+            loc.observing_time,
+        ));
+
         let bp = if let Some(bp) = boresight_pixel {
             bp.clone()
         } else {
@@ -1526,7 +1534,7 @@ impl SolveEngine {
                 answer.push(fce);
             }
             for decrowded in sce.decrowded_entries {
-                if let Some(fce) = Self::make_fov_catalog_entry(
+                if let Some(mut fce) = Self::make_fov_catalog_entry(
                     &decrowded,
                     width as usize,
                     height as usize,
@@ -1534,6 +1542,18 @@ impl SolveEngine {
                     distortion,
                     rotation_matrix,
                 ) {
+                    if let Some((lat, long, time)) = observer_alt_az_params {
+                        let coord = decrowded.coord.as_ref().unwrap();
+                        let (alt, az, _ha) = alt_az_from_equatorial(
+                            coord.ra.to_radians(),
+                            coord.dec.to_radians(),
+                            lat,
+                            long,
+                            &time,
+                        );
+                        fce.altitude = Some(alt.to_degrees());
+                        fce.azimuth = Some(az.to_degrees());
+                    }
                     culled.push(fce);
                 }
             }
