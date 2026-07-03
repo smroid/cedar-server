@@ -933,6 +933,8 @@ mod tests {
                     notes: None,
                 }),
                 image_pos: Some(ImageCoord { x: 50.0, y: 60.0 }),
+                altitude: None,
+                azimuth: None,
             },
             FovCatalogEntry {
                 entry: Some(CatalogEntry {
@@ -950,6 +952,8 @@ mod tests {
                     notes: None,
                 }),
                 image_pos: Some(ImageCoord { x: 21.5, y: 35.2 }), // Match d2.
+                altitude: None,
+                azimuth: None,
             },
         ];
 

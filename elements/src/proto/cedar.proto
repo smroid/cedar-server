@@ -916,6 +916,14 @@ message ErrorBoundedValue {
 message FovCatalogEntry {
   cedar_sky.CatalogEntry entry = 1;
   ImageCoord image_pos = 2;
+
+  // Computed information, available if observer location/time is known.
+
+  // Altitude (degrees, relative to the local horizon).
+  optional double altitude = 3;
+
+  // Azimuth (degrees, positive clockwise from north).
+  optional double azimuth = 4;
 }
 
 message ActionRequest {

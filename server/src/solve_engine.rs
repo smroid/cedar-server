@@ -26,7 +26,7 @@ use cedar_elements::{
     },
     cedar_common::CelestialCoord,
     cedar_sky::{CatalogEntry, CatalogEntryMatch, Constellation, Ordering},
-    cedar_sky_trait::CedarSkyTrait,
+    cedar_sky_trait::{CedarSkyTrait, LocationInfo},
     image_utils::scale_image_mut,
     hot_pixel_trait::HotPixelTrait,
     imu_trait::{EquatorialCoordinates, ImuTrait},
@@ -902,8 +902,13 @@ impl SolveEngine {
             } // !align_mode
 
             if let Some(sky) = &cedar_sky {
-                let mut catalog_entry_match =
-                    state.lock().await.catalog_entry_match.clone().unwrap();
+                let (mut catalog_entry_match, observer_location) = {
+                    let locked_state = state.lock().await;
+                    (
+                        locked_state.catalog_entry_match.clone().unwrap(),
+                        locked_state.observer_location.clone(),
+                    )
+                };
                 if align_mode {
                     // Replace catalog_entry_match.
                     catalog_entry_match = CatalogEntryMatch {
@@ -919,6 +924,10 @@ impl SolveEngine {
                         ],
                     };
                 }
+                let location_info = observer_location.map(|loc| LocationInfo {
+                    observer_location: loc,
+                    observing_time: detect_result.captured_image.readout_time,
+                });
                 let result = Self::query_fov_catalog_entries(
                     &boresight_coords,
                     &boresight_pixel,
@@ -929,6 +938,7 @@ impl SolveEngine {
                     psp.fov,
                     psp.distortion.unwrap(),
                     &rotation_matrix,
+                    location_info,
                 )
                 .await;
                 (fov_catalog_entries, decrowded_fov_catalog_entries) =
@@ -1424,6 +1434,8 @@ impl SolveEngine {
         Some(FovCatalogEntry {
             entry: Some(entry.clone()),
             image_pos: Some(ImageCoord { x, y }),
+            altitude: None,
+            azimuth: None,
         })
     }
 
@@ -1441,6 +1453,7 @@ impl SolveEngine {
         fov: f64,
         distortion: f64,
         rotation_matrix: &[f64; 9],
+        location_info: Option<LocationInfo>,
     ) -> (Vec<FovCatalogEntry>, Vec<FovCatalogEntry>) {
         let mut answer = Vec::<FovCatalogEntry>::new(); // Decrowd survivors.
         let mut culled = Vec::<FovCatalogEntry>::new(); // Decrowd victims.
@@ -1485,7 +1498,7 @@ impl SolveEngine {
                 // sky_location
                 Some(boresight_coords.clone()),
                 // location_info=
-                None,
+                location_info,
             )
             .await;
         if let Err(e) = query_result {
@@ -1496,9 +1509,11 @@ impl SolveEngine {
         let selected_catalog_entries = query_result.unwrap().0;
         for sce in selected_catalog_entries {
             let entry = sce.entry.unwrap();
+            let altitude = sce.altitude;
+            let azimuth = sce.azimuth;
             // Convert each catalog entry's celesital coordinates to image
             // position, and discard those outside of our FOV.
-            if let Some(fce) = Self::make_fov_catalog_entry(
+            if let Some(mut fce) = Self::make_fov_catalog_entry(
                 &entry,
                 width as usize,
                 height as usize,
@@ -1506,6 +1521,8 @@ impl SolveEngine {
                 distortion,
                 rotation_matrix,
             ) {
+                fce.altitude = altitude;
+                fce.azimuth = azimuth;
                 answer.push(fce);
             }
             for decrowded in sce.decrowded_entries {
