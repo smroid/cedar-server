@@ -305,8 +305,10 @@ impl Lx200Controller {
         // Keep a snapshot of the current dec for the next retrieval
         locked_position.snapshot_dec = Some(dec);
         // RA degrees need to be converted to hours before the conversion to
-        // HH:MM:SS
-        let (h, m, s) = Self::to_hms(ra / 15.0);
+        // HH:MM:SS. Normalize to [0, 360) so precession near 0h doesn't
+        // produce negative values that LX200 clients reject.
+        let ra_norm = ra.rem_euclid(360.0);
+        let (h, m, s) = Self::to_hms(ra_norm / 15.0);
         format!("{h:02}:{m:02}:{s:02}#")
     }
 
