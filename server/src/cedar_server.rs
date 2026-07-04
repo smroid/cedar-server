@@ -69,6 +69,7 @@ use prost::Message;
 use tetra3_server::tetra3_solver::Tetra3Solver;
 use tonic::transport::server::Routes;
 use tonic_web::{GrpcWebLayer, GrpcWebService};
+use tokio_stream::wrappers::ReceiverStream;
 use tower_http::{
     cors::{Any, Cors, CorsLayer},
     services::ServeDir,
@@ -1229,6 +1230,59 @@ impl Cedar for MyCedar {
         Ok(tonic::Response::new(frame_result))
     }
 
+    type GetFramesStream =
+        ReceiverStream<Result<FrameResult, tonic::Status>>;
+
+    async fn get_frames(
+        &self,
+        request: tonic::Request<FrameRequest>,
+    ) -> Result<tonic::Response<Self::GetFramesStream>, tonic::Status> {
+        let is_bluetooth = request.extensions().get::<BluetoothRequest>().is_some();
+
+        let activity_led = self.state.lock().await.activity_led.clone();
+        activity_led.lock().await.received_rpc().await;
+
+        let req: FrameRequest = request.into_inner();
+        let landscape = req.display_orientation.is_none()
+            || req.display_orientation.unwrap()
+                == DisplayOrientation::Landscape as i32;
+
+        let state = self.state.clone();
+        let server_info_ctx = self.server_info_ctx();
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+
+        tokio::spawn(async move {
+            let mut prev_frame_id = req.prev_frame_id;
+            let mut prev_solution_id = req.prev_solution_id;
+            loop {
+                let fr = Self::get_next_frame(
+                    state.clone(),
+                    prev_frame_id,
+                    prev_solution_id,
+                    /*non_blocking=*/ false,
+                    landscape,
+                    is_bluetooth,
+                )
+                .await;
+                let mut frame_result = fr.unwrap_or_default();
+                // Advance tracking ids for the next iteration.
+                prev_frame_id = Some(frame_result.frame_id);
+                prev_solution_id = if frame_result.solution_id != 0 {
+                    Some(frame_result.solution_id)
+                } else {
+                    None
+                };
+                frame_result.server_information =
+                    Some(Self::get_server_information_ctx(&server_info_ctx).await);
+                if tx.send(Ok(frame_result)).await.is_err() {
+                    break;  // Client disconnected.
+                }
+            }
+        });
+
+        Ok(tonic::Response::new(ReceiverStream::new(rx)))
+    }
+
     async fn initiate_action(
         &self,
         request: tonic::Request<ActionRequest>,
@@ -1915,6 +1969,28 @@ impl Cedar for MyCedar {
     }
 } // impl Cedar for MyCedar.
 
+// Captures the MyCedar fields needed by get_server_information, all of which
+// are Clone (strings or Arcs). Used to pass context into spawned tasks that
+// don't have access to &self.
+struct ServerInfoCtx {
+    state: Arc<tokio::sync::Mutex<CedarState>>,
+    test_image_camera:
+        Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
+    demo_images: Vec<String>,
+    product_name: String,
+    copyright: String,
+    feature_level: FeatureLevel,
+    cedar_version: String,
+    processor_model: String,
+    os_version: String,
+    serial_number: String,
+    connection_counters: Arc<ConnectionCounters>,
+    cpu_temperature: Arc<tokio::sync::Mutex<(f32, Instant)>>,
+    cpu_load_average: Arc<tokio::sync::Mutex<(f32, Instant)>>,
+    cpu_core_count: i32,
+    cedar_process_load: Arc<tokio::sync::Mutex<(f32, u64, Instant)>>,
+}
+
 impl MyCedar {
     fn get_demo_images() -> Result<Vec<String>, tonic::Status> {
         let dir = Path::new("./demo_images");
@@ -2391,7 +2467,31 @@ impl MyCedar {
         }
     }
 
+    fn server_info_ctx(&self) -> ServerInfoCtx {
+        ServerInfoCtx {
+            state: self.state.clone(),
+            test_image_camera: self.test_image_camera.clone(),
+            demo_images: self.demo_images.clone(),
+            product_name: self.product_name.clone(),
+            copyright: self.copyright.clone(),
+            feature_level: self.feature_level,
+            cedar_version: self.cedar_version.clone(),
+            processor_model: self.processor_model.clone(),
+            os_version: self.os_version.clone(),
+            serial_number: self.serial_number.clone(),
+            connection_counters: self.connection_counters.clone(),
+            cpu_temperature: self.cpu_temperature.clone(),
+            cpu_load_average: self.cpu_load_average.clone(),
+            cpu_core_count: self.cpu_core_count,
+            cedar_process_load: self.cedar_process_load.clone(),
+        }
+    }
+
     async fn get_server_information(&self) -> ServerInformation {
+        Self::get_server_information_ctx(&self.server_info_ctx()).await
+    }
+
+    async fn get_server_information_ctx(ctx: &ServerInfoCtx) -> ServerInformation {
         // Extract all data we need first, then release state lock.
         let (
             demo_image,
@@ -2400,7 +2500,7 @@ impl MyCedar {
             wifi_arc,
             imu_tracker_arc,
         ) = {
-            let locked_state = self.state.lock().await;
+            let locked_state = ctx.state.lock().await;
             (
                 locked_state.operation_settings.demo_image_filename.clone(),
                 locked_state.camera.clone(),
@@ -2414,7 +2514,7 @@ impl MyCedar {
         let camera = if let Some(demo_image) = &demo_image {
             Some(Self::camera_model_from_arc(
                 &camera_arc, Some(demo_image.to_string()), /*include_detail=*/false).await)
-        } else if let Some(test_image_camera) = &self.test_image_camera {
+        } else if let Some(test_image_camera) = &ctx.test_image_camera {
             Some(Self::camera_model_from_arc(
                 test_image_camera, None, /*include_detail=*/false).await)
         } else if let Some(attached_camera) = &attached_camera_arc {
@@ -2425,13 +2525,13 @@ impl MyCedar {
         };
 
         let mut server_info = ServerInformation {
-            product_name: self.product_name.clone(),
-            copyright: self.copyright.clone(),
-            cedar_server_version: self.cedar_version.clone(),
-            feature_level: self.feature_level as i32,
-            processor_model: self.processor_model.clone(),
-            os_version: self.os_version.clone(),
-            serial_number: self.serial_number.clone(),
+            product_name: ctx.product_name.clone(),
+            copyright: ctx.copyright.clone(),
+            cedar_server_version: ctx.cedar_version.clone(),
+            feature_level: ctx.feature_level as i32,
+            processor_model: ctx.processor_model.clone(),
+            os_version: ctx.os_version.clone(),
+            serial_number: ctx.serial_number.clone(),
             cpu_temperature: 0.0,
             server_time: None,
             camera,
@@ -2441,12 +2541,12 @@ impl MyCedar {
             imu_tracker_state: None,
             wifi_access_point: None,
             connection_status: Some(ConnectionStatus {
-                cedar_wifi: self.connection_counters.cedar_wifi.load(AtomicOrdering::Relaxed) as i32,
-                cedar_bluetooth: self.connection_counters.cedar_bluetooth.load(AtomicOrdering::Relaxed) as i32,
-                lx200_wifi: self.connection_counters.lx200_wifi.load(AtomicOrdering::Relaxed) as i32,
-                lx200_bluetooth: self.connection_counters.lx200_bluetooth.load(AtomicOrdering::Relaxed) as i32,
+                cedar_wifi: ctx.connection_counters.cedar_wifi.load(AtomicOrdering::Relaxed) as i32,
+                cedar_bluetooth: ctx.connection_counters.cedar_bluetooth.load(AtomicOrdering::Relaxed) as i32,
+                lx200_wifi: ctx.connection_counters.lx200_wifi.load(AtomicOrdering::Relaxed) as i32,
+                lx200_bluetooth: ctx.connection_counters.lx200_bluetooth.load(AtomicOrdering::Relaxed) as i32,
             }),
-            demo_image_names: self.demo_images.clone(),
+            demo_image_names: ctx.demo_images.clone(),
             system_load_average: None,
             cpu_core_count: None,
             cedar_load_average: None,
@@ -2504,7 +2604,7 @@ impl MyCedar {
         }
 
         // Get CPU temperature, reading from sysfs at most once per minute.
-        let mut cached = self.cpu_temperature.lock().await;
+        let mut cached = ctx.cpu_temperature.lock().await;
         if cached.1.elapsed() >= Duration::from_secs(60) {
             if let Ok(temp_str) = tokio::fs::read_to_string(
                 "/sys/class/thermal/thermal_zone0/temp").await {
@@ -2517,7 +2617,7 @@ impl MyCedar {
         server_info.cpu_temperature = cached.0;
 
         // Get 1-minute load average, reading /proc/loadavg at most once per minute.
-        let mut cached_load = self.cpu_load_average.lock().await;
+        let mut cached_load = ctx.cpu_load_average.lock().await;
         if cached_load.1.elapsed() >= Duration::from_secs(60) {
             if let Ok(loadavg_str) = tokio::fs::read_to_string("/proc/loadavg").await {
                 if let Some(first) = loadavg_str.split_whitespace().next() {
@@ -2529,11 +2629,11 @@ impl MyCedar {
             cached_load.1 = Instant::now();
         }
         server_info.system_load_average = Some(cached_load.0);
-        server_info.cpu_core_count = Some(self.cpu_core_count);
+        server_info.cpu_core_count = Some(ctx.cpu_core_count);
 
         // Get cedar process CPU usage by sampling /proc/self/stat at most once
         // per minute and computing delta ticks / delta time.
-        let mut cached_proc = self.cedar_process_load.lock().await;
+        let mut cached_proc = ctx.cedar_process_load.lock().await;
         if cached_proc.2.elapsed() >= Duration::from_secs(60) {
             if let Ok(stat_str) = tokio::fs::read_to_string("/proc/self/stat").await {
                 // Skip past the process name field "(name)" which may contain
