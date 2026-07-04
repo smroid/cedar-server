@@ -138,7 +138,7 @@ pub fn equatorial_from_alt_az(
     let dec =
         (lat.sin() * alt.sin() - lat.cos() * alt.cos() * meeus_az.cos()).asin();
     let hour_angle = hr_angl_frm_hz(meeus_az, alt, lat);
-    let ra = gmst + long - hour_angle;
+    let ra = limit_to_two_PI(gmst + long - hour_angle);
 
     (ra, dec)
 }
