@@ -987,6 +987,11 @@ message ActionRequest {
 
   // Causes the Cedar server to panic. For testing.
   optional bool crash_server = 12;
+
+  // Enables or disables the WiFi access point. When disabled, the AP is
+  // brought down until explicitly re-enabled or the server reboots. Useful
+  // after switching to Bluetooth.
+  optional bool wifi_enabled = 15;
 }
 
 message ServerLogRequest {
