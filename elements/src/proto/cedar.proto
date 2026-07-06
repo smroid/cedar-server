@@ -1064,7 +1064,6 @@ service Cedar {
 
   // Obtains the most recent Cedar computation result. Blocks if necessary to
   // wait for a new result (see FrameRequest's `prev_frame_id` field).
-  // DEPRECATED: use GetFrames() instead.
   rpc GetFrame(FrameRequest) returns (FrameResult);
 
   // Server-streaming variant of GetFrame(). The client sends one FrameRequest
