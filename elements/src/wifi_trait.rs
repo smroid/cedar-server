@@ -14,4 +14,9 @@ pub trait WifiTrait {
                            channel: Option<i32>,
                            ssid: Option<&str>,
                            psk: Option<&str>) -> Result<(), CanonicalError>;
+
+    /// Enables or disables the WiFi access point connection. When disabled,
+    /// the AP is brought down until explicitly re-enabled or the server
+    /// reboots.
+    fn set_enabled(&self, enabled: bool) -> Result<(), CanonicalError>;
 }
