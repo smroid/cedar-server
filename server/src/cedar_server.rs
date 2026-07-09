@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering},
         Arc,
     },
     time::{Duration, Instant, SystemTime},
@@ -74,17 +74,15 @@ use tower_http::{
     cors::{Any, Cors, CorsLayer},
     services::ServeDir,
 };
-use tracing_appender::{
-    non_blocking::NonBlockingBuilder,
-    rolling::{RollingFileAppender, Rotation},
-};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 
 use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
     bonding_helper::{
-        get_adapter_alias, set_adapter_name, get_bonded_devices, remove_bond, run_pairing_mode,
+        get_adapter_alias, set_adapter_name, get_bonded_devices,
+        remove_bond, reset_hci_controller, run_pairing_mode, ResetOutcome,
     },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
@@ -102,6 +100,14 @@ const GRPC_SLOW_THRESHOLD_MS: u64 = 100;
 
 // RFCOMM UUID for gRPC over Bluetooth. The same UUID must be used in Cedar Aim.
 const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
+
+// Maximum time without a successful write to the RFCOMM stream on an
+// active BT connection before the watchdog concludes the transport is
+// silently wedged and aborts the connection. Chosen to be well beyond
+// any expected pause under normal client polling (~10 Hz getFrame), so
+// firing is a strong signal that hyper's write path has stopped making
+// progress. Aborting triggers our post-session recovery path.
+const BT_WRITE_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Retry interval for skip-focus auto-calibration attempts.
 const SKIP_FOCUS_RETRY_INTERVAL_SECS: u64 = 15;
@@ -309,7 +315,13 @@ struct CedarState {
     pairing_mode: Arc<tokio::sync::Mutex<bool>>,
 
     // When true, pairing mode will remain enabled indefinitely (not auto-exit).
-    pairing_mode_forever: bool,
+    pairing_mode_forever: Arc<tokio::sync::Mutex<bool>>,
+
+    // Incremented each time a timed pairing window is started. A spawned
+    // auto-exit timer compares its captured generation against this value
+    // before clearing pairing_mode; if they differ, a newer window has
+    // superseded it and the timer does nothing.
+    pairing_mode_generation: Arc<tokio::sync::Mutex<u64>>,
 
     // Set to true when the client (mobile app) has provided the date/time via
     // update_fixed_settings(). When true, time updates from the telescope
@@ -1247,13 +1259,29 @@ impl Cedar for MyCedar {
             || req.display_orientation.unwrap()
                 == DisplayOrientation::Landscape as i32;
 
+        // Producer task feeds frames into a "latest-only" slot; a separate
+        // forwarder task hands them to tonic. When tonic is slow (WiFi
+        // backpressure), the producer keeps updating the slot with fresher
+        // frames rather than queueing stale ones. The forwarder always picks
+        // up the most recent frame available.
         let state = self.state.clone();
         let server_info_ctx = self.server_info_ctx();
+        let latest: Arc<tokio::sync::Mutex<Option<FrameResult>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        let notify = Arc::new(tokio::sync::Notify::new());
         let (tx, rx) = tokio::sync::mpsc::channel(1);
 
-        tokio::spawn(async move {
+        // Producer: always writes the newest frame into `latest`, replacing
+        // any previous one, then wakes the forwarder. Frames arriving faster
+        // than the rate limit are silently dropped. Bluetooth bandwidth is
+        // ~700 kbps usable vs. ~5 Mbps over WiFi, so we cap at 10 Hz on
+        // Bluetooth and 20 Hz on WiFi.
+        let latest_p = latest.clone();
+        let notify_p = notify.clone();
+        let producer = tokio::spawn(async move {
             let mut prev_frame_id = req.prev_frame_id;
             let mut prev_solution_id = req.prev_solution_id;
+            let mut next_emit = tokio::time::Instant::now();
             loop {
                 let fr = Self::get_next_frame(
                     state.clone(),
@@ -1265,17 +1293,47 @@ impl Cedar for MyCedar {
                 )
                 .await;
                 let mut frame_result = fr.unwrap_or_default();
-                // Advance tracking ids for the next iteration.
                 prev_frame_id = Some(frame_result.frame_id);
                 prev_solution_id = if frame_result.solution_id != 0 {
                     Some(frame_result.solution_id)
                 } else {
                     None
                 };
+                // Throttle: sleep until the slot is due, then emit.
+                tokio::time::sleep_until(next_emit).await;
+                let interval = if is_bluetooth {
+                    tokio::time::Duration::from_millis(100) // 10 Hz
+                } else {
+                    tokio::time::Duration::from_millis(50) // 20 Hz
+                };
+                next_emit = tokio::time::Instant::now() + interval;
                 frame_result.server_information =
                     Some(Self::get_server_information_ctx(&server_info_ctx).await);
-                if tx.send(Ok(frame_result)).await.is_err() {
-                    break;  // Client disconnected.
+                *latest_p.lock().await = Some(frame_result);
+                notify_p.notify_one();
+            }
+        });
+
+        // Forwarder: waits for a frame, sends to tonic (may block on WiFi),
+        // then loops. If it sees `latest` already populated when it comes
+        // back around, it drains it immediately without extra wait.
+        tokio::spawn(async move {
+            loop {
+                let frame = {
+                    let mut guard = latest.lock().await;
+                    guard.take()
+                };
+                let frame = match frame {
+                    Some(f) => f,
+                    None => {
+                        notify.notified().await;
+                        continue;
+                    }
+                };
+                if tx.send(Ok(frame)).await.is_err() {
+                    // Client disconnected; stop the producer too.
+                    producer.abort();
+                    break;
                 }
             }
         });
@@ -1517,6 +1575,43 @@ impl Cedar for MyCedar {
             if let Some(new_ssid) = update_ap.ssid {
                 if let Err(e) = set_adapter_name(&new_ssid).await {
                     warn!("Failed to update Bluetooth adapter name when updating WiFi SSID: {:?}", e);
+                }
+            }
+        }
+        if let Some(wifi_enabled) = req.wifi_enabled {
+            let wifi = self.state.lock().await.wifi.clone();
+            if wifi.is_none() {
+                return Err(logged_status!(
+                    unimplemented,
+                    format!(
+                        "{} does not include WiFi control.",
+                        self.product_name
+                    )
+                ));
+            }
+            let wifi_arc = wifi.as_ref().unwrap().clone();
+            let result = tokio::task::spawn_blocking(move || {
+                wifi_arc.blocking_lock().set_enabled(wifi_enabled)
+            }).await.map_err(|e| {
+                tonic::Status::internal(format!("set_enabled task panicked: {:?}", e))
+            })?;
+            if let Err(x) = result {
+                return Err(tonic_status(x));
+            }
+            // When disabling WiFi to use Bluetooth, ensure the adapter is
+            // discoverable and pairable so the client can connect. If pairing
+            // mode is already enabled forever, leave it be. Otherwise start
+            // (or restart) the timed pairing window so the user can pair.
+            if !wifi_enabled {
+                let state = self.state.lock().await;
+                let already_forever = *state.pairing_mode_forever.lock().await;
+                if !already_forever {
+                    *state.pairing_mode.lock().await = true;
+                    Self::spawn_pairing_mode_timer(
+                        state.pairing_mode.clone(),
+                        state.pairing_mode_forever.clone(),
+                        state.pairing_mode_generation.clone(),
+                    ).await;
                 }
             }
         }
@@ -1938,29 +2033,21 @@ impl Cedar for MyCedar {
         request: tonic::Request<SetPairingModeRequest>,
     ) -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
         let req = request.into_inner();
-        let mut state = self.state.lock().await;
+        let state = self.state.lock().await;
         {
             let mut pairing_mode = state.pairing_mode.lock().await;
             *pairing_mode = req.enabled;
         }
         if req.enabled {
-            state.pairing_mode_forever = req.forever;
+            *state.pairing_mode_forever.lock().await = req.forever;
             if req.forever {
                 info!("Entering pairing mode via RPC, will remain enabled");
             } else {
-                info!("Entering pairing mode via RPC, will auto-exit in {} seconds",
-                      PAIRING_MODE_EXIT_DELAY_SECS);
-                // Spawn a timer to auto-disable pairing mode.
-                let pairing_mode = state.pairing_mode.clone();
-                tokio::task::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(PAIRING_MODE_EXIT_DELAY_SECS)).await;
-                    let mut pm = pairing_mode.lock().await;
-                    if *pm {
-                        *pm = false;
-                        info!("Auto-exiting pairing mode after {} seconds",
-                              PAIRING_MODE_EXIT_DELAY_SECS);
-                    }
-                });
+                Self::spawn_pairing_mode_timer(
+                    state.pairing_mode.clone(),
+                    state.pairing_mode_forever.clone(),
+                    state.pairing_mode_generation.clone(),
+                ).await;
             }
         } else {
             info!("Exiting pairing mode via RPC");
@@ -1992,6 +2079,38 @@ struct ServerInfoCtx {
 }
 
 impl MyCedar {
+    // Increments the pairing mode generation counter and spawns a task that
+    // clears pairing_mode after PAIRING_MODE_EXIT_DELAY_SECS, unless a newer
+    // timer or forever mode supersedes it. Caller is responsible for setting
+    // pairing_mode=true before calling.
+    async fn spawn_pairing_mode_timer(
+        pairing_mode: Arc<tokio::sync::Mutex<bool>>,
+        pairing_mode_forever: Arc<tokio::sync::Mutex<bool>>,
+        pairing_mode_generation: Arc<tokio::sync::Mutex<u64>>,
+    ) {
+        let gen = {
+            let mut g = pairing_mode_generation.lock().await;
+            *g += 1;
+            *g
+        };
+        info!("Enabling pairing mode, will auto-exit in {} seconds",
+              PAIRING_MODE_EXIT_DELAY_SECS);
+        tokio::task::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(PAIRING_MODE_EXIT_DELAY_SECS)).await;
+            if *pairing_mode_forever.lock().await {
+                return; // A subsequent call upgraded to forever mode.
+            }
+            if *pairing_mode_generation.lock().await != gen {
+                return; // A newer timed window superseded us.
+            }
+            let mut pm = pairing_mode.lock().await;
+            if *pm {
+                *pm = false;
+                info!("Auto-exiting pairing mode");
+            }
+        });
+    }
+
     fn get_demo_images() -> Result<Vec<String>, tonic::Status> {
         let dir = Path::new("./demo_images");
         if !dir.exists() {
@@ -3036,7 +3155,7 @@ impl MyCedar {
 
         frame_result.skip_focus_active = skip_focus_active;
 
-        let jpeg_quality = if is_bluetooth { 20_u8 } else { 95_u8 };
+        let jpeg_quality = if is_bluetooth { 20_u8 } else { 75_u8 };
 
         if calibrating {
             frame_result.calibrating = true;
@@ -3480,7 +3599,7 @@ impl MyCedar {
             imu_tracker: imu_tracker.clone(),
             hot_pixel_map: hot_pixel_map.clone(),
             polar_analyzer: closure_polar_analyzer.clone(),
-            jpeg_quality: 95,
+            jpeg_quality: 75,
             landscape: false,
         };
         let serve_engine = Arc::new(tokio::sync::Mutex::new(
@@ -3538,7 +3657,8 @@ impl MyCedar {
                 args_binning,
                 args_display_sampling,
                 pairing_mode: Arc::new(tokio::sync::Mutex::new(false)),
-                pairing_mode_forever: false,
+                pairing_mode_forever: Arc::new(tokio::sync::Mutex::new(false)),
+                pairing_mode_generation: Arc::new(tokio::sync::Mutex::new(0)),
                 time_set_by_client,
                 saving_state,
             }))
@@ -4056,20 +4176,17 @@ pub fn server_main(
         .build(&args.log_dir)
         .unwrap();
 
-    // Create non-blocking writers for both the file and stdout
-    let (non_blocking_file, _guard1) = NonBlockingBuilder::default()
-        .lossy(false)
-        .finish(file_appender);
-    let (non_blocking_stdout, _guard2) = NonBlockingBuilder::default()
-        .lossy(false)
-        .finish(std::io::stdout());
+    // Use blocking (synchronous) writers so each log entry is accepted by
+    // the OS before returning. The non-blocking variant buffers in a worker
+    // thread whose destructor does not run on process::exit() or _exit(),
+    // causing the last entries to be lost on shutdown or crash.
     registry()
         .with(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("info")),
         )
-        .with(fmt::layer().with_writer(non_blocking_stdout))
-        .with(fmt::layer().with_ansi(false).with_writer(non_blocking_file))
+        .with(fmt::layer().with_writer(std::io::stdout))
+        .with(fmt::layer().with_ansi(false).with_writer(file_appender))
         .init();
     let remaining = pargs.finish();
 
@@ -4222,6 +4339,96 @@ where
     }
 }
 
+/// AsyncRead+AsyncWrite adapter that increments a shared counter each time
+/// bytes are successfully written to the wrapped stream. Used by the BT
+/// watchdog to detect when hyper's write path has stopped making progress
+/// (e.g., because the BCM43430A1 has silently wedged).
+struct ActivityTrackingStream<S> {
+    inner: S,
+    activity: Arc<AtomicU64>,
+}
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for ActivityTrackingStream<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for ActivityTrackingStream<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(n)) = &poll {
+            if *n > 0 {
+                self.activity.fetch_add(*n as u64, AtomicOrdering::Relaxed);
+            }
+        }
+        poll
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+// Target SO_SNDBUF for gRPC/HTTP client sockets. Small enough that our
+// drop-oldest logic in get_frames sees WiFi backpressure quickly instead
+// of frames piling up in a large kernel send buffer, but large enough to
+// absorb one biggish JPEG frame without stalling the TCP stream.
+const TARGET_SNDBUF: i32 = 64 * 1024;
+
+/// Wrap a TcpListener as a hyper `Accept`, applying SO_SNDBUF to each
+/// accepted socket before yielding it. Reducing the send buffer forces
+/// backpressure to appear at the tonic write path (instead of hiding in
+/// the kernel), so get_frames' drop-oldest slot can discard stale frames
+/// under slow WiFi conditions.
+fn accept_with_sndbuf(
+    listener: tokio::net::TcpListener,
+) -> impl hyper::server::accept::Accept<
+    Conn = tokio::net::TcpStream,
+    Error = io::Error,
+> {
+    hyper::server::accept::poll_fn(move |cx| {
+        match listener.poll_accept(cx) {
+            std::task::Poll::Ready(Ok((sock, _addr))) => {
+                use std::os::unix::io::AsRawFd;
+                let fd = sock.as_raw_fd();
+                let val = TARGET_SNDBUF;
+                // Best-effort: if this fails we still return the socket.
+                unsafe {
+                    libc::setsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        libc::SO_SNDBUF,
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of_val(&val) as libc::socklen_t,
+                    );
+                }
+                std::task::Poll::Ready(Some(Ok(sock)))
+            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Some(Err(e))),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    })
+}
+
 /// MakeService that logs WiFi connection open/close and tracks active count.
 struct ConnectionTrackingMakeService<S> {
     inner: S,
@@ -4311,41 +4518,156 @@ async fn serve_over_bt(
     };
 
     let mut profile_handle = session.register_profile(profile).await?;
+    let ready_at = Instant::now();
     info!("Running cedar control BT channel: {}", adapter.address().await?);
 
-    // Wrap service with middleware that marks requests as Bluetooth.
-    let bt_service = BluetoothMarkingMiddleware { inner: service };
+    // Signal from a connection task to the outer loop that tier-1 reset
+    // failed and the BT stack was hard-reset. The bluer session and profile
+    // registration are invalidated by the hard reset, so the loop must exit
+    // and the caller restarts serve_over_bt from scratch.
+    let hard_reset_notify = Arc::new(tokio::sync::Notify::new());
 
-    loop {
-        let req = profile_handle.next().await;
+    // Track spawned per-connection tasks so we can abort any that outlived
+    // the outer loop when we exit. Without this, a hung serve_connection
+    // (e.g., blocked on a wedged RFCOMM socket that tokio can't cancel) can
+    // accumulate across successive serve_over_bt invocations, holding onto
+    // stream fds and other resources.
+    let mut connection_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    // Track whether we've seen any successful accept since profile
+    // registration, so the first one after a fresh registration logs the
+    // gap between "profile ready" and "first client connect".
+    let mut first_accept_since_ready = true;
+
+    let exit = loop {
+        // Prune any tasks that have already finished, so this vec doesn't
+        // grow unboundedly during a long-lived serve_over_bt.
+        connection_handles.retain(|h| !h.is_finished());
+
+        let hard_reset_wait = hard_reset_notify.notified();
+        tokio::pin!(hard_reset_wait);
+        let req = tokio::select! {
+            r = profile_handle.next() => r,
+            _ = &mut hard_reset_wait => {
+                info!("BT stack was hard-reset; exiting serve_over_bt to restart bluer session");
+                break Ok(());
+            }
+        };
         if req.is_none() {
             info!("Found no request, returning");
-            return Ok(());
+            break Ok(());
         }
         match req.unwrap().accept() {
             Ok(stream) => {
-                let count = counters.cedar_bluetooth.fetch_add(1, AtomicOrdering::Relaxed) + 1;
-                info!("BT connection opened ({} active)", count);
-                let bt_service = bt_service.clone();
+                if first_accept_since_ready {
+                    info!("First BT accept since profile registration: {:?} elapsed",
+                          ready_at.elapsed());
+                    first_accept_since_ready = false;
+                }
+                let open_count =
+                    counters.cedar_bluetooth.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+                info!("BT connection opened ({} active)", open_count);
+                // Byte-write inactivity watchdog. The BCM43430A1 can wedge
+                // in a way that hyper's poll_write on the RFCOMM stream
+                // silently stops returning progress; serve_connection then
+                // never completes, and our normal recovery path (which
+                // runs after serve_connection returns) never runs. Wrap
+                // the stream so we can observe when write bytes stop
+                // flowing, and abort the serve task if they've been
+                // stalled for BT_WRITE_INACTIVITY_TIMEOUT.
+                let activity = Arc::new(AtomicU64::new(0));
+                let tracked_stream = ActivityTrackingStream {
+                    inner: stream,
+                    activity: activity.clone(),
+                };
+                let bt_service = BluetoothMarkingMiddleware {
+                    inner: service.clone(),
+                };
                 let counters = counters.clone();
-                tokio::task::spawn(async move {
-                    let result =
-                        Http::new().serve_connection(stream, bt_service).await;
-                    let count = counters.cedar_bluetooth.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
-                    match result {
-                        Ok(()) => info!("BT connection closed ({} active)", count),
-                        Err(e) if e.is_incomplete_message() || e.is_closed() => {
-                            info!("BT connection closed ({} active)", count);
+                let hard_reset_notify = hard_reset_notify.clone();
+                let serve_handle = tokio::task::spawn(async move {
+                    Http::new().serve_connection(tracked_stream, bt_service).await
+                });
+                let watchdog_handle = {
+                    let abort_serve = serve_handle.abort_handle();
+                    tokio::task::spawn(async move {
+                        let mut last_seen = 0u64;
+                        let mut last_change = tokio::time::Instant::now();
+                        loop {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            let current = activity.load(AtomicOrdering::Relaxed);
+                            if current != last_seen {
+                                last_seen = current;
+                                last_change = tokio::time::Instant::now();
+                            } else if last_change.elapsed() > BT_WRITE_INACTIVITY_TIMEOUT {
+                                warn!("BT watchdog: no RFCOMM writes for {:?}, aborting connection",
+                                      BT_WRITE_INACTIVITY_TIMEOUT);
+                                abort_serve.abort();
+                                return;
+                            }
                         }
-                        Err(e) => warn!("BT connection closed with error ({} active): {:?}", count, e),
+                    })
+                };
+                let handle = tokio::task::spawn(async move {
+                    let result = serve_handle.await;
+                    watchdog_handle.abort();
+                    let close_count =
+                        counters.cedar_bluetooth.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
+                    match result {
+                        Ok(Ok(())) => info!("BT connection closed ({} active)", close_count),
+                        Ok(Err(e)) if e.is_incomplete_message() || e.is_closed() => {
+                            info!("BT connection closed ({} active)", close_count);
+                        }
+                        Ok(Err(e)) => warn!("BT connection closed with error ({} active): {:?}",
+                                            close_count, e),
+                        Err(join_err) if join_err.is_cancelled() => {
+                            info!("BT connection aborted by watchdog ({} active)", close_count);
+                        }
+                        Err(join_err) => warn!("BT connection task failed ({} active): {:?}",
+                                               close_count, join_err),
+                    }
+                    // Run the tiered reset on the blocking pool. Its inner
+                    // work is entirely synchronous (subprocess calls plus,
+                    // on hard-reset escalation, std::thread::sleep pauses),
+                    // so running it on an async worker would stall it for
+                    // up to a couple seconds — enough to starve the runtime
+                    // when several BT connections close near simultaneously.
+                    let outcome = tokio::task::spawn_blocking(reset_hci_controller)
+                        .await
+                        .unwrap_or(ResetOutcome::HardReset);
+                    match outcome {
+                        ResetOutcome::LightResetOk => {}
+                        ResetOutcome::HardReset => {
+                            // Bluer session was invalidated by our reset or
+                            // a concurrent one; notify the outer loop to
+                            // rebuild.
+                            hard_reset_notify.notify_one();
+                        }
                     }
                 });
+                connection_handles.push(handle);
             }
             Err(e) => {
-                error!("Failed to accept BT connection: {:?}", e);
+                error!("Failed to accept BT connection ({:?} since profile ready): {:?}",
+                       ready_at.elapsed(), e);
             }
         }
+    };
+
+    // Abort any still-running connection tasks. When we exit because of a
+    // hard reset, the underlying RFCOMM streams held by these tasks are
+    // invalidated anyway; releasing them promptly frees fds and stops any
+    // stalled serve_connection futures from hanging around across
+    // serve_over_bt restarts.
+    for h in &connection_handles {
+        if !h.is_finished() {
+            h.abort();
+        }
     }
+    if !connection_handles.is_empty() {
+        info!("serve_over_bt exiting; aborted {} connection task(s)",
+              connection_handles.len());
+    }
+    exit
 }
 
 #[tokio::main]
@@ -4580,27 +4902,45 @@ async fn async_main(
     // Listen on any WiFi address for the given port.
     let addr = SocketAddr::from(([0, 0, 0, 0], 80));
     info!("Listening at {:?}", addr);
-    let service_future = hyper::Server::bind(&addr)
+    let listener_80 = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let service_future = hyper::Server::builder(accept_with_sndbuf(listener_80))
         .serve(ConnectionTrackingMakeService::new(
             service.clone(), connection_counters.clone(), 80));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let service_future8080 = hyper::Server::bind(&addr8080)
+    let listener_8080 = tokio::net::TcpListener::bind(&addr8080).await.unwrap();
+    let service_future8080 = hyper::Server::builder(accept_with_sndbuf(listener_8080))
         .serve(ConnectionTrackingMakeService::new(
             service.clone(), connection_counters.clone(), 8080));
 
-    // Also listen on Bluetooth.
+    // Also listen on Bluetooth. serve_over_bt returns whenever the BT stack
+    // was hard-reset (bluer session invalidated) or bluetoothd went away;
+    // restart it in a loop so a wedge recovery brings the BT server back
+    // up automatically. Brief backoff prevents a spin if the stack is
+    // persistently broken.
     let bt_counters = connection_counters.clone();
     let bt_server_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
-            let _status = serve_over_bt(service, bt_counters).await;
-            Ok(())
+            loop {
+                {
+                    // Scoped so the non-Send Box<dyn Error> return value
+                    // does not span the await below.
+                    let status = serve_over_bt(service.clone(), bt_counters.clone()).await;
+                    if let Err(e) = &status {
+                        warn!("BT server exited with error: {:?}", e);
+                    }
+                }
+                warn!("Restarting BT server in 2s");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
         });
 
     // Run pairing mode loop.
     let pairing_mode_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
         tokio::task::spawn(async move {
-            let _status = run_pairing_mode(pairing_mode_state).await;
+            if let Err(e) = run_pairing_mode(pairing_mode_state).await {
+                warn!("Bluetooth pairing mode loop exited with error: {:?}", e);
+            }
             Ok(())
         });
 
