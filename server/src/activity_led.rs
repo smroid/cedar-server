@@ -72,8 +72,12 @@ impl ActivityLed {
 
     fn worker(state: Arc<tokio::sync::Mutex<SharedState>>, got_signal: Arc<AtomicBool>) {
 	// Raspberry Pi 5 reverses the control signal to the ACT led.
+        // On non-Raspberry-Pi hosts (e.g. x86 dev machines) this device-tree
+        // file is absent; default to empty (non-Pi5) and let the LED writes
+        // below no-op via unwrap_or(()).
         let processor_model =
-            fs::read_to_string("/sys/firmware/devicetree/base/model").unwrap()
+            fs::read_to_string("/sys/firmware/devicetree/base/model")
+            .unwrap_or_default()
             .trim_end_matches('\0').to_string();
 	let is_rpi5 = processor_model.contains("Raspberry Pi 5");
 	let off_value = if is_rpi5 { "1" } else { "0" };
