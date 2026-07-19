@@ -396,3 +396,22 @@ Cedar-server version: 1.0.3
 
 * Guard pipeline processing stages from pegging CPU cores. This might have been causing connection timeouts.
 
+# July 19 2026
+
+Cedar-server version: 1.1.6
+
+* Improved Bluetooth reliability: detect when the Bluetooth connection
+  has silently stopped working and automatically recover it, instead of
+  requiring a Cedar server restart.
+
+* Add control to enable/disable the WiFi access point; when turning WiFi off,
+  Bluetooth pairing mode is started automatically so a client can still connect.
+
+* Reduce image data size over WiFi for smoother, less laggy live view on
+  slower connections.
+
+* Add altitude/azimuth to sky objects shown in the live field-of-view
+  overlay, not just catalog lookups.
+
+* Fix LX200 (SkySafari/Stellarium) position reporting so declination values
+  near 0 hours right ascension are no longer rejected as invalid.
