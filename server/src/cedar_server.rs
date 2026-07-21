@@ -912,6 +912,7 @@ impl Cedar for MyCedar {
                 preferences_arc,
             ) = {
                 let mut locked_state = self.state.lock().await;
+                let old_camera = locked_state.camera.clone();
                 if demo_image_filename.is_empty() {
                     // Go back to using our configured camera.
                     locked_state.camera = get_camera(
@@ -945,6 +946,23 @@ impl Cedar for MyCedar {
                         Some(demo_image_filename);
                 }
                 let new_camera = locked_state.camera.clone();
+                // Start the new camera before anyone can observe it as
+                // active, then stop the old one now that nothing should be
+                // able to reach it via locked_state.camera. Skip entirely
+                // if old_camera and new_camera are the same Arc (e.g.
+                // redundant calls with the same demo image, or switching
+                // to "real camera" when already on it).
+                if !Arc::ptr_eq(&old_camera, &new_camera) {
+                    if let Err(e) = new_camera.lock().await.start().await {
+                        // Roll back so locked_state.camera, DetectEngine,
+                        // and Calibrator stay consistent (all still on
+                        // old_camera) rather than splitting: the new camera
+                        // never started, so the switch didn't really happen.
+                        locked_state.camera = old_camera;
+                        return Err(tonic_status(e));
+                    }
+                    old_camera.lock().await.stop().await;
+                }
                 let (width, height) = Self::camera_geometry(&new_camera).await;
 
                 let std_duration =
@@ -4767,6 +4785,10 @@ async fn async_main(
     }
 
     let camera = get_camera(&attached_camera, &test_image_camera).await;
+    if let Err(e) = camera.lock().await.start().await {
+        error!("Failed to start initial camera: {:?}", e);
+        std::process::exit(1);
+    }
     {
         let locked_camera = camera.lock().await;
         info!(

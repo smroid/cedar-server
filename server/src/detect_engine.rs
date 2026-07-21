@@ -354,7 +354,7 @@ impl DetectEngine {
                     state: Arc<tokio::sync::Mutex<DetectState>>,
                     done: Arc<AtomicBool>) {
         debug!("Starting detect engine");
-        loop {
+        'outer: loop {
             let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>;
             let focus_mode: bool;
             let daylight_mode: bool;
@@ -394,8 +394,13 @@ impl DetectEngine {
                         Ok(c) => c,
                         Err(e) => {
                             error!("Error capturing image: {}", &e.to_string());
-                            // TODO: advertise camera status somewhere.
-                            None  // Keep going.
+                            // The active camera may have changed (e.g. a
+                            // demo-mode switch stopped this one). Don't
+                            // retry against this same stale `camera`
+                            // clone forever - restart the outer loop so it
+                            // re-fetches locked_state.camera.
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            continue 'outer;
                         }
                     };
                     if capture.is_none() {
