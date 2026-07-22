@@ -254,6 +254,7 @@ impl ServeEngine {
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
     ) {
         debug!("Starting serve engine");
+        let mut compressor = turbojpeg::Compressor::new().unwrap();
         loop {
             let frame_id;
             let last_solve_solution_id;
@@ -372,6 +373,7 @@ impl ServeEngine {
                 plate_solution,
                 &solve_engine,
                 &detect_engine,
+                &mut compressor,
             )
             .await;
 
@@ -407,6 +409,7 @@ impl ServeEngine {
         plate_solution: Option<PlateSolution>,
         solve_engine: &Arc<tokio::sync::Mutex<SolveEngine>>,
         detect_engine: &Arc<tokio::sync::Mutex<DetectEngine>>,
+        compressor: &mut turbojpeg::Compressor,
     ) -> ServeResult {
         // Read context and persistent state (brief lock).
         let (
@@ -655,9 +658,9 @@ impl ServeEngine {
                     // of detect_binning.
                     if is_color {
                         let binned = bin_2x2(center_peak_image);
-                        (2_i32, Self::jpeg_encode(&binned, ctx_jpeg_quality))
+                        (2_i32, Self::jpeg_encode(compressor, &binned, ctx_jpeg_quality))
                     } else {
-                        (1_i32, Self::jpeg_encode(center_peak_image, ctx_jpeg_quality))
+                        (1_i32, Self::jpeg_encode(compressor, center_peak_image, ctx_jpeg_quality))
                     };
                 frame_result.center_peak_image = Some(Image {
                     binning_factor: cp_binning_factor,
@@ -679,9 +682,9 @@ impl ServeEngine {
                     // See color bin_2x2 comment above for center_peak_image.
                     if is_color {
                         let binned = bin_2x2(daylight_focus_image);
-                        (2_i32, Self::jpeg_encode(&binned, ctx_jpeg_quality))
+                        (2_i32, Self::jpeg_encode(compressor, &binned, ctx_jpeg_quality))
                     } else {
-                        (1_i32, Self::jpeg_encode(daylight_focus_image, ctx_jpeg_quality))
+                        (1_i32, Self::jpeg_encode(compressor, daylight_focus_image, ctx_jpeg_quality))
                     };
                 frame_result.daylight_focus_zoom_image = Some(Image {
                     binning_factor: df_binning_factor,
@@ -706,7 +709,7 @@ impl ServeEngine {
         let scaled_image =
             scale_image(resized_disp_image, black_level, peak_value, gamma);
         let scaled_image = Arc::new(scaled_image);
-        let jpg_buf = Self::jpeg_encode(&scaled_image, ctx_jpeg_quality);
+        let jpg_buf = Self::jpeg_encode(compressor, &scaled_image, ctx_jpeg_quality);
         let scaled_image_frame_id = frame_result.frame_id;
         frame_result.image = Some(Image {
             binning_factor: binning_factor as i32,
@@ -746,6 +749,7 @@ impl ServeEngine {
                 let rotated_boresight_image =
                     irr.rotate_image_and_crop(&resized_boresight_image);
                 let jpg_buf = Self::jpeg_encode(
+                    compressor,
                     &rotated_boresight_image,
                     ctx_jpeg_quality,
                 );
@@ -1007,7 +1011,9 @@ impl ServeEngine {
         }
     }
 
-    fn jpeg_encode(img: &GrayImage, jpeg_quality: u8) -> Vec<u8> {
+    fn jpeg_encode(
+        compressor: &mut turbojpeg::Compressor, img: &GrayImage, jpeg_quality: u8
+    ) -> Vec<u8> {
         let (width, height) = img.dimensions();
         let image = turbojpeg::Image {
             pixels: img.as_raw().as_slice(),
@@ -1016,7 +1022,6 @@ impl ServeEngine {
             height: height as usize,
             format: turbojpeg::PixelFormat::GRAY,
         };
-        let mut compressor = turbojpeg::Compressor::new().unwrap();
         compressor.set_quality(jpeg_quality as i32).unwrap();
         compressor.set_subsamp(turbojpeg::Subsamp::Gray).unwrap();
         compressor.compress_to_vec(image).unwrap()
