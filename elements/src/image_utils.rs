@@ -17,6 +17,16 @@ pub fn set_rotate_crop_fn(func: RotateCropFn) {
     let _ = ROTATE_CROP_FN.set(func);  // Ignores error if already set.
 }
 
+// Applies `lut` (256-entry byte->byte lookup table) to every pixel of
+// `image`, producing a new image of the same dimensions.
+pub type ApplyLutFn = fn(&GrayImage, &[u8; 256]) -> GrayImage;
+
+static APPLY_LUT_FN: OnceLock<ApplyLutFn> = OnceLock::new();
+
+pub fn set_apply_lut_fn(func: ApplyLutFn) {
+    let _ = APPLY_LUT_FN.set(func);  // Ignores error if already set.
+}
+
 fn compute_lut(min_pixel_value: u8,
                mut peak_pixel_value: u8,
                gamma: f32) -> [u8; 256] {
@@ -48,11 +58,16 @@ pub fn scale_image(
     -> GrayImage {
     let lut = compute_lut(min_pixel_value, peak_pixel_value, gamma);
 
-    // Apply the lut.
-    let out_vec: Vec<u8> = image.as_raw().iter().map(|x| lut[*x as usize]).collect();
-
-    let (width, height) = image.dimensions();
-    GrayImage::from_raw(width, height, out_vec).unwrap()
+    match APPLY_LUT_FN.get() {
+        Some(f) => f(image, &lut),
+        None => {
+            // Apply the lut.
+            let out_vec: Vec<u8> =
+                image.as_raw().iter().map(|x| lut[*x as usize]).collect();
+            let (width, height) = image.dimensions();
+            GrayImage::from_raw(width, height, out_vec).unwrap()
+        }
+    }
 }
 
 // In-place variant of scale_image().
