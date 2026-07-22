@@ -87,7 +87,7 @@ message ServerInformation {
   // Filenames of image(s) found in run/demo_images directory.
   repeated string demo_image_names = 11;
 
-  // Recent system load average (number of runnable/waiting processes).
+  // Recent total system CPU usage, in cores (e.g. 1.0 = one full core).
   optional float system_load_average = 18;
 
   // Recent CPU usage of the cedar server process, in cores (e.g. 1.0 = one full

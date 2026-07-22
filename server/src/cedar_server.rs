@@ -228,9 +228,12 @@ struct MyCedar {
 
     connection_counters: Arc<ConnectionCounters>,
 
-    // Cached CPU temperature and load average, read at most once per minute.
+    // Cached CPU temperature, read at most once per minute.
     cpu_temperature: Arc<tokio::sync::Mutex<(f32, Instant)>>,
-    cpu_load_average: Arc<tokio::sync::Mutex<(f32, Instant)>>,
+
+    // System-wide CPU usage: cached result (in cores), and previous
+    // (busy ticks, Instant) sample.
+    cpu_load_average: Arc<tokio::sync::Mutex<(f32, u64, Instant)>>,
 
     cpu_core_count: i32,
 
@@ -2091,7 +2094,7 @@ struct ServerInfoCtx {
     serial_number: String,
     connection_counters: Arc<ConnectionCounters>,
     cpu_temperature: Arc<tokio::sync::Mutex<(f32, Instant)>>,
-    cpu_load_average: Arc<tokio::sync::Mutex<(f32, Instant)>>,
+    cpu_load_average: Arc<tokio::sync::Mutex<(f32, u64, Instant)>>,
     cpu_core_count: i32,
     cedar_process_load: Arc<tokio::sync::Mutex<(f32, u64, Instant)>>,
 }
@@ -2753,17 +2756,35 @@ impl MyCedar {
         }
         server_info.cpu_temperature = cached.0;
 
-        // Get 1-minute load average, reading /proc/loadavg at most once per minute.
+        // Get total system CPU usage (in cores, e.g. 1.0 = one full core), by
+        // sampling /proc/stat's aggregate "cpu" line at most once per minute
+        // and computing delta busy ticks / delta time.
         let mut cached_load = ctx.cpu_load_average.lock().await;
-        if cached_load.1.elapsed() >= Duration::from_secs(60) {
-            if let Ok(loadavg_str) = tokio::fs::read_to_string("/proc/loadavg").await {
-                if let Some(first) = loadavg_str.split_whitespace().next() {
-                    if let Ok(load) = first.parse::<f32>() {
-                        cached_load.0 = load;
+        if cached_load.2.elapsed() >= Duration::from_secs(60) {
+            if let Ok(stat_str) = tokio::fs::read_to_string("/proc/stat").await {
+                if let Some(cpu_line) = stat_str.lines().next() {
+                    let fields: Vec<u64> = cpu_line.split_whitespace()
+                        .skip(1)  // Skip "cpu" label.
+                        .filter_map(|f| f.parse::<u64>().ok())
+                        .collect();
+                    // Fields are: user nice system idle iowait irq softirq
+                    // steal [guest guest_nice]. Busy time is everything
+                    // except idle and iowait.
+                    if fields.len() >= 5 {
+                        let idle = fields[3] + fields[4];
+                        let total: u64 = fields.iter().sum();
+                        let busy = total.saturating_sub(idle);
+                        let elapsed = cached_load.2.elapsed().as_secs_f32();
+                        let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f32;
+                        if clk_tck > 0.0 && elapsed > 0.0 && cached_load.1 > 0 {
+                            cached_load.0 = (busy.saturating_sub(cached_load.1)) as f32
+                                / clk_tck / elapsed;
+                        }
+                        cached_load.1 = busy;
                     }
                 }
             }
-            cached_load.1 = Instant::now();
+            cached_load.2 = Instant::now();
         }
         server_info.system_load_average = Some(cached_load.0);
         server_info.cpu_core_count = Some(ctx.cpu_core_count);
@@ -3714,7 +3735,7 @@ impl MyCedar {
                 (0.0_f32, Instant::now() - Duration::from_secs(120))
             )),
             cpu_load_average: Arc::new(tokio::sync::Mutex::new(
-                (0.0_f32, Instant::now() - Duration::from_secs(120))
+                (0.0_f32, 0_u64, Instant::now() - Duration::from_secs(120))
             )),
             cedar_process_load: Arc::new(tokio::sync::Mutex::new(
                 (0.0_f32, 0_u64, Instant::now() - Duration::from_secs(120))
