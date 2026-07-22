@@ -3809,9 +3809,9 @@ impl MyCedar {
         Ok(cedar)
     } // MyCedar::new().
 
-    // From Gemini.
-    fn find_most_recent_file(pattern: &str) -> Option<PathBuf> {
-        let mut latest_file: Option<(PathBuf, u64)> = None;
+    // Returns files matching `pattern`, sorted newest-to-oldest by mtime.
+    fn find_files_newest_first(pattern: &str) -> Vec<PathBuf> {
+        let mut files: Vec<(PathBuf, u64)> = Vec::new();
 
         for entry in glob(pattern).expect("Failed to read glob pattern") {
             match entry {
@@ -3824,48 +3824,60 @@ impl MyCedar {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs();
-                    if latest_file.is_none()
-                        || modified_time > latest_file.as_ref().unwrap().1
-                    {
-                        latest_file = Some((path, modified_time));
-                    }
+                    files.push((path, modified_time));
                 }
                 Err(e) => {
                     warn!("Error globbing pattern {:?}: {:?}", pattern, e);
                 }
             }
         }
-
-        if let Some(result) = latest_file {
-            Some(result.0)
-        } else {
-            None
-        }
+        files.sort_by(|a, b| b.1.cmp(&a.1));
+        files.into_iter().map(|(path, _)| path).collect()
     }
 
+    // Reads up to `bytes_to_read` bytes of log tail, newest content last.
+    // Since the log rotates (e.g. daily), the most-recently-modified file
+    // alone may be too small to satisfy `bytes_to_read` (e.g. right after
+    // rollover) -- in that case earlier rotated files are also read.
     fn read_log_tail(
         log_file: &Path,
         bytes_to_read: i32,
     ) -> io::Result<String> {
         let pat = log_file.to_str().unwrap().to_owned() + ".*";
-        let latest_file = Self::find_most_recent_file(&pat);
-        if latest_file.is_none() {
+        let files = Self::find_files_newest_first(&pat);
+        if files.is_empty() {
             return Err(io::Error::new(
                 ErrorKind::NotFound,
                 format!("No match for {:?}", pat),
             ));
         }
-        let mut f = fs::File::open(latest_file.unwrap())?;
-        let len = f.metadata()?.len();
-        let to_read = std::cmp::min(len, bytes_to_read as u64) as i64;
-        f.seek(SeekFrom::End(-to_read))?;
-        let mut content = String::new();
-        f.read_to_string(&mut content)?;
-        // Trim leading portion of content until first newline.
-        if let Some(pos) = content.find('\n') {
-            content = content[pos + 1..].to_string();
+        let mut remaining = bytes_to_read as i64;
+        let mut chunks: Vec<String> = Vec::new();
+        for path in &files {
+            if remaining <= 0 {
+                break;
+            }
+            let mut f = fs::File::open(path)?;
+            let len = f.metadata()?.len();
+            let to_read = std::cmp::min(len as i64, remaining);
+            f.seek(SeekFrom::End(-to_read))?;
+            let mut content = String::new();
+            f.read_to_string(&mut content)?;
+            // If we didn't read this file from its start, the leading
+            // portion of `content` may be a partial line; discard it up
+            // to the first newline.
+            if to_read < len as i64 {
+                if let Some(pos) = content.find('\n') {
+                    content = content[pos + 1..].to_string();
+                }
+            }
+            remaining -= content.len() as i64;
+            chunks.push(content);
         }
-        Ok(content)
+        // `chunks` is newest-file-first; reverse so output reads
+        // oldest-to-newest.
+        chunks.reverse();
+        Ok(chunks.concat())
     }
 
     async fn post_solve_callback(
