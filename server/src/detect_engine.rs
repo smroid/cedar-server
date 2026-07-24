@@ -354,8 +354,7 @@ impl DetectEngine {
                     state: Arc<tokio::sync::Mutex<DetectState>>,
                     done: Arc<AtomicBool>) {
         debug!("Starting detect engine");
-        'outer: loop {
-            let camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>;
+        loop {
             let focus_mode: bool;
             let daylight_mode: bool;
             let daylight_focus_point: Option<ImageCoord>;
@@ -365,7 +364,6 @@ impl DetectEngine {
             let auto_exposure_duration: Option<Duration>;
             {
                 let mut locked_state = state.lock().await;
-                camera = locked_state.camera.clone();
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
                 daylight_focus_point = locked_state.daylight_focus_point.clone();
@@ -381,26 +379,25 @@ impl DetectEngine {
             let camera_processing_duration;
             {
                 let frame_id = state.lock().await.frame_id;
-                let delay_est = camera.lock().await.estimate_delay(frame_id).await;
-                if let Some(delay_est) = delay_est {
-                    state.lock().await.eta = Some(Instant::now() + delay_est);
-                }
-                // Don't hold camera lock for the entirety of the time waiting for
-                // the next image.
+                // Re-fetch `camera` from locked_state on every iteration
+                // so that a camera switch (e.g. entering/leaving demo mode,
+                // which stops the old camera) is picked up immediately.
+                // Don't hold the camera lock for the entirety of the time
+                // waiting for the next image.
                 loop {
+                    let camera = state.lock().await.camera.clone();
+                    let delay_est = camera.lock().await.estimate_delay(frame_id).await;
+                    if let Some(delay_est) = delay_est {
+                        state.lock().await.eta = Some(Instant::now() + delay_est);
+                    }
                     let capture =
                         match camera.lock().await.try_capture_image(frame_id).await
                     {
                         Ok(c) => c,
                         Err(e) => {
                             error!("Error capturing image: {}", &e.to_string());
-                            // The active camera may have changed (e.g. a
-                            // demo-mode switch stopped this one). Don't
-                            // retry against this same stale `camera`
-                            // clone forever - restart the outer loop so it
-                            // re-fetches locked_state.camera.
                             tokio::time::sleep(Duration::from_millis(50)).await;
-                            continue 'outer;
+                            continue;
                         }
                     };
                     if capture.is_none() {
@@ -819,6 +816,7 @@ impl DetectEngine {
             {
                 debug!("Setting new exposure duration {}s",
                        new_exposure_duration_secs);
+                let camera = state.lock().await.camera.clone();
                 let result = camera.lock().await.set_exposure_duration(
                     Duration::from_secs_f64(new_exposure_duration_secs)).await;
                 match result {

@@ -904,6 +904,7 @@ impl Cedar for MyCedar {
             };
 
             let (
+                old_camera,
                 new_camera,
                 width,
                 height,
@@ -949,22 +950,16 @@ impl Cedar for MyCedar {
                         Some(demo_image_filename);
                 }
                 let new_camera = locked_state.camera.clone();
-                // Start the new camera before anyone can observe it as
-                // active, then stop the old one now that nothing should be
-                // able to reach it via locked_state.camera. Skip entirely
-                // if old_camera and new_camera are the same Arc (e.g.
-                // redundant calls with the same demo image, or switching
-                // to "real camera" when already on it).
+                // Start the new camera now; old_camera is stopped later,
+                // after DetectEngine/Calibrator switch over (see below).
+                // Skip if they're the same Arc (e.g. redundant switch).
                 if !Arc::ptr_eq(&old_camera, &new_camera) {
                     if let Err(e) = new_camera.lock().await.start().await {
-                        // Roll back so locked_state.camera, DetectEngine,
-                        // and Calibrator stay consistent (all still on
-                        // old_camera) rather than splitting: the new camera
-                        // never started, so the switch didn't really happen.
-                        locked_state.camera = old_camera;
+                        // New camera never started; roll back so nothing
+                        // ends up split between old and new.
+                        locked_state.camera = old_camera.clone();
                         return Err(tonic_status(e));
                     }
-                    old_camera.lock().await.stop().await;
                 }
                 let (width, height) = Self::camera_geometry(&new_camera).await;
 
@@ -982,6 +977,7 @@ impl Cedar for MyCedar {
                 );
 
                 (
+                    old_camera,
                     new_camera,
                     width,
                     height,
@@ -994,7 +990,11 @@ impl Cedar for MyCedar {
                 )
             }; // State lock released here!
 
-            // Configure engines outside state lock
+            // Configure engines outside state lock. Switch DetectEngine
+            // and Calibrator to new_camera before stopping old_camera
+            // (below) - each tracks its own camera separately from
+            // CedarState, so stopping too early risks a FailedPrecondition
+            // if either fetches the old, now-stopped camera in between.
             detect_engine_arc
                 .lock()
                 .await
@@ -1010,6 +1010,9 @@ impl Cedar for MyCedar {
                 .lock()
                 .await
                 .replace_camera(new_camera.clone());
+            if !Arc::ptr_eq(&old_camera, &new_camera) {
+                old_camera.lock().await.stop().await;
+            }
 
             // Validate boresight_pixel (full-sensor coords) against the new
             // camera's image area, then re-apply to solve_engine.
