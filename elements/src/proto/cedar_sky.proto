@@ -37,7 +37,8 @@ message QueryCatalogRequest {
   // with implicit AND; order is not significant. Thus, |andr gal| and
   // |gal andr| both match "Andromeda Galaxy".
   // Note that when `text_search` is given, the `catalog_entry_match`,
-  // `max_distance`, and `min_elevation` constraints are ignored.
+  // `max_distance`, and `min_elevation` constraints are ignored, and 'ordering'
+  // is also ignored.
   optional string text_search = 8;
 }
 
