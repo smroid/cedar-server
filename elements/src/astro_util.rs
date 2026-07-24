@@ -531,7 +531,9 @@ pub fn fill_in_detections(
             {
                 // Found a same-location item between catalog_entries and
                 // detections.
-                if let Some(mag) = catalog_entry.entry.as_ref().unwrap().magnitude {
+                if let Some(mag) =
+                    catalog_entry.entry.as_ref().unwrap().magnitude
+                {
                     match_magnitude = mag;
                     match_brightness = detection.brightness;
                     found_match = true;
@@ -567,12 +569,11 @@ pub fn fill_in_detections(
             // Synthesize a StarCentroid corresponding to `catalog_entry`.
             // Note: entries without magnitude cannot be synthesized, so they
             // are skipped.
-            if let Some(catalog_mag) = catalog_entry.entry.as_ref().unwrap().magnitude {
+            if let Some(catalog_mag) =
+                catalog_entry.entry.as_ref().unwrap().magnitude
+            {
                 let brightness = match_brightness
-                    * magnitude_intensity_ratio(
-                        match_magnitude,
-                        catalog_mag,
-                    );
+                    * magnitude_intensity_ratio(match_magnitude, catalog_mag);
                 detections_for_catalog_entries.push(StarCentroid {
                     centroid_position: Some(cat_coord.clone()),
                     brightness,
@@ -921,7 +922,11 @@ mod tests {
                 entry: Some(CatalogEntry {
                     catalog_label: "PL".to_string(),
                     catalog_entry: "jupiter".to_string(),
-                    coord: Some(CelestialCoord { ra: 0.0, dec: 0.0, epoch: None }),
+                    coord: Some(CelestialCoord {
+                        ra: 0.0,
+                        dec: 0.0,
+                        epoch: None,
+                    }),
                     constellation: None,
                     object_type: Some(ObjectType {
                         label: "xx".to_string(),
@@ -940,7 +945,11 @@ mod tests {
                 entry: Some(CatalogEntry {
                     catalog_label: "IAU".to_string(),
                     catalog_entry: "some_star".to_string(),
-                    coord: Some(CelestialCoord { ra: 0.0, dec: 0.0, epoch: None }),
+                    coord: Some(CelestialCoord {
+                        ra: 0.0,
+                        dec: 0.0,
+                        epoch: None,
+                    }),
                     constellation: None,
                     object_type: Some(ObjectType {
                         label: "xx".to_string(),

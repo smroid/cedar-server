@@ -1,21 +1,21 @@
 // A canned SolverTrait impl. Its job is to prove the harness is not
 // tetra3-specific: the same engine stack, corpus, and gates must work against
-// any solver behind the trait -- which is the whole point of the exercise, since
-// tetra3rs is coming next.
+// any solver behind the trait -- which is the whole point of the exercise,
+// since tetra3rs is coming next.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use canonical_error::CanonicalError;
-use cedar_elements::cedar::{ImageCoord, PlateSolution};
-use cedar_elements::cedar_common::CelestialCoord;
-use cedar_elements::imu_trait::EquatorialCoordinates;
-use cedar_elements::solver_trait::{SolveExtension, SolveParams, SolverTrait};
+use cedar_elements::{
+    cedar::{ImageCoord, PlateSolution},
+    cedar_common::CelestialCoord,
+    imu_trait::EquatorialCoordinates,
+    solver_trait::{SolveExtension, SolveParams, SolverTrait},
+};
 use tokio::sync::Mutex;
 
-use super::corpus::Field;
-use super::harness::expected_roll_deg;
+use super::{corpus::Field, harness::expected_roll_deg};
 
 pub struct FakeSolver {
     ra: f64,
@@ -37,8 +37,8 @@ impl FakeSolver {
         }
     }
 
-    /// Off by 10 degrees in declination -- far outside the 5 arcmin gate. If the
-    /// harness passes this, the gates are not actually firing.
+    /// Off by 10 degrees in declination -- far outside the 5 arcmin gate. If
+    /// the harness passes this, the gates are not actually firing.
     pub fn wrong(field: &Field) -> FakeSolver {
         FakeSolver {
             dec: field.dec_deg + 10.0,

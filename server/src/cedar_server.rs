@@ -11,7 +11,9 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering},
+        atomic::{
+            AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering,
+        },
         Arc,
     },
     time::{Duration, Instant, SystemTime},
@@ -33,13 +35,13 @@ use cedar_elements::{
     cedar::{
         cedar_server::{Cedar, CedarServer},
         ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
-        CameraModel, CelestialCoordFormat, ConnectionStatus, DisplayOrientation,
-        EmptyMessage, FeatureLevel, FixedSettings, FrameRequest,
-        FrameResult, GetBluetoothNameResponse, GetBondedDevicesResponse, Image,
-        ImageCoord, ImuState, ImuTrackerState, LatLong,
-        MountType, OperatingMode, OperationSettings,
-        PlateSolution as PlateSolutionProto, Preferences,
-        Rectangle, RemoveBondRequest, ServerInformation, ServerLogRequest,
+        CameraModel, CelestialCoordFormat, ConnectionStatus,
+        DisplayOrientation, EmptyMessage, FeatureLevel, FixedSettings,
+        FrameRequest, FrameResult, GetBluetoothNameResponse,
+        GetBondedDevicesResponse, Image, ImageCoord, ImuState, ImuTrackerState,
+        LatLong, MountType, OperatingMode, OperationSettings,
+        PlateSolution as PlateSolutionProto, Preferences, Rectangle,
+        RemoveBondRequest, ServerInformation, ServerLogRequest,
         ServerLogResult, SetPairingModeRequest, WiFiAccessPoint,
     },
     cedar_common::CelestialCoord,
@@ -67,9 +69,9 @@ use nix::{
 use pico_args::Arguments;
 use prost::Message;
 use tetra3_server::tetra3_solver::Tetra3Solver;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::server::Routes;
 use tonic_web::{GrpcWebLayer, GrpcWebService};
-use tokio_stream::wrappers::ReceiverStream;
 use tower_http::{
     cors::{Any, Cors, CorsLayer},
     services::ServeDir,
@@ -81,8 +83,8 @@ use self::multiplex_service::MultiplexService;
 use crate::{
     activity_led::ActivityLed,
     bonding_helper::{
-        get_adapter_alias, set_adapter_name, get_bonded_devices,
-        remove_bond, reset_hci_controller, run_pairing_mode, ResetOutcome,
+        get_adapter_alias, get_bonded_devices, remove_bond,
+        reset_hci_controller, run_pairing_mode, set_adapter_name, ResetOutcome,
     },
     calibrator::{Calibrator, ExposureCalibrationError},
     detect_engine::{DetectEngine, DetectResult},
@@ -113,7 +115,7 @@ const BT_WRITE_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
 const SKIP_FOCUS_RETRY_INTERVAL_SECS: u64 = 15;
 
 // Duration before auto-exiting pairing mode when forever==false.
-const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 300;  // 5 minutes.
+const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 300; // 5 minutes.
 
 /// Shared counters for tracking active client connections across all servers.
 #[derive(Default)]
@@ -317,7 +319,8 @@ struct CedarState {
     // discoverable/pairable state accordingly.
     pairing_mode: Arc<tokio::sync::Mutex<bool>>,
 
-    // When true, pairing mode will remain enabled indefinitely (not auto-exit).
+    // When true, pairing mode will remain enabled indefinitely (not
+    // auto-exit).
     pairing_mode_forever: Arc<tokio::sync::Mutex<bool>>,
 
     // Incremented each time a timed pairing window is started. A spawned
@@ -382,8 +385,11 @@ impl Cedar for MyCedar {
                 .set_observer_location(Some(observer_location.clone()))
                 .await;
             let new_fixed_settings = fixed_settings_arc.lock().await.clone();
-            serve_engine_arc.lock().await
-                .update_fixed_settings(new_fixed_settings).await;
+            serve_engine_arc
+                .lock()
+                .await
+                .update_fixed_settings(new_fixed_settings)
+                .await;
             let preferences = Preferences {
                 observer_location: Some(observer_location.clone()),
                 ..Default::default()
@@ -413,7 +419,10 @@ impl Cedar for MyCedar {
                     .initialize_solar_system(SystemTime::now())
                     .await;
             }
-            self.state.lock().await.time_set_by_client
+            self.state
+                .lock()
+                .await
+                .time_set_by_client
                 .store(true, AtomicOrdering::Relaxed);
             info!("Updated server time from client to {:?}", Local::now());
             // Don't store the client time in our fixed_settings state, but
@@ -452,10 +461,17 @@ impl Cedar for MyCedar {
         let preferences_arc = locked_state.preferences.clone();
         drop(locked_state);
         fixed_settings_arc.lock().await.observer_location = None;
-        solve_engine_arc.lock().await.set_observer_location(None).await;
+        solve_engine_arc
+            .lock()
+            .await
+            .set_observer_location(None)
+            .await;
         let new_fixed_settings = fixed_settings_arc.lock().await.clone();
-        serve_engine_arc.lock().await
-            .update_fixed_settings(new_fixed_settings).await;
+        serve_engine_arc
+            .lock()
+            .await
+            .update_fixed_settings(new_fixed_settings)
+            .await;
 
         // Also clear from preferences for persistence.
         let mut our_prefs = preferences_arc.lock().await.clone();
@@ -474,19 +490,21 @@ impl Cedar for MyCedar {
         let _timer = GrpcTimer::new("update_operation_settings");
         let mut req: OperationSettings = request.into_inner();
 
-        // Block operation setting changes while in skip-focus auto-calibration mode.
-        // User must first disable skip_focus preference to exit this mode.
-        // Also read skip_alignment preference for use below.
+        // Block operation setting changes while in skip-focus auto-calibration
+        // mode. User must first disable skip_focus preference to exit
+        // this mode. Also read skip_alignment preference for use below.
         let skip_alignment = {
             let locked_state = self.state.lock().await;
-            if locked_state.skip_focus_worker_running &&
-               (req.operating_mode.is_some() || req.daylight_mode.is_some() ||
-                req.focus_assist_mode.is_some())
+            if locked_state.skip_focus_worker_running
+                && (req.operating_mode.is_some()
+                    || req.daylight_mode.is_some()
+                    || req.focus_assist_mode.is_some())
             {
                 return Err(logged_status!(
                     failed_precondition,
                     "Cannot change operation settings while in skip-focus \
-                     auto-calibration mode. Disable skip_focus preference first."
+                     auto-calibration mode. \
+                     Disable skip_focus preference first."
                 ));
             }
             let skip_alignment = locked_state
@@ -802,22 +820,23 @@ impl Cedar for MyCedar {
                             .await
                             .skip_focus
                             .unwrap_or(false);
-                        let spawn_fn = |state: Arc<tokio::sync::Mutex<CedarState>>| {
-                            if skip_focus {
-                                Self::spawn_skip_focus_calibration(
-                                    state,
-                                    skip_alignment,
-                                );
-                            } else {
-                                Self::spawn_calibration(
-                                    state,
-                                    // new_operate_mode=
-                                    skip_alignment,
-                                    new_focus_assist_mode,
-                                    daylight_mode,
-                                );
-                            }
-                        };
+                        let spawn_fn =
+                            |state: Arc<tokio::sync::Mutex<CedarState>>| {
+                                if skip_focus {
+                                    Self::spawn_skip_focus_calibration(
+                                        state,
+                                        skip_alignment,
+                                    );
+                                } else {
+                                    Self::spawn_calibration(
+                                        state,
+                                        // new_operate_mode=
+                                        skip_alignment,
+                                        new_focus_assist_mode,
+                                        daylight_mode,
+                                    );
+                                }
+                            };
                         spawn_fn(self.state.clone());
                         calibrating = true;
                     }
@@ -836,8 +855,11 @@ impl Cedar for MyCedar {
             }
         }
         if let Some(_log_dwelled_positions) = req.log_dwelled_positions {
-            return Err(logged_status!(unimplemented,
-                "rpc UpdateOperationSettings not implemented for log_dwelled_positions."));
+            return Err(logged_status!(
+                unimplemented,
+                "rpc UpdateOperationSettings not implemented \
+                for log_dwelled_positions."
+            ));
         }
         if let Some(catalog_entry_match) = req.catalog_entry_match {
             let solve_engine_arc = {
@@ -922,7 +944,8 @@ impl Cedar for MyCedar {
                     locked_state.camera = get_camera(
                         &locked_state.attached_camera,
                         &self.test_image_camera,
-                    ).await;
+                    )
+                    .await;
                     locked_state.operation_settings.demo_image_filename = None;
                     locked_state
                         .solve_engine
@@ -970,11 +993,8 @@ impl Cedar for MyCedar {
                 {
                     return Err(tonic_status(x));
                 }
-                let (detect_binning, display_sampling) = Self::compute_binning(
-                    &locked_state,
-                    width,
-                    height,
-                );
+                let (detect_binning, display_sampling) =
+                    Self::compute_binning(&locked_state, width, height);
 
                 (
                     old_camera,
@@ -1066,8 +1086,11 @@ impl Cedar for MyCedar {
         let updated_op_settings = locked_state.operation_settings.clone();
         let serve_engine_arc = locked_state.serve_engine.clone();
         drop(locked_state);
-        serve_engine_arc.lock().await
-            .update_operation_settings(updated_op_settings.clone()).await;
+        serve_engine_arc
+            .lock()
+            .await
+            .update_operation_settings(updated_op_settings.clone())
+            .await;
 
         Ok(tonic::Response::new(updated_op_settings))
     } // update_operation_settings().
@@ -1089,7 +1112,12 @@ impl Cedar for MyCedar {
         }
         if let Some(eyepiece_fov) = req.eyepiece_fov {
             our_prefs.eyepiece_fov = Some(eyepiece_fov);
-            locked_state.solve_engine.lock().await.set_eyepiece_fov(eyepiece_fov).await;
+            locked_state
+                .solve_engine
+                .lock()
+                .await
+                .set_eyepiece_fov(eyepiece_fov)
+                .await;
         }
         if let Some(night_vision) = req.night_vision_theme {
             our_prefs.night_vision_theme = Some(night_vision);
@@ -1169,7 +1197,9 @@ impl Cedar for MyCedar {
 
         // Handle skip_focus being cleared - exit skip-focus retry mode.
         if req.skip_focus == Some(false) && locked_state.skip_focus_active {
-            info!("User cleared skip_focus preference, exiting skip-focus mode");
+            info!(
+                "User cleared skip_focus preference, exiting skip-focus mode"
+            );
 
             // Deactivate skip-focus mode (this will cause retry loop to exit).
             locked_state.skip_focus_active = false;
@@ -1197,11 +1227,15 @@ impl Cedar for MyCedar {
                 Some(OperatingMode::Setup as i32);
 
             let camera = locked_state.camera.clone();
-            let initial_exposure_duration = locked_state.initial_exposure_duration;
+            let initial_exposure_duration =
+                locked_state.initial_exposure_duration;
             drop(locked_state);
-            Self::set_pre_calibration_defaults(&camera, initial_exposure_duration)
-                .await
-                .ok();
+            Self::set_pre_calibration_defaults(
+                &camera,
+                initial_exposure_duration,
+            )
+            .await
+            .ok();
             Self::set_gain(&camera, false).await;
             locked_state = self.state.lock().await;
 
@@ -1216,9 +1250,13 @@ impl Cedar for MyCedar {
         let serve_engine_arc = locked_state.serve_engine.clone();
         let updated_op_settings = locked_state.operation_settings.clone();
         drop(locked_state);
-        serve_engine_arc.lock().await
-            .update_operation_settings(updated_op_settings).await;
-        self.save_preferences(serve_engine_arc, our_prefs.clone()).await;
+        serve_engine_arc
+            .lock()
+            .await
+            .update_operation_settings(updated_op_settings)
+            .await;
+        self.save_preferences(serve_engine_arc, our_prefs.clone())
+            .await;
 
         Ok(tonic::Response::new(our_prefs))
     }
@@ -1230,7 +1268,8 @@ impl Cedar for MyCedar {
         let _timer =
             GrpcTimer::with_threshold("get_frame", Duration::from_millis(200));
 
-        let is_bluetooth = request.extensions().get::<BluetoothRequest>().is_some();
+        let is_bluetooth =
+            request.extensions().get::<BluetoothRequest>().is_some();
 
         let activity_led = self.state.lock().await.activity_led.clone();
         activity_led.lock().await.received_rpc().await;
@@ -1266,14 +1305,14 @@ impl Cedar for MyCedar {
         Ok(tonic::Response::new(frame_result))
     }
 
-    type GetFramesStream =
-        ReceiverStream<Result<FrameResult, tonic::Status>>;
+    type GetFramesStream = ReceiverStream<Result<FrameResult, tonic::Status>>;
 
     async fn get_frames(
         &self,
         request: tonic::Request<FrameRequest>,
     ) -> Result<tonic::Response<Self::GetFramesStream>, tonic::Status> {
-        let is_bluetooth = request.extensions().get::<BluetoothRequest>().is_some();
+        let is_bluetooth =
+            request.extensions().get::<BluetoothRequest>().is_some();
 
         let activity_led = self.state.lock().await.activity_led.clone();
         activity_led.lock().await.received_rpc().await;
@@ -1311,7 +1350,8 @@ impl Cedar for MyCedar {
                     state.clone(),
                     prev_frame_id,
                     prev_solution_id,
-                    /*non_blocking=*/ false,
+                    // non_blocking=
+                    false,
                     landscape,
                     is_bluetooth,
                 )
@@ -1331,8 +1371,9 @@ impl Cedar for MyCedar {
                     tokio::time::Duration::from_millis(50) // 20 Hz
                 };
                 next_emit = tokio::time::Instant::now() + interval;
-                frame_result.server_information =
-                    Some(Self::get_server_information_ctx(&server_info_ctx).await);
+                frame_result.server_information = Some(
+                    Self::get_server_information_ctx(&server_info_ctx).await,
+                );
                 *latest_p.lock().await = Some(frame_result);
                 notify_p.notify_one();
             }
@@ -1425,7 +1466,9 @@ impl Cedar for MyCedar {
                         boresight_pixel: Some(bsp),
                         ..Default::default()
                     };
-                    if let Some(hpm) = self.state.lock().await.hot_pixel_map.clone() {
+                    if let Some(hpm) =
+                        self.state.lock().await.hot_pixel_map.clone()
+                    {
                         hpm.lock().await.reset();
                     }
                 } else {
@@ -1447,15 +1490,12 @@ impl Cedar for MyCedar {
                 let serve_engine_arc = locked_state.serve_engine.clone();
                 let camera_arc = locked_state.camera.clone();
                 drop(locked_state);
-                image_rotator = serve_engine_arc.lock().await.image_rotator().await;
+                image_rotator =
+                    serve_engine_arc.lock().await.image_rotator().await;
                 (width, height) = camera_arc.lock().await.dimensions().await;
             }
-            (bsp.x, bsp.y) = image_rotator.transform_from_rotated(
-                bsp.x,
-                bsp.y,
-                width,
-                height,
-            );
+            (bsp.x, bsp.y) = image_rotator
+                .transform_from_rotated(bsp.x, bsp.y, width, height);
 
             let distance_from_center = ((width as f64 / 2.0 - bsp.x)
                 * (width as f64 / 2.0 - bsp.x)
@@ -1492,10 +1532,12 @@ impl Cedar for MyCedar {
             info!("Shutting down host system");
             let (imu_tracker, hot_pixel_map, saving_state, activity_led) = {
                 let locked_state = self.state.lock().await;
-                (locked_state.imu_tracker.clone(),
-                 locked_state.hot_pixel_map.clone(),
-                 locked_state.saving_state.clone(),
-                 locked_state.activity_led.clone())
+                (
+                    locked_state.imu_tracker.clone(),
+                    locked_state.hot_pixel_map.clone(),
+                    locked_state.saving_state.clone(),
+                    locked_state.activity_led.clone(),
+                )
             };
             saving_state.store(true, AtomicOrdering::Relaxed);
             prepare_for_exit_async(&imu_tracker, &hot_pixel_map).await;
@@ -1517,10 +1559,12 @@ impl Cedar for MyCedar {
             info!("Restarting host system");
             let (imu_tracker, hot_pixel_map, saving_state, activity_led) = {
                 let locked_state = self.state.lock().await;
-                (locked_state.imu_tracker.clone(),
-                 locked_state.hot_pixel_map.clone(),
-                 locked_state.saving_state.clone(),
-                 locked_state.activity_led.clone())
+                (
+                    locked_state.imu_tracker.clone(),
+                    locked_state.hot_pixel_map.clone(),
+                    locked_state.saving_state.clone(),
+                    locked_state.activity_led.clone(),
+                )
             };
             saving_state.store(true, AtomicOrdering::Relaxed);
             prepare_for_exit_async(&imu_tracker, &hot_pixel_map).await;
@@ -1539,7 +1583,7 @@ impl Cedar for MyCedar {
             }
         }
         if let Some(slew_coord) = req.initiate_slew {
-            let (preferences_arc, fixed_settings_arc, telescope_position_arc) = {
+            let (preferences_arc, fixed_settings_arc, telescope_pos_arc) = {
                 let locked_state = self.state.lock().await;
                 (
                     locked_state.preferences.clone(),
@@ -1558,7 +1602,7 @@ impl Cedar for MyCedar {
                 ));
             }
             let slew_coord = celestial_coord_to_j2000(&slew_coord);
-            let mut telescope = telescope_position_arc.lock().await;
+            let mut telescope = telescope_pos_arc.lock().await;
             telescope.slew_target_ra = slew_coord.ra;
             telescope.slew_target_dec = slew_coord.dec;
             telescope.slew_active = true;
@@ -1598,7 +1642,11 @@ impl Cedar for MyCedar {
             // Update Bluetooth adapter name to match new WiFi SSID.
             if let Some(new_ssid) = update_ap.ssid {
                 if let Err(e) = set_adapter_name(&new_ssid).await {
-                    warn!("Failed to update Bluetooth adapter name when updating WiFi SSID: {:?}", e);
+                    warn!(
+                        "Failed to update Bluetooth adapter name \
+                        when updating WiFi SSID: {:?}",
+                        e
+                    );
                 }
             }
         }
@@ -1616,8 +1664,13 @@ impl Cedar for MyCedar {
             let wifi_arc = wifi.as_ref().unwrap().clone();
             let result = tokio::task::spawn_blocking(move || {
                 wifi_arc.blocking_lock().set_enabled(wifi_enabled)
-            }).await.map_err(|e| {
-                tonic::Status::internal(format!("set_enabled task panicked: {:?}", e))
+            })
+            .await
+            .map_err(|e| {
+                tonic::Status::internal(format!(
+                    "set_enabled task panicked: {:?}",
+                    e
+                ))
             })?;
             if let Err(x) = result {
                 return Err(tonic_status(x));
@@ -1635,7 +1688,8 @@ impl Cedar for MyCedar {
                         state.pairing_mode.clone(),
                         state.pairing_mode_forever.clone(),
                         state.pairing_mode_generation.clone(),
-                    ).await;
+                    )
+                    .await;
                 }
             }
         }
@@ -1647,7 +1701,8 @@ impl Cedar for MyCedar {
                 locked_prefs.dont_show_items.clear();
                 (locked_prefs.clone(), locked_state.serve_engine.clone())
             };
-            self.save_preferences(serve_engine_arc, prefs_to_write).await;
+            self.save_preferences(serve_engine_arc, prefs_to_write)
+                .await;
         }
         if let Some(mut dfr) = req.designate_daylight_focus_region {
             let (image_rotator, camera, detect_engine) = {
@@ -1662,12 +1717,8 @@ impl Cedar for MyCedar {
                 )
             };
             let (width, height) = camera.lock().await.dimensions().await;
-            (dfr.x, dfr.y) = image_rotator.transform_from_rotated(
-                dfr.x,
-                dfr.y,
-                width,
-                height,
-            );
+            (dfr.x, dfr.y) = image_rotator
+                .transform_from_rotated(dfr.x, dfr.y, width, height);
             // Check that the point is within reasonable bounds.
             if dfr.x < 0.0
                 || dfr.x >= width as f64
@@ -1692,15 +1743,22 @@ impl Cedar for MyCedar {
                     "Dark frame calibration is not available with a test image."
                 ));
             }
-            // Precondition checks and extraction of needed arcs (no mutation yet).
+            // Precondition checks and extraction of needed arcs (no mutation
+            // yet).
             let (calibrator, camera, detect_engine, fixed_settings_arc) = {
                 let locked_state = self.state.lock().await;
-                if locked_state.operation_settings.demo_image_filename
-                    .as_deref().unwrap_or("").len() > 0
+                if locked_state
+                    .operation_settings
+                    .demo_image_filename
+                    .as_deref()
+                    .unwrap_or("")
+                    .len()
+                    > 0
                 {
                     return Err(logged_status!(
                         failed_precondition,
-                        "Dark frame calibration is not available in demo image mode."
+                        "Dark frame calibration is not available \
+                        in demo image mode."
                     ));
                 }
                 if locked_state.hot_pixel_map.is_none() {
@@ -1721,12 +1779,21 @@ impl Cedar for MyCedar {
             // accurate duration estimate. Camera and detect_engine locks are
             // deferred to the spawned task: they may be held by the serve loop
             // during a long exposure, and begin_calibration stops the serve
-            // loop (calibrating=true) so the spawned task acquires them quickly.
+            // loop (calibrating=true) so the spawned task acquires them
+            // quickly.
             let max_exposure_duration = std::time::Duration::try_from(
-                fixed_settings_arc.lock().await.max_exposure_time
-                    .clone().unwrap()).unwrap();
+                fixed_settings_arc
+                    .lock()
+                    .await
+                    .max_exposure_time
+                    .clone()
+                    .unwrap(),
+            )
+            .unwrap();
 
-            if !Self::begin_calibration(&self.state, max_exposure_duration * 2).await {
+            if !Self::begin_calibration(&self.state, max_exposure_duration * 2)
+                .await
+            {
                 return Err(logged_status!(
                     failed_precondition,
                     "Calibration already in progress."
@@ -1737,22 +1804,30 @@ impl Cedar for MyCedar {
                 tokio::task::spawn(async move {
                     let (width, height) = Self::camera_geometry(&camera).await;
                     let (detection_binning, _) = Self::compute_binning(
-                        &*state.lock().await, width, height);
+                        &*state.lock().await,
+                        width,
+                        height,
+                    );
                     let detection_sigma =
                         detect_engine.lock().await.get_detection_sigma();
                     Self::set_gain(&camera, /* daylight_mode= */ false).await;
-                    if let Err(e) = calibrator.lock().await.calibrate_dark_frame(
-                        max_exposure_duration,
-                        detection_binning, detection_sigma,
-                    ).await {
+                    if let Err(e) = calibrator
+                        .lock()
+                        .await
+                        .calibrate_dark_frame(
+                            max_exposure_duration,
+                            detection_binning,
+                            detection_sigma,
+                        )
+                        .await
+                    {
                         warn!("Dark frame calibration failed: {:?}", e);
                     }
                     state.lock().await.calibrating = false;
                 });
         }
         if req.reset_hot_pixel_map.unwrap_or(false) {
-            let hot_pixel_map =
-                self.state.lock().await.hot_pixel_map.clone();
+            let hot_pixel_map = self.state.lock().await.hot_pixel_map.clone();
             match hot_pixel_map {
                 None => {
                     return Err(logged_status!(
@@ -2007,10 +2082,7 @@ impl Cedar for MyCedar {
             }
         };
 
-        Ok(tonic::Response::new(GetBluetoothNameResponse {
-            name,
-            address,
-        }))
+        Ok(tonic::Response::new(GetBluetoothNameResponse { name, address }))
     }
 
     async fn get_bonded_devices(
@@ -2071,7 +2143,8 @@ impl Cedar for MyCedar {
                     state.pairing_mode.clone(),
                     state.pairing_mode_forever.clone(),
                     state.pairing_mode_generation.clone(),
-                ).await;
+                )
+                .await;
             }
         } else {
             info!("Exiting pairing mode via RPC");
@@ -2117,10 +2190,15 @@ impl MyCedar {
             *g += 1;
             *g
         };
-        info!("Enabling pairing mode, will auto-exit in {} seconds",
-              PAIRING_MODE_EXIT_DELAY_SECS);
+        info!(
+            "Enabling pairing mode, will auto-exit in {} seconds",
+            PAIRING_MODE_EXIT_DELAY_SECS
+        );
         tokio::task::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(PAIRING_MODE_EXIT_DELAY_SECS)).await;
+            tokio::time::sleep(Duration::from_secs(
+                PAIRING_MODE_EXIT_DELAY_SECS,
+            ))
+            .await;
             if *pairing_mode_forever.lock().await {
                 return; // A subsequent call upgraded to forever mode.
             }
@@ -2167,9 +2245,9 @@ impl MyCedar {
     // Returns:
     // detect_binning: u32; whether (and how much) the acquired image is binned
     //     prior to CedarDetect. Note: when detect_binning >= 2, the display
-    //     image sent to the UI is always 2x binned regardless of detect_binning.
-    // display_sampling: bool; whether (possibly binned) image is to be further
-    //     2x downsampled when sending to the UI.
+    //     image sent to the UI is always 2x binned regardless of
+    // detect_binning. display_sampling: bool; whether (possibly binned)
+    // image is to be further     2x downsampled when sending to the UI.
     fn compute_binning(
         state: &CedarState,
         width: u32,
@@ -2206,7 +2284,7 @@ impl MyCedar {
     }
 
     async fn camera_geometry(
-        camera: &Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>
+        camera: &Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
     ) -> (u32, u32) {
         let locked = camera.lock().await;
         locked.dimensions().await
@@ -2218,8 +2296,8 @@ impl MyCedar {
     /// it was already in progress.
     async fn begin_calibration(
         state: &Arc<tokio::sync::Mutex<CedarState>>,
-        duration_estimate: Duration) -> bool
-    {
+        duration_estimate: Duration,
+    ) -> bool {
         let mut locked_state = state.lock().await;
         if locked_state.calibrating {
             return false;
@@ -2230,8 +2308,11 @@ impl MyCedar {
         // because ServeEngine never acquires the CedarState lock; the lock
         // ordering is always CedarState -> ServeEngine, never the reverse.
         let serve_engine_arc = locked_state.serve_engine.clone();
-        if let Some(sr) = serve_engine_arc.lock().await
-            .get_next_result(None, None, /* non_blocking= */ true).await
+        if let Some(sr) = serve_engine_arc
+            .lock()
+            .await
+            .get_next_result(None, None, /* non_blocking= */ true)
+            .await
         {
             locked_state.scaled_image = sr.scaled_image;
             locked_state.scaled_image_binning_factor =
@@ -2244,10 +2325,10 @@ impl MyCedar {
         true
     }
 
-    /// Runs a single calibration attempt. Returns true if calibration succeeded.
-    /// Handles all setup (gain, autoexposure, timing) and cleanup (autoexposure
-    /// restore). Does NOT handle mode transitions on success/failure - caller
-    /// is responsible.
+    /// Runs a single calibration attempt. Returns true if calibration
+    /// succeeded. Handles all setup (gain, autoexposure, timing) and
+    /// cleanup (autoexposure restore). Does NOT handle mode transitions on
+    /// success/failure - caller is responsible.
     async fn run_calibration_attempt(
         state: Arc<tokio::sync::Mutex<CedarState>>,
     ) -> bool {
@@ -2262,12 +2343,16 @@ impl MyCedar {
             )
         }; // State lock released here!
 
-        let calibration_solve_timeout = solver_arc.lock().await.default_timeout();
+        let calibration_solve_timeout =
+            solver_arc.lock().await.default_timeout();
         let camera = state.lock().await.camera.clone();
         Self::set_gain(&camera, /* daylight_mode= */ false).await;
 
         if !Self::begin_calibration(
-            &state, Duration::from_secs(5) + calibration_solve_timeout).await
+            &state,
+            Duration::from_secs(5) + calibration_solve_timeout,
+        )
+        .await
         {
             return false; // Already in flight.
         }
@@ -2345,12 +2430,20 @@ impl MyCedar {
                     Self::run_calibration_attempt(state.clone()).await;
 
                 // Get state for mode transitions.
-                let (detect_engine_arc, solve_engine_arc, focus_mode, daylight_mode) = {
+                let (
+                    detect_engine_arc,
+                    solve_engine_arc,
+                    focus_mode,
+                    daylight_mode,
+                ) = {
                     let locked_state = state.lock().await;
                     (
                         locked_state.detect_engine.clone(),
                         locked_state.solve_engine.clone(),
-                        locked_state.operation_settings.focus_assist_mode.unwrap(),
+                        locked_state
+                            .operation_settings
+                            .focus_assist_mode
+                            .unwrap(),
                         locked_state.operation_settings.daylight_mode.unwrap(),
                     )
                 };
@@ -2426,8 +2519,11 @@ impl MyCedar {
                             locked_state.operation_settings.clone(),
                         )
                     };
-                    serve_engine_arc.lock().await
-                        .update_operation_settings(updated_op_settings).await;
+                    serve_engine_arc
+                        .lock()
+                        .await
+                        .update_operation_settings(updated_op_settings)
+                        .await;
                 }
                 Ok(())
             });
@@ -2435,8 +2531,9 @@ impl MyCedar {
         // task to complete regardless of a possible RPC timeout.
     }
 
-    /// Spawns an auto-calibration loop for skip-focus mode. Retries periodically
-    /// until calibration succeeds or skip_focus_active is cleared.
+    /// Spawns an auto-calibration loop for skip-focus mode. Retries
+    /// periodically until calibration succeeds or skip_focus_active is
+    /// cleared.
     fn spawn_skip_focus_calibration(
         state: Arc<tokio::sync::Mutex<CedarState>>,
         advance_to_operate: bool, // Based on skip_alignment preference.
@@ -2517,8 +2614,11 @@ impl MyCedar {
                             locked_state.operation_settings.clone(),
                         )
                     };
-                    serve_engine_arc.lock().await
-                        .update_operation_settings(updated_op_settings).await;
+                    serve_engine_arc
+                        .lock()
+                        .await
+                        .update_operation_settings(updated_op_settings)
+                        .await;
                     let mut s = state.lock().await;
                     s.skip_focus_worker_running = false;
                     return;
@@ -2530,7 +2630,8 @@ impl MyCedar {
                     SKIP_FOCUS_RETRY_INTERVAL_SECS
                 );
 
-                // Check every 100ms if we should abort or if interval has elapsed.
+                // Check every 100ms if we should abort or if interval has
+                // elapsed.
                 loop {
                     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -2587,7 +2688,11 @@ impl MyCedar {
         preferences: Preferences,
     ) {
         Self::write_preferences_file(&self.preferences_file, &preferences);
-        serve_engine_arc.lock().await.update_preferences(preferences).await;
+        serve_engine_arc
+            .lock()
+            .await
+            .update_preferences(preferences)
+            .await;
     }
 
     async fn camera_model_from_arc(
@@ -2601,7 +2706,11 @@ impl MyCedar {
             Some(m) => m,
             None => locked.model().await,
         };
-        let model_detail = if include_detail { locked.model_detail().await } else { None };
+        let model_detail = if include_detail {
+            locked.model_detail().await
+        } else {
+            None
+        };
         CameraModel {
             model,
             model_detail,
@@ -2634,7 +2743,9 @@ impl MyCedar {
         Self::get_server_information_ctx(&self.server_info_ctx()).await
     }
 
-    async fn get_server_information_ctx(ctx: &ServerInfoCtx) -> ServerInformation {
+    async fn get_server_information_ctx(
+        ctx: &ServerInfoCtx,
+    ) -> ServerInformation {
         // Extract all data we need first, then release state lock.
         let (
             demo_image,
@@ -2655,14 +2766,35 @@ impl MyCedar {
 
         // Process camera info.
         let camera = if let Some(demo_image) = &demo_image {
-            Some(Self::camera_model_from_arc(
-                &camera_arc, Some(demo_image.to_string()), /*include_detail=*/false).await)
+            Some(
+                Self::camera_model_from_arc(
+                    &camera_arc,
+                    Some(demo_image.to_string()),
+                    // include_detail=
+                    false,
+                )
+                .await,
+            )
         } else if let Some(test_image_camera) = &ctx.test_image_camera {
-            Some(Self::camera_model_from_arc(
-                test_image_camera, None, /*include_detail=*/false).await)
+            Some(
+                Self::camera_model_from_arc(
+                    test_image_camera,
+                    None,
+                    // include_detail=
+                    false,
+                )
+                .await,
+            )
         } else if let Some(attached_camera) = &attached_camera_arc {
-            Some(Self::camera_model_from_arc(
-                attached_camera, None, /*include_detail=*/true).await)
+            Some(
+                Self::camera_model_from_arc(
+                    attached_camera,
+                    None,
+                    // include_detail=
+                    true,
+                )
+                .await,
+            )
         } else {
             None
         };
@@ -2684,10 +2816,26 @@ impl MyCedar {
             imu_tracker_state: None,
             wifi_access_point: None,
             connection_status: Some(ConnectionStatus {
-                cedar_wifi: ctx.connection_counters.cedar_wifi.load(AtomicOrdering::Relaxed) as i32,
-                cedar_bluetooth: ctx.connection_counters.cedar_bluetooth.load(AtomicOrdering::Relaxed) as i32,
-                lx200_wifi: ctx.connection_counters.lx200_wifi.load(AtomicOrdering::Relaxed) as i32,
-                lx200_bluetooth: ctx.connection_counters.lx200_bluetooth.load(AtomicOrdering::Relaxed) as i32,
+                cedar_wifi: ctx
+                    .connection_counters
+                    .cedar_wifi
+                    .load(AtomicOrdering::Relaxed)
+                    as i32,
+                cedar_bluetooth: ctx
+                    .connection_counters
+                    .cedar_bluetooth
+                    .load(AtomicOrdering::Relaxed)
+                    as i32,
+                lx200_wifi: ctx
+                    .connection_counters
+                    .lx200_wifi
+                    .load(AtomicOrdering::Relaxed)
+                    as i32,
+                lx200_bluetooth: ctx
+                    .connection_counters
+                    .lx200_bluetooth
+                    .load(AtomicOrdering::Relaxed)
+                    as i32,
             }),
             demo_image_names: ctx.demo_images.clone(),
             system_load_average: None,
@@ -2750,7 +2898,10 @@ impl MyCedar {
         let mut cached = ctx.cpu_temperature.lock().await;
         if cached.1.elapsed() >= Duration::from_secs(60) {
             if let Ok(temp_str) = tokio::fs::read_to_string(
-                "/sys/class/thermal/thermal_zone0/temp").await {
+                "/sys/class/thermal/thermal_zone0/temp",
+            )
+            .await
+            {
                 if let Ok(temp_millideg) = temp_str.trim().parse::<f32>() {
                     cached.0 = temp_millideg / 1000.0;
                 }
@@ -2764,10 +2915,12 @@ impl MyCedar {
         // and computing delta busy ticks / delta time.
         let mut cached_load = ctx.cpu_load_average.lock().await;
         if cached_load.2.elapsed() >= Duration::from_secs(60) {
-            if let Ok(stat_str) = tokio::fs::read_to_string("/proc/stat").await {
+            if let Ok(stat_str) = tokio::fs::read_to_string("/proc/stat").await
+            {
                 if let Some(cpu_line) = stat_str.lines().next() {
-                    let fields: Vec<u64> = cpu_line.split_whitespace()
-                        .skip(1)  // Skip "cpu" label.
+                    let fields: Vec<u64> = cpu_line
+                        .split_whitespace()
+                        .skip(1) // Skip "cpu" label.
                         .filter_map(|f| f.parse::<u64>().ok())
                         .collect();
                     // Fields are: user nice system idle iowait irq softirq
@@ -2778,10 +2931,13 @@ impl MyCedar {
                         let total: u64 = fields.iter().sum();
                         let busy = total.saturating_sub(idle);
                         let elapsed = cached_load.2.elapsed().as_secs_f32();
-                        let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f32;
+                        let clk_tck =
+                            unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f32;
                         if clk_tck > 0.0 && elapsed > 0.0 && cached_load.1 > 0 {
-                            cached_load.0 = (busy.saturating_sub(cached_load.1)) as f32
-                                / clk_tck / elapsed;
+                            cached_load.0 = (busy.saturating_sub(cached_load.1))
+                                as f32
+                                / clk_tck
+                                / elapsed;
                         }
                         cached_load.1 = busy;
                     }
@@ -2796,21 +2952,28 @@ impl MyCedar {
         // per minute and computing delta ticks / delta time.
         let mut cached_proc = ctx.cedar_process_load.lock().await;
         if cached_proc.2.elapsed() >= Duration::from_secs(60) {
-            if let Ok(stat_str) = tokio::fs::read_to_string("/proc/self/stat").await {
+            if let Ok(stat_str) =
+                tokio::fs::read_to_string("/proc/self/stat").await
+            {
                 // Skip past the process name field "(name)" which may contain
                 // spaces. utime/stime are fields 13/14 (0-indexed) in the full
                 // line, i.e. indices 11/12 after the closing ')'.
-                let after_comm = stat_str.find(')').map(|i| &stat_str[i+1..]);
-                let fields: Vec<&str> = after_comm.unwrap_or("").split_whitespace().collect();
+                let after_comm = stat_str.find(')').map(|i| &stat_str[i + 1..]);
+                let fields: Vec<&str> =
+                    after_comm.unwrap_or("").split_whitespace().collect();
                 if fields.len() > 12 {
-                    if let (Ok(utime), Ok(stime)) = (fields[11].parse::<u64>(),
-                                                     fields[12].parse::<u64>()) {
+                    if let (Ok(utime), Ok(stime)) =
+                        (fields[11].parse::<u64>(), fields[12].parse::<u64>())
+                    {
                         let ticks = utime + stime;
                         let elapsed = cached_proc.2.elapsed().as_secs_f32();
-                        let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f32;
+                        let clk_tck =
+                            unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f32;
                         if clk_tck > 0.0 && elapsed > 0.0 && cached_proc.1 > 0 {
-                            cached_proc.0 = (ticks.saturating_sub(cached_proc.1)) as f32
-                                / clk_tck / elapsed;
+                            cached_proc.0 =
+                                (ticks.saturating_sub(cached_proc.1)) as f32
+                                    / clk_tck
+                                    / elapsed;
                         }
                         cached_proc.1 = ticks;
                     }
@@ -2863,14 +3026,16 @@ impl MyCedar {
             attached_camera
                 .lock()
                 .await
-                .set_update_interval(update_interval).await
+                .set_update_interval(update_interval)
+                .await
                 .unwrap();
         }
         state
             .camera
             .lock()
             .await
-            .set_update_interval(update_interval).await
+            .set_update_interval(update_interval)
+            .await
     }
 
     async fn reset_session_stats(state: &mut CedarState) {
@@ -2885,7 +3050,9 @@ impl MyCedar {
         initial_exposure_duration: Duration,
     ) -> Result<(), CanonicalError> {
         let mut locked_camera = camera.lock().await;
-        locked_camera.set_exposure_duration(initial_exposure_duration).await?;
+        locked_camera
+            .set_exposure_duration(initial_exposure_duration)
+            .await?;
         if let Err(e) = locked_camera.set_offset(Offset::new(3)).await {
             debug!("Could not set offset: {:?}", e);
         }
@@ -2894,8 +3061,8 @@ impl MyCedar {
 
     async fn set_gain(
         camera: &Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-        daylight_mode: bool)
-    {
+        daylight_mode: bool,
+    ) {
         let mut locked_camera = camera.lock().await;
         let gain = if daylight_mode {
             Gain::new(0)
@@ -2952,11 +3119,8 @@ impl MyCedar {
             {
                 (width, height) = Self::camera_geometry(&camera).await;
                 let _display_sampling;
-                (detect_binning, _display_sampling) = Self::compute_binning(
-                    &*state.lock().await,
-                    width,
-                    height,
-                );
+                (detect_binning, _display_sampling) =
+                    Self::compute_binning(&*state.lock().await, width, height);
             }
 
             // For calibrations, use statically configured sigma value.
@@ -3021,8 +3185,12 @@ impl MyCedar {
                         ));
                     }
                 }
-                warn! {"Error while calibrating exposure duration: {:?}, using {:?}",
-                e, initial_exposure_duration};
+                warn! {
+                    "Error while calibrating exposure duration: \
+                    {:?}, using {:?}",
+                    e,
+                    initial_exposure_duration,
+                };
                 return Ok(false);
             }
         };
@@ -3057,8 +3225,8 @@ impl MyCedar {
                 let lens_fl_mm =
                     sensor_width_mm / (2.0 * (fov / 2.0).to_radians()).tan();
                 locked_calibration_data.lens_fl_mm = Some(lens_fl_mm);
-                let pixel_width_mm =
-                    sensor_width_mm / camera.lock().await.dimensions().await.0 as f64;
+                let pixel_width_mm = sensor_width_mm
+                    / camera.lock().await.dimensions().await.0 as f64;
                 locked_calibration_data.pixel_angular_size =
                     Some((pixel_width_mm / lens_fl_mm).atan().to_degrees());
 
@@ -3119,7 +3287,7 @@ impl MyCedar {
         let image = turbojpeg::Image {
             pixels: img.as_raw().as_slice(),
             width: width as usize,
-            pitch: width as usize,  // Grayscale: 1 byte per pixel.
+            pitch: width as usize, // Grayscale: 1 byte per pixel.
             height: height as usize,
             format: turbojpeg::PixelFormat::GRAY,
         };
@@ -3249,8 +3417,11 @@ impl MyCedar {
 
         // Update per-request render parameters before polling.
         let serve_engine = state.lock().await.serve_engine.clone();
-        serve_engine.lock().await
-            .update_render_params(landscape, jpeg_quality).await;
+        serve_engine
+            .lock()
+            .await
+            .update_render_params(landscape, jpeg_quality)
+            .await;
 
         // Delegate all image processing to the ServeEngine.
         let serve_result = serve_engine
@@ -3296,7 +3467,9 @@ impl MyCedar {
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
         wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
         imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
-        hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+        hot_pixel_map: Option<
+            Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
+        >,
         saving_state: Arc<AtomicBool>,
     ) -> Result<Self, CanonicalError> {
         let cedar_version = env!("CARGO_PKG_VERSION");
@@ -3471,9 +3644,10 @@ impl MyCedar {
         let (width, height) = camera.lock().await.dimensions().await;
         let inset = 16;
         if let Some(ref bsp) = preferences.boresight_pixel {
-            // Validate boresight_pixel loaded from preferences (full-sensor coords),
-            // to make sure it is within the image area. This could be violated if
-            // e.g. we changed camera since the preferences were saved.
+            // Validate boresight_pixel loaded from preferences (full-sensor
+            // coords), to make sure it is within the image area.
+            // This could be violated if e.g. we changed camera
+            // since the preferences were saved.
             if bsp.x < inset as f64
                 || bsp.x > (width - inset) as f64
                 || bsp.y < inset as f64
@@ -3535,33 +3709,36 @@ impl MyCedar {
 
         // Pre-solve callback: gets the current slew target and sync coordinates
         // before the plate solve runs.
-        let pre_solve_closure_telescope_position = closure_telescope_position.clone();
+        let pre_solve_telescope_position = closure_telescope_position.clone();
         let pre_solve_callback = Arc::new(
             move || -> std::pin::Pin<
                 Box<
                     dyn std::future::Future<
-                        Output = (Option<CelestialCoord>, Option<CelestialCoord>),
+                        Output = (
+                            Option<CelestialCoord>,
+                            Option<CelestialCoord>,
+                    ),
                     > + Send,
                 >,
             > {
-                let telescope_pos = pre_solve_closure_telescope_position.clone();
+                let telescope_pos = pre_solve_telescope_position.clone();
                 Box::pin(async move {
-                    let mut locked_telescope_position = telescope_pos.lock().await;
-                    let slew_target = if locked_telescope_position.slew_active {
+                    let mut locked_telescope_pos = telescope_pos.lock().await;
+                    let slew_target = if locked_telescope_pos.slew_active {
                         Some(CelestialCoord {
-                            ra: locked_telescope_position.slew_target_ra,
-                            dec: locked_telescope_position.slew_target_dec,
+                            ra: locked_telescope_pos.slew_target_ra,
+                            dec: locked_telescope_pos.slew_target_dec,
                             epoch: None,
                         })
                     } else {
                         None
                     };
-                    let sync_coord = if locked_telescope_position.sync_ra.is_some()
-                        && locked_telescope_position.sync_dec.is_some()
+                    let sync_coord = if locked_telescope_pos.sync_ra.is_some()
+                        && locked_telescope_pos.sync_dec.is_some()
                     {
                         Some(CelestialCoord {
-                            ra: locked_telescope_position.sync_ra.unwrap(),
-                            dec: locked_telescope_position.sync_dec.unwrap(),
+                            ra: locked_telescope_pos.sync_ra.unwrap(),
+                            dec: locked_telescope_pos.sync_dec.unwrap(),
                             epoch: None,
                         })
                     } else {
@@ -3570,8 +3747,8 @@ impl MyCedar {
                     // Clear sync flags after reading them.
                     if sync_coord.is_some() {
                         info!("Telescope synced boresight to {:?}", sync_coord);
-                        locked_telescope_position.sync_ra = None;
-                        locked_telescope_position.sync_dec = None;
+                        locked_telescope_pos.sync_ra = None;
+                        locked_telescope_pos.sync_dec = None;
                     }
                     (slew_target, sync_coord)
                 })
@@ -3582,8 +3759,10 @@ impl MyCedar {
         // server state (motion estimator, polar analyzer, preferences).
         let post_solve_closure_fixed_settings = closure_fixed_settings.clone();
         let post_solve_closure_preferences = closure_preferences.clone();
-        let post_solve_closure_preferences_file = closure_preferences_file.clone();
-        let post_solve_closure_telescope_position = closure_telescope_position.clone();
+        let post_solve_closure_preferences_file =
+            closure_preferences_file.clone();
+        let post_solve_closure_telescope_position =
+            closure_telescope_position.clone();
         let post_solve_motion_estimator = motion_estimator.clone();
         let post_solve_closure_polar_analyzer = closure_polar_analyzer.clone();
         let post_solve_time_set_by_client = time_set_by_client.clone();
@@ -3592,9 +3771,7 @@ impl MyCedar {
                   detect_result: Option<DetectResult>,
                   plate_solution: Option<PlateSolutionProto>|
                   -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Option<LatLong>> + Send,
-                >,
+                Box<dyn std::future::Future<Output = Option<LatLong>> + Send>,
             > {
                 Box::pin(Self::post_solve_callback(
                     boresight_pixel,
@@ -3627,9 +3804,10 @@ impl MyCedar {
         ));
         // Shared calibration data arc: used by both CedarState and ServeContext
         // so the serve engine always reads up-to-date calibration results.
-        let shared_calibration_data = Arc::new(tokio::sync::Mutex::new(
-            CalibrationData { ..Default::default() },
-        ));
+        let shared_calibration_data =
+            Arc::new(tokio::sync::Mutex::new(CalibrationData {
+                ..Default::default()
+            }));
         let initial_serve_context = ServeContext {
             fixed_settings: closure_fixed_settings.lock().await.clone(),
             preferences: copied_preferences.clone(),
@@ -3646,14 +3824,12 @@ impl MyCedar {
             jpeg_quality: 75,
             landscape: false,
         };
-        let serve_engine = Arc::new(tokio::sync::Mutex::new(
-            ServeEngine::new(
-                solve_engine.clone(),
-                detect_engine.clone(),
-                initial_serve_context,
-                stats_capacity,
-            ),
-        ));
+        let serve_engine = Arc::new(tokio::sync::Mutex::new(ServeEngine::new(
+            solve_engine.clone(),
+            detect_engine.clone(),
+            initial_serve_context,
+            stats_capacity,
+        )));
 
         let state = {
             Arc::new(tokio::sync::Mutex::new(CedarState {
@@ -3734,17 +3910,23 @@ impl MyCedar {
             serial_number,
             connection_counters: connection_counters.clone(),
             // Timestamps in the past so the first call triggers a read.
-            cpu_temperature: Arc::new(tokio::sync::Mutex::new(
-                (0.0_f32, Instant::now() - Duration::from_secs(120))
-            )),
-            cpu_load_average: Arc::new(tokio::sync::Mutex::new(
-                (0.0_f32, 0_u64, Instant::now() - Duration::from_secs(120))
-            )),
-            cedar_process_load: Arc::new(tokio::sync::Mutex::new(
-                (0.0_f32, 0_u64, Instant::now() - Duration::from_secs(120))
-            )),
+            cpu_temperature: Arc::new(tokio::sync::Mutex::new((
+                0.0_f32,
+                Instant::now() - Duration::from_secs(120),
+            ))),
+            cpu_load_average: Arc::new(tokio::sync::Mutex::new((
+                0.0_f32,
+                0_u64,
+                Instant::now() - Duration::from_secs(120),
+            ))),
+            cedar_process_load: Arc::new(tokio::sync::Mutex::new((
+                0.0_f32,
+                0_u64,
+                Instant::now() - Duration::from_secs(120),
+            ))),
             cpu_core_count: std::thread::available_parallelism()
-                .map(|n| n.get() as i32).unwrap_or(0),
+                .map(|n| n.get() as i32)
+                .unwrap_or(0),
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;
@@ -3756,8 +3938,11 @@ impl MyCedar {
             Self::compute_binning(&locked_state, width, height);
         let initial_exposure_duration = locked_state.initial_exposure_duration;
         drop(locked_state);
-        if let Err(x) =
-            Self::set_pre_calibration_defaults(&camera, initial_exposure_duration).await
+        if let Err(x) = Self::set_pre_calibration_defaults(
+            &camera,
+            initial_exposure_duration,
+        )
+        .await
         {
             warn!("Could not set default settings on camera {:?}", x);
         }
@@ -3765,7 +3950,9 @@ impl MyCedar {
 
         {
             let mut detect_engine = locked_state.detect_engine.lock().await;
-            detect_engine.set_detect_binning(detect_binning, display_sampling).await;
+            detect_engine
+                .set_detect_binning(detect_binning, display_sampling)
+                .await;
             detect_engine
                 .set_focus_mode(
                     locked_state.operation_settings.focus_assist_mode.unwrap(),
@@ -3800,7 +3987,10 @@ impl MyCedar {
                         .await
                         .unwrap();
                 } else {
-                    warn!("Saved boresight_pixel {:?} is out of range; ignoring.", bsp);
+                    warn!(
+                        "Saved boresight_pixel {:?} is out of range; ignoring.",
+                        bsp
+                    );
                 }
             }
         }
@@ -3810,7 +4000,8 @@ impl MyCedar {
         let skip_alignment = copied_preferences.skip_alignment.unwrap_or(false);
         if skip_focus {
             info!(
-                "Skip-focus mode enabled, starting auto-calibration (skip_alignment={})",
+                "Skip-focus mode enabled, \
+                starting auto-calibration (skip_alignment={})",
                 skip_alignment
             );
             // Set initial state for skip-focus mode.
@@ -3991,24 +4182,38 @@ impl MyCedar {
                 if let Ok(duration) = dt.duration_since(std::time::UNIX_EPOCH) {
                     if time_set_by_client.load(AtomicOrdering::Relaxed) {
                         let telescope_secs = duration.as_secs() as i64;
-                        if let Ok(cur_time) = clock_gettime(ClockId::CLOCK_REALTIME) {
+                        if let Ok(cur_time) =
+                            clock_gettime(ClockId::CLOCK_REALTIME)
+                        {
                             if (cur_time.tv_sec() - telescope_secs).abs() > 60 {
-                                warn!("Ignoring telescope time update; times differ by more \
-                                       than a minute. Current time: {:?}, telescope time: {:?}",
-                                      Local::now(), dt);
+                                warn!(
+                                    "Ignoring telescope time update; \
+                                    times differ by more than a minute. \
+                                    Current time: {:?}, telescope time: {:?}",
+                                    Local::now(),
+                                    dt
+                                );
                             } else {
-                                info!("Ignoring telescope time update; client has already set the time");
+                                info!(
+                                    "Ignoring telescope time update; \
+                                         client has already set the time"
+                                );
                             }
                         } else {
-                            info!("Ignoring telescope time update; client has already set the time");
+                            info!(
+                                "Ignoring telescope time update; \
+                                client has already set the time"
+                            );
                         }
                     } else {
                         _ = Self::set_server_time(TimeSpec::new(
                             duration.as_secs() as i64,
                             duration.subsec_nanos() as i64,
                         ));
-                        info!("Updated server time from telescope to {:?}",
-                              Local::now());
+                        info!(
+                            "Updated server time from telescope to {:?}",
+                            Local::now()
+                        );
                     }
                 } else {
                     warn!("Unable to set server time to {:?}", dt);
@@ -4163,6 +4368,7 @@ pub fn server_main(
     // line.
     default_total_binning: Option<u32>,
 ) {
+    #[rustfmt::skip]
     const HELP: &str = "\
     FLAGS:
       -h, --help                     Prints help information
@@ -4273,14 +4479,19 @@ pub fn server_main(
         // exit() triggers libcamera's static unordered_map destructors while
         // the Tokio runtime may still have live camera handles making libcamera
         // calls, causing an intermittent unordered_map::at crash.
-        unsafe { libc::_exit(0); }
+        unsafe {
+            libc::_exit(0);
+        }
     })
     .unwrap();
 
     // Derive product name from device verification status (indicated by whether
     // cedar_sky is Some).
-    let product_name = if cedar_sky.is_some() { "Hopper" } else { "Cedar-Box" };
-
+    let product_name = if cedar_sky.is_some() {
+        "Hopper"
+    } else {
+        "Cedar-Box"
+    };
 
     async_main(
         args,
@@ -4316,7 +4527,8 @@ fn prepare_for_exit(
     }
 }
 
-/// Async version for use within a Tokio runtime (shutdown/restart RPC handlers).
+/// Async version for use within a Tokio runtime (shutdown/restart RPC
+/// handlers).
 async fn prepare_for_exit_async(
     imu_tracker: &Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
@@ -4376,7 +4588,8 @@ struct BluetoothMarkingMiddleware<S> {
     inner: S,
 }
 
-impl<S> tower::Service<hyper::Request<hyper::Body>> for BluetoothMarkingMiddleware<S>
+impl<S> tower::Service<hyper::Request<hyper::Body>>
+    for BluetoothMarkingMiddleware<S>
 where
     S: tower::Service<hyper::Request<hyper::Body>> + Clone + Send + 'static,
     S::Future: Send + 'static,
@@ -4385,7 +4598,10 @@ where
     type Error = S::Error;
     type Future = S::Future;
 
-    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
@@ -4404,7 +4620,9 @@ struct ActivityTrackingStream<S> {
     activity: Arc<AtomicU64>,
 }
 
-impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for ActivityTrackingStream<S> {
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead
+    for ActivityTrackingStream<S>
+{
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -4414,7 +4632,9 @@ impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for ActivityTrackingS
     }
 }
 
-impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for ActivityTrackingStream<S> {
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
+    for ActivityTrackingStream<S>
+{
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -4479,7 +4699,9 @@ fn accept_with_sndbuf(
                 }
                 std::task::Poll::Ready(Some(Ok(sock)))
             }
-            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Some(Err(e))),
+            std::task::Poll::Ready(Err(e)) => {
+                std::task::Poll::Ready(Some(Err(e)))
+            }
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     })
@@ -4494,7 +4716,11 @@ struct ConnectionTrackingMakeService<S> {
 
 impl<S: Clone> ConnectionTrackingMakeService<S> {
     fn new(inner: S, counters: Arc<ConnectionCounters>, port: u16) -> Self {
-        Self { inner, counters, port }
+        Self {
+            inner,
+            counters,
+            port,
+        }
     }
 }
 
@@ -4506,13 +4732,23 @@ where
     type Error = std::convert::Infallible;
     type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
         std::task::Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, _target: T) -> Self::Future {
-        let count = self.counters.cedar_wifi.fetch_add(1, AtomicOrdering::Relaxed) + 1;
-        info!("WiFi connection opened on port {} ({} active)", self.port, count);
+        let count = self
+            .counters
+            .cedar_wifi
+            .fetch_add(1, AtomicOrdering::Relaxed)
+            + 1;
+        info!(
+            "WiFi connection opened on port {} ({} active)",
+            self.port, count
+        );
         std::future::ready(Ok(ConnectionTrackingService {
             inner: self.inner.clone(),
             counters: self.counters.clone(),
@@ -4530,12 +4766,20 @@ struct ConnectionTrackingService<S> {
 
 impl<S> Drop for ConnectionTrackingService<S> {
     fn drop(&mut self) {
-        let count = self.counters.cedar_wifi.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
-        info!("WiFi connection closed on port {} ({} active)", self.port, count);
+        let count = self
+            .counters
+            .cedar_wifi
+            .fetch_sub(1, AtomicOrdering::Relaxed)
+            - 1;
+        info!(
+            "WiFi connection closed on port {} ({} active)",
+            self.port, count
+        );
     }
 }
 
-impl<S> tower::Service<hyper::Request<hyper::Body>> for ConnectionTrackingService<S>
+impl<S> tower::Service<hyper::Request<hyper::Body>>
+    for ConnectionTrackingService<S>
 where
     S: tower::Service<hyper::Request<hyper::Body>>,
 {
@@ -4543,7 +4787,10 @@ where
     type Error = S::Error;
     type Future = S::Future;
 
-    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
@@ -4604,7 +4851,8 @@ async fn serve_over_bt(
         let req = tokio::select! {
             r = profile_handle.next() => r,
             _ = &mut hard_reset_wait => {
-                info!("BT stack was hard-reset; exiting serve_over_bt to restart bluer session");
+                info!("BT stack was hard-reset; \
+                exiting serve_over_bt to restart bluer session");
                 break Ok(());
             }
         };
@@ -4615,12 +4863,17 @@ async fn serve_over_bt(
         match req.unwrap().accept() {
             Ok(stream) => {
                 if first_accept_since_ready {
-                    info!("First BT accept since profile registration: {:?} elapsed",
-                          ready_at.elapsed());
+                    info!(
+                        "First BT accept since profile registration: \
+                        {:?} elapsed",
+                        ready_at.elapsed()
+                    );
                     first_accept_since_ready = false;
                 }
-                let open_count =
-                    counters.cedar_bluetooth.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+                let open_count = counters
+                    .cedar_bluetooth
+                    .fetch_add(1, AtomicOrdering::Relaxed)
+                    + 1;
                 info!("BT connection opened ({} active)", open_count);
                 // Byte-write inactivity watchdog. The BCM43430A1 can wedge
                 // in a way that hyper's poll_write on the RFCOMM stream
@@ -4641,7 +4894,9 @@ async fn serve_over_bt(
                 let counters = counters.clone();
                 let hard_reset_notify = hard_reset_notify.clone();
                 let serve_handle = tokio::task::spawn(async move {
-                    Http::new().serve_connection(tracked_stream, bt_service).await
+                    Http::new()
+                        .serve_connection(tracked_stream, bt_service)
+                        .await
                 });
                 let watchdog_handle = {
                     let abort_serve = serve_handle.abort_handle();
@@ -4650,13 +4905,19 @@ async fn serve_over_bt(
                         let mut last_change = tokio::time::Instant::now();
                         loop {
                             tokio::time::sleep(Duration::from_secs(1)).await;
-                            let current = activity.load(AtomicOrdering::Relaxed);
+                            let current =
+                                activity.load(AtomicOrdering::Relaxed);
                             if current != last_seen {
                                 last_seen = current;
                                 last_change = tokio::time::Instant::now();
-                            } else if last_change.elapsed() > BT_WRITE_INACTIVITY_TIMEOUT {
-                                warn!("BT watchdog: no RFCOMM writes for {:?}, aborting connection",
-                                      BT_WRITE_INACTIVITY_TIMEOUT);
+                            } else if last_change.elapsed()
+                                > BT_WRITE_INACTIVITY_TIMEOUT
+                            {
+                                warn!(
+                                    "BT watchdog: no RFCOMM writes for {:?}, \
+                                    aborting connection",
+                                    BT_WRITE_INACTIVITY_TIMEOUT
+                                );
                                 abort_serve.abort();
                                 return;
                             }
@@ -4666,20 +4927,37 @@ async fn serve_over_bt(
                 let handle = tokio::task::spawn(async move {
                     let result = serve_handle.await;
                     watchdog_handle.abort();
-                    let close_count =
-                        counters.cedar_bluetooth.fetch_sub(1, AtomicOrdering::Relaxed) - 1;
+                    let close_count = counters
+                        .cedar_bluetooth
+                        .fetch_sub(1, AtomicOrdering::Relaxed)
+                        - 1;
                     match result {
-                        Ok(Ok(())) => info!("BT connection closed ({} active)", close_count),
-                        Ok(Err(e)) if e.is_incomplete_message() || e.is_closed() => {
-                            info!("BT connection closed ({} active)", close_count);
+                        Ok(Ok(())) => info!(
+                            "BT connection closed ({} active)",
+                            close_count
+                        ),
+                        Ok(Err(e))
+                            if e.is_incomplete_message() || e.is_closed() =>
+                        {
+                            info!(
+                                "BT connection closed ({} active)",
+                                close_count
+                            );
                         }
-                        Ok(Err(e)) => warn!("BT connection closed with error ({} active): {:?}",
-                                            close_count, e),
+                        Ok(Err(e)) => warn!(
+                            "BT connection closed with error ({} active): {:?}",
+                            close_count, e
+                        ),
                         Err(join_err) if join_err.is_cancelled() => {
-                            info!("BT connection aborted by watchdog ({} active)", close_count);
+                            info!(
+                                "BT connection aborted by watchdog ({} active)",
+                                close_count
+                            );
                         }
-                        Err(join_err) => warn!("BT connection task failed ({} active): {:?}",
-                                               close_count, join_err),
+                        Err(join_err) => warn!(
+                            "BT connection task failed ({} active): {:?}",
+                            close_count, join_err
+                        ),
                     }
                     // Run the tiered reset on the blocking pool. Its inner
                     // work is entirely synchronous (subprocess calls plus,
@@ -4687,9 +4965,10 @@ async fn serve_over_bt(
                     // so running it on an async worker would stall it for
                     // up to a couple seconds — enough to starve the runtime
                     // when several BT connections close near simultaneously.
-                    let outcome = tokio::task::spawn_blocking(reset_hci_controller)
-                        .await
-                        .unwrap_or(ResetOutcome::HardReset);
+                    let outcome =
+                        tokio::task::spawn_blocking(reset_hci_controller)
+                            .await
+                            .unwrap_or(ResetOutcome::HardReset);
                     match outcome {
                         ResetOutcome::LightResetOk => {}
                         ResetOutcome::HardReset => {
@@ -4703,8 +4982,12 @@ async fn serve_over_bt(
                 connection_handles.push(handle);
             }
             Err(e) => {
-                error!("Failed to accept BT connection ({:?} since profile ready): {:?}",
-                       ready_at.elapsed(), e);
+                error!(
+                    "Failed to accept BT connection \
+                    ({:?} since profile ready): {:?}",
+                    ready_at.elapsed(),
+                    e
+                );
             }
         }
     };
@@ -4720,8 +5003,10 @@ async fn serve_over_bt(
         }
     }
     if !connection_handles.is_empty() {
-        info!("serve_over_bt exiting; aborted {} connection task(s)",
-              connection_handles.len());
+        info!(
+            "serve_over_bt exiting; aborted {} connection task(s)",
+            connection_handles.len()
+        );
     }
     exit
 }
@@ -4767,7 +5052,8 @@ async fn async_main(
     };
 
     let attached_camera =
-        match get_attached_camera(camera_interface.as_ref(), args.camera_index).await
+        match get_attached_camera(camera_interface.as_ref(), args.camera_index)
+            .await
         {
             Ok(cam) => Some(Arc::new(tokio::sync::Mutex::new(cam))),
             Err(e) => {
@@ -4932,26 +5218,34 @@ async fn async_main(
             let wifi_name = wifi.lock().await.ssid();
             wifi_name
         } else if cedar.serial_number.len() >= 3 {
-            let serial_name =
-                format!("cedar-{}",
-                        &cedar.serial_number[cedar.serial_number.len() - 3..]);
+            let serial_name = format!(
+                "cedar-{}",
+                &cedar.serial_number[cedar.serial_number.len() - 3..]
+            );
             serial_name
         } else {
             "cedar".to_string()
         };
         drop(state);
-        // Bound this so a host without a Bluetooth adapter / bluetoothd (e.g. an
-        // x86 dev machine) doesn't hang startup before the server binds its
-        // ports. Bluetooth itself remains best-effort via the spawned BT tasks.
+        // Bound this so a host without a Bluetooth adapter / bluetoothd (e.g.
+        // an x86 dev machine) doesn't hang startup before the server
+        // binds its ports. Bluetooth itself remains best-effort via the
+        // spawned BT tasks.
         match tokio::time::timeout(
-            Duration::from_secs(5), set_adapter_name(&bt_name)).await
+            Duration::from_secs(5),
+            set_adapter_name(&bt_name),
+        )
+        .await
         {
             Ok(Ok(())) => {}
-            Ok(Err(e)) =>
-                warn!("Failed to set Bluetooth adapter name during startup: {:?}", e),
-            Err(_) =>
-                warn!("Timed out setting Bluetooth adapter name during startup \
-                       (no Bluetooth adapter?); continuing"),
+            Ok(Err(e)) => warn!(
+                "Failed to set Bluetooth adapter name during startup: {:?}",
+                e
+            ),
+            Err(_) => warn!(
+                "Timed out setting Bluetooth adapter name during startup \
+                       (no Bluetooth adapter?); continuing"
+            ),
         }
     }
 
@@ -4973,15 +5267,25 @@ async fn async_main(
     let addr = SocketAddr::from(([0, 0, 0, 0], 80));
     info!("Listening at {:?}", addr);
     let listener_80 = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    let service_future = hyper::Server::builder(accept_with_sndbuf(listener_80))
-        .serve(ConnectionTrackingMakeService::new(
-            service.clone(), connection_counters.clone(), 80));
+    let service_future = hyper::Server::builder(accept_with_sndbuf(
+        listener_80,
+    ))
+    .serve(ConnectionTrackingMakeService::new(
+        service.clone(),
+        connection_counters.clone(),
+        80,
+    ));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener_8080 = tokio::net::TcpListener::bind(&addr8080).await.unwrap();
-    let service_future8080 = hyper::Server::builder(accept_with_sndbuf(listener_8080))
-        .serve(ConnectionTrackingMakeService::new(
-            service.clone(), connection_counters.clone(), 8080));
+    let service_future8080 = hyper::Server::builder(accept_with_sndbuf(
+        listener_8080,
+    ))
+    .serve(ConnectionTrackingMakeService::new(
+        service.clone(),
+        connection_counters.clone(),
+        8080,
+    ));
 
     // Also listen on Bluetooth. serve_over_bt returns whenever the BT stack
     // was hard-reset (bluer session invalidated) or bluetoothd went away;
@@ -4995,7 +5299,9 @@ async fn async_main(
                 {
                     // Scoped so the non-Send Box<dyn Error> return value
                     // does not span the await below.
-                    let status = serve_over_bt(service.clone(), bt_counters.clone()).await;
+                    let status =
+                        serve_over_bt(service.clone(), bt_counters.clone())
+                            .await;
                     if let Err(e) = &status {
                         warn!("BT server exited with error: {:?}", e);
                     }
@@ -5006,13 +5312,14 @@ async fn async_main(
         });
 
     // Run pairing mode loop.
-    let pairing_mode_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
-        tokio::task::spawn(async move {
-            if let Err(e) = run_pairing_mode(pairing_mode_state).await {
-                warn!("Bluetooth pairing mode loop exited with error: {:?}", e);
-            }
-            Ok(())
-        });
+    let pairing_mode_handle: tokio::task::JoinHandle<
+        Result<(), tonic::Status>,
+    > = tokio::task::spawn(async move {
+        if let Err(e) = run_pairing_mode(pairing_mode_state).await {
+            warn!("Bluetooth pairing mode loop exited with error: {:?}", e);
+        }
+        Ok(())
+    });
 
     // Spin up servers for reporting our RA/Dec solution as the telescope
     // position.
@@ -5033,11 +5340,12 @@ async fn async_main(
         true,
         connection_counters.clone(),
     );
-    let lx200_task_bt_handle: tokio::task::JoinHandle<Result<(), tonic::Status>> =
-        tokio::task::spawn(async move {
-            let _status = lx200_server_bt.serve_requests().await;
-            Ok(())
-        });
+    let lx200_task_bt_handle: tokio::task::JoinHandle<
+        Result<(), tonic::Status>,
+    > = tokio::task::spawn(async move {
+        let _status = lx200_server_bt.serve_requests().await;
+        Ok(())
+    });
     let mut lx200_server = create_lx200_server(
         shared_telescope_position.clone(),
         async_callback.clone(),
@@ -5055,16 +5363,15 @@ async fn async_main(
         create_alpaca_server(shared_telescope_position, async_callback);
     let alpaca_server_future = alpaca_server.start();
 
-    let (service_result, service_result8080, alpaca_result, _, _, _, _) =
-        join!(
-            service_future,
-            service_future8080,
-            alpaca_server_future,
-            bt_server_handle,
-            lx200_task_bt_handle,
-            lx200_task_handle,
-            pairing_mode_handle
-        );
+    let (service_result, service_result8080, alpaca_result, _, _, _, _) = join!(
+        service_future,
+        service_future8080,
+        alpaca_server_future,
+        bt_server_handle,
+        lx200_task_bt_handle,
+        lx200_task_handle,
+        pairing_mode_handle
+    );
     service_result.unwrap();
     service_result8080.unwrap();
     alpaca_result.unwrap();

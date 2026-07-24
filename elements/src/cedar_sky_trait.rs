@@ -4,12 +4,16 @@
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use crate::cedar_common::CelestialCoord;
-use crate::cedar_sky::{CatalogDescription, CatalogEntryKey,
-                       CatalogEntry, Constellation,
-                       ObjectType, Ordering, SelectedCatalogEntry};
-use crate::cedar::LatLong;
 use canonical_error::CanonicalError;
+
+use crate::{
+    cedar::LatLong,
+    cedar_common::CelestialCoord,
+    cedar_sky::{
+        CatalogDescription, CatalogEntry, CatalogEntryKey, Constellation,
+        ObjectType, Ordering, SelectedCatalogEntry,
+    },
+};
 
 pub struct LocationInfo {
     pub observer_location: LatLong,
@@ -32,26 +36,28 @@ pub trait CedarSkyTrait {
     /// off because of `limit_result`. Returned solar system objects' current
     /// position are determined using `location_info` if provided, current time
     /// otherwise.
-    async fn query_catalog_entries(&self,
-                             max_distance: Option<f64>,
-                             min_elevation: Option<f64>,
-                             faintest_magnitude: Option<i32>,
-                             match_catalog_label: bool,
-                             catalog_label: &[String],
-                             match_object_type_label: bool,
-                             object_type_label: &[String],
-                             text_search: Option<String>,
-                             ordering: Option<Ordering>,
-                             decrowd_distance: Option<f64>,
-                             limit_result: Option<usize>,
-                             sky_location: Option<CelestialCoord>,
-                             location_info: Option<LocationInfo>)
-                             -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError>;
+    async fn query_catalog_entries(
+        &self,
+        max_distance: Option<f64>,
+        min_elevation: Option<f64>,
+        faintest_magnitude: Option<i32>,
+        match_catalog_label: bool,
+        catalog_label: &[String],
+        match_object_type_label: bool,
+        object_type_label: &[String],
+        text_search: Option<String>,
+        ordering: Option<Ordering>,
+        decrowd_distance: Option<f64>,
+        limit_result: Option<usize>,
+        sky_location: Option<CelestialCoord>,
+        location_info: Option<LocationInfo>,
+    ) -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError>;
 
     /// Return the selected catalog entry. If it is a solar system object the
     /// current position is calculated using `timestamp`.
-    async fn get_catalog_entry(&mut self,
-                         entry_key: CatalogEntryKey,
-                         timestamp: SystemTime)
-                         -> Result<CatalogEntry, CanonicalError>;
+    async fn get_catalog_entry(
+        &mut self,
+        entry_key: CatalogEntryKey,
+        timestamp: SystemTime,
+    ) -> Result<CatalogEntry, CanonicalError>;
 }
