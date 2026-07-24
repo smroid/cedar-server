@@ -123,12 +123,7 @@ impl RateEstimation {
     // Determines if the given data point is on-trend, within `sigma` multiple
     // of the model's noise.
     // If count() is less than 3, returns true.
-    pub fn fits_trend(
-        &self,
-        time: &Instant,
-        value: f64,
-        sigma: f64,
-    ) -> bool {
+    pub fn fits_trend(&self, time: &Instant, value: f64, sigma: f64) -> bool {
         if self.count() < 3 {
             return true;
         }
@@ -145,21 +140,30 @@ impl RateEstimation {
     // Returns estimated rate of change in value per second of time.
     // Returns 0.0 if fewer than 3 points have been add()ed.
     pub fn slope(&self) -> f64 {
-        if self.count() < 3 { 0.0 } else { self.slope }
+        if self.count() < 3 {
+            0.0
+        } else {
+            self.slope
+        }
     }
 
     // Returns an estimate of the +/- range within which the true rate likely
     // falls. Returns 0.0 if fewer than 3 points have been add()ed.
     pub fn rate_interval_bound(&self) -> f64 {
-        if self.count() < 3 { 0.0 } else { self.slope_noise }
+        if self.count() < 3 {
+            0.0
+        } else {
+            self.slope_noise
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     extern crate approx;
-    use approx::assert_abs_diff_eq;
     use std::time::Duration;
+
+    use approx::assert_abs_diff_eq;
 
     use super::*;
 

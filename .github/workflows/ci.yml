@@ -128,15 +128,7 @@ jobs:
         with:
           workspaces: cedar-server
 
-      # --- rustfmt (advisory) ---------------------------------------------
-      # NOTE: the existing codebase predates its own strict rustfmt.toml and
-      # does not currently pass `cargo fmt --check` under recent nightly (~392
-      # reformatting hunks across the two crates). This step is therefore
-      # advisory (continue-on-error) so it surfaces formatting drift without
-      # blocking merges. Once the tree is reformatted in one sweep, drop
-      # continue-on-error to make it a hard gate.
       - name: rustfmt (check)
-        continue-on-error: true
         working-directory: cedar-server
         run: cargo +nightly fmt --package cedar-server --package cedar-elements --check
 

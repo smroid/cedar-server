@@ -42,7 +42,10 @@ enum State {
     // point, for either a tracking or fixed mount. We continue in SteadyRate
     // as long as newly add()ed positions are consistent with the existing
     // rate estimates.
-    SteadyRate { ra_rate: RateEstimation, dec_rate: RateEstimation },
+    SteadyRate {
+        ra_rate: RateEstimation,
+        dec_rate: RateEstimation,
+    },
 }
 
 impl State {
@@ -134,15 +137,21 @@ impl MotionEstimator {
             return;
         };
         let position_rmse = position_rmse.unwrap() / 3600.0; // arcsec->deg.
-        let prev_pos = prev_pos.expect("prev_pos is Some when prev_time is Some");
+        let prev_pos =
+            prev_pos.expect("prev_pos is Some when prev_time is Some");
         match self.state {
             State::Unknown => {
                 self.set_state(State::Moving);
             }
             State::Moving => {
                 // Compare new position/time to previous position/time.
-                if Self::is_stopped(time, &position, position_rmse,
-                                    prev_time, &prev_pos) {
+                if Self::is_stopped(
+                    time,
+                    &position,
+                    position_rmse,
+                    prev_time,
+                    &prev_pos,
+                ) {
                     self.set_state(State::Stopped);
                 }
             }
@@ -150,28 +159,45 @@ impl MotionEstimator {
                 // Compare new position/time to previous position/time. Are we
                 // still stopped? TODO: require a few add()
                 // calls in Stopped before advancing to SteadyRate?
-                if Self::is_stopped(time, &position, position_rmse,
-                                    prev_time, &prev_pos) {
+                if Self::is_stopped(
+                    time,
+                    &position,
+                    position_rmse,
+                    prev_time,
+                    &prev_pos,
+                ) {
                     // Enter SteadyRate and initialize ra/dec RateEstimation
                     // objects with the current and previous positions/times.
-                    let mut ra_rate = RateEstimation::new(1000, &prev_time, prev_pos.ra);
+                    let mut ra_rate =
+                        RateEstimation::new(1000, &prev_time, prev_pos.ra);
                     ra_rate.add(time, position.ra, position_rmse);
-                    let mut dec_rate = RateEstimation::new(1000, &prev_time, prev_pos.dec);
+                    let mut dec_rate =
+                        RateEstimation::new(1000, &prev_time, prev_pos.dec);
                     dec_rate.add(time, position.dec, position_rmse);
                     self.set_state(State::SteadyRate { ra_rate, dec_rate });
                 } else {
                     self.set_state(State::Moving);
                 }
             }
-            State::SteadyRate { ref mut ra_rate, ref mut dec_rate } => {
+            State::SteadyRate {
+                ref mut ra_rate,
+                ref mut dec_rate,
+            } => {
                 if ra_rate.fits_trend(time, position.ra, /* sigma= */ 10.0)
-                    && dec_rate.fits_trend(time, position.dec, /* sigma= */ 10.0)
+                    && dec_rate.fits_trend(
+                        time,
+                        position.dec,
+                        // sigma=
+                        10.0,
+                    )
                 {
                     ra_rate.add(time, position.ra, position_rmse);
                     dec_rate.add(time, position.dec, position_rmse);
                 } else {
                     // Has rate trend violation persisted for too long?
-                    if time.duration_since(ra_rate.last_time()) > self.bump_tolerance {
+                    if time.duration_since(ra_rate.last_time())
+                        > self.bump_tolerance
+                    {
                         self.set_state(State::Moving);
                     }
                 }

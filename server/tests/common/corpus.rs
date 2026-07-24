@@ -3,8 +3,10 @@
 // The image corpus is not committed; it is staged by cedar-solve's
 // tools/fetch_corpus.py and located via the CEDAR_E2E_DATA_DIR env var.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use image::GrayImage;
 
@@ -43,7 +45,8 @@ impl Field {
 /// Parsing is positional, so a header drift must be a hard error rather than a
 /// silent column shift.
 const MANIFEST_HEADER: &str = "name,ra,dec,rotation_deg,fov_x_deg,fov_y_deg,\
-                               pixscale_arcsec,nx,ny,maglim,n_catalog,n_rendered,seed";
+                               pixscale_arcsec,nx,ny,maglim,\
+                               n_catalog,n_rendered,seed";
 
 pub fn parse_manifest(text: &str) -> Result<Vec<Field>, String> {
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
@@ -51,7 +54,9 @@ pub fn parse_manifest(text: &str) -> Result<Vec<Field>, String> {
     let header = lines.next().ok_or("manifest.csv is empty")?.trim();
     if header != MANIFEST_HEADER {
         return Err(format!(
-            "manifest.csv header drift.\n  expected: {MANIFEST_HEADER}\n  found:    {header}"
+            "manifest.csv header drift.\n  \
+                expected: {MANIFEST_HEADER}\n  \
+                found:    {header}"
         ));
     }
 
@@ -66,9 +71,9 @@ pub fn parse_manifest(text: &str) -> Result<Vec<Field>, String> {
             ));
         }
         let num = |i: usize| -> Result<f64, String> {
-            row[i]
-                .parse::<f64>()
-                .map_err(|e| format!("manifest.csv row {} col {}: {e}", n + 2, i))
+            row[i].parse::<f64>().map_err(|e| {
+                format!("manifest.csv row {} col {}: {e}", n + 2, i)
+            })
         };
         fields.push(Field {
             name: row[0].to_string(),
@@ -160,7 +165,10 @@ pub fn preconditions() -> Preconditions {
     // Tetra3Solver spawns a bare `python`, inheriting PATH. If the cedar-solve
     // venv is not active, the subprocess dies a second after launch and the
     // failure surfaces far from its cause -- so probe for it here.
-    match Command::new("python").args(["-c", "import tetra3"]).output() {
+    match Command::new("python")
+        .args(["-c", "import tetra3"])
+        .output()
+    {
         Ok(out) if out.status.success() => {}
         Ok(out) => {
             return Preconditions::Skip(format!(
@@ -220,8 +228,11 @@ pub fn load_manifest(data_dir: &Path) -> Result<Vec<Field>, String> {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = "name,ra,dec,rotation_deg,fov_x_deg,fov_y_deg,pixscale_arcsec,nx,ny,maglim,n_catalog,n_rendered,seed\n\
-                          grid_000,0.0,-60.0,-180.0,12.71,7.149375,23.83125,1920,1080,7.5,159,70,0\n";
+    const SAMPLE: &str =
+        "name,ra,dec,rotation_deg,fov_x_deg,fov_y_deg,pixscale_arcsec,\
+                          nx,ny,maglim,n_catalog,n_rendered,seed\n\
+                          grid_000,0.0,-60.0,-180.0,12.71,7.149375,23.83125,\
+                          1920,1080,7.5,159,70,0\n";
 
     #[test]
     fn parses_a_known_row() {
@@ -247,7 +258,10 @@ mod tests {
         let f = &parse_manifest(SAMPLE).expect("parse")[0];
 
         // The manifest column is exactly the small-angle product.
-        assert!((f.fov_x_deg - f.nx as f64 * f.pixscale_arcsec / 3600.0).abs() < 1e-9);
+        assert!(
+            (f.fov_x_deg - f.nx as f64 * f.pixscale_arcsec / 3600.0).abs()
+                < 1e-9
+        );
 
         let true_fov = f.true_fov_x_deg();
         assert!((true_fov - 12.658_26).abs() < 1e-4, "got {true_fov}");

@@ -1,25 +1,27 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use std::ops::Deref;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{ops::Deref, sync::Arc, time::Duration};
 
-use image::GrayImage;
-use log::{debug, warn};
-
+use canonical_error::{
+    aborted_error, failed_precondition_error, internal_error, CanonicalError,
+};
 use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage, Offset};
-use canonical_error::{CanonicalError,
-                      aborted_error, failed_precondition_error, internal_error};
-use cedar_detect::algorithm::{StarDescription,
-                              estimate_noise_from_image, get_stars_from_image};
-use cedar_detect::histogram_funcs::stats_for_histogram;
-use cedar_detect::image_funcs::histogram_from_region;
+use cedar_detect::{
+    algorithm::{
+        estimate_noise_from_image, get_stars_from_image, StarDescription,
+    },
+    histogram_funcs::stats_for_histogram,
+    image_funcs::histogram_from_region,
+};
+use cedar_elements::{
+    cedar::ImageCoord,
+    hot_pixel_trait::HotPixelTrait,
+    solver_trait::{SolveExtension, SolveParams, SolverTrait},
+};
+use image::GrayImage;
 use imageproc::rect::Rect;
-use cedar_elements::hot_pixel_trait::HotPixelTrait;
-use cedar_elements::solver_trait::{
-    SolveExtension, SolveParams, SolverTrait};
-use cedar_elements::cedar::ImageCoord;
+use log::{debug, warn};
 pub struct Calibrator {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
     hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
@@ -35,22 +37,30 @@ pub enum ExposureCalibrationError {
 }
 
 impl Calibrator {
-    pub fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-               hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+    pub fn new(
+        camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+        hot_pixel_map: Option<
+            Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
+        >,
     ) -> Self {
-        Calibrator{camera, hot_pixel_map}
+        Calibrator {
+            camera,
+            hot_pixel_map,
+        }
     }
 
     pub fn replace_camera(
-        &mut self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
-    {
+        &mut self,
+        camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+    ) {
         self.camera = camera.clone();
     }
 
     // Leaves camera set to the returned calibrated offset value.
     pub async fn calibrate_offset(
-        &self, cancel_calibration: Arc<tokio::sync::Mutex<bool>>)
-        -> Result<Offset, CanonicalError> {
+        &self,
+        cancel_calibration: Arc<tokio::sync::Mutex<bool>>,
+    ) -> Result<Offset, CanonicalError> {
         // Goal: find the minimum camera offset setting that avoids
         // black crush (too many zero-value pixels).
         //
@@ -58,8 +68,8 @@ impl Calibrator {
         //
         // Approach:
         // * Use 1ms exposures.
-        // * Starting at offset=0, as long as >0.1% of pixels have zero
-        //   value, increase the offset.
+        // * Starting at offset=0, as long as >0.1% of pixels have zero value,
+        //   increase the offset.
         if *cancel_calibration.lock().await {
             return Err(aborted_error("Cancelled during calibrate_offset()."));
         }
@@ -69,8 +79,13 @@ impl Calibrator {
         self.camera.lock().await.set_offset(Offset::new(0)).await?;
 
         // Restore the exposure duration that we change here.
-        let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
-        self.camera.lock().await.set_exposure_duration(Duration::from_millis(1)).await?;
+        let mut restore_exposure =
+            RestoreExposure::new(self.camera.clone()).await;
+        self.camera
+            .lock()
+            .await
+            .set_exposure_duration(Duration::from_millis(1))
+            .await?;
         let (width, height) = self.camera.lock().await.dimensions().await;
         let total_pixels = width * height;
 
@@ -80,9 +95,15 @@ impl Calibrator {
         for mut offset in 0..=max_offset {
             if *cancel_calibration.lock().await {
                 restore_exposure.restore().await;
-                return Err(aborted_error("Cancelled during calibrate_offset()."));
+                return Err(aborted_error(
+                    "Cancelled during calibrate_offset().",
+                ));
             }
-            self.camera.lock().await.set_offset(Offset::new(offset)).await?;
+            self.camera
+                .lock()
+                .await
+                .set_offset(Offset::new(offset))
+                .await?;
             let (captured_image, frame_id) =
                 Self::capture_image(self.camera.clone(), prev_frame_id).await?;
             prev_frame_id = Some(frame_id);
@@ -91,30 +112,36 @@ impl Calibrator {
             num_zero_pixels = histo[0];
             if num_zero_pixels < (total_pixels / 1000) as u32 {
                 if offset < max_offset {
-                    offset += 1;  // One more for good measure.
+                    offset += 1; // One more for good measure.
                 }
                 restore_exposure.restore().await;
                 return Ok(Offset::new(offset));
             }
         }
         restore_exposure.restore().await;
-        Err(failed_precondition_error(format!("Still have {} zero pixels at offset={}",
-                                              num_zero_pixels, max_offset).as_str()))
+        Err(failed_precondition_error(
+            format!(
+                "Still have {} zero pixels at offset={}",
+                num_zero_pixels, max_offset
+            )
+            .as_str(),
+        ))
     }
 
     async fn capture_image(
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-        mut frame_id: Option<i32>) -> Result<(CapturedImage, i32), CanonicalError>
-    {
+        mut frame_id: Option<i32>,
+    ) -> Result<(CapturedImage, i32), CanonicalError> {
         // Don't hold camera lock for the entirety of the time waiting for
         // the next image.
         loop {
             let capture =
-                match camera.lock().await.try_capture_image(frame_id).await
-            {
-                Ok(c) => c,
-                Err(e) => { return Err(e); }
-            };
+                match camera.lock().await.try_capture_image(frame_id).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Err(e);
+                    }
+                };
             if capture.is_none() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
@@ -138,9 +165,10 @@ impl Calibrator {
         initial_exposure_duration: Duration,
         max_exposure_duration: Duration,
         star_count_goal: i32,
-        detection_binning: u32, detection_sigma: f64,
-        cancel_calibration: Arc<tokio::sync::Mutex<bool>>)
-        -> Result<Duration, ExposureCalibrationError> {
+        detection_binning: u32,
+        detection_sigma: f64,
+        cancel_calibration: Arc<tokio::sync::Mutex<bool>>,
+    ) -> Result<Duration, ExposureCalibrationError> {
         // Goal: find the camera exposure duration that yields the desired
         // number of detected stars.
         //
@@ -154,21 +182,33 @@ impl Calibrator {
         //   * Detect the stars.
         //   * If close enough to the goal, scale the exposure duration and
         //     return it.
-        //   * If not close to the goal, scale the exposure duration and
-        //     do one more exposure/detect/scale.
+        //   * If not close to the goal, scale the exposure duration and do one
+        //     more exposure/detect/scale.
         if *cancel_calibration.lock().await {
             return Err(ExposureCalibrationError::Aborted);
         }
 
         // If we fail, restore the exposure duration that we change here.
-        let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
+        let mut restore_exposure =
+            RestoreExposure::new(self.camera.clone()).await;
 
-        self.camera.lock().await.set_exposure_duration(
-            initial_exposure_duration).await.unwrap();
-        let (mut image, mut exp_duration, mut stars, mut frame_id) =
-            self.acquire_image_get_stars(
-                /*frame_id=*/None, detection_binning, detection_sigma,
-                /*use_hot_pixel_map=*/true).await.unwrap();
+        self.camera
+            .lock()
+            .await
+            .set_exposure_duration(initial_exposure_duration)
+            .await
+            .unwrap();
+        let (mut image, mut exp_duration, mut stars, mut frame_id) = self
+            .acquire_image_get_stars(
+                // frame_id=
+                None,
+                detection_binning,
+                detection_sigma,
+                // use_hot_pixel_map=
+                true,
+            )
+            .await
+            .unwrap();
         let mut stats = stats_for_histogram(&full_image_histogram(&image));
 
         // >1 if we have more stars than goal; <1 if fewer stars than goal.
@@ -176,17 +216,27 @@ impl Calibrator {
             f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
         // See the rationale in DetectEngine::worker() for how we relate
         // star_goal_fraction to exposure time adjustment.
-        debug!("1: exp {:?}, {} stars, pix mean {:.2} ",
-               exp_duration, stars.len(), stats.mean);
+        debug!(
+            "1: exp {:?}, {} stars, pix mean {:.2} ",
+            exp_duration,
+            stars.len(),
+            stats.mean
+        );
 
-        let mut scaled_exp_duration =
-            Duration::from_secs_f64(exp_duration.as_secs_f64() / star_goal_fraction);
+        let mut scaled_exp_duration = Duration::from_secs_f64(
+            exp_duration.as_secs_f64() / star_goal_fraction,
+        );
         if scaled_exp_duration > max_exposure_duration {
             scaled_exp_duration = max_exposure_duration;
         }
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
+            self.camera
+                .lock()
+                .await
+                .set_exposure_duration(scaled_exp_duration)
+                .await
+                .unwrap();
             return Ok(scaled_exp_duration);
         }
 
@@ -205,25 +255,46 @@ impl Calibrator {
             restore_exposure.restore().await;
             return Err(ExposureCalibrationError::Aborted);
         }
-        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
-        (image, exp_duration, stars, frame_id) =
-            self.acquire_image_get_stars(
-                Some(frame_id), detection_binning, detection_sigma,
-                /*use_hot_pixel_map=*/true).await.unwrap();
+        self.camera
+            .lock()
+            .await
+            .set_exposure_duration(scaled_exp_duration)
+            .await
+            .unwrap();
+        (image, exp_duration, stars, frame_id) = self
+            .acquire_image_get_stars(
+                Some(frame_id),
+                detection_binning,
+                detection_sigma,
+                // use_hot_pixel_map=
+                true,
+            )
+            .await
+            .unwrap();
         stats = stats_for_histogram(&full_image_histogram(&image));
         star_goal_fraction =
             f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
-        debug!("2: exp {:?}, {} stars, pix mean {:.2} ",
-               exp_duration, stars.len(), stats.mean);
+        debug!(
+            "2: exp {:?}, {} stars, pix mean {:.2} ",
+            exp_duration,
+            stars.len(),
+            stats.mean
+        );
 
         scaled_exp_duration = Duration::from_secs_f64(
-            exp_duration.as_secs_f64() / star_goal_fraction);
+            exp_duration.as_secs_f64() / star_goal_fraction,
+        );
         if scaled_exp_duration > max_exposure_duration {
             scaled_exp_duration = max_exposure_duration;
         }
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
+            self.camera
+                .lock()
+                .await
+                .set_exposure_duration(scaled_exp_duration)
+                .await
+                .unwrap();
             return Ok(scaled_exp_duration);
         }
         if star_goal_fraction < 1.0 {
@@ -244,25 +315,46 @@ impl Calibrator {
             restore_exposure.restore().await;
             return Err(ExposureCalibrationError::Aborted);
         }
-        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
-        (image, exp_duration, stars, _) =
-            self.acquire_image_get_stars(
-                Some(frame_id), detection_binning, detection_sigma,
-                /*use_hot_pixel_map=*/true).await.unwrap();
+        self.camera
+            .lock()
+            .await
+            .set_exposure_duration(scaled_exp_duration)
+            .await
+            .unwrap();
+        (image, exp_duration, stars, _) = self
+            .acquire_image_get_stars(
+                Some(frame_id),
+                detection_binning,
+                detection_sigma,
+                // use_hot_pixel_map=
+                true,
+            )
+            .await
+            .unwrap();
         stats = stats_for_histogram(&full_image_histogram(&image));
         star_goal_fraction =
             f64::max(stars.len() as f64, 1.0) / star_count_goal as f64;
-        debug!("3: exp {:?}, {} stars, pix mean {:.2} ",
-               exp_duration, stars.len(), stats.mean);
+        debug!(
+            "3: exp {:?}, {} stars, pix mean {:.2} ",
+            exp_duration,
+            stars.len(),
+            stats.mean
+        );
 
         scaled_exp_duration = Duration::from_secs_f64(
-            exp_duration.as_secs_f64() / star_goal_fraction);
+            exp_duration.as_secs_f64() / star_goal_fraction,
+        );
         if scaled_exp_duration > max_exposure_duration {
             scaled_exp_duration = max_exposure_duration;
         }
         if star_goal_fraction > 0.8 && star_goal_fraction < 1.2 {
             // Close enough to goal, the scaled exposure time is good.
-            self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
+            self.camera
+                .lock()
+                .await
+                .set_exposure_duration(scaled_exp_duration)
+                .await
+                .unwrap();
             return Ok(scaled_exp_duration);
         }
         if star_goal_fraction < 1.0 {
@@ -279,11 +371,18 @@ impl Calibrator {
             }
         }
         if star_goal_fraction < 0.5 || star_goal_fraction > 2.0 {
-            warn!("Exposure time calibration diverged, goal fraction {}",
-                  star_goal_fraction);
+            warn!(
+                "Exposure time calibration diverged, goal fraction {}",
+                star_goal_fraction
+            );
         }
 
-        self.camera.lock().await.set_exposure_duration(scaled_exp_duration).await.unwrap();
+        self.camera
+            .lock()
+            .await
+            .set_exposure_duration(scaled_exp_duration)
+            .await
+            .unwrap();
         Ok(scaled_exp_duration)
     }
 
@@ -295,23 +394,43 @@ impl Calibrator {
     pub async fn calibrate_dark_frame(
         &self,
         max_exposure_duration: Duration,
-        detection_binning: u32, detection_sigma: f64,
+        detection_binning: u32,
+        detection_sigma: f64,
     ) -> Result<(), CanonicalError> {
         let hpm = match &self.hot_pixel_map {
             Some(h) => h,
-            None => return Err(failed_precondition_error(
-                "No hot pixel map is configured.")),
+            None => {
+                return Err(failed_precondition_error(
+                    "No hot pixel map is configured.",
+                ))
+            }
         };
-        let mut restore_exposure = RestoreExposure::new(self.camera.clone()).await;
-        self.camera.lock().await
-            .set_exposure_duration(max_exposure_duration).await?;
-        let (_, _, candidates, _) = self.acquire_image_get_stars(
-            /*frame_id=*/None, detection_binning, detection_sigma,
-            /*use_hot_pixel_map=*/false).await?;
+        let mut restore_exposure =
+            RestoreExposure::new(self.camera.clone()).await;
+        self.camera
+            .lock()
+            .await
+            .set_exposure_duration(max_exposure_duration)
+            .await?;
+        let (_, _, candidates, _) = self
+            .acquire_image_get_stars(
+                // frame_id=
+                None,
+                detection_binning,
+                detection_sigma,
+                // use_hot_pixel_map=
+                false,
+            )
+            .await?;
         restore_exposure.restore().await;
 
-        // sky_pos=None signals dark frame: candidates replace the map immediately.
-        hpm.lock().await.update_hot_pixel_map(&candidates, /*sky_pos=*/None);
+        // sky_pos=None signals dark frame: candidates replace the map
+        // immediately.
+        hpm.lock().await.update_hot_pixel_map(
+            &candidates,
+            // sky_pos=
+            None,
+        );
         hpm.lock().await.save_state()?;
         Ok(())
     }
@@ -327,9 +446,10 @@ impl Calibrator {
     pub async fn calibrate_optical(
         &self,
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
-        detection_binning: u32, detection_sigma: f64,
-        cancel_calibration: Arc<tokio::sync::Mutex<bool>>)
-        -> Result<(f64, f64, f64, Duration), CanonicalError> {
+        detection_binning: u32,
+        detection_sigma: f64,
+        cancel_calibration: Arc<tokio::sync::Mutex<bool>>,
+    ) -> Result<(f64, f64, f64, Duration), CanonicalError> {
         // Goal: find the field of view, lens distortion, match_max_error solver
         // parameter, and representative plate solve time.
         //
@@ -337,17 +457,24 @@ impl Calibrator {
         //
         // Approach:
         // * Grab an image, detect the stars.
-        // * Do a plate solution with no FOV estimate and no distortion estimate.
-        //   Use a generous match_max_error value and the default (generous)
-        //   solve_timeout.
-        // * Use the plate solution to obtain FOV and lens distortion, and determine
-        //   an appropriate match_max_error value.
+        // * Do a plate solution with no FOV estimate and no distortion
+        //   estimate. Use a generous match_max_error value and the default
+        //   (generous) solve_timeout.
+        // * Use the plate solution to obtain FOV and lens distortion, and
+        //   determine an appropriate match_max_error value.
         // * Do another plate solution with the known FOV, lens distortion, and
         //   match_max_error to obtain a representative solution time.
 
-        let (image, _, stars, _) = self.acquire_image_get_stars(
-            /*frame_id=*/None, detection_binning, detection_sigma,
-            /*use_hot_pixel_map=*/true).await?;
+        let (image, _, stars, _) = self
+            .acquire_image_get_stars(
+                // frame_id=
+                None,
+                detection_binning,
+                detection_sigma,
+                // use_hot_pixel_map=
+                true,
+            )
+            .await?;
         let (width, height) = image.dimensions();
         if *cancel_calibration.lock().await {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
@@ -355,33 +482,44 @@ impl Calibrator {
 
         // Set up solve arguments.
         let solve_extension = SolveExtension::default();
-        let mut solve_params = SolveParams{
-            fov_estimate: None,  // Initially blind w.r.t. FOV.
+        let mut solve_params = SolveParams {
+            fov_estimate: None, // Initially blind w.r.t. FOV.
             distortion: Some(0.0),
             match_max_error: Some(0.005),
             ..Default::default()
         };
         let mut star_centroids = Vec::<ImageCoord>::with_capacity(stars.len());
         for star in &stars {
-            star_centroids.push(ImageCoord{x: star.centroid_x,
-                                           y: star.centroid_y});
+            star_centroids.push(ImageCoord {
+                x: star.centroid_x,
+                y: star.centroid_y,
+            });
         }
-        let plate_solution = solver.lock().await.solve_from_centroids(
-            &star_centroids,
-            width as usize, height as usize,
-            &solve_extension, &solve_params, /*imu_estimate=*/None).await?;
+        let plate_solution = solver
+            .lock()
+            .await
+            .solve_from_centroids(
+                &star_centroids,
+                width as usize,
+                height as usize,
+                &solve_extension,
+                &solve_params,
+                // imu_estimate=
+                None,
+            )
+            .await?;
 
         if *cancel_calibration.lock().await {
             return Err(aborted_error("Cancelled during calibrate_optical()."));
         }
 
-        let fov = plate_solution.fov;  // Degrees.
+        let fov = plate_solution.fov; // Degrees.
         let distortion = plate_solution.distortion.unwrap();
 
         // Use the 90th percentile error residual as a basis for determining the
         // 'match_max_error' argument to the solver.
-        let p90_error_deg = plate_solution.p90_error / 3600.0;  // Degrees.
-        let p90_err_frac = p90_error_deg / fov;  // As fraction of FOV.
+        let p90_error_deg = plate_solution.p90_error / 3600.0; // Degrees.
+        let p90_err_frac = p90_error_deg / fov; // As fraction of FOV.
         let match_max_error = p90_err_frac * 2.0;
 
         // Do another solve with now-known FOV, distortion, and
@@ -390,61 +528,91 @@ impl Calibrator {
         solve_params.distortion = Some(distortion);
         solve_params.match_max_error = Some(match_max_error);
 
-        let plate_solution2 = match solver.lock().await.solve_from_centroids(
-            &star_centroids,
-            width as usize, height as usize,
-            &solve_extension, &solve_params, /*imu_estimate=*/None).await
+        let plate_solution2 = match solver
+            .lock()
+            .await
+            .solve_from_centroids(
+                &star_centroids,
+                width as usize,
+                height as usize,
+                &solve_extension,
+                &solve_params,
+                // imu_estimate=
+                None,
+            )
+            .await
         {
             Ok(ps) => ps,
             Err(e) => {
-                return Err(internal_error(
-                    &format!("Unexpected error during repeated plate solve: {:?}", e)));
+                return Err(internal_error(&format!(
+                    "Unexpected error during repeated plate solve: {:?}",
+                    e
+                )));
             }
         };
-        let solve_duration = std::time::Duration::try_from(
-            plate_solution2.solve_time.unwrap()).unwrap();
+        let solve_duration =
+            std::time::Duration::try_from(plate_solution2.solve_time.unwrap())
+                .unwrap();
 
         Ok((fov, distortion, match_max_error, solve_duration))
     }
 
-    // Returns: acquired image, actual exposure duration, detected stars, frame_id.
-    // If use_hot_pixel_map is true, hot pixels are suppressed from the returned
-    // stars via the hot pixel map.
+    // Returns: acquired image, actual exposure duration, detected stars,
+    // frame_id. If use_hot_pixel_map is true, hot pixels are suppressed
+    // from the returned stars via the hot pixel map.
     // If use_hot_pixel_map is false, only the default star detection hot pixel
     // processing is applied.
     async fn acquire_image_get_stars(
-        &self, frame_id: Option<i32>,
-        detection_binning: u32, detection_sigma: f64,
-        use_hot_pixel_map: bool)
-        -> Result<(Arc<GrayImage>, Duration, Vec<StarDescription>, i32),
-                  CanonicalError>
-    {
+        &self,
+        frame_id: Option<i32>,
+        detection_binning: u32,
+        detection_sigma: f64,
+        use_hot_pixel_map: bool,
+    ) -> Result<
+        (Arc<GrayImage>, Duration, Vec<StarDescription>, i32),
+        CanonicalError,
+    > {
         let (captured_image, frame_id) =
             Self::capture_image(self.camera.clone(), frame_id).await?;
         // Run CedarDetect on the image. Use spawn_blocking to avoid tying up
-        // tokio worker threads (and thus gRPC serving) during this CPU-intensive
-        // operation.
+        // tokio worker threads (and thus gRPC serving) during this
+        // CPU-intensive operation.
         let image = captured_image.image.clone();
-        let precomputed_binned =
-            if detection_binning != 1 { Some(captured_image.binned_image.clone()) }
-            else { None };
-        let (stars, _, _) =
-            tokio::task::spawn_blocking(move || {
-                let noise_estimate = estimate_noise_from_image(&image);
-                get_stars_from_image(
-                    &image, precomputed_binned, noise_estimate, detection_sigma,
-                    detection_binning)
-            }).await.unwrap();
+        let precomputed_binned = if detection_binning != 1 {
+            Some(captured_image.binned_image.clone())
+        } else {
+            None
+        };
+        let (stars, _, _) = tokio::task::spawn_blocking(move || {
+            let noise_estimate = estimate_noise_from_image(&image);
+            get_stars_from_image(
+                &image,
+                precomputed_binned,
+                noise_estimate,
+                detection_sigma,
+                detection_binning,
+            )
+        })
+        .await
+        .unwrap();
         let stars = if use_hot_pixel_map {
             if let Some(hpm) = &self.hot_pixel_map {
-                let (filtered, _) = hpm.lock().await.classify_candidates(&stars);
+                let (filtered, _) =
+                    hpm.lock().await.classify_candidates(&stars);
                 filtered
-            } else { stars }
-        } else { stars };
+            } else {
+                stars
+            }
+        } else {
+            stars
+        };
 
-        Ok((captured_image.image.clone(),
+        Ok((
+            captured_image.image.clone(),
             captured_image.capture_params.exposure_duration,
-            stars, frame_id))
+            stars,
+            frame_id,
+        ))
     }
 }
 
@@ -460,14 +628,21 @@ struct RestoreExposure {
     exp_duration: Duration,
 }
 impl RestoreExposure {
-    async fn new(camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>) -> Self {
-        RestoreExposure{
+    async fn new(
+        camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+    ) -> Self {
+        RestoreExposure {
             camera: camera.clone(),
             exp_duration: camera.lock().await.get_exposure_duration().await,
         }
     }
 
     async fn restore(&mut self) {
-        self.camera.lock().await.set_exposure_duration(self.exp_duration).await.unwrap();
+        self.camera
+            .lock()
+            .await
+            .set_exposure_duration(self.exp_duration)
+            .await
+            .unwrap();
     }
 }

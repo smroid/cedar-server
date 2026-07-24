@@ -27,8 +27,8 @@ use cedar_elements::{
     cedar_common::CelestialCoord,
     cedar_sky::{CatalogEntry, CatalogEntryMatch, Constellation, Ordering},
     cedar_sky_trait::{CedarSkyTrait, LocationInfo},
-    image_utils::scale_image_mut,
     hot_pixel_trait::HotPixelTrait,
+    image_utils::scale_image_mut,
     imu_trait::{EquatorialCoordinates, ImuTrait},
     solver_trait::{SolveExtension, SolveParams, SolverTrait},
     value_stats::ValueStatsAccumulator,
@@ -50,12 +50,15 @@ const IMU_MOTION_THRESHOLD_DEG_PER_SEC: f64 = 0.5;
 // target and/or sync coordinates. Returns (slew_target, sync_coord).
 type PreSolveCallback = Arc<
     dyn Fn() -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = (Option<CelestialCoord>, Option<CelestialCoord>),
-                > + Send,
-        >,
-    > + Send
+            Box<
+                dyn std::future::Future<
+                        Output = (
+                            Option<CelestialCoord>,
+                            Option<CelestialCoord>,
+                        ),
+                    > + Send,
+            >,
+        > + Send
         + Sync,
 >;
 
@@ -69,9 +72,7 @@ type PostSolveCallback = Arc<
             Option<DetectResult>,
             Option<PlateSolutionProto>,
         ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<Output = Option<LatLong>> + Send,
-            >,
+            Box<dyn std::future::Future<Output = Option<LatLong>> + Send>,
         > + Send
         + Sync,
 >;
@@ -106,7 +107,7 @@ struct SolveState {
 
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
     catalog_entry_match: Option<CatalogEntryMatch>,
-    eyepiece_fov: f64,  // Degrees; diameter.
+    eyepiece_fov: f64, // Degrees; diameter.
 
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     use_imu_tracker: bool,
@@ -154,7 +155,9 @@ impl SolveEngine {
     pub fn new(
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-        hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+        hot_pixel_map: Option<
+            Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
+        >,
         imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
         stats_capacity: usize,
@@ -182,8 +185,12 @@ impl SolveEngine {
                 match_max_error: 0.005,
                 return_matches: true,
                 slew_target: None,
-                solve_duration_stats: ValueStatsAccumulator::new(stats_capacity),
-                solve_other_duration_stats: ValueStatsAccumulator::new(stats_capacity),
+                solve_duration_stats: ValueStatsAccumulator::new(
+                    stats_capacity,
+                ),
+                solve_other_duration_stats: ValueStatsAccumulator::new(
+                    stats_capacity,
+                ),
                 solve_attempt_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_success_stats: ValueStatsAccumulator::new(stats_capacity),
                 solve_interval_stats: ValueStatsAccumulator::new(
@@ -408,16 +415,28 @@ impl SolveEngine {
         locked_state.solve_interval_stats.reset_session();
     }
 
-    pub async fn estimate_delay(&self, prev_solution_id: Option<i32>) -> Option<Duration> {
+    pub async fn estimate_delay(
+        &self,
+        prev_solution_id: Option<i32>,
+    ) -> Option<Duration> {
         let locked_state = self.state.lock().await;
-        if locked_state.plate_solution.is_some() &&
-            (prev_solution_id.is_none() ||
-             prev_solution_id.unwrap() !=
-             locked_state.plate_solution.as_ref().unwrap().solution_id)
+        if locked_state.plate_solution.is_some()
+            && (prev_solution_id.is_none()
+                || prev_solution_id.unwrap()
+                    != locked_state
+                        .plate_solution
+                        .as_ref()
+                        .unwrap()
+                        .solution_id)
         {
             Some(Duration::ZERO)
         } else if locked_state.eta.is_some() {
-            Some(locked_state.eta.unwrap().saturating_duration_since(Instant::now()))
+            Some(
+                locked_state
+                    .eta
+                    .unwrap()
+                    .saturating_duration_since(Instant::now()),
+            )
         } else {
             None
         }
@@ -539,8 +558,9 @@ impl SolveEngine {
         solve_params: &SolveParams,
         skip_stars: bool,
     ) -> (Option<PlateSolutionProto>, Option<SystemTime>, Duration) {
-        let mut star_centroids =
-            Vec::<ImageCoord>::with_capacity(detect_result.star_candidates.len());
+        let mut star_centroids = Vec::<ImageCoord>::with_capacity(
+            detect_result.star_candidates.len(),
+        );
         if !skip_stars {
             for sc in &detect_result.star_candidates {
                 star_centroids.push(ImageCoord {
@@ -640,8 +660,7 @@ impl SolveEngine {
             )
             .await;
             solver_duration = t_before_solve.elapsed();
-            match solve_result
-            {
+            match solve_result {
                 Err(e) => {
                     // Let's not spam the log with solver failures. If the
                     // number of detected stars is low, don't bother to log,
@@ -655,8 +674,11 @@ impl SolveEngine {
                         // Secondly, don't log the error if we've just logged
                         // one.
                         if !locked_state.logged_error {
-                            warn!("Solver error {:?} with {} centroids",
-                                  e, star_centroids.len());
+                            warn!(
+                                "Solver error {:?} with {} centroids",
+                                e,
+                                star_centroids.len()
+                            );
                             locked_state.logged_error = true;
                         }
                     }
@@ -717,7 +739,9 @@ impl SolveEngine {
         detect_result: &DetectResult,
         plate_solution_proto: Option<PlateSolutionProto>,
         post_solve_callback: &PostSolveCallback,
-        hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+        hot_pixel_map: &Option<
+            Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
+        >,
         slew_target: Option<CelestialCoord>,
         sync_coord: Option<CelestialCoord>,
         solve_finish_time: Option<SystemTime>,
@@ -766,7 +790,9 @@ impl SolveEngine {
         detect_result: &DetectResult,
         plate_solution_proto: &Option<PlateSolutionProto>,
         post_solve_callback: &PostSolveCallback,
-        hot_pixel_map: &Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+        hot_pixel_map: &Option<
+            Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
+        >,
         slew_target: Option<CelestialCoord>,
         sync_coord: Option<CelestialCoord>,
         width: u32,
@@ -844,7 +870,8 @@ impl SolveEngine {
             }
 
             if !align_mode {
-                // Process the plate solution result (update motion estimator, etc).
+                // Process the plate solution result (update motion estimator,
+                // etc).
                 if let Some(observer_location) = post_solve_callback(
                     boresight_pixel.clone(),
                     Some(detect_result.clone()),
@@ -945,7 +972,8 @@ impl SolveEngine {
                     (Some(result.0), Some(result.1));
 
                 // Find the displayed catalog entry closest to the boresight.
-                // Coordinates are in image coordinates, matching boresight_pixel.
+                // Coordinates are in image coordinates, matching
+                // boresight_pixel.
                 let center = ImageCoord {
                     x: width as f64 / 2.0,
                     y: height as f64 / 2.0,
@@ -954,7 +982,9 @@ impl SolveEngine {
                 let eyepiece_fov_radius_px =
                     (eyepiece_fov / 2.0) / (psp.fov / width as f64);
                 let mut best_dist_sq = f64::MAX;
-                let all_displayed_entries = fov_catalog_entries.iter().flatten()
+                let all_displayed_entries = fov_catalog_entries
+                    .iter()
+                    .flatten()
                     .chain(decrowded_fov_catalog_entries.iter().flatten());
                 for fce in all_displayed_entries {
                     if let Some(pos) = &fce.image_pos {
@@ -969,30 +999,39 @@ impl SolveEngine {
                 }
                 if boresight_catalog_entry.is_some() {
                     boresight_catalog_entry_distance = Some(
-                        (best_dist_sq.sqrt() / eyepiece_fov_radius_px) as f32
+                        (best_dist_sq.sqrt() / eyepiece_fov_radius_px) as f32,
                     );
                 }
 
                 // Use boresight_catalog_entry's constellation if available;
-                // otherwise query with no filters for a reliable identification.
+                // otherwise query with no filters for a reliable
+                // identification.
                 if let Some(bce) = &boresight_catalog_entry {
-                    boresight_constellation = bce.entry.as_ref().unwrap().constellation.clone();
+                    boresight_constellation =
+                        bce.entry.as_ref().unwrap().constellation.clone();
                 } else {
-                    let query_result = sky.lock().await.query_catalog_entries(
-                        Some(psp.fov / 2.0),  // max_distance; guaranteed to contain an entry.
-                        None,                  // min_elevation
-                        None,                  // faintest_magnitude; no filter.
-                        false,                 // match_catalog_label; no filter.
-                        &[],                   // catalog_label
-                        false,                 // match_object_type_label; no filter.
-                        &[],                   // object_type_label
-                        None,                  // text_search
-                        Some(Ordering::SkyLocation),  // nearest first.
-                        None,                  // decrowd_distance
-                        Some(1),               // limit_result; only need the nearest.
-                        Some(boresight_coords.clone()),
-                        None,                  // location_info
-                    ).await;
+                    let query_result = sky
+                        .lock()
+                        .await
+                        .query_catalog_entries(
+                            Some(psp.fov / 2.0),
+                            // max_distance; guaranteed
+                            // to contain
+                            // an entry.
+                            None,                        // min_elevation
+                            None,  // faintest_magnitude; no filter.
+                            false, // match_catalog_label; no filter.
+                            &[],   // catalog_label
+                            false, // match_object_type_label; no filter.
+                            &[],   // object_type_label
+                            None,  // text_search
+                            Some(Ordering::SkyLocation), // nearest first.
+                            None,  // decrowd_distance
+                            Some(1), // limit_result; only need the nearest.
+                            Some(boresight_coords.clone()),
+                            None, // location_info
+                        )
+                        .await;
                     if let Ok((entries, _)) = query_result {
                         if let Some(nearest) = entries.into_iter().next() {
                             boresight_constellation =
@@ -1074,7 +1113,9 @@ impl SolveEngine {
         solver: Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
         state: Arc<tokio::sync::Mutex<SolveState>>,
         detect_engine: Arc<tokio::sync::Mutex<DetectEngine>>,
-        hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+        hot_pixel_map: Option<
+            Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
+        >,
         pre_solve_callback: PreSolveCallback,
         post_solve_callback: PostSolveCallback,
     ) {
@@ -1118,18 +1159,22 @@ impl SolveEngine {
                     solve_params.match_radius = Some(locked_state.match_radius);
                     solve_params.match_threshold =
                         Some(locked_state.match_threshold);
-                    solve_params.solve_timeout = Some(locked_state.solve_timeout);
-                    if let Some(boresight_pixel) = &locked_state.boresight_pixel {
+                    solve_params.solve_timeout =
+                        Some(locked_state.solve_timeout);
+                    if let Some(boresight_pixel) = &locked_state.boresight_pixel
+                    {
                         solve_extension.target_pixel =
                             Some(vec![boresight_pixel.clone()]);
                     }
                     if let Some(st) = &slew_target {
-                        solve_extension.target_sky_coord = Some(vec![st.clone()]);
+                        solve_extension.target_sky_coord =
+                            Some(vec![st.clone()]);
                     }
                     solve_params.distortion = Some(locked_state.distortion);
                     solve_params.match_max_error =
                         Some(locked_state.match_max_error);
-                    solve_extension.return_matches = locked_state.return_matches;
+                    solve_extension.return_matches =
+                        locked_state.return_matches;
                     solve_extension.return_catalog = true;
                     solve_extension.return_rotation_matrix = true;
                 }
@@ -1143,17 +1188,20 @@ impl SolveEngine {
                         &detect_result.captured_image.readout_time,
                         &solve_extension,
                         &solve_params,
-                        /* skip_stars= */ false,
+                        // skip_stars=
+                        false,
                     )
                     .await;
 
                 let elapsed = frame_start_time.elapsed();
                 if state.lock().await.last_solve_attempt_time.is_some() {
                     let mut locked_state = state.lock().await;
-                    locked_state.solve_duration_stats
+                    locked_state
+                        .solve_duration_stats
                         .add_value(solver_duration.as_secs_f64());
-                    locked_state.solve_other_duration_stats
-                        .add_value(elapsed.saturating_sub(solver_duration).as_secs_f64());
+                    locked_state.solve_other_duration_stats.add_value(
+                        elapsed.saturating_sub(solver_duration).as_secs_f64(),
+                    );
                 }
 
                 Self::process_and_post(
@@ -1183,18 +1231,20 @@ impl SolveEngine {
                         None
                     }
                 };
-                let do_imu_interpolation = if let Some(ref tracker) = imu_tracker {
-                    match tracker.lock().await.get_angular_velocity_magnitude().await {
-                        Ok((v, _)) => {
-                            v >= IMU_MOTION_THRESHOLD_DEG_PER_SEC
+                let do_imu_interpolation =
+                    if let Some(ref tracker) = imu_tracker {
+                        match tracker
+                            .lock()
+                            .await
+                            .get_angular_velocity_magnitude()
+                            .await
+                        {
+                            Ok((v, _)) => v >= IMU_MOTION_THRESHOLD_DEG_PER_SEC,
+                            Err(_e) => false,
                         }
-                        Err(_e) => {
-                            false
-                        }
-                    }
-                } else {
-                    false
-                };
+                    } else {
+                        false
+                    };
                 if do_imu_interpolation {
                     let (imu_plate_solution_proto, imu_solve_finish_time, _) =
                         Self::attempt_plate_solve(
@@ -1204,7 +1254,8 @@ impl SolveEngine {
                             &SystemTime::now(),
                             &solve_extension,
                             &solve_params,
-                            /* skip_stars= */ true,
+                            // skip_stars=
+                            true,
                         )
                         .await;
                     Self::process_and_post(
@@ -1234,7 +1285,8 @@ impl SolveEngine {
             } else {
                 IMU_INTERPOLATION_INTERVAL
             };
-            tokio::time::sleep(sleep_duration.max(Duration::from_millis(1))).await;
+            tokio::time::sleep(sleep_duration.max(Duration::from_millis(1)))
+                .await;
         } // loop.
     } // worker
 
@@ -1280,7 +1332,9 @@ impl SolveEngine {
             return None;
         }
         let (selected_catalog_entries, _overflow) = query_result.unwrap();
-        selected_catalog_entries.into_iter().next()
+        selected_catalog_entries
+            .into_iter()
+            .next()
             .map(|sce| sce.entry.unwrap())
     }
 
@@ -1460,11 +1514,13 @@ impl SolveEngine {
 
         // Extract lat/long/time for alt/az computation on decrowded entries,
         // before location_info is consumed by query_catalog_entries.
-        let observer_alt_az_params = location_info.as_ref().map(|loc| (
-            loc.observer_location.latitude.to_radians(),
-            loc.observer_location.longitude.to_radians(),
-            loc.observing_time,
-        ));
+        let observer_alt_az_params = location_info.as_ref().map(|loc| {
+            (
+                loc.observer_location.latitude.to_radians(),
+                loc.observer_location.longitude.to_radians(),
+                loc.observing_time,
+            )
+        });
 
         let bp = if let Some(bp) = boresight_pixel {
             bp.clone()
@@ -1598,9 +1654,10 @@ pub struct PlateSolution {
     // `slew_request` with its information.
     pub slew_request: Option<SlewRequest>,
 
-    // A small crop of `detect_result.captured_image` centered at the boresight.
-    // Brightness scaled to full range for visibility. This is present if
-    // `slew_request` is present and the slew target is close to the boresight.
+    // A small crop of `detect_result.captured_image` centered at the
+    // boresight. Brightness scaled to full range for visibility. This is
+    // present if `slew_request` is present and the slew target is close to
+    // the boresight.
     pub boresight_image: Option<GrayImage>,
 
     // The location of `boresight_image`. Omitted if `boresight_image` is

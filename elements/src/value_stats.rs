@@ -21,8 +21,12 @@ impl ValueStatsAccumulator {
     pub fn new(capacity: usize) -> Self {
         Self {
             value_stats: cedar::ValueStats {
-                recent: Some(cedar::DescriptiveStats{..Default::default()}),
-                session: Some(cedar::DescriptiveStats{..Default::default()}),
+                recent: Some(cedar::DescriptiveStats {
+                    ..Default::default()
+                }),
+                session: Some(cedar::DescriptiveStats {
+                    ..Default::default()
+                }),
             },
             circular_buffer: CircularBuffer::new(capacity),
             rolling_stats: rolling_stats::Stats::<f64>::new(),
@@ -42,7 +46,9 @@ impl ValueStatsAccumulator {
         recent_stats.mean = statistical::mean(recent_values);
         if recent_values.len() > 1 {
             recent_stats.stddev = statistical::standard_deviation(
-                recent_values, Some(recent_stats.mean));
+                recent_values,
+                Some(recent_stats.mean),
+            );
         }
         recent_stats.median = Some(recent_values.medf_unchecked());
         recent_stats.median_absolute_deviation =
@@ -57,7 +63,9 @@ impl ValueStatsAccumulator {
     }
 
     pub fn reset_session(&mut self) {
-        self.value_stats.session = Some(cedar::DescriptiveStats{..Default::default()});
+        self.value_stats.session = Some(cedar::DescriptiveStats {
+            ..Default::default()
+        });
         self.rolling_stats = rolling_stats::Stats::<f64>::new();
     }
 }
@@ -102,6 +110,7 @@ impl CircularBuffer {
 mod tests {
     extern crate approx;
     use approx::assert_abs_diff_eq;
+
     use super::*;
 
     #[test]
@@ -174,5 +183,4 @@ mod tests {
         assert_eq!(session.median, None);
         assert_eq!(session.median_absolute_deviation, None);
     }
-
-}  // mod tests.
+} // mod tests.
