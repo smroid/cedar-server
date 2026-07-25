@@ -10,8 +10,8 @@ use std::{
 use cedar_detect::image_funcs::bin_2x2;
 use cedar_elements::{
     astro_util::{
-        alt_az_from_equatorial, equatorial_from_alt_az,
-        fill_in_detections, magnitude_intensity_ratio, position_angle,
+        alt_az_from_equatorial, equatorial_from_alt_az, fill_in_detections,
+        magnitude_intensity_ratio, position_angle,
     },
     cedar::{
         CalibrationData, FixedSettings, FovCatalogEntry, FrameResult, Image,
@@ -19,8 +19,8 @@ use cedar_elements::{
         OperationSettings, Preferences, ProcessingStats, Rectangle,
         StarCentroid,
     },
-    image_utils::{scale_image, ImageRotator},
     hot_pixel_trait::HotPixelTrait,
+    image_utils::{scale_image, ImageRotator},
     imu_trait::ImuTrait,
     value_stats::ValueStatsAccumulator,
 };
@@ -28,9 +28,11 @@ use image::GrayImage;
 use log::debug;
 use prost_types;
 
-use crate::detect_engine::{DetectEngine, DetectResult};
-use crate::polar_analyzer::PolarAnalyzer;
-use crate::solve_engine::{PlateSolution, SolveEngine};
+use crate::{
+    detect_engine::{DetectEngine, DetectResult},
+    polar_analyzer::PolarAnalyzer,
+    solve_engine::{PlateSolution, SolveEngine},
+};
 
 // Server state snapshot provided to the serve engine. Updated by cedar_server
 // via update_context() when relevant settings change.
@@ -40,7 +42,8 @@ pub struct ServeContext {
     pub operation_settings: OperationSettings,
     pub calibration_data: Arc<tokio::sync::Mutex<CalibrationData>>,
     pub imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
-    pub hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+    pub hot_pixel_map:
+        Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
     pub polar_analyzer: Arc<tokio::sync::Mutex<PolarAnalyzer>>,
     pub jpeg_quality: u8,
     pub landscape: bool,
@@ -97,7 +100,8 @@ impl ServeEngine {
             state: Arc::new(tokio::sync::Mutex::new(ServeState {
                 frame_id: None,
                 last_solve_solution_id: None,
-                next_solution_id: 1,  // 0 is the proto default/"not set" sentinel
+                next_solution_id: 1, /* 0 is the proto default/"not set"
+                                      * sentinel */
                 serve_result: None,
                 eta: None,
                 context,
@@ -119,15 +123,23 @@ impl ServeEngine {
 
     /// Updates per-request render parameters. Called at the start of each
     /// get_frame RPC since landscape and jpeg_quality are request-level values.
-    pub async fn update_render_params(&mut self, landscape: bool, jpeg_quality: u8) {
+    pub async fn update_render_params(
+        &mut self,
+        landscape: bool,
+        jpeg_quality: u8,
+    ) {
         let mut locked_state = self.state.lock().await;
         locked_state.context.landscape = landscape;
         locked_state.context.jpeg_quality = jpeg_quality;
     }
 
     /// Updates the operation settings snapshot. Called by cedar_server after
-    /// any operation settings change so the serve engine polls the right engine.
-    pub async fn update_operation_settings(&mut self, operation_settings: OperationSettings) {
+    /// any operation settings change so the serve engine polls the right
+    /// engine.
+    pub async fn update_operation_settings(
+        &mut self,
+        operation_settings: OperationSettings,
+    ) {
         self.state.lock().await.context.operation_settings = operation_settings;
     }
 
@@ -139,7 +151,10 @@ impl ServeEngine {
 
     /// Updates the fixed settings snapshot. Called by cedar_server after
     /// fixed settings change (observer_location affects alt/az calc).
-    pub async fn update_fixed_settings(&mut self, fixed_settings: FixedSettings) {
+    pub async fn update_fixed_settings(
+        &mut self,
+        fixed_settings: FixedSettings,
+    ) {
         self.state.lock().await.context.fixed_settings = fixed_settings;
     }
 
@@ -156,7 +171,8 @@ impl ServeEngine {
     }
 
     /// Returns the most recent ImageRotator, for use by other handlers that
-    /// need to transform coordinates (e.g. initiate_action, detect_frame_region).
+    /// need to transform coordinates (e.g. initiate_action,
+    /// detect_frame_region).
     pub async fn image_rotator(&self) -> ImageRotator {
         self.state.lock().await.image_rotator.clone()
     }
@@ -184,7 +200,8 @@ impl ServeEngine {
                         sr.frame_result.solution_id != psid
                     } else {
                         prev_frame_id.is_none()
-                            || prev_frame_id.unwrap() != sr.frame_result.frame_id
+                            || prev_frame_id.unwrap()
+                                != sr.frame_result.frame_id
                     };
                     if is_new {
                         // Clone the result for the caller without consuming it.
@@ -192,7 +209,8 @@ impl ServeEngine {
                             frame_result: sr.frame_result.clone(),
                             image_rotator: sr.image_rotator.clone(),
                             scaled_image: sr.scaled_image.clone(),
-                            scaled_image_binning_factor: sr.scaled_image_binning_factor,
+                            scaled_image_binning_factor: sr
+                                .scaled_image_binning_factor,
                             scaled_image_frame_id: sr.scaled_image_frame_id,
                         });
                     }
@@ -277,73 +295,75 @@ impl ServeEngine {
             };
 
             // Poll the appropriate upstream engine for a new result.
-            let (detect_result, plate_solution) =
-                if operating_mode == OperatingMode::Setup as i32
-                    && (focus_assist_mode || daylight_from_config)
+            let (detect_result, plate_solution) = if operating_mode
+                == OperatingMode::Setup as i32
+                && (focus_assist_mode || daylight_from_config)
+            {
+                // Setup/focus/daylight mode: poll detect engine directly.
+                if let Some(delay_est) =
+                    detect_engine.lock().await.estimate_delay(frame_id).await
                 {
-                    // Setup/focus/daylight mode: poll detect engine directly.
-                    if let Some(delay_est) = detect_engine
+                    state.lock().await.eta = Some(Instant::now() + delay_est);
+                }
+                loop {
+                    let dr = detect_engine
+                        .lock()
+                        .await
+                        .get_next_result(
+                            frame_id, // non_blocking=
+                            true,
+                        )
+                        .await;
+                    if let Some(dr) = dr {
+                        break (dr, None);
+                    }
+                    let short_delay = Duration::from_millis(1);
+                    let delay_est = detect_engine
                         .lock()
                         .await
                         .estimate_delay(frame_id)
+                        .await;
+                    tokio::time::sleep(
+                        delay_est.map_or(short_delay, |d| max(d, short_delay)),
+                    )
+                    .await;
+                }
+            } else {
+                // Operate/setup-align mode: poll solve engine.
+                if let Some(delay_est) = solve_engine
+                    .lock()
+                    .await
+                    .estimate_delay(last_solve_solution_id)
+                    .await
+                {
+                    state.lock().await.eta = Some(Instant::now() + delay_est);
+                }
+                loop {
+                    let ps = solve_engine
+                        .lock()
                         .await
-                    {
-                        state.lock().await.eta =
-                            Some(Instant::now() + delay_est);
-                    }
-                    loop {
-                        let dr = detect_engine
-                            .lock()
-                            .await
-                            .get_next_result(frame_id, /* non_blocking= */ true)
-                            .await;
-                        if let Some(dr) = dr {
-                            break (dr, None);
-                        }
-                        let short_delay = Duration::from_millis(1);
-                        let delay_est = detect_engine
-                            .lock()
-                            .await
-                            .estimate_delay(frame_id)
-                            .await;
-                        tokio::time::sleep(
-                            delay_est.map_or(short_delay, |d| max(d, short_delay)),
+                        .get_next_result(
+                            last_solve_solution_id,
+                            // non_blocking=
+                            true,
                         )
                         .await;
+                    if let Some(ps) = ps {
+                        let dr = ps.detect_result.clone();
+                        break (dr, Some(ps));
                     }
-                } else {
-                    // Operate/setup-align mode: poll solve engine.
-                    if let Some(delay_est) = solve_engine
+                    let short_delay = Duration::from_millis(1);
+                    let delay_est = solve_engine
                         .lock()
                         .await
                         .estimate_delay(last_solve_solution_id)
-                        .await
-                    {
-                        state.lock().await.eta =
-                            Some(Instant::now() + delay_est);
-                    }
-                    loop {
-                        let ps = solve_engine
-                            .lock()
-                            .await
-                            .get_next_result(last_solve_solution_id, /* non_blocking= */ true)
-                            .await;
-                        if let Some(ps) = ps {
-                            let dr = ps.detect_result.clone();
-                            break (dr, Some(ps));
-                        }
-                        let short_delay = Duration::from_millis(1);
-                        let delay_est = solve_engine
-                            .lock()
-                            .await
-                            .estimate_delay(last_solve_solution_id)
-                            .await;
-                        tokio::time::sleep(
-                            delay_est.map_or(short_delay, |d| max(d, short_delay)),
-                        )
                         .await;
-                    }
-                };
+                    tokio::time::sleep(
+                        delay_est.map_or(short_delay, |d| max(d, short_delay)),
+                    )
+                    .await;
+                }
+            };
 
             // Update frame_id and assign a solution_id for this result.
             // In OPERATE mode, use the solve engine's solution_id directly so
@@ -386,17 +406,14 @@ impl ServeEngine {
                     .add_value(elapsed.as_secs_f64());
                 // Populate serve_latency in the frame result now that we have
                 // the timing.
-                if let Some(ref mut stats) = serve_result
-                    .frame_result
-                    .processing_stats
-                    .as_mut()
+                if let Some(ref mut stats) =
+                    serve_result.frame_result.processing_stats.as_mut()
                 {
                     stats.serve_latency = Some(
                         locked_state.serve_latency_stats.value_stats.clone(),
                     );
                 }
-                locked_state.image_rotator =
-                    serve_result.image_rotator.clone();
+                locked_state.image_rotator = serve_result.image_rotator.clone();
                 serve_result.frame_result.solution_id = solution_id;
                 locked_state.serve_result = Some(serve_result);
             }
@@ -445,12 +462,11 @@ impl ServeEngine {
         let (detect_binning, display_sampling) =
             detect_engine.lock().await.get_detect_binning().await;
 
-        let plate_solution_proto =
-            if let Some(ref ps) = plate_solution {
-                ps.plate_solution.clone()
-            } else {
-                None
-            };
+        let plate_solution_proto = if let Some(ref ps) = plate_solution {
+            ps.plate_solution.clone()
+        } else {
+            None
+        };
 
         let captured_image = &detect_result.captured_image;
         let is_color = captured_image.is_color;
@@ -496,7 +512,8 @@ impl ServeEngine {
         frame_result.star_candidates = centroids;
         frame_result.star_count_moving_average =
             detect_result.star_count_moving_average;
-        frame_result.hot_pixel_count = Some(detect_result.detected_hot_pixels.len() as i32);
+        frame_result.hot_pixel_count =
+            Some(detect_result.detected_hot_pixels.len() as i32);
         frame_result.noise_estimate = detect_result.noise_estimate;
 
         // Build display image.
@@ -508,7 +525,7 @@ impl ServeEngine {
 
         let disp_image_binning;
         if detect_binning > 1 {
-            disp_image = &captured_image.binned_image;  // 2x binned.
+            disp_image = &captured_image.binned_image; // 2x binned.
             resized_disp_image = disp_image;
             disp_image_binning = 2;
         } else {
@@ -609,23 +626,32 @@ impl ServeEngine {
         // pre-computed replacement value directly.
         for hp in &detect_result.detected_hot_pixels {
             let (rx, ry) = irr.transform_to_rotated(
-                hp.x as f64 / bf, hp.y as f64 / bf, bw, bh);
+                hp.x as f64 / bf,
+                hp.y as f64 / bf,
+                bw,
+                bh,
+            );
             let rx = rx.round() as i32;
             let ry = ry.round() as i32;
             if rx >= 0 && ry >= 0 && rx < rot_w as i32 && ry < rot_h as i32 {
-                rotated.put_pixel(rx as u32, ry as u32,
-                                  image::Luma([hp.replacement_value]));
+                rotated.put_pixel(
+                    rx as u32,
+                    ry as u32,
+                    image::Luma([hp.replacement_value]),
+                );
             }
         }
-        // Mapped bright spots: use fix_bright_spot to also cover bleed neighbors.
+        // Mapped bright spots: use fix_bright_spot to also cover bleed
+        // neighbors.
         if let Some(ref hpm) = ctx_hot_pixel_map {
             let hot_pixels = hpm.lock().await.get_hot_pixels();
             for hp in &hot_pixels {
-                let (rx, ry) = irr.transform_to_rotated(
-                    hp.x / bf, hp.y / bf, bw, bh);
+                let (rx, ry) =
+                    irr.transform_to_rotated(hp.x / bf, hp.y / bf, bw, bh);
                 let rx = rx.round() as i32;
                 let ry = ry.round() as i32;
-                if rx >= 0 && ry >= 0 && rx < rot_w as i32 && ry < rot_h as i32 {
+                if rx >= 0 && ry >= 0 && rx < rot_w as i32 && ry < rot_h as i32
+                {
                     Self::fix_bright_spot(&mut rotated, rx, ry);
                 }
             }
@@ -652,16 +678,29 @@ impl ServeEngine {
             if let (Some(center_peak_image), Some(peak_image_region)) =
                 (&fa.peak_image, &fa.peak_image_region)
             {
-                let (cp_binning_factor, center_peak_jpg_buf) =
-                    // For color cameras, bin_2x2 collapses the Bayer pattern.
-                    // These inset images are always full-res crops, regardless
-                    // of detect_binning.
-                    if is_color {
-                        let binned = bin_2x2(center_peak_image);
-                        (2_i32, Self::jpeg_encode(compressor, &binned, ctx_jpeg_quality))
-                    } else {
-                        (1_i32, Self::jpeg_encode(compressor, center_peak_image, ctx_jpeg_quality))
-                    };
+                // For color cameras, bin_2x2 collapses the Bayer pattern.
+                // These inset images are always full-res crops, regardless
+                // of detect_binning.
+                let (cp_binning_factor, center_peak_jpg_buf) = if is_color {
+                    let binned = bin_2x2(center_peak_image);
+                    (
+                        2_i32,
+                        Self::jpeg_encode(
+                            compressor,
+                            &binned,
+                            ctx_jpeg_quality,
+                        ),
+                    )
+                } else {
+                    (
+                        1_i32,
+                        Self::jpeg_encode(
+                            compressor,
+                            center_peak_image,
+                            ctx_jpeg_quality,
+                        ),
+                    )
+                };
                 frame_result.center_peak_image = Some(Image {
                     binning_factor: cp_binning_factor,
                     rotation_size_ratio: 1.0,
@@ -678,14 +717,27 @@ impl ServeEngine {
             if let (Some(daylight_focus_image), Some(daylight_focus_region)) =
                 (&fa.daylight_focus_zoom_image, &fa.daylight_focus_zoom_region)
             {
-                let (df_binning_factor, daylight_focus_jpg_buf) =
-                    // See color bin_2x2 comment above for center_peak_image.
-                    if is_color {
-                        let binned = bin_2x2(daylight_focus_image);
-                        (2_i32, Self::jpeg_encode(compressor, &binned, ctx_jpeg_quality))
-                    } else {
-                        (1_i32, Self::jpeg_encode(compressor, daylight_focus_image, ctx_jpeg_quality))
-                    };
+                // See color bin_2x2 comment above for center_peak_image.
+                let (df_binning_factor, daylight_focus_jpg_buf) = if is_color {
+                    let binned = bin_2x2(daylight_focus_image);
+                    (
+                        2_i32,
+                        Self::jpeg_encode(
+                            compressor,
+                            &binned,
+                            ctx_jpeg_quality,
+                        ),
+                    )
+                } else {
+                    (
+                        1_i32,
+                        Self::jpeg_encode(
+                            compressor,
+                            daylight_focus_image,
+                            ctx_jpeg_quality,
+                        ),
+                    )
+                };
                 frame_result.daylight_focus_zoom_image = Some(Image {
                     binning_factor: df_binning_factor,
                     rotation_size_ratio: 1.0,
@@ -709,7 +761,8 @@ impl ServeEngine {
         let scaled_image =
             scale_image(resized_disp_image, black_level, peak_value, gamma);
         let scaled_image = Arc::new(scaled_image);
-        let jpg_buf = Self::jpeg_encode(compressor, &scaled_image, ctx_jpeg_quality);
+        let jpg_buf =
+            Self::jpeg_encode(compressor, &scaled_image, ctx_jpeg_quality);
         let scaled_image_frame_id = frame_result.frame_id;
         frame_result.image = Some(Image {
             binning_factor: binning_factor as i32,
@@ -730,17 +783,16 @@ impl ServeEngine {
 
         if let Some(mut ps) = plate_solution {
             stats.solve_latency = Some(ps.solve_duration_stats.clone());
-            stats.solve_other_latency = Some(ps.solve_other_duration_stats.clone());
-            stats.solve_attempt_fraction =
-                Some(ps.solve_attempt_stats.clone());
-            stats.solve_success_fraction =
-                Some(ps.solve_success_stats.clone());
+            stats.solve_other_latency =
+                Some(ps.solve_other_duration_stats.clone());
+            stats.solve_attempt_fraction = Some(ps.solve_attempt_stats.clone());
+            stats.solve_success_fraction = Some(ps.solve_success_stats.clone());
             stats.solve_interval = Some(ps.solve_interval_stats.clone());
             frame_result.slew_request = ps.slew_request.clone();
 
             if let Some(boresight_image) = &ps.boresight_image {
+                // See color bin_2x2 comment above for center_peak_image.
                 let (bs_binning_factor, resized_boresight_image) =
-                    // See color bin_2x2 comment above for center_peak_image.
                     if is_color && detect_binning == 1 {
                         (2_i32, bin_2x2(boresight_image))
                     } else {
@@ -803,10 +855,8 @@ impl ServeEngine {
                     };
                     let bs_ra = celestial_coords.ra.to_radians();
                     let bs_dec = celestial_coords.dec.to_radians();
-                    let target_ra =
-                        slew_request.target.as_ref().unwrap().ra;
-                    let target_dec =
-                        slew_request.target.as_ref().unwrap().dec;
+                    let target_ra = slew_request.target.as_ref().unwrap().ra;
+                    let target_dec = slew_request.target.as_ref().unwrap().dec;
                     let mount_type = ctx_preferences.mount_type;
                     if mount_type == Some(MountType::Equatorial.into()) {
                         let mut rel_ra = target_ra - bs_ra.to_degrees();
@@ -833,14 +883,13 @@ impl ServeEngine {
                         let (bs_alt, bs_az, _) = alt_az_from_equatorial(
                             bs_ra, bs_dec, lat, long, time,
                         );
-                        let (target_alt, target_az, _) =
-                            alt_az_from_equatorial(
-                                target_ra.to_radians(),
-                                target_dec.to_radians(),
-                                lat,
-                                long,
-                                time,
-                            );
+                        let (target_alt, target_az, _) = alt_az_from_equatorial(
+                            target_ra.to_radians(),
+                            target_dec.to_radians(),
+                            lat,
+                            long,
+                            time,
+                        );
                         let mut rel_az =
                             target_az.to_degrees() - bs_az.to_degrees();
                         if rel_az < -180.0 {
@@ -868,8 +917,7 @@ impl ServeEngine {
                     frame_result.labeled_catalog_entries.push(fce.clone());
                 }
             }
-            if let Some(decrowded_fces) =
-                &mut ps.decrowded_fov_catalog_entries
+            if let Some(decrowded_fces) = &mut ps.decrowded_fov_catalog_entries
             {
                 frame_result.unlabeled_catalog_entries =
                     Vec::<FovCatalogEntry>::with_capacity(decrowded_fces.len());
@@ -877,9 +925,7 @@ impl ServeEngine {
                     let pos = fce.image_pos.as_mut().unwrap();
                     (pos.x, pos.y) =
                         irr.transform_to_rotated(pos.x, pos.y, width, height);
-                    frame_result
-                        .unlabeled_catalog_entries
-                        .push(fce.clone());
+                    frame_result.unlabeled_catalog_entries.push(fce.clone());
                 }
             }
 
@@ -891,19 +937,22 @@ impl ServeEngine {
                 (pos.x, pos.y) =
                     irr.transform_to_rotated(pos.x, pos.y, width, height);
             }
-            frame_result.boresight_catalog_entry = ps.boresight_catalog_entry.clone();
-            frame_result.boresight_catalog_entry_distance = ps.boresight_catalog_entry_distance;
-            frame_result.boresight_constellation = ps.boresight_constellation.clone();
+            frame_result.boresight_catalog_entry =
+                ps.boresight_catalog_entry.clone();
+            frame_result.boresight_catalog_entry_distance =
+                ps.boresight_catalog_entry_distance;
+            frame_result.boresight_constellation =
+                ps.boresight_constellation.clone();
         } // plate_solution
 
         // Boresight position.
-        frame_result.boresight_position = Some(
-            solve_engine.lock().await.boresight_pixel().await
-                .unwrap_or(ImageCoord {
+        frame_result.boresight_position =
+            Some(solve_engine.lock().await.boresight_pixel().await.unwrap_or(
+                ImageCoord {
                     x: width as f64 / 2.0,
                     y: height as f64 / 2.0,
-                })
-        );
+                },
+            ));
 
         let operating_mode = ctx_operation_settings.operating_mode.unwrap();
         let focus_assist_mode = detect_result.focus_aid.is_some();
@@ -974,8 +1023,7 @@ impl ServeEngine {
             if let Some(tc) = transform_calibration {
                 cal_data.gyro_transform_error_fraction =
                     Some(tc.transform_error_fraction);
-                cal_data.camera_view_gyro_axis =
-                    Some(tc.camera_view_gyro_axis);
+                cal_data.camera_view_gyro_axis = Some(tc.camera_view_gyro_axis);
                 cal_data.camera_view_misalignment =
                     Some(tc.camera_view_misalignment);
                 cal_data.camera_up_gyro_axis = Some(tc.camera_up_gyro_axis);
@@ -995,12 +1043,8 @@ impl ServeEngine {
         }
 
         // Polar alignment advice.
-        frame_result.polar_align_advice = Some(
-            ctx_polar_analyzer
-                .lock()
-                .await
-                .get_polar_align_advice(),
-        );
+        frame_result.polar_align_advice =
+            Some(ctx_polar_analyzer.lock().await.get_polar_align_advice());
 
         ServeResult {
             frame_result,
@@ -1012,7 +1056,9 @@ impl ServeEngine {
     }
 
     fn jpeg_encode(
-        compressor: &mut turbojpeg::Compressor, img: &GrayImage, jpeg_quality: u8
+        compressor: &mut turbojpeg::Compressor,
+        img: &GrayImage,
+        jpeg_quality: u8,
     ) -> Vec<u8> {
         let (width, height) = img.dimensions();
         let image = turbojpeg::Image {
@@ -1052,7 +1098,8 @@ impl ServeEngine {
         }
         // Sort descending; the 3 brightest are likely bright spot bleed.
         neighbors.sort_unstable_by(|a, b| b.2.cmp(&a.2));
-        let dim_sum: u32 = neighbors[3..].iter().map(|&(_, _, v)| v as u32).sum();
+        let dim_sum: u32 =
+            neighbors[3..].iter().map(|&(_, _, v)| v as u32).sum();
         let dim_mean = (dim_sum / 5) as u8;
         for &(px, py, _) in &neighbors[..3] {
             image.put_pixel(px, py, image::Luma([dim_mean]));

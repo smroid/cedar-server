@@ -53,7 +53,8 @@ impl Report {
     }
 
     pub fn summary(&self) -> Summary {
-        let solved: Vec<&Outcome> = self.outcomes.iter().filter(|o| o.solved).collect();
+        let solved: Vec<&Outcome> =
+            self.outcomes.iter().filter(|o| o.solved).collect();
 
         let centers = sorted_finite(solved.iter().map(|o| o.center_arcmin));
         let rolls = sorted_finite(solved.iter().map(|o| o.roll_err_deg.abs()));
@@ -77,7 +78,8 @@ impl Report {
 
     /// Per-field CSV under target/e2e-report/, for diffing runs across solvers.
     pub fn write_csv(&self) -> std::io::Result<PathBuf> {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/e2e-report");
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/e2e-report");
         std::fs::create_dir_all(&dir)?;
         let dir = dir.canonicalize()?;
         let path = dir.join(format!("{}.csv", self.solver));
@@ -129,7 +131,8 @@ pub fn print_table(reports: &[&Report]) {
     for r in reports {
         let s = r.summary();
         println!(
-            "{:<14} {:>3}/{:<3} {:>3}/{:<3} {:>10.3} {:>10.3} {:>8.3} {:>9.3} {:>9.3} {:>9.1} {:>9.1}",
+            "{:<14} {:>3}/{:<3} {:>3}/{:<3} {:>10.3} {:>10.3} \
+            {:>8.3} {:>9.3} {:>9.3} {:>9.1} {:>9.1}",
             r.solver,
             s.solved,
             s.total,
@@ -154,8 +157,13 @@ pub fn print_table(reports: &[&Report]) {
                 "OVER"
             };
             println!(
-                "  {}: solve_time p95 = {:.1} ms vs {:.0} ms target [{}]  (max {:.1} ms)",
-                r.solver, s.solve_p95_ms, SOLVE_P95_TARGET_MS, verdict, s.solve_max_ms
+                "  {}: solve_time p95 = {:.1} ms vs \
+                {:.0} ms target [{}]  (max {:.1} ms)",
+                r.solver,
+                s.solve_p95_ms,
+                SOLVE_P95_TARGET_MS,
+                verdict,
+                s.solve_max_ms
             );
         }
     }

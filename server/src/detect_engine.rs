@@ -1,27 +1,36 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
+use std::{
+    cmp::max,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
+
 use cedar_camera::abstract_camera::{AbstractCamera, CapturedImage};
-
-use std::cmp::max;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
-
+use cedar_detect::{
+    algorithm::{
+        estimate_noise_from_image, get_stars_from_image,
+        summarize_region_of_interest, HotPixel, StarDescription,
+    },
+    histogram_funcs::{
+        average_top_values, get_level_for_fraction,
+        remove_stars_from_histogram, stats_for_histogram,
+    },
+    image_funcs::histogram_from_region,
+};
+use cedar_elements::{
+    cedar::{ImageCoord, ValueStats},
+    hot_pixel_trait::HotPixelTrait,
+    image_utils::scale_image_mut,
+    value_stats::ValueStatsAccumulator,
+};
 use image::{GenericImageView, GrayImage};
 use imageproc::rect::Rect;
 use log::{debug, error};
-use cedar_detect::algorithm::{HotPixel, StarDescription, estimate_noise_from_image,
-                              get_stars_from_image, summarize_region_of_interest};
-use cedar_detect::image_funcs::histogram_from_region;
-use cedar_detect::histogram_funcs::{average_top_values,
-                                    get_level_for_fraction,
-                                    remove_stars_from_histogram,
-                                    stats_for_histogram};
-use cedar_elements::hot_pixel_trait::HotPixelTrait;
-use cedar_elements::image_utils::scale_image_mut;
-use cedar_elements::value_stats::ValueStatsAccumulator;
-use cedar_elements::cedar::{ImageCoord, ValueStats};
 
 pub struct DetectEngine {
     // Initial exposure duration, prior to doing any calibrations. Setup mode
@@ -70,29 +79,29 @@ struct DetectState {
     // Affects auto-exposure and turns off focus aids and star detection.
     daylight_mode: bool,
 
-    // User-designated focus point for daylight focus mode. In image coordinates
-    // (coordinate space of CapturedImage.image). None if no point has been
-    // designated.
+    // User-designated focus point for daylight focus mode. In image
+    // coordinates (coordinate space of CapturedImage.image). None if no
+    // point has been designated.
     daylight_focus_point: Option<ImageCoord>,
 
     // When running CedarDetect, this supplies the `detect_binning` value used.
     // See "About Resolutions" in cedar_server.rs.
     detect_binning: u32,
 
-    // Together with 'detect_binning', this is used to adjust central peak image
-    // size.
+    // Together with 'detect_binning', this is used to adjust central peak
+    // image size.
     display_sampling: bool,
 
-    // When using auto exposure in operate mode or setup align mode, this is the
-    // exposure duration determined (by calibration) to yield `star_count_goal`
-    // detected stars. Auto exposure logic will only deviate from this by a
-    // bounded amount. None if calibration result is not yet available because
-    // we are still focusing.
+    // When using auto exposure in operate mode or setup align mode, this is
+    // the exposure duration determined (by calibration) to yield
+    // `star_count_goal` detected stars. Auto exposure logic will only
+    // deviate from this by a bounded amount. None if calibration result is
+    // not yet available because we are still focusing.
     calibrated_exposure_duration: Option<Duration>,
 
-    // If we have determined a good star detection exposure duration that yields
-    // close to `star_count_goal`, remember it here. None if auto exposure did
-    // not find a good value.
+    // If we have determined a good star detection exposure duration that
+    // yields close to `star_count_goal`, remember it here. None if auto
+    // exposure did not find a good value.
     auto_exposure_duration: Option<Duration>,
 
     // We update the exposure time based on the number of detected stars.
@@ -110,22 +119,25 @@ struct DetectState {
 }
 
 impl DetectEngine {
-    pub fn new(initial_exposure_duration: Duration,
-               min_exposure_duration: Duration,
-               max_exposure_duration: Duration,
-               detection_sigma: f64,
-               star_count_goal: i32,
-               camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
-               stats_capacity: usize,
-               hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
+    pub fn new(
+        initial_exposure_duration: Duration,
+        min_exposure_duration: Duration,
+        max_exposure_duration: Duration,
+        detection_sigma: f64,
+        star_count_goal: i32,
+        camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+        stats_capacity: usize,
+        hot_pixel_map: Option<
+            Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
+        >,
     ) -> Self {
-        DetectEngine{
+        DetectEngine {
             initial_exposure_duration,
             min_exposure_duration,
             max_exposure_duration,
             detection_sigma,
             star_count_goal,
-            state: Arc::new(tokio::sync::Mutex::new(DetectState{
+            state: Arc::new(tokio::sync::Mutex::new(DetectState {
                 camera: camera.clone(),
                 autoexposure_enabled: true,
                 frame_id: None,
@@ -137,9 +149,15 @@ impl DetectEngine {
                 calibrated_exposure_duration: None,
                 auto_exposure_duration: None,
                 star_count_moving_average: 0.0,
-                acquire_latency_stats: ValueStatsAccumulator::new(stats_capacity),
-                detect_duration_stats: ValueStatsAccumulator::new(stats_capacity),
-                other_duration_stats: ValueStatsAccumulator::new(stats_capacity),
+                acquire_latency_stats: ValueStatsAccumulator::new(
+                    stats_capacity,
+                ),
+                detect_duration_stats: ValueStatsAccumulator::new(
+                    stats_capacity,
+                ),
+                other_duration_stats: ValueStatsAccumulator::new(
+                    stats_capacity,
+                ),
                 eta: None,
                 detect_result: None,
             })),
@@ -150,8 +168,9 @@ impl DetectEngine {
     }
 
     pub async fn replace_camera(
-        &mut self, camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>)
-    {
+        &mut self,
+        camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+    ) {
         self.reset_session_stats().await;
         let mut locked_state = self.state.lock().await;
         locked_state.camera = camera.clone();
@@ -166,8 +185,11 @@ impl DetectEngine {
         locked_state.auto_exposure_duration = None;
     }
 
-    pub async fn set_detect_binning(&mut self, detect_binning: u32,
-                                    display_sampling: bool) {
+    pub async fn set_detect_binning(
+        &mut self,
+        detect_binning: u32,
+        display_sampling: bool,
+    ) {
         let mut locked_state = self.state.lock().await;
         locked_state.detect_binning = detect_binning;
         locked_state.display_sampling = display_sampling;
@@ -217,15 +239,20 @@ impl DetectEngine {
     }
 
     pub async fn set_calibrated_exposure_duration(
-        &mut self, calibrated_exposure_duration: Option<Duration>) {
+        &mut self,
+        calibrated_exposure_duration: Option<Duration>,
+    ) {
         let mut locked_state = self.state.lock().await;
-        locked_state.calibrated_exposure_duration = calibrated_exposure_duration;
+        locked_state.calibrated_exposure_duration =
+            calibrated_exposure_duration;
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
     }
 
-    fn update_star_count_moving_average(state: &mut DetectState,
-                                        num_stars_detected: usize) -> f64 {
+    fn update_star_count_moving_average(
+        state: &mut DetectState,
+        num_stars_detected: usize,
+    ) -> f64 {
         // First time?
         if state.star_count_moving_average == 0.0 {
             state.star_count_moving_average = num_stars_detected as f64;
@@ -233,8 +260,8 @@ impl DetectEngine {
             // Alpha near 1.0: current value dominates. Alpha near 0.0: long
             // term average dominates.
             let alpha = 0.5;
-            state.star_count_moving_average = alpha * num_stars_detected as f64 +
-                (1.0 - alpha) * state.star_count_moving_average;
+            state.star_count_moving_average = alpha * num_stars_detected as f64
+                + (1.0 - alpha) * state.star_count_moving_average;
         }
         state.star_count_moving_average
     }
@@ -249,8 +276,11 @@ impl DetectEngine {
     /// has the same id value.
     /// Returns: the processed result along with its frame_id value. Returns
     ///     None if non_blocking and a suitable result is not yet available.
-    pub async fn get_next_result(&mut self, prev_frame_id: Option<i32>,
-                                 non_blocking: bool) -> Option<DetectResult> {
+    pub async fn get_next_result(
+        &mut self,
+        prev_frame_id: Option<i32>,
+        non_blocking: bool,
+    ) -> Option<DetectResult> {
         // Has the worker terminated for some reason?
         if self.worker_done.load(Ordering::Relaxed) {
             self.worker_done.store(false, Ordering::Relaxed);
@@ -274,8 +304,10 @@ impl DetectEngine {
             // compute durations are well beyond the guidelines for running
             // async code without an .await yield point.
             //
-            // We thus run DetectEngine::worker() on its own async runtime. See
-            // https://thenewstack.io/using-rustlangs-async-tokio-runtime-for-cpu-bound-tasks/
+            // We thus run DetectEngine::worker() on its own async runtime.
+            // See thenewstack.io/
+            // using-rustlangs-async-tokio-runtime-for-cpu-bound-tasks/
+
             self.worker_thread = Some(std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -283,13 +315,20 @@ impl DetectEngine {
                     // Single worker suffices: this runtime runs only the
                     // sequential detect worker loop with no concurrent tasks.
                     .worker_threads(1)
-                    .build().unwrap();
+                    .build()
+                    .unwrap();
                 runtime.block_on(async move {
                     DetectEngine::worker(
                         initial_exposure_duration,
-                        min_exposure_duration, max_exposure_duration,
-                        detection_sigma, star_count_goal,
-                        hot_pixel_map, cloned_state, cloned_done).await;
+                        min_exposure_duration,
+                        max_exposure_duration,
+                        detection_sigma,
+                        star_count_goal,
+                        hot_pixel_map,
+                        cloned_state,
+                        cloned_done,
+                    )
+                    .await;
                 });
             }));
         }
@@ -300,10 +339,14 @@ impl DetectEngine {
             let mut sleep_duration = Duration::from_millis(1);
             {
                 let locked_state = self.state.lock().await;
-                if locked_state.detect_result.is_some() &&
-                    (prev_frame_id.is_none() ||
-                     prev_frame_id.unwrap() !=
-                     locked_state.detect_result.as_ref().unwrap().frame_id)
+                if locked_state.detect_result.is_some()
+                    && (prev_frame_id.is_none()
+                        || prev_frame_id.unwrap()
+                            != locked_state
+                                .detect_result
+                                .as_ref()
+                                .unwrap()
+                                .frame_id)
                 {
                     // Don't consume it, other clients may want it.
                     return Some(locked_state.detect_result.clone().unwrap());
@@ -312,8 +355,10 @@ impl DetectEngine {
                     return None;
                 }
                 if locked_state.eta.is_some() {
-                    let time_to_eta =
-                        locked_state.eta.unwrap().saturating_duration_since(Instant::now());
+                    let time_to_eta = locked_state
+                        .eta
+                        .unwrap()
+                        .saturating_duration_since(Instant::now());
                     if time_to_eta > sleep_duration {
                         sleep_duration = time_to_eta;
                     }
@@ -330,29 +375,41 @@ impl DetectEngine {
         state.other_duration_stats.reset_session();
     }
 
-    pub async fn estimate_delay(&self, prev_frame_id: Option<i32>) -> Option<Duration> {
+    pub async fn estimate_delay(
+        &self,
+        prev_frame_id: Option<i32>,
+    ) -> Option<Duration> {
         let locked_state = self.state.lock().await;
-        if locked_state.detect_result.is_some() &&
-            (prev_frame_id.is_none() ||
-             prev_frame_id.unwrap() !=
-             locked_state.detect_result.as_ref().unwrap().frame_id)
+        if locked_state.detect_result.is_some()
+            && (prev_frame_id.is_none()
+                || prev_frame_id.unwrap()
+                    != locked_state.detect_result.as_ref().unwrap().frame_id)
         {
             Some(Duration::ZERO)
         } else if locked_state.eta.is_some() {
-            Some(locked_state.eta.unwrap().saturating_duration_since(Instant::now()))
+            Some(
+                locked_state
+                    .eta
+                    .unwrap()
+                    .saturating_duration_since(Instant::now()),
+            )
         } else {
             None
         }
     }
 
-    async fn worker(initial_exposure_duration: Duration,
-                    min_exposure_duration: Duration,
-                    max_exposure_duration: Duration,
-                    detection_sigma: f64,
-                    star_count_goal: i32,
-                    hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
-                    state: Arc<tokio::sync::Mutex<DetectState>>,
-                    done: Arc<AtomicBool>) {
+    async fn worker(
+        initial_exposure_duration: Duration,
+        min_exposure_duration: Duration,
+        max_exposure_duration: Duration,
+        detection_sigma: f64,
+        star_count_goal: i32,
+        hot_pixel_map: Option<
+            Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
+        >,
+        state: Arc<tokio::sync::Mutex<DetectState>>,
+        done: Arc<AtomicBool>,
+    ) {
         debug!("Starting detect engine");
         loop {
             let focus_mode: bool;
@@ -366,13 +423,13 @@ impl DetectEngine {
                 let mut locked_state = state.lock().await;
                 focus_mode = locked_state.focus_mode;
                 daylight_mode = locked_state.daylight_mode;
-                daylight_focus_point = locked_state.daylight_focus_point.clone();
+                daylight_focus_point =
+                    locked_state.daylight_focus_point.clone();
                 detect_binning = locked_state.detect_binning;
                 display_sampling = locked_state.display_sampling;
                 calibrated_exposure_duration =
                     locked_state.calibrated_exposure_duration;
-                auto_exposure_duration =
-                    locked_state.auto_exposure_duration;
+                auto_exposure_duration = locked_state.auto_exposure_duration;
                 locked_state.eta = None;
             }
             let captured_image;
@@ -386,12 +443,17 @@ impl DetectEngine {
                 // waiting for the next image.
                 loop {
                     let camera = state.lock().await.camera.clone();
-                    let delay_est = camera.lock().await.estimate_delay(frame_id).await;
+                    let delay_est =
+                        camera.lock().await.estimate_delay(frame_id).await;
                     if let Some(delay_est) = delay_est {
-                        state.lock().await.eta = Some(Instant::now() + delay_est);
+                        state.lock().await.eta =
+                            Some(Instant::now() + delay_est);
                     }
-                    let capture =
-                        match camera.lock().await.try_capture_image(frame_id).await
+                    let capture = match camera
+                        .lock()
+                        .await
+                        .try_capture_image(frame_id)
+                        .await
                     {
                         Ok(c) => c,
                         Err(e) => {
@@ -402,9 +464,11 @@ impl DetectEngine {
                     };
                     if capture.is_none() {
                         let short_delay = Duration::from_millis(1);
-                        let delay_est = camera.lock().await.estimate_delay(frame_id).await;
+                        let delay_est =
+                            camera.lock().await.estimate_delay(frame_id).await;
                         if let Some(delay_est) = delay_est {
-                            tokio::time::sleep(max(delay_est, short_delay)).await;
+                            tokio::time::sleep(max(delay_est, short_delay))
+                                .await;
                         } else {
                             tokio::time::sleep(short_delay).await;
                         }
@@ -414,7 +478,8 @@ impl DetectEngine {
                     captured_image = image;
                     let mut locked_state = state.lock().await;
                     locked_state.frame_id = Some(id);
-                    camera_processing_duration = captured_image.processing_duration;
+                    camera_processing_duration =
+                        captured_image.processing_duration;
                     break;
                 }
             }
@@ -433,15 +498,20 @@ impl DetectEngine {
             let inset = 8 * adjusted_binning as i32;
 
             let noise_estimate = estimate_noise_from_image(image);
-            let prev_exposure_duration_secs =
-                captured_image.capture_params.exposure_duration.as_secs_f64();
+            let prev_exposure_duration_secs = captured_image
+                .capture_params
+                .exposure_duration
+                .as_secs_f64();
 
             let mut acquire_duration_secs = prev_exposure_duration_secs;
             if let Some(cpd) = camera_processing_duration {
-              acquire_duration_secs = cpd.as_secs_f64();
+                acquire_duration_secs = cpd.as_secs_f64();
             }
-            state.lock().await.acquire_latency_stats.add_value(
-                acquire_duration_secs);
+            state
+                .lock()
+                .await
+                .acquire_latency_stats
+                .add_value(acquire_duration_secs);
 
             let mut new_exposure_duration_secs = prev_exposure_duration_secs;
 
@@ -453,32 +523,42 @@ impl DetectEngine {
                 // Region of interest is the central square crop of the image.
                 let square_roi_size = height;
                 let roi_region = Rect::at(
-                    ((width - square_roi_size) / 2) as i32 + inset, inset)
-                    .of_size(square_roi_size - 2 * inset as u32,
-                             square_roi_size - 2 * inset as u32);
+                    ((width - square_roi_size) / 2) as i32 + inset,
+                    inset,
+                )
+                .of_size(
+                    square_roi_size - 2 * inset as u32,
+                    square_roi_size - 2 * inset as u32,
+                );
 
                 // NOTE: summarize_region_of_interest must run on the full-res
                 // image; binning would dilute hot pixels and break the
                 // single-pixel-spike detection that classify_pixel relies on to
                 // exclude them from the peak.
                 let roi_summary = summarize_region_of_interest(
-                    image, &roi_region, noise_estimate, detection_sigma);
+                    image,
+                    &roi_region,
+                    noise_estimate,
+                    detection_sigma,
+                );
                 let roi_histogram = roi_summary.histogram;
-                peak_value = max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
-                black_level =
-                    if daylight_mode {
-                        get_level_for_fraction(&roi_histogram, 0.001) as u8
-                    } else {
-                        get_level_for_fraction(&roi_histogram, 0.85) as u8
-                    };
+                peak_value =
+                    max(get_level_for_fraction(&roi_histogram, 0.999) as u8, 1);
+                black_level = if daylight_mode {
+                    get_level_for_fraction(&roi_histogram, 0.001) as u8
+                } else {
+                    get_level_for_fraction(&roi_histogram, 0.85) as u8
+                };
 
                 // Auto exposure.
 
                 let correction_factor: f64;
                 let stats = stats_for_histogram(&roi_histogram);
                 if daylight_mode {
-                    let bright_value =
-                        max(get_level_for_fraction(&roi_histogram, 0.9) as u8, 1);
+                    let bright_value = max(
+                        get_level_for_fraction(&roi_histogram, 0.9) as u8,
+                        1,
+                    );
 
                     // Push bright part of image towards upper mid-level.
                     correction_factor = if bright_value > 250 {
@@ -496,8 +576,9 @@ impl DetectEngine {
                         // Knock back exposure time quickly.
                         correction_factor = 0.05;
                     } else if stats.mean > dark_level_cap {
-                        // In twilight or heavily light polluted situations (or with
-                        // moonlight), control the average scene exposure to avoid
+                        // In twilight or heavily light polluted situations (or
+                        // with moonlight), control the
+                        // average scene exposure to avoid
                         // whiting out the screen.
                         correction_factor = dark_level_cap / stats.mean;
                     } else {
@@ -505,7 +586,8 @@ impl DetectEngine {
                         // value of the pixels in the detected peak region.
                         // Note that a lower brightness_goal value allows for
                         // faster exposures, which is nice in focus mode.
-                        let peak_region_val = f64::max(roi_summary.peak_value, 1.0);
+                        let peak_region_val =
+                            f64::max(roi_summary.peak_value, 1.0);
                         let brightness_goal = 64.0;
                         correction_factor = brightness_goal / peak_region_val;
                     }
@@ -519,36 +601,57 @@ impl DetectEngine {
 
                 if !daylight_mode {
                     // Get a small sub-image centered on the peak coordinates.
-                    let peak_position = (roi_summary.peak_x, roi_summary.peak_y);
-                    debug!("peak at x/y {}/{}", peak_position.0, peak_position.1);
+                    let peak_position =
+                        (roi_summary.peak_x, roi_summary.peak_y);
+                    debug!(
+                        "peak at x/y {}/{}",
+                        peak_position.0, peak_position.1
+                    );
                     let sub_image_size = height as i32 / 30;
                     let half_size = sub_image_size / 2;
+                    let peak_region = Rect::at(
+                        (peak_position.0 as i32 - half_size) as i32,
+                        (peak_position.1 as i32 - half_size) as i32,
+                    )
+                    .of_size(sub_image_size as u32, sub_image_size as u32);
                     let peak_region =
-                        Rect::at((peak_position.0 as i32 - half_size) as i32,
-                                 (peak_position.1 as i32 - half_size) as i32)
-                        .of_size(sub_image_size as u32, sub_image_size as u32);
-                    let peak_region = peak_region.intersect(image_region).unwrap();
-                    let mut peak_image = image.view(peak_region.left() as u32,
-                                                    peak_region.top() as u32,
-                                                    peak_region.width() as u32,
-                                                    peak_region.height() as u32).to_image();
+                        peak_region.intersect(image_region).unwrap();
+                    let mut peak_image = image
+                        .view(
+                            peak_region.left() as u32,
+                            peak_region.top() as u32,
+                            peak_region.width() as u32,
+                            peak_region.height() as u32,
+                        )
+                        .to_image();
 
                     // Find min/max for display stretching.
                     let mut histogram: [u32; 256] = [0_u32; 256];
                     for pixel_value in peak_image.pixels() {
                         histogram[pixel_value.0[0] as usize] += 1;
                     }
-                    // Compute peak_value as the average of the 5 brightest pixels.
+                    // Compute peak_value as the average of the 5 brightest
+                    // pixels.
                     let max_value = average_top_values(&histogram, 5);
 
-                    remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
-                    // Put the min level near the top of the non-star background,
-                    // so we don't display too much of the noise floor.
+                    remove_stars_from_histogram(
+                        &mut histogram,
+                        // sigma=
+                        8.0,
+                    );
+                    // Put the min level near the top of the non-star
+                    // background, so we don't display too
+                    // much of the noise floor.
                     let min_value = get_level_for_fraction(&histogram, 0.98);
 
                     scale_image_mut(
-                        &mut peak_image, min_value as u8, max_value, /*gamma=*/0.7);
-                    focus_aid = Some(FocusAid{
+                        &mut peak_image,
+                        min_value as u8,
+                        max_value,
+                        // gamma=
+                        0.7,
+                    );
+                    focus_aid = Some(FocusAid {
                         center_peak_position: Some(peak_position),
                         center_peak_value: Some(peak_value),
                         peak_image: Some(peak_image),
@@ -558,14 +661,22 @@ impl DetectEngine {
                     });
                 } else {
                     // Generate daylight focus zoom image.
-                    let roi_center = (roi_region.left() as f64 + roi_region.width() as f64 / 2.0,
-                                      roi_region.top() as f64 + roi_region.height() as f64 / 2.0);
+                    let roi_center = (
+                        roi_region.left() as f64
+                            + roi_region.width() as f64 / 2.0,
+                        roi_region.top() as f64
+                            + roi_region.height() as f64 / 2.0,
+                    );
                     let focus_point = match daylight_focus_point {
                         None => roi_center,
-                        Some(ref p) if p.x < roi_region.left() as f64
+                        Some(ref p)
+                            if p.x < roi_region.left() as f64
                                 || p.x >= roi_region.right() as f64
                                 || p.y < roi_region.top() as f64
-                                || p.y >= roi_region.bottom() as f64 => roi_center,
+                                || p.y >= roi_region.bottom() as f64 =>
+                        {
+                            roi_center
+                        }
                         Some(p) => (p.x, p.y),
                     };
 
@@ -573,40 +684,65 @@ impl DetectEngine {
                     let sub_image_size = height as i32 / 15;
                     let half_size = sub_image_size / 2;
 
-                    // Create region centered on focus point, bounded by roi_region.
+                    // Create region centered on focus point, bounded by
+                    // roi_region.
                     let desired_left = focus_point.0 as i32 - half_size;
                     let desired_top = focus_point.1 as i32 - half_size;
 
                     // Bound the region within roi_region
-                    let bounded_left = desired_left.max(roi_region.left())
+                    let bounded_left = desired_left
+                        .max(roi_region.left())
                         .min(roi_region.right() - sub_image_size);
-                    let bounded_top = desired_top.max(roi_region.top())
+                    let bounded_top = desired_top
+                        .max(roi_region.top())
                         .min(roi_region.bottom() - sub_image_size);
 
-                    let daylight_focus_region = Rect::at(bounded_left, bounded_top)
-                        .of_size(sub_image_size as u32, sub_image_size as u32)
-                        .intersect(roi_region).unwrap();
+                    let daylight_focus_region =
+                        Rect::at(bounded_left, bounded_top)
+                            .of_size(
+                                sub_image_size as u32,
+                                sub_image_size as u32,
+                            )
+                            .intersect(roi_region)
+                            .unwrap();
 
-                    let mut daylight_focus_image = image.view(
-                        daylight_focus_region.left() as u32,
-                        daylight_focus_region.top() as u32,
-                        daylight_focus_region.width() as u32,
-                        daylight_focus_region.height() as u32).to_image();
+                    let mut daylight_focus_image = image
+                        .view(
+                            daylight_focus_region.left() as u32,
+                            daylight_focus_region.top() as u32,
+                            daylight_focus_region.width() as u32,
+                            daylight_focus_region.height() as u32,
+                        )
+                        .to_image();
 
                     // Calculate display stretching values specific to the focus
-                    // region. Use the original image with the daylight_focus_region
-                    // coordinates to avoid margin issues.
+                    // region. Use the original image with the
+                    // daylight_focus_region coordinates to
+                    // avoid margin issues.
                     let focus_summary = summarize_region_of_interest(
-                        image, &daylight_focus_region, noise_estimate, detection_sigma);
+                        image,
+                        &daylight_focus_region,
+                        noise_estimate,
+                        detection_sigma,
+                    );
                     let focus_histogram = focus_summary.histogram;
-                    let focus_peak_value =
-                        max(get_level_for_fraction(&focus_histogram, 0.999) as u8, 1);
+                    let focus_peak_value = max(
+                        get_level_for_fraction(&focus_histogram, 0.999) as u8,
+                        1,
+                    );
                     let focus_black_level =
                         get_level_for_fraction(&focus_histogram, 0.001) as u8;
 
-                    // Apply display stretching using focus region-specific values.
-                    scale_image_mut(&mut daylight_focus_image, focus_black_level, focus_peak_value, /*gamma=*/0.7);
-                    focus_aid = Some(FocusAid{
+                    // Apply display stretching using focus region-specific
+                    // values.
+                    scale_image_mut(
+                        &mut daylight_focus_image,
+                        focus_black_level,
+                        focus_peak_value,
+                        // gamma=
+                        0.7,
+                    );
+                    focus_aid = Some(FocusAid {
                         center_peak_position: None,
                         center_peak_value: None,
                         peak_image: None,
@@ -615,7 +751,7 @@ impl DetectEngine {
                         daylight_focus_zoom_region: Some(daylight_focus_region),
                     });
                 }
-            }  // focus_mode || daylight_mode
+            } // focus_mode || daylight_mode
 
             let mut star_candidates: Vec<StarDescription> = vec![];
             let mut detected_hot_pixels: Vec<HotPixel> = vec![];
@@ -632,19 +768,27 @@ impl DetectEngine {
                     if let Some(recent_stats) =
                         &locked_state.detect_duration_stats.value_stats.recent
                     {
-                        let detect_duration = Duration::from_secs_f64(recent_stats.min);
-                        locked_state.eta = Some(Instant::now() + detect_duration);
+                        let detect_duration =
+                            Duration::from_secs_f64(recent_stats.min);
+                        locked_state.eta =
+                            Some(Instant::now() + detect_duration);
                     }
                 }
                 let effective_hpm = hot_pixel_map.as_ref();
                 let detect_start_time = Instant::now();
-                let precomputed_binned =
-                    if detect_binning != 1 { Some(captured_image.binned_image.clone()) }
-                    else { None };
+                let precomputed_binned = if detect_binning != 1 {
+                    Some(captured_image.binned_image.clone())
+                } else {
+                    None
+                };
                 (star_candidates, detected_hot_pixels, _) =
                     get_stars_from_image(
-                        image, precomputed_binned, noise_estimate, detection_sigma,
-                        detect_binning);
+                        image,
+                        precomputed_binned,
+                        noise_estimate,
+                        detection_sigma,
+                        detect_binning,
+                    );
                 detect_duration = detect_start_time.elapsed();
                 // Histogram the center of the binned image (or full-res if
                 // binning==1) for auto-exposure and display level computation.
@@ -655,13 +799,15 @@ impl DetectEngine {
                 };
                 let (hw, hh) = histo_image.dimensions();
                 let side = (hh / 2) as i32;
-                let histo_region = Rect::at((hw as i32 - side) / 2,
-                                            (hh as i32 - side) / 2)
-                    .of_size(side as u32, side as u32);
-                let mut histogram = histogram_from_region(histo_image, &histo_region);
+                let histo_region =
+                    Rect::at((hw as i32 - side) / 2, (hh as i32 - side) / 2)
+                        .of_size(side as u32, side as u32);
+                let mut histogram =
+                    histogram_from_region(histo_image, &histo_region);
                 let stats = stats_for_histogram(&histogram);
 
-                // Filter mapped bright spots; star_candidates holds the clean list.
+                // Filter mapped bright spots; star_candidates holds the clean
+                // list.
                 if let Some(ref hpm) = effective_hpm {
                     let (filtered, _) =
                         hpm.lock().await.classify_candidates(&star_candidates);
@@ -680,19 +826,22 @@ impl DetectEngine {
                         break;
                     }
                 }
-                peak_value =
-                    if num_peak == 0 {
-                        // No stars detected; set peak_value according to histogram.
-                        let top_value = average_top_values(&histogram, 5);
-                        // Choose value a quarter of the way from top_value to 255.
-                        let span = 255 - top_value;
-                        top_value + span / 4
-                    } else {
-                        (sum_peak / num_peak) as u8
-                    };
+                peak_value = if num_peak == 0 {
+                    // No stars detected; set peak_value according to histogram.
+                    let top_value = average_top_values(&histogram, 5);
+                    // Choose value a quarter of the way from top_value to 255.
+                    let span = 255 - top_value;
+                    top_value + span / 4
+                } else {
+                    (sum_peak / num_peak) as u8
+                };
 
                 // Get a good black level for display.
-                remove_stars_from_histogram(&mut histogram, /*sigma=*/8.0);
+                remove_stars_from_histogram(
+                    &mut histogram,
+                    // sigma=
+                    8.0,
+                );
                 // Put the black level near the top of the non-star background,
                 // so we don't display too much of the noise floor.
                 black_level = get_level_for_fraction(&histogram, 0.985) as u8;
@@ -706,56 +855,65 @@ impl DetectEngine {
 
                 // Auto exposure.
                 let baseline_exposure_duration =
-                    match calibrated_exposure_duration
-                {
-                    Some(ced) => ced,
-                    None => initial_exposure_duration,
-                };
+                    match calibrated_exposure_duration {
+                        Some(ced) => ced,
+                        None => initial_exposure_duration,
+                    };
                 let baseline_exposure_duration_secs =
                     baseline_exposure_duration.as_secs_f64();
-                let fallback_exposure_duration_secs = if let Some(d) = auto_exposure_duration {
-                    d.as_secs_f64()
-                } else {
-                    baseline_exposure_duration_secs
-                };
+                let fallback_exposure_duration_secs =
+                    if let Some(d) = auto_exposure_duration {
+                        d.as_secs_f64()
+                    } else {
+                        baseline_exposure_duration_secs
+                    };
 
                 if num_stars_detected < 4 {
                     // We're likely slewing and thus detecting no stars.
                     // Don't update the moving average, and for safety use
                     // a known-good exposure duration.
-                    new_exposure_duration_secs = fallback_exposure_duration_secs;
-                    // Force update even if image is catching up to camera settings.
+                    new_exposure_duration_secs =
+                        fallback_exposure_duration_secs;
+                    // Force update even if image is catching up to camera
+                    // settings.
                     update_exposure = true;
                 } else if captured_image.params_accurate {
                     let moving_average = {
                         let mut locked_state = state.lock().await;
                         Self::update_star_count_moving_average(
-                            &mut locked_state, num_stars_detected)
+                            &mut locked_state,
+                            num_stars_detected,
+                        )
                     };
                     if moving_average < 4.0 {
-                        // This shouldn't happen because we don't update the moving
-                        // average with num_stars_detected<4. But just in case do
+                        // This shouldn't happen because we don't update the
+                        // moving average with
+                        // num_stars_detected<4. But just in case do
                         // something sane.
-                        new_exposure_duration_secs = fallback_exposure_duration_secs;
+                        new_exposure_duration_secs =
+                            fallback_exposure_duration_secs;
                     } else {
                         // When increasing exposure to increase star count,
                         // don't exceed a brightness limit. Note: this should be
                         // the same value as in
                         // Calibrator::calibrate_exposure_duration().
                         const BRIGHTNESS_LIMIT: u8 = 240;
-                        // >1 if we have more stars than goal; <1 if fewer stars than
-                        // goal.
+                        // >1 if we have more stars than goal; <1 if fewer stars
+                        // than goal.
                         let star_goal_fraction =
                             moving_average / star_count_goal as f64;
-                        if star_goal_fraction < 1.0 &&
-                            stats.mean as u8 > BRIGHTNESS_LIMIT
+                        if star_goal_fraction < 1.0
+                            && stats.mean as u8 > BRIGHTNESS_LIMIT
                         {
-                            new_exposure_duration_secs = fallback_exposure_duration_secs;
+                            new_exposure_duration_secs =
+                                fallback_exposure_duration_secs;
                         } else {
                             // Don't adjust exposure time too often. Allow
                             // number of detected stars to exceed goal, but
                             // don't allow much of a shortfall.
-                            if star_goal_fraction < 0.8 || star_goal_fraction > 1.6 {
+                            if star_goal_fraction < 0.8
+                                || star_goal_fraction > 1.6
+                            {
                                 // What is the relationship between exposure
                                 // time and number of stars detected?
                                 // * If we increase the exposure time by 2.5x,
@@ -772,71 +930,94 @@ impl DetectEngine {
                                 // exposure time a modest amount relative to the
                                 // baseline_exposure_duration.
                                 new_exposure_duration_secs =
-                                    prev_exposure_duration_secs / star_goal_fraction;
+                                    prev_exposure_duration_secs
+                                        / star_goal_fraction;
                                 if calibrated_exposure_duration.is_some() {
-                                    // Bound exposure duration to be within three
-                                    // stops of calibrated_exposure_duration. Further
+                                    // Bound exposure duration to be within
+                                    // three
+                                    // stops of calibrated_exposure_duration.
+                                    // Further
                                     // bounds are applied below.
                                     new_exposure_duration_secs = f64::max(
                                         new_exposure_duration_secs,
-                                        baseline_exposure_duration_secs / 8.0);
+                                        baseline_exposure_duration_secs / 8.0,
+                                    );
                                     new_exposure_duration_secs = f64::min(
                                         new_exposure_duration_secs,
-                                        baseline_exposure_duration_secs * 8.0);
+                                        baseline_exposure_duration_secs * 8.0,
+                                    );
                                 }
                             } else {
                                 // Auto exposure time is good. Remember it for
                                 // use as a fallback.
                                 state.lock().await.auto_exposure_duration =
                                     Some(Duration::from_secs_f64(
-                                        prev_exposure_duration_secs));
+                                        prev_exposure_duration_secs,
+                                    ));
                             }
                         }
                     }
                 }
-            }  // !daylight_mode && !focus_mode
+            } // !daylight_mode && !focus_mode
             let elapsed = process_start_time.elapsed();
             {
                 let mut locked_state = state.lock().await;
-                locked_state.detect_duration_stats.add_value(
-                    detect_duration.as_secs_f64());
+                locked_state
+                    .detect_duration_stats
+                    .add_value(detect_duration.as_secs_f64());
                 locked_state.other_duration_stats.add_value(
-                    elapsed.saturating_sub(detect_duration).as_secs_f64());
+                    elapsed.saturating_sub(detect_duration).as_secs_f64(),
+                );
             }
 
             // Update camera exposure time if auto-exposure calls for an
             // adjustment.
             // Bound auto-exposure duration to given limits.
-            new_exposure_duration_secs = f64::max(new_exposure_duration_secs,
-                                                  min_exposure_duration.as_secs_f64());
-            new_exposure_duration_secs = f64::min(new_exposure_duration_secs,
-                                                  max_exposure_duration.as_secs_f64());
-            if update_exposure && state.lock().await.autoexposure_enabled &&
-                prev_exposure_duration_secs != new_exposure_duration_secs
+            new_exposure_duration_secs = f64::max(
+                new_exposure_duration_secs,
+                min_exposure_duration.as_secs_f64(),
+            );
+            new_exposure_duration_secs = f64::min(
+                new_exposure_duration_secs,
+                max_exposure_duration.as_secs_f64(),
+            );
+            if update_exposure
+                && state.lock().await.autoexposure_enabled
+                && prev_exposure_duration_secs != new_exposure_duration_secs
             {
-                debug!("Setting new exposure duration {}s",
-                       new_exposure_duration_secs);
+                debug!(
+                    "Setting new exposure duration {}s",
+                    new_exposure_duration_secs
+                );
                 let camera = state.lock().await.camera.clone();
-                let result = camera.lock().await.set_exposure_duration(
-                    Duration::from_secs_f64(new_exposure_duration_secs)).await;
+                let result = camera
+                    .lock()
+                    .await
+                    .set_exposure_duration(Duration::from_secs_f64(
+                        new_exposure_duration_secs,
+                    ))
+                    .await;
                 match result {
                     Ok(()) => (),
                     Err(e) => {
-                        error!("Error updating exposure duration: {}",
-                               &e.to_string());
+                        error!(
+                            "Error updating exposure duration: {}",
+                            &e.to_string()
+                        );
                         done.store(true, Ordering::Relaxed);
-                        return;  // Abandon thread execution!
+                        return; // Abandon thread execution!
                     }
                 }
             }
 
             // Post the result.
             let mut locked_state = state.lock().await;
-            locked_state.detect_result = Some(DetectResult{
+            locked_state.detect_result = Some(DetectResult {
                 frame_id: locked_state.frame_id.unwrap(),
                 captured_image,
                 star_candidates,
-                star_count_moving_average: locked_state.star_count_moving_average,
+                star_count_moving_average: locked_state
+                    .star_count_moving_average,
                 display_black_level: black_level,
                 noise_estimate,
                 detected_hot_pixels,
@@ -846,15 +1027,21 @@ impl DetectEngine {
                 detect_binning,
                 detect_duration,
                 other_duration: elapsed.saturating_sub(detect_duration),
-                acquire_latency_stats:
-                  locked_state.acquire_latency_stats.value_stats.clone(),
-                detect_duration_stats:
-                  locked_state.detect_duration_stats.value_stats.clone(),
-                other_duration_stats:
-                  locked_state.other_duration_stats.value_stats.clone(),
+                acquire_latency_stats: locked_state
+                    .acquire_latency_stats
+                    .value_stats
+                    .clone(),
+                detect_duration_stats: locked_state
+                    .detect_duration_stats
+                    .value_stats
+                    .clone(),
+                other_duration_stats: locked_state
+                    .other_duration_stats
+                    .value_stats
+                    .clone(),
             });
             drop(locked_state);
-        }  // loop.
+        } // loop.
     }
 }
 
@@ -908,8 +1095,8 @@ pub struct DetectResult {
     pub other_duration: std::time::Duration,
 
     // How much time (in seconds) is spent acquiring the image. This is the max
-    // of the camera exposure time and the (pipelined) time taken to convert the
-    // pixel format.
+    // of the camera exposure time and the (pipelined) time taken to convert
+    // the pixel format.
     pub acquire_latency_stats: ValueStats,
 
     // Distribution of `detect_duration` values.

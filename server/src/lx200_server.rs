@@ -1,6 +1,7 @@
 // Implementation of the Meade LX200 protocol for Cedar.
 //
 // References for LX200 command set include:
+#[rustfmt::skip]
 //    https://www.astro.louisville.edu/software/xmtel/archive/xmtel-indi-6.0/xmtel-6.0l/support/lx200/CommandSet.html
 //    https://interactiveastronomy.com/lx-200gps_telescope_protocol_2010-10.pdf
 //    https://skymtn.com/mapug-astronomy/ragreiner/LX200Commands.html
@@ -8,7 +9,11 @@
 // Copyright (c) 2025 Omair Kamil
 // See LICENSE file in root directory for license terms.
 
-use std::{error::Error, sync::{atomic::Ordering, Arc}, time::SystemTime};
+use std::{
+    error::Error,
+    sync::{atomic::Ordering, Arc},
+    time::SystemTime,
+};
 
 use async_trait::async_trait;
 use bluer::{
@@ -25,8 +30,10 @@ use tokio::{
     net::TcpListener,
 };
 
-use crate::cedar_server::ConnectionCounters;
-use crate::position_reporter::{Callback, TelescopePosition};
+use crate::{
+    cedar_server::ConnectionCounters,
+    position_reporter::{Callback, TelescopePosition},
+};
 
 // Note: both WiFi and Bluetooth LX200 servers currently handle one connection
 // at a time. Each server awaits handle_connection() before accepting the next
@@ -113,7 +120,8 @@ impl Lx200Telescope for Lx200BtTelescope {
             auto_connect: Some(false),
             // BlueZ does not auto-create SDP records for D-Bus registered
             // profiles, so we provide one explicitly.
-            service_record: Some(format!(r#"<?xml version="1.0" encoding="utf-8" ?>
+            service_record: Some(format!(
+                r#"<?xml version="1.0" encoding="utf-8" ?>
 <record>
   <attribute id="0x0001">
     <sequence>
@@ -139,7 +147,8 @@ impl Lx200Telescope for Lx200BtTelescope {
   <attribute id="0x0100">
     <text value="LX200 Serial Port" />
   </attribute>
-</record>"#)),
+</record>"#
+            )),
             ..Default::default()
         };
 
@@ -155,11 +164,15 @@ impl Lx200Telescope for Lx200BtTelescope {
             }
             match req.unwrap().accept() {
                 Ok(stream) => {
-                    self.counters.lx200_bluetooth.fetch_add(1, Ordering::Relaxed);
+                    self.counters
+                        .lx200_bluetooth
+                        .fetch_add(1, Ordering::Relaxed);
                     info!("BT LX200 connection opened");
                     let (reader, writer) = tokio::io::split(stream);
                     self.controller.handle_connection(reader, writer).await;
-                    self.counters.lx200_bluetooth.fetch_sub(1, Ordering::Relaxed);
+                    self.counters
+                        .lx200_bluetooth
+                        .fetch_sub(1, Ordering::Relaxed);
                     info!("BT LX200 connection closed");
                 }
                 Err(e) => {

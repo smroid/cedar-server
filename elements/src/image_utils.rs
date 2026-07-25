@@ -3,9 +3,10 @@
 
 use std::sync::OnceLock;
 
-use image::{GrayImage, Luma};
-use image::imageops;
-use imageproc::geometric_transformations::{Border, Interpolation, rotate_about_center};
+use image::{imageops, GrayImage, Luma};
+use imageproc::geometric_transformations::{
+    rotate_about_center, Border, Interpolation,
+};
 
 use crate::cedar::Rectangle;
 
@@ -14,7 +15,7 @@ pub type RotateCropFn = fn(&GrayImage, &ImageRotator) -> GrayImage;
 static ROTATE_CROP_FN: OnceLock<RotateCropFn> = OnceLock::new();
 
 pub fn set_rotate_crop_fn(func: RotateCropFn) {
-    let _ = ROTATE_CROP_FN.set(func);  // Ignores error if already set.
+    let _ = ROTATE_CROP_FN.set(func); // Ignores error if already set.
 }
 
 // Applies `lut` (256-entry byte->byte lookup table) to every pixel of
@@ -24,17 +25,20 @@ pub type ApplyLutFn = fn(&GrayImage, &[u8; 256]) -> GrayImage;
 static APPLY_LUT_FN: OnceLock<ApplyLutFn> = OnceLock::new();
 
 pub fn set_apply_lut_fn(func: ApplyLutFn) {
-    let _ = APPLY_LUT_FN.set(func);  // Ignores error if already set.
+    let _ = APPLY_LUT_FN.set(func); // Ignores error if already set.
 }
 
-fn compute_lut(min_pixel_value: u8,
-               mut peak_pixel_value: u8,
-               gamma: f32) -> [u8; 256] {
+fn compute_lut(
+    min_pixel_value: u8,
+    mut peak_pixel_value: u8,
+    gamma: f32,
+) -> [u8; 256] {
     if peak_pixel_value < min_pixel_value {
         peak_pixel_value = min_pixel_value;
     }
     let mut lut: [u8; 256] = [0; 256];
-    let scale = 256.0 / ((peak_pixel_value - min_pixel_value) as f32).powf(gamma);
+    let scale =
+        256.0 / ((peak_pixel_value - min_pixel_value) as f32).powf(gamma);
     for n in 0..=255 {
         if n < min_pixel_value {
             lut[n as usize] = 0;
@@ -54,8 +58,11 @@ fn compute_lut(min_pixel_value: u8,
 // Copy the image, mapping min_pixel_value..peak_pixel_value to 0..255 by
 // applying a gamma and scale factor.
 pub fn scale_image(
-    image: &GrayImage, min_pixel_value: u8, peak_pixel_value: u8, gamma: f32)
-    -> GrayImage {
+    image: &GrayImage,
+    min_pixel_value: u8,
+    peak_pixel_value: u8,
+    gamma: f32,
+) -> GrayImage {
     let lut = compute_lut(min_pixel_value, peak_pixel_value, gamma);
 
     match APPLY_LUT_FN.get() {
@@ -72,7 +79,11 @@ pub fn scale_image(
 
 // In-place variant of scale_image().
 pub fn scale_image_mut(
-    image: &mut GrayImage, min_pixel_value: u8, peak_pixel_value: u8, gamma: f32) {
+    image: &mut GrayImage,
+    min_pixel_value: u8,
+    peak_pixel_value: u8,
+    gamma: f32,
+) {
     let lut = compute_lut(min_pixel_value, peak_pixel_value, gamma);
 
     for pixel in image.pixels_mut() {
@@ -100,7 +111,11 @@ impl ImageRotator {
         let sin_term = angle_rad.sin();
         let cos_term = angle_rad.cos();
 
-        ImageRotator{angle_rad, sin_term, cos_term}
+        ImageRotator {
+            angle_rad,
+            sin_term,
+            cos_term,
+        }
     }
 
     pub fn angle(&self) -> f64 {
@@ -119,10 +134,18 @@ impl ImageRotator {
     }
 
     // Default implementation, used if set_rotate_crop_fn() was not called.
-    pub fn rotate_image_and_crop_default(&self, image: &GrayImage) -> GrayImage {
+    pub fn rotate_image_and_crop_default(
+        &self,
+        image: &GrayImage,
+    ) -> GrayImage {
         let (w, h) = image.dimensions();
-        assert!(w >= h, "rotate_image_and_crop requires width >= height, \
-                         got {}x{}", w, h);
+        assert!(
+            w >= h,
+            "rotate_image_and_crop requires width >= height, \
+                         got {}x{}",
+            w,
+            h
+        );
         let square_size = h;
 
         let rotated_image = rotate_about_center(
@@ -130,28 +153,42 @@ impl ImageRotator {
             -(self.angle_rad as f32),
             // Almost as fast as Nearest, with much higher visual quality.
             Interpolation::Bilinear,
-            Border::Constant(Luma::<u8>([0])));
+            Border::Constant(Luma::<u8>([0])),
+        );
 
         // Take central crop of rotated image.
         let center_x = w / 2;
-        imageops::crop_imm(&rotated_image,
-                           center_x - square_size / 2, 0,
-                           square_size, square_size).to_image()
+        imageops::crop_imm(
+            &rotated_image,
+            center_x - square_size / 2,
+            0,
+            square_size,
+            square_size,
+        )
+        .to_image()
     }
 
     pub fn get_cropped_region(&self, width: u32, height: u32) -> Rectangle {
         let square_size = height as i32;
         let center_x = (width / 2) as i32;
 
-        Rectangle{origin_x: center_x - square_size / 2, origin_y: 0,
-                  width: square_size, height: square_size,
+        Rectangle {
+            origin_x: center_x - square_size / 2,
+            origin_y: 0,
+            width: square_size,
+            height: square_size,
         }
     }
 
     // Given (x, y), the image coordinates in the original image, returns the
     // coordinates within the output image.
-    pub fn transform_to_rotated(&self, x: f64, y: f64,
-                                width: u32, height: u32) -> (f64, f64) {
+    pub fn transform_to_rotated(
+        &self,
+        x: f64,
+        y: f64,
+        width: u32,
+        height: u32,
+    ) -> (f64, f64) {
         let square_size = height;
 
         // The x, y origin is upper-left corner. Change to center-based
@@ -165,14 +202,21 @@ impl ImageRotator {
             Self::rotate_vector(x_cen, y_cen, self.sin_term, self.cos_term);
 
         // Move back to corner-based origin in the output image.
-        (x_cen_rot + (square_size as f64 / 2.0),
-         (square_size as f64 / 2.0) - y_cen_rot)
+        (
+            x_cen_rot + (square_size as f64 / 2.0),
+            (square_size as f64 / 2.0) - y_cen_rot,
+        )
     }
 
     // Given (x, y), the image coordinates in the output image after rotating,
     // returns the coordinates within the original image (prior to rotating).
-    pub fn transform_from_rotated(&self, x: f64, y: f64,
-                                  width: u32, height: u32) -> (f64, f64) {
+    pub fn transform_from_rotated(
+        &self,
+        x: f64,
+        y: f64,
+        width: u32,
+        height: u32,
+    ) -> (f64, f64) {
         let square_size = height;
 
         // The x, y origin is upper-left corner. Change to center-based
@@ -182,16 +226,23 @@ impl ImageRotator {
         let y_cen = (square_size as f64 / 2.0) - y;
 
         // De-rotate according to the transform.
-        let (x_cen_rot, y_cen_rot) =
-            Self::rotate_vector(x_cen, y_cen, -1.0 * self.sin_term, self.cos_term);
+        let (x_cen_rot, y_cen_rot) = Self::rotate_vector(
+            x_cen,
+            y_cen,
+            -1.0 * self.sin_term,
+            self.cos_term,
+        );
 
         // Move back to original image corner-based origin.
-        (x_cen_rot + (width as f64 / 2.0),
-         (height as f64 / 2.0) - y_cen_rot)
+        (x_cen_rot + (width as f64 / 2.0), (height as f64 / 2.0) - y_cen_rot)
     }
 
-    fn rotate_vector(x: f64, y: f64, sin_term: f64, cos_term: f64) -> (f64, f64) {
-        (x * cos_term - y * sin_term,
-         x * sin_term + y * cos_term)
+    fn rotate_vector(
+        x: f64,
+        y: f64,
+        sin_term: f64,
+        cos_term: f64,
+    ) -> (f64, f64) {
+        (x * cos_term - y * sin_term, x * sin_term + y * cos_term)
     }
 }

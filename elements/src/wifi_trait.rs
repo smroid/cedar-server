@@ -10,10 +10,12 @@ pub trait WifiTrait {
 
     /// Updates the specified fields of this WiFi access point. Passing
     /// 'None' leaves the corresponding field unmodified.
-    fn update_access_point(&mut self,
-                           channel: Option<i32>,
-                           ssid: Option<&str>,
-                           psk: Option<&str>) -> Result<(), CanonicalError>;
+    fn update_access_point(
+        &mut self,
+        channel: Option<i32>,
+        ssid: Option<&str>,
+        psk: Option<&str>,
+    ) -> Result<(), CanonicalError>;
 
     /// Enables or disables the WiFi access point connection. When disabled,
     /// the AP is brought down until explicitly re-enabled or the server

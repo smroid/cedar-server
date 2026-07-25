@@ -10,7 +10,8 @@
 //! venv. Run them with
 //!
 //! ```text
-//! cd cedar-solve && source .cedar_venv/bin/activate && python tools/fetch_corpus.py
+//! cd cedar-solve && source .cedar_venv/bin/activate && \
+//!   python tools/fetch_corpus.py
 //! export CEDAR_E2E_DATA_DIR=$PWD/tests/data/synthetic_large
 //! cd ../cedar-server
 //! cargo test --test e2e_plate_solve -- --ignored --test-threads=1 --nocapture
@@ -39,8 +40,7 @@
 //! pkill -f '[t]etra3_server.py'
 //! ```
 
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc};
 
 use cedar_elements::solver_trait::SolverTrait;
 use image::GrayImage;
@@ -49,10 +49,12 @@ use tokio::sync::Mutex;
 
 mod common;
 
-use common::corpus::{self, Env, Field, Preconditions};
-use common::fake_solver::FakeSolver;
-use common::harness::{evaluate, expected_roll_deg, Stack};
-use common::report::{print_table, Report, SOLVE_P95_TARGET_MS};
+use common::{
+    corpus::{self, Env, Field, Preconditions},
+    fake_solver::FakeSolver,
+    harness::{evaluate, expected_roll_deg, Stack},
+    report::{print_table, Report, SOLVE_P95_TARGET_MS},
+};
 
 type SharedSolver = Arc<Mutex<dyn SolverTrait + Send + Sync>>;
 
@@ -121,7 +123,8 @@ async fn gate1_single_field() {
         expected_roll_deg(field.rotation_deg)
     );
     println!(
-        "  fov             {:.4} (gt {:.4} gnomonic; manifest fov_x_deg {:.4})",
+        "  fov             {:.4} (gt {:.4} gnomonic; \
+        manifest fov_x_deg {:.4})",
         p.fov,
         field.true_fov_x_deg(),
         field.fov_x_deg
@@ -129,7 +132,8 @@ async fn gate1_single_field() {
 
     let o = evaluate(field, &ps);
     println!(
-        "  center {:.4}'   roll_err {:.4} deg   fov_err {:.4}%   {:.1} ms   matches {}",
+        "  center {:.4}'   roll_err {:.4} deg   \
+        fov_err {:.4}%   {:.1} ms   matches {}",
         o.center_arcmin,
         o.roll_err_deg,
         o.fov_err_frac * 100.0,
@@ -138,7 +142,8 @@ async fn gate1_single_field() {
     );
 
     assert!(o.solved, "{} did not solve", field.name);
-    // Loose: this gate is about conventions (flip/rotation/pixscale), not accuracy.
+    // Loose: this gate is about conventions (flip/rotation/pixscale), not
+    // accuracy.
     assert!(
         o.center_arcmin < 30.0,
         "center off by {:.2}' -- suspect a WCS convention mismatch",
@@ -162,7 +167,11 @@ async fn e2e_corpus() {
     let Some(env) = setup() else { return };
     let fields = fields(&env);
     assert!(!fields.is_empty(), "empty manifest");
-    println!("\nRunning {} fields from {}", fields.len(), env.data_dir.display());
+    println!(
+        "\nRunning {} fields from {}",
+        fields.len(),
+        env.data_dir.display()
+    );
 
     // ---- Real solver over the whole corpus -------------------------------
     let solver = tetra3_solver(&env).await;
@@ -190,15 +199,22 @@ async fn e2e_corpus() {
 
     // ---- The seam: same harness, same gates, a different solver ----------
     let target = &fields[0];
-    let target_image = corpus::load_image(&env.data_dir, target).expect("load png");
+    let target_image =
+        corpus::load_image(&env.data_dir, target).expect("load png");
 
-    let mut honest = Stack::new(FakeSolver::honest(target).shared(), target_image.clone()).await;
-    let honest_outcome = evaluate(target, &honest.solve_image(target_image.clone()).await);
+    let mut honest =
+        Stack::new(FakeSolver::honest(target).shared(), target_image.clone())
+            .await;
+    let honest_outcome =
+        evaluate(target, &honest.solve_image(target_image.clone()).await);
     let fake_report = Report::new("fake-honest", vec![honest_outcome.clone()]);
 
     // ---- Negative control A: a wrong solver must fail the gates ----------
-    let mut wrong = Stack::new(FakeSolver::wrong(target).shared(), target_image.clone()).await;
-    let wrong_outcome = evaluate(target, &wrong.solve_image(target_image).await);
+    let mut wrong =
+        Stack::new(FakeSolver::wrong(target).shared(), target_image.clone())
+            .await;
+    let wrong_outcome =
+        evaluate(target, &wrong.solve_image(target_image).await);
 
     // ---- Report before asserting, so a failure prints its evidence -------
     print_table(&[&tetra3_report, &fake_report]);
@@ -245,7 +261,8 @@ async fn e2e_corpus() {
         s.total
     );
     assert_eq!(
-        s.passed, s.total,
+        s.passed,
+        s.total,
         "{} of {} fields missed the pose gates",
         s.total - s.passed,
         s.total

@@ -1,11 +1,15 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use std::fs;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{JoinHandle, sleep, spawn};
-use std::time::Duration;
+use std::{
+    fs,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::{sleep, spawn, JoinHandle},
+    time::Duration,
+};
 
 pub struct ActivityLed {
     // Our state, shared between ActivityLed methods and the worker thread.
@@ -41,19 +45,17 @@ struct SharedState {
 impl ActivityLed {
     // Initiates the activity LED to blinking at 1hz.
     pub fn new(got_signal: Arc<AtomicBool>) -> Self {
-        let mut activity_led = ActivityLed{
-            state: Arc::new(tokio::sync::Mutex::new(
-                SharedState{
-                    stop_request: false,
-                    received_rpc: false,
-                })),
+        let mut activity_led = ActivityLed {
+            state: Arc::new(tokio::sync::Mutex::new(SharedState {
+                stop_request: false,
+                received_rpc: false,
+            })),
             worker_thread: None,
         };
         let cloned_state = activity_led.state.clone();
-        activity_led.worker_thread =
-            Some(spawn(move || {
-                ActivityLed::worker(cloned_state, got_signal);
-            }));
+        activity_led.worker_thread = Some(spawn(move || {
+            ActivityLed::worker(cloned_state, got_signal);
+        }));
         activity_led
     }
 
@@ -70,20 +72,25 @@ impl ActivityLed {
         self.worker_thread.take().unwrap().join().unwrap();
     }
 
-    fn worker(state: Arc<tokio::sync::Mutex<SharedState>>, got_signal: Arc<AtomicBool>) {
-	// Raspberry Pi 5 reverses the control signal to the ACT led.
+    fn worker(
+        state: Arc<tokio::sync::Mutex<SharedState>>,
+        got_signal: Arc<AtomicBool>,
+    ) {
+        // Raspberry Pi 5 reverses the control signal to the ACT led.
         // On non-Raspberry-Pi hosts (e.g. x86 dev machines) this device-tree
         // file is absent; default to empty (non-Pi5) and let the LED writes
         // below no-op via unwrap_or(()).
         let processor_model =
             fs::read_to_string("/sys/firmware/devicetree/base/model")
-            .unwrap_or_default()
-            .trim_end_matches('\0').to_string();
-	let is_rpi5 = processor_model.contains("Raspberry Pi 5");
-	let off_value = if is_rpi5 { "1" } else { "0" };
-	let on_value = if is_rpi5 { "0" } else { "1" };
+                .unwrap_or_default()
+                .trim_end_matches('\0')
+                .to_string();
+        let is_rpi5 = processor_model.contains("Raspberry Pi 5");
+        let off_value = if is_rpi5 { "1" } else { "0" };
+        let on_value = if is_rpi5 { "0" } else { "1" };
 
-        // https://www.jeffgeerling.com/blogs/jeff-geerling/controlling-pwr-act-leds-raspberry-pi
+        // See jeffgeerling.com/blogs/jeff-geerling/
+        // controlling-pwr-act-leds-raspberry-pi
         let brightness_path = "/sys/class/leds/ACT/brightness";
         let trigger_path = "/sys/class/leds/ACT/trigger";
 
@@ -107,10 +114,10 @@ impl ActivityLed {
             if got_signal.load(Ordering::Relaxed) {
                 break;
             }
-            if led_state != LedState::ConnectedOff &&
-                state.blocking_lock().received_rpc
+            if led_state != LedState::ConnectedOff
+                && state.blocking_lock().received_rpc
             {
-		        fs::write(brightness_path, off_value).unwrap_or(());
+                fs::write(brightness_path, off_value).unwrap_or(());
                 led_state = LedState::ConnectedOff;
                 continue;
             }
@@ -118,11 +125,11 @@ impl ActivityLed {
                 LedState::ReadyOff => {
                     fs::write(brightness_path, on_value).unwrap_or(());
                     led_state = LedState::ReadyOn;
-                },
+                }
                 LedState::ReadyOn => {
                     fs::write(brightness_path, off_value).unwrap_or(());
                     led_state = LedState::ReadyOff;
-                },
+                }
                 LedState::ConnectedOff => {}
             };
         }

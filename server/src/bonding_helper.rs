@@ -8,8 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bluer::agent::Agent;
-use bluer::{Address, Session};
+use bluer::{agent::Agent, Address, Session};
 use log::{info, warn};
 use tokio::{sync::mpsc, time::timeout};
 
@@ -57,7 +56,10 @@ pub async fn set_adapter_name(
     if alias != desired_name {
         match adapter.set_alias(desired_name.to_string()).await {
             Ok(_) => {
-                info!("Successfully updated Bluetooth alias to '{}'", desired_name);
+                info!(
+                    "Successfully updated Bluetooth alias to '{}'",
+                    desired_name
+                );
             }
             Err(e) => {
                 warn!("Unable to update alias: {:?}", e);
@@ -79,13 +81,16 @@ fn apply_lp_rswitch() {
         .args(["hciconfig", "hci0", "lp", "rswitch"])
         .output();
     match result {
-        Ok(o) if o.status.success() =>
-            info!("Disabled BT sniff mode via hciconfig lp rswitch"),
-        Ok(o) =>
-            warn!("Failed to disable BT sniff mode: {}",
-                  String::from_utf8_lossy(&o.stderr).trim()),
-        Err(e) =>
-            warn!("Failed to disable BT sniff mode: {:?}", e),
+        Ok(o) if o.status.success() => {
+            info!("Disabled BT sniff mode via hciconfig lp rswitch")
+        }
+        Ok(o) => {
+            warn!(
+                "Failed to disable BT sniff mode: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            )
+        }
+        Err(e) => warn!("Failed to disable BT sniff mode: {:?}", e),
     }
 }
 
@@ -123,8 +128,10 @@ pub fn reset_hci_controller() -> ResetOutcome {
             true
         }
         Ok(o) => {
-            warn!("HCI reset failed: {}",
-                  String::from_utf8_lossy(&o.stderr).trim());
+            warn!(
+                "HCI reset failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
             false
         }
         Err(e) => {
@@ -156,13 +163,18 @@ fn hard_reset_bt_stack() {
     let mut last = last_hard_reset().lock().unwrap();
     if let Some(when) = *last {
         if when.elapsed() < HARD_RESET_COOLDOWN {
-            info!("Skipping hard BT stack reset; another completed {:.1}s ago",
-                  when.elapsed().as_secs_f32());
+            info!(
+                "Skipping hard BT stack reset; another completed {:.1}s ago",
+                when.elapsed().as_secs_f32()
+            );
             return;
         }
     }
 
-    warn!("Escalating to hard BT stack reset (bluetoothd stop + hci_uart unbind + GPIO 42 toggle + rebind + bluetoothd start)");
+    warn!(
+        "Escalating to hard BT stack reset (bluetoothd stop + \
+            hci_uart unbind + GPIO 42 toggle + rebind + bluetoothd start)"
+    );
 
     // Stop bluetoothd so it releases the HCI socket cleanly and doesn't
     // race with the unbind/rebind cycle.
@@ -171,7 +183,12 @@ fn hard_reset_bt_stack() {
     // Unbind the serdev driver. This releases the UART and lets the
     // kernel forget any state associated with hci0.
     run_step(
-        &["sudo", "sh", "-c", "echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/unbind"],
+        &[
+            "sudo",
+            "sh",
+            "-c",
+            "echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/unbind",
+        ],
         "unbind hci_uart_bcm",
     );
 
@@ -186,7 +203,12 @@ fn hard_reset_bt_stack() {
     // Rebind the serdev driver so the kernel re-runs the BCM firmware
     // load and re-attaches hci0.
     run_step(
-        &["sudo", "sh", "-c", "echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/bind"],
+        &[
+            "sudo",
+            "sh",
+            "-c",
+            "echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/bind",
+        ],
         "rebind hci_uart_bcm",
     );
 
@@ -207,19 +229,21 @@ fn run_step(argv: &[&str], label: &str) {
     let (bin, args) = argv.split_first().expect("argv non-empty");
     let result = std::process::Command::new(bin).args(args).output();
     match result {
-        Ok(o) if o.status.success() =>
-            info!("{}: ok", label),
-        Ok(o) =>
-            warn!("{}: failed: {}", label, String::from_utf8_lossy(&o.stderr).trim()),
-        Err(e) =>
-            warn!("{}: exec failed: {:?}", label, e),
+        Ok(o) if o.status.success() => info!("{}: ok", label),
+        Ok(o) => warn!(
+            "{}: failed: {}",
+            label,
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => warn!("{}: exec failed: {:?}", label, e),
     }
 }
 
 /// Run pairing mode indefinitely, respecting the pairing_mode flag.
 /// This function runs continuously and monitors the pairing_mode flag.
 /// When pairing_mode is true, the adapter is set to discoverable and pairable.
-/// When pairing_mode is false, the adapter is set to not discoverable and not pairable.
+/// When pairing_mode is false, the adapter is set to not discoverable and not
+/// pairable.
 ///
 /// Registers a Bluetooth agent that auto-accepts pairing requests.
 pub async fn run_pairing_mode(
@@ -231,7 +255,10 @@ pub async fn run_pairing_mode(
     })?;
     let adapter = session.default_adapter().await.map_err(|e| {
         warn!("Failed to get default Bluetooth adapter: {:?}", e);
-        warn!("Make sure the BlueZ service (bluetoothd) is running. Start it with: sudo systemctl start bluetooth");
+        warn!(
+            "Make sure the BlueZ service (bluetoothd) is running. \
+                Start it with: sudo systemctl start bluetooth"
+        );
         Box::new(e) as Box<dyn Error + 'static>
     })?;
     adapter.set_powered(true).await.map_err(|e| {
@@ -249,7 +276,10 @@ pub async fn run_pairing_mode(
         request_confirmation: Some(Box::new(move |req| {
             let tx = tx_confirm.clone();
             Box::pin(async move {
-                info!("RequestConfirmation from {}: auto-accepting", req.device);
+                info!(
+                    "RequestConfirmation from {}: auto-accepting",
+                    req.device
+                );
                 let _ = tx.try_send(req.device);
                 Ok(())
             })
@@ -266,8 +296,10 @@ pub async fn run_pairing_mode(
 
     // Zero timeout means "discoverable never auto-expires". Set once at
     // startup; the loop below toggles the discoverable flag itself.
-    adapter.set_discoverable_timeout(0).await
-        .map_err(|e| { warn!("set_discoverable_timeout(0) failed: {:?}", e); e })?;
+    adapter.set_discoverable_timeout(0).await.map_err(|e| {
+        warn!("set_discoverable_timeout(0) failed: {:?}", e);
+        e
+    })?;
 
     let mut last_pairing_state: Option<bool> = None;
 
@@ -280,16 +312,33 @@ pub async fn run_pairing_mode(
         if last_pairing_state != Some(current_pairing_state) {
             if current_pairing_state {
                 info!("Enabling Bluetooth pairing (pairable + discoverable)");
-                adapter.set_pairable(true).await
-                    .map_err(|e| { warn!("set_pairable(true) failed: {:?}", e); e })?;
-                adapter.set_discoverable(true).await
-                    .map_err(|e| warn!("set_discoverable(true) failed: {:?}", e)).ok();
+                adapter.set_pairable(true).await.map_err(|e| {
+                    warn!("set_pairable(true) failed: {:?}", e);
+                    e
+                })?;
+                adapter
+                    .set_discoverable(true)
+                    .await
+                    .map_err(|e| {
+                        warn!("set_discoverable(true) failed: {:?}", e)
+                    })
+                    .ok();
             } else {
-                info!("Disabling Bluetooth pairing (pairable + discoverable off)");
-                adapter.set_pairable(false).await
-                    .map_err(|e| warn!("set_pairable(false) failed: {:?}", e)).ok();
-                adapter.set_discoverable(false).await
-                    .map_err(|e| warn!("set_discoverable(false) failed: {:?}", e)).ok();
+                info!(
+                    "Disabling Bluetooth pairing (pairable + discoverable off)"
+                );
+                adapter
+                    .set_pairable(false)
+                    .await
+                    .map_err(|e| warn!("set_pairable(false) failed: {:?}", e))
+                    .ok();
+                adapter
+                    .set_discoverable(false)
+                    .await
+                    .map_err(|e| {
+                        warn!("set_discoverable(false) failed: {:?}", e)
+                    })
+                    .ok();
             }
             last_pairing_state = Some(current_pairing_state);
         }

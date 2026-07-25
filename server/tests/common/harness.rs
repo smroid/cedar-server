@@ -5,19 +5,21 @@
 // Bluetooth, no Operate-mode state machine. What it does exercise is the same
 // camera -> detect -> solve path the box runs in flight.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
-use cedar_camera::abstract_camera::AbstractCamera;
-use cedar_camera::image_camera::ImageCamera;
-use cedar_elements::astro_util::angular_separation;
-use cedar_elements::cedar::{ImageCoord, LatLong, PlateSolution as PlateSolutionProto};
-use cedar_elements::cedar_common::CelestialCoord;
-use cedar_elements::solver_trait::SolverTrait;
-use cedar_server::detect_engine::{DetectEngine, DetectResult};
-use cedar_server::solve_engine::{PlateSolution, SolveEngine};
+use cedar_camera::{
+    abstract_camera::AbstractCamera, image_camera::ImageCamera,
+};
+use cedar_elements::{
+    astro_util::angular_separation,
+    cedar::{ImageCoord, LatLong, PlateSolution as PlateSolutionProto},
+    cedar_common::CelestialCoord,
+    solver_trait::SolverTrait,
+};
+use cedar_server::{
+    detect_engine::{DetectEngine, DetectResult},
+    solve_engine::{PlateSolution, SolveEngine},
+};
 use image::GrayImage;
 use tokio::sync::Mutex;
 
@@ -26,8 +28,10 @@ use super::corpus::Field;
 // Production values, from server_main's `MyCedar::new` call and the pico-args
 // defaults in cedar_server.rs.
 const INITIAL_EXPOSURE: Duration = Duration::from_millis(100);
-const MIN_EXPOSURE: Duration = Duration::from_micros(10); // --min_exposure 0.00001 s
-const MAX_EXPOSURE: Duration = Duration::from_secs(1); // --max_exposure 1.0 s
+// --min_exposure 0.00001 s
+const MIN_EXPOSURE: Duration = Duration::from_micros(10);
+// --max_exposure 1.0 s
+const MAX_EXPOSURE: Duration = Duration::from_secs(1);
 const DETECTION_SIGMA: f64 = 8.0; // --sigma
 const STAR_COUNT_GOAL: i32 = 20; // --star_count_goal
 const STATS_CAPACITY: usize = 100;
@@ -49,7 +53,8 @@ fn wrap_camera(camera: ImageCamera) -> SharedCamera {
 }
 
 /// The engine stack, built once and reused across every field. Only the camera
-/// is swapped per field, which is what `cedar_server.rs`'s demo-image path does.
+/// is swapped per field, which is what `cedar_server.rs`'s demo-image path
+/// does.
 pub struct Stack {
     detect: Arc<Mutex<DetectEngine>>,
     solve: SolveEngine,
@@ -75,12 +80,14 @@ impl Stack {
             STAR_COUNT_GOAL,
             camera,
             STATS_CAPACITY,
-            /*hot_pixel_map=*/ None,
+            // hot_pixel_map=
+            None,
         )));
 
         // ImageCamera ignores exposure changes -- the pixels are baked into the
-        // PNG -- so autoexposure cannot converge on anything. Disabling it keeps
-        // the run deterministic and stops the worker from hunting.
+        // PNG -- so autoexposure cannot converge on anything. Disabling it
+        // keeps the run deterministic and stops the worker from
+        // hunting.
         detect.lock().await.set_autoexposure_enabled(false).await;
 
         // Note: detect_binning is left at its default of 1, so CedarDetect runs
@@ -90,7 +97,14 @@ impl Stack {
 
         let pre_solve: Arc<
             dyn Fn() -> Pin<
-                    Box<dyn Future<Output = (Option<CelestialCoord>, Option<CelestialCoord>)> + Send>,
+                    Box<
+                        dyn Future<
+                                Output = (
+                                    Option<CelestialCoord>,
+                                    Option<CelestialCoord>,
+                                ),
+                            > + Send,
+                    >,
                 > + Send
                 + Sync,
         > = Arc::new(|| Box::pin(async { (None, None) }));
@@ -100,21 +114,26 @@ impl Stack {
                     Option<ImageCoord>,
                     Option<DetectResult>,
                     Option<PlateSolutionProto>,
-                ) -> Pin<Box<dyn Future<Output = Option<LatLong>> + Send>>
+                )
+                    -> Pin<Box<dyn Future<Output = Option<LatLong>> + Send>>
                 + Send
                 + Sync,
         > = Arc::new(|_, _, _| Box::pin(async { None }));
 
         let solve = SolveEngine::new(
             solver,
-            /*cedar_sky=*/ None,
-            /*hot_pixel_map=*/ None,
-            /*imu_tracker=*/ None,
+            // cedar_sky=
+            None,
+            // hot_pixel_map=
+            None,
+            // imu_tracker=
+            None,
             detect.clone(),
             STATS_CAPACITY,
             pre_solve,
             post_solve,
-            /*observer_location=*/ None,
+            // observer_location=
+            None,
         )
         .expect("SolveEngine::new");
 
@@ -134,7 +153,8 @@ impl Stack {
     /// capturing from the camera it still holds, so several post-swap solutions
     /// can carry a DetectResult sourced from the *previous* image. Those solve
     /// successfully and look plausible -- they just describe the wrong field.
-    /// `DetectResult` carries the frame it was computed from, so we match on it.
+    /// `DetectResult` carries the frame it was computed from, so we match on
+    /// it.
     pub async fn solve_image(&mut self, image: GrayImage) -> PlateSolution {
         let camera = wrap_camera(
             ImageCamera::new(image.clone())
@@ -146,20 +166,22 @@ impl Stack {
 
         for _ in 0..MAX_SETTLE_RESULTS {
             let ps = self.next_result().await;
-            if ps.detect_result.captured_image.image.as_raw() == image.as_raw() {
+            if ps.detect_result.captured_image.image.as_raw() == image.as_raw()
+            {
                 return ps;
             }
         }
         panic!(
-            "after {MAX_SETTLE_RESULTS} solutions the engine was still reporting \
-             on a stale frame; the camera swap never took effect"
+            "after {MAX_SETTLE_RESULTS} solutions the engine was \
+                still reporting on a stale frame; \
+                the camera swap never took effect"
         );
     }
 
     async fn next_result(&mut self) -> PlateSolution {
         let ps = self
             .solve
-            .get_next_result(self.last_id, /*non_blocking=*/ false)
+            .get_next_result(self.last_id, /* non_blocking= */ false)
             .await
             .expect("blocking get_next_result returns Some");
         self.last_id = Some(ps.solution_id);
@@ -233,7 +255,8 @@ pub fn evaluate(field: &Field, ps: &PlateSolution) -> Outcome {
     .to_degrees()
         * 60.0;
 
-    let roll_err_deg = circular_diff_deg(p.roll, expected_roll_deg(field.rotation_deg));
+    let roll_err_deg =
+        circular_diff_deg(p.roll, expected_roll_deg(field.rotation_deg));
     // Against the gnomonic FOV, not the manifest's small-angle fov_x_deg -- see
     // Field::true_fov_x_deg.
     let true_fov = field.true_fov_x_deg();
@@ -276,7 +299,11 @@ mod tests {
         }
     }
 
-    fn outcome(center_arcmin: f64, roll_err_deg: f64, fov_err_frac: f64) -> Outcome {
+    fn outcome(
+        center_arcmin: f64,
+        roll_err_deg: f64,
+        fov_err_frac: f64,
+    ) -> Outcome {
         Outcome {
             name: "t".into(),
             solved: true,
@@ -313,8 +340,8 @@ mod tests {
 
     #[test]
     fn roll_wraps_across_zero() {
-        // rotation 179.5 -> expected roll 359.5; solver says 0.2. The true error
-        // is 0.7 deg, not 359.3.
+        // rotation 179.5 -> expected roll 359.5; solver says 0.2. The true
+        // error is 0.7 deg, not 359.3.
         let f = field(179.5);
         assert!((expected_roll_deg(f.rotation_deg) - 359.5).abs() < 1e-9);
         let err = circular_diff_deg(0.2, expected_roll_deg(f.rotation_deg));

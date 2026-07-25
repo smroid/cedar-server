@@ -3,12 +3,14 @@
 
 use std::time::Duration;
 
-use canonical_error::CanonicalError;
 use async_trait::async_trait;
+use canonical_error::CanonicalError;
 
-use crate::cedar_common::CelestialCoord;
-use crate::cedar::{ImageCoord, PlateSolution};
-use crate::imu_trait::EquatorialCoordinates;
+use crate::{
+    cedar::{ImageCoord, PlateSolution},
+    cedar_common::CelestialCoord,
+    imu_trait::EquatorialCoordinates,
+};
 
 #[derive(Debug, Default)]
 pub struct SolveExtension {
@@ -29,11 +31,13 @@ pub struct SolveParams {
     // the pattern database.
     pub fov_estimate: Option<(f64, f64)>,
 
-    pub match_radius: Option<f64>,  // Defaults to 0.01.
-    pub match_threshold: Option<f64>,  // Defaults to 1e-5.
-    pub solve_timeout: Option<Duration>,  // Default determined by implementation.
+    pub match_radius: Option<f64>, // Defaults to 0.01.
+    pub match_threshold: Option<f64>, // Defaults to 1e-5.
+    pub solve_timeout: Option<Duration>, /* Default determined by
+                                    * implementation. */
     pub distortion: Option<f64>,
-    pub match_max_error: Option<f64>,  // Defaults to pattern_max_error from database.
+    pub match_max_error: Option<f64>, /* Defaults to pattern_max_error from
+                                       * database. */
 }
 
 // See tetra3.py in cedar-solve for description of args.
@@ -49,13 +53,15 @@ pub struct SolveParams {
 pub trait SolverTrait {
     // Note: this can take up to several seconds in the Python/Numpy
     // implementation (50ms typical).
-    async fn solve_from_centroids(&self,
-                                  star_centroids: &[ImageCoord],
-                                  width: usize, height: usize,
-                                  extension: &SolveExtension,
-                                  params: &SolveParams,
-                                  imu_estimate: Option<EquatorialCoordinates>)
-                                  -> Result<PlateSolution, CanonicalError>;
+    async fn solve_from_centroids(
+        &self,
+        star_centroids: &[ImageCoord],
+        width: usize,
+        height: usize,
+        extension: &SolveExtension,
+        params: &SolveParams,
+        imu_estimate: Option<EquatorialCoordinates>,
+    ) -> Result<PlateSolution, CanonicalError>;
 
     // Requests that the current solve_from_centroids() operation, if any,
     // terminate soon. Returns without waiting for the cancel to take effect.

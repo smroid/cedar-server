@@ -1,8 +1,7 @@
 // Copyright (c) 2024 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use rand::{Rng, SeedableRng};
-use rand::rngs::SmallRng;
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 
 pub struct ReservoirSampler<T> {
     reservoir: Vec<T>,
