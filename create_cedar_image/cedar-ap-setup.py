@@ -89,6 +89,7 @@ def setup_access_point():
             '802-11-wireless.band', 'bg', '802-11-wireless.channel', str(channel),
             'wifi-sec.key-mgmt', 'wpa-psk', 'wifi-sec.psk', 'cedar123',
             'wifi-sec.proto', 'rsn', 'wifi-sec.pairwise', 'ccmp',
+            'wifi-sec.pmf', 'disable',
             'connection.autoconnect', 'true'
         ], check=True)
 
