@@ -1,0 +1,116 @@
+name: Build ARM64 builder image
+
+# Builds the Debian-bookworm arm64 build environment
+# (.github/docker/Dockerfile.build-arm64) and publishes it to GHCR as
+#   ghcr.io/<owner>/cedar-build-arm64:bookworm
+#
+# The release workflow (build-arm-release.yml) runs its whole job *inside* that
+# image so the cedar-box-server binary links against bookworm's glibc 2.36 and
+# the Raspberry Pi libcamera, and therefore actually runs on a Pi. Building on
+# the runner's own Ubuntu 24.04 userland instead would link GLIBC_2.38+ and the
+# binary would refuse to start on the Pi. See the Dockerfile for the full why.
+#
+# The build runs on ubuntu-24.04-arm -- GitHub's *native* arm64 runner, free for
+# public repositories -- so there is no QEMU emulation involved and the build
+# takes minutes rather than hours.
+#
+# Publishing only happens for pushes and manual runs. Pull requests build the
+# image to prove the Dockerfile still works, but never push: a PR from a fork
+# gets a read-only GITHUB_TOKEN, and we do not want an unreviewed Dockerfile
+# to be able to replace the image every other workflow trusts.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/docker/**'
+      - '.github/workflows/build-image.yml'
+  pull_request:
+    paths:
+      - '.github/docker/**'
+      - '.github/workflows/build-image.yml'
+  # Lets you rebuild on demand -- e.g. to pick up upstream Debian / Raspberry Pi
+  # archive security updates without touching the Dockerfile.
+  workflow_dispatch:
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: cedar-build-arm64
+
+jobs:
+  build-image:
+    runs-on: ubuntu-24.04-arm
+
+    permissions:
+      contents: read
+      # Required for the GITHUB_TOKEN to push to GHCR.
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Lowercase the owner: GHCR rejects uppercase characters in image names,
+      # but GitHub owner names may contain them.
+      - name: Compute image reference
+        id: img
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${owner}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      # buildx gives us the GitHub Actions layer cache backend (type=gha).
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Two tags:
+      #   :bookworm  - the mutable tag consumers reference; always the newest
+      #                image for the current base distro.
+      #   :sha-xxxxx - immutable, so a specific release can be traced back to,
+      #                or pinned against, the exact build environment used.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .github/docker/Dockerfile.build-arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ steps.img.outputs.image }}:bookworm
+            ${{ steps.img.outputs.image }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Cheap proof the image is actually usable, not just buildable: the
+      # release workflow needs all of these on PATH, and libcamera present for
+      # --features rpi-camera. Runs against the freshly built local image.
+      - name: Smoke-test the image
+        run: |
+          # --load is required: setup-buildx-action makes the docker-container
+          # driver the default builder, and that driver keeps its result in the
+          # build cache rather than the local image store, so `docker run` would
+          # not find the tag. Every layer is already in the gha cache from the
+          # step above, so this resolves in seconds.
+          docker buildx build --load --quiet \
+            --file .github/docker/Dockerfile.build-arm64 \
+            --tag "${IMAGE_NAME}:smoke" \
+            --cache-from type=gha .
+          docker run --rm "${IMAGE_NAME}:smoke" bash -euo pipefail -c '
+            uname --machine
+            ldd --version | head --lines=1
+            cargo --version
+            rustc --version
+            protoc --version
+            cmake --version | head --lines=1
+            git --version
+            pkg-config --modversion libcamera
+          '

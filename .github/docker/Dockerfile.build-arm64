@@ -1,0 +1,102 @@
+# ARM64 build environment for cedar-box-server, used by GitHub Actions.
+#
+# This is a *builder* image: it carries the full toolchain (Rust, protoc, the
+# C/C++ deps, and the Raspberry Pi libcamera) but NO source. The source is
+# mounted at run time -- in CI, by GitHub Actions' `container:` support, which
+# runs every step of the job inside this image with the workspace bind-mounted.
+# Because the image is native arm64 and the job runs on a native arm64 runner
+# (`ubuntu-24.04-arm`), a plain `cargo build` produces an ARM binary with no
+# QEMU, no cross sysroot, and no linker overrides.
+#
+# It is published to GHCR by .github/workflows/build-image.yml:
+#   ghcr.io/trams/cedar-build-arm64:bookworm
+#
+# To build it by hand on any arm64 host (a Pi 4/5, or an arm64 cloud VM):
+#   docker build -f .github/docker/Dockerfile.build-arm64 -t cedar-build:arm64 .
+#
+# ---------------------------------------------------------------------------
+# Why debian:bookworm and not the runner's own userland
+# ---------------------------------------------------------------------------
+# The production target is Raspberry Pi OS *Bookworm* (glibc 2.36). GitHub's
+# ubuntu-24.04-arm runner has glibc 2.39, so a binary built directly on the
+# runner links GLIBC_2.38+ symbols and dies on the Pi with "GLIBC_2.38 not
+# found". Building inside a bookworm container pins the userland regardless of
+# what the host runs. This is the entire reason this image exists.
+#
+# Likewise, an `--features rpi-camera` binary links a *versioned* libcamera
+# soname (libcamera.so.0.5 at the time of writing). That soname must match the
+# run host's libcamera, so the image installs libcamera from the same
+# Raspberry Pi apt archive the Pi itself uses. A binary built here loads on a
+# bookworm Pi but NOT on a trixie box (libcamera 0.7) -- build and run on the
+# same distro when a real camera is involved.
+FROM debian:bookworm
+
+# Attaches the published package to the repo in the GitHub UI, and lets GHCR
+# inherit the repository's access permissions.
+LABEL org.opencontainers.image.source=https://github.com/trams/cedar-server
+LABEL org.opencontainers.image.description="Debian bookworm arm64 build environment for cedar-box-server"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Raspberry Pi apt archive -> the "+rpt" libcamera build that matches the Pi.
+# Stock Debian's libcamera is an incompatible build; this is the same source
+# the local cross-compile sysroot uses.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg && \
+    install -d /usr/share/keyrings && \
+    curl -fsSL https://archive.raspberrypi.org/debian/raspberrypi.gpg.key \
+      | gpg --dearmor -o /usr/share/keyrings/raspberrypi.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/raspberrypi.gpg] http://archive.raspberrypi.org/debian/ bookworm main" \
+      > /etc/apt/sources.list.d/raspi.list && \
+    apt-get update
+
+# Build prerequisites (mirrors building.md, plus turbojpeg's from-source deps
+# cmake+nasm and the git/build-essential basics):
+#   protobuf-compiler   protoc (prost/tonic codegen; cedar-elements & cedar-detect build.rs)
+#   libprotobuf-dev     ships /usr/include/google/protobuf/*.proto (the well-known
+#                       types); protobuf-compiler alone does NOT, and prost-build
+#                       imports google/protobuf/duration.proto -> "File not found"
+#   libdbus-1-dev       bluer -> libdbus-sys
+#   libjpeg-dev zlib    jpeg (turbojpeg is built static, but keep headers)
+#   cmake nasm          TURBOJPEG_STATIC=1 builds libjpeg-turbo from source
+#   libcamera-dev       --features rpi-camera (libcamera-sys)
+#   libclang-dev clang  bindgen for libcamera-sys
+#   libstdc++-12-dev    libcamera C++ wrapper
+#
+# The last two lines are for the CI harness rather than the build:
+#   git                 actions/checkout
+#   zstd xz-utils       actions/cache + Swatinem/rust-cache compress with zstd
+#                       when it is on PATH and fall back to gzip when it isn't
+#   file                not needed to build, but the first thing anyone reaches
+#                       for when inspecting a produced binary. binutils
+#                       (readelf/strip/objdump) already comes via build-essential
+RUN apt-get install -y --no-install-recommends \
+        build-essential pkg-config \
+        protobuf-compiler libprotobuf-dev \
+        libdbus-1-dev \
+        libjpeg-dev zlib1g-dev \
+        cmake nasm \
+        libcamera-dev libstdc++-12-dev \
+        clang libclang-dev \
+        git \
+        zstd xz-utils file && \
+    rm -rf /var/lib/apt/lists/*
+
+# Rust via rustup (stable). Pin here if the project later adds a toolchain file.
+ENV RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | \
+        sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable && \
+    rustc --version && cargo --version
+
+# turbojpeg build.rs honors this; harmless when set globally.
+ENV TURBOJPEG_STATIC=1
+# Where prost-build finds the well-known .proto types (from libprotobuf-dev).
+ENV PROTOC_INCLUDE=/usr/include
+
+# So cargo (and actions/checkout) don't trip git's ownership check on a
+# bind-mounted, differently-owned checkout.
+RUN git config --global --add safe.directory '*'
+
+WORKDIR /src
+CMD ["bash"]
