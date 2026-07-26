@@ -1,0 +1,226 @@
+name: Build ARM release binary
+
+# Builds a release cedar-box-server for the Raspberry Pi and publishes it.
+#
+#   push to main    -> workflow artifact (downloadable for ~90 days)
+#   push of a v* tag -> the same binary, additionally attached to a GitHub Release
+#
+# The whole job runs INSIDE the Debian bookworm builder image published by
+# build-image.yml. That is the point of the exercise: the ubuntu-24.04-arm
+# runner's own userland is glibc 2.39, so a binary built directly on it links
+# GLIBC_2.38+ symbols and dies on the Pi (Raspberry Pi OS bookworm, glibc 2.36)
+# with "GLIBC_2.38 not found". The container pins the userland to bookworm, and
+# supplies the Raspberry Pi archive's libcamera so --features rpi-camera links
+# the same versioned soname the Pi provides (libcamera.so.0.5).
+#
+# The "Verify ABI" step below asserts both of those properties on the finished
+# binary, so a regression fails loudly here instead of silently shipping
+# something that won't start on the target.
+#
+# Scope note: this builds the server binary only. Packaging (systemd unit,
+# config, setcap) is Phase 2's .deb; the Flutter app and the python/tetra3
+# environment are deliberately out of scope.
+
+on:
+  push:
+    # `branches` and `tags` are OR-ed: this fires on a push to main and on a
+    # push of any v* tag.
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  # Serialize per ref. Superseded main builds are cancelled, but a tag build is
+  # never cancelled -- it may already have created a Release.
+  group: arm-release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Sibling repos, tracked at their default branch, matching ci.yml. Replace a
+  # _REF with a commit SHA to pin that sibling if its tip ever breaks the build.
+  # The resolved SHAs are recorded in the job summary of every run, so an
+  # artifact can always be traced back to the exact sibling state it was built
+  # from.
+  CEDAR_CAMERA_REPO: smroid/cedar-camera
+  CEDAR_CAMERA_REF: main
+  CEDAR_DETECT_REPO: smroid/cedar-detect
+  CEDAR_DETECT_REF: main
+  TETRA3_SERVER_REPO: smroid/tetra3_server
+  TETRA3_SERVER_REF: main
+  ASI_CAMERA2_REPO: smroid/asi_camera2
+  ASI_CAMERA2_REF: main
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+
+    container:
+      image: ghcr.io/trams/cedar-build-arm64:bookworm
+      # The package is public, so this is not strictly required today. It is
+      # here so the workflow keeps working if the image is ever made private.
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    permissions:
+      contents: write  # needed to create a Release on tag pushes
+      packages: read   # pull the builder image
+
+    defaults:
+      run:
+        # REQUIRED for container jobs. On a normal runner GitHub defaults `run`
+        # to bash, but inside a container it defaults to `sh -e` because it
+        # cannot assume bash exists. Debian's sh is dash, which has no
+        # `set -o pipefail`, so every step below would die with
+        # "set: Illegal option -o pipefail" before running a single command.
+        shell: bash
+
+    steps:
+      # --- Check out this repo and every sibling it depends on -------------
+      # cedar-server pulls four siblings by relative path, so a lone checkout
+      # does not build. The checkout dir for THIS repo must be named exactly
+      # `cedar-server`: tetra3_server/Cargo.toml references
+      # ../cedar-server/elements, so any other name breaks that path.
+      # asi_camera2 is an optional dep (behind cedar-camera's `asi` feature,
+      # which is off here) but cargo still needs its Cargo.toml on disk to
+      # resolve the graph.
+      - name: Checkout cedar-server
+        uses: actions/checkout@v4
+        with:
+          path: cedar-server
+
+      - name: Checkout cedar-camera
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CEDAR_CAMERA_REPO }}
+          ref: ${{ env.CEDAR_CAMERA_REF }}
+          path: cedar-camera
+
+      - name: Checkout cedar-detect
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CEDAR_DETECT_REPO }}
+          ref: ${{ env.CEDAR_DETECT_REF }}
+          path: cedar-detect
+
+      - name: Checkout tetra3_server
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TETRA3_SERVER_REPO }}
+          ref: ${{ env.TETRA3_SERVER_REF }}
+          path: tetra3_server
+
+      - name: Checkout asi_camera2
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ASI_CAMERA2_REPO }}
+          ref: ${{ env.ASI_CAMERA2_REF }}
+          path: asi_camera2
+
+      # Siblings track their default branch, so "which code is this?" is not
+      # answerable from this repo's SHA alone. Record what actually got built.
+      - name: Record resolved sibling revisions
+        id: revs
+        run: |
+          {
+            echo "### Build inputs"
+            echo
+            echo '| repo | ref | resolved SHA |'
+            echo '| --- | --- | --- |'
+            printf '| cedar-server | `%s` | `%s` |\n' \
+              "${GITHUB_REF_NAME}" "$(git -C cedar-server rev-parse HEAD)"
+            for pair in \
+                "cedar-camera:${CEDAR_CAMERA_REF}" \
+                "cedar-detect:${CEDAR_DETECT_REF}" \
+                "tetra3_server:${TETRA3_SERVER_REF}" \
+                "asi_camera2:${ASI_CAMERA2_REF}"; do
+              name="${pair%%:*}"; ref="${pair#*:}"
+              printf '| %s | `%s` | `%s` |\n' \
+                "$name" "$ref" "$(git -C "$name" rev-parse HEAD)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cedar-server
+
+      # --- Build ------------------------------------------------------------
+      # --features rpi-camera builds the libcamera backend, so the binary can
+      # actually drive a Pi camera. TURBOJPEG_STATIC=1 comes from the image.
+      - name: Build cedar-box-server (release, rpi-camera)
+        working-directory: cedar-server
+        run: |
+          cargo build --release \
+            --package cedar-server \
+            --bin cedar-box-server \
+            --features rpi-camera
+
+      # --- Verify the ABI is actually Pi-compatible -------------------------
+      # This is the assertion that justifies the whole container setup. If the
+      # image base or the runner ever drifts, fail here rather than shipping a
+      # binary that cannot start on the target. The checks live in a script so
+      # Phase 2 can run the identical assertion against the binary unpacked
+      # from the .deb, and so they can be run by hand off CI.
+      - name: Verify ABI (glibc ceiling and libcamera soname)
+        working-directory: cedar-server
+        run: .github/scripts/verify-abi.sh target/release/cedar-box-server 2.36
+
+      # --- Package ----------------------------------------------------------
+      - name: Strip and checksum
+        id: package
+        working-directory: cedar-server
+        run: |
+          set -euo pipefail
+          mkdir --parents dist
+          cp target/release/cedar-box-server dist/cedar-box-server
+          strip dist/cedar-box-server
+          (cd dist && sha256sum cedar-box-server > cedar-box-server.sha256)
+          ls --format=long --human-readable dist/
+          cat dist/cedar-box-server.sha256
+          # Short SHA for the artifact name; on a tag build, use the tag.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Note: the binary needs capabilities to run on the Pi
+      #   cap_sys_time,cap_dac_override,cap_chown,cap_fowner,cap_net_bind_service+ep
+      # (see build.sh). File capabilities cannot survive an artifact zip, so
+      # whoever installs this must re-run setcap. Phase 2's .deb does it in a
+      # postinst.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cedar-box-server-aarch64-${{ steps.package.outputs.name }}
+          path: cedar-server/dist/
+          if-no-files-found: error
+
+      # --- Release (tags only) ----------------------------------------------
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cedar-server/dist/cedar-box-server
+            cedar-server/dist/cedar-box-server.sha256
+          generate_release_notes: true
+          body: |
+            ARM64 (aarch64) `cedar-box-server` for Raspberry Pi OS **bookworm**.
+
+            Built with `--features rpi-camera` inside
+            `ghcr.io/trams/cedar-build-arm64:bookworm`, so it links glibc 2.36
+            and `libcamera.so.0.5` as the Pi provides them. It will **not** run
+            on a trixie system (libcamera 0.7).
+
+            After installing, restore the file capabilities — they do not
+            survive the download:
+
+            ```
+            sudo setcap cap_sys_time,cap_dac_override,cap_chown,cap_fowner,cap_net_bind_service+ep cedar-box-server
+            ```
+
+            See the run's job summary for the exact sibling-repo revisions this
+            was built from.
