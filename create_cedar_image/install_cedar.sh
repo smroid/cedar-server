@@ -3,6 +3,10 @@
 # Copyright (c) 2025 Steven Rosenthal smr@dt3.org
 # See LICENSE file in root directory for license terms.
 
+if [ "$EUID" -ne 0 ]; then
+    exec sudo unshare --mount --propagation private -- "$0" "$@"
+fi
+
 set -e  # Exit on any error
 
 if [ "$#" -ne 3 ]; then

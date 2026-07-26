@@ -3,6 +3,10 @@
 # Copyright (c) 2025 Steven Rosenthal smr@dt3.org
 # See LICENSE file in root directory for license terms.
 
+if [ "$EUID" -ne 0 ]; then
+    exec sudo unshare --mount --propagation private -- "$0" "$@"
+fi
+
 set -e  # Exit on any error
 
 if [ "$#" -ne 2 ]; then
@@ -27,7 +31,7 @@ echo "Copying to $CUSTOMIZED_RPI_FILE"
 cp $SOURCE_IMG_FILE $CUSTOMIZED_RPI_FILE
 
 echo "Extending $CUSTOMIZED_RPI_FILE"
-dd if=/dev/zero bs=1M count=3500 >> $CUSTOMIZED_RPI_FILE
+dd if=/dev/zero bs=1M count=5000 >> $CUSTOMIZED_RPI_FILE
 echo "Resizing filesystem"
 sudo parted $CUSTOMIZED_RPI_FILE resizepart 2 100%
 sudo python resize_fs.py $CUSTOMIZED_RPI_FILE

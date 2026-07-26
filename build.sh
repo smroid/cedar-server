@@ -1,13 +1,28 @@
 #!/bin/bash
 
-# Check for the --release flag
-if [[ "$1" == "--release" ]]; then
-    release_flag="--release"
-fi
+# Check for the --release and --asi flags (any order). Default is the Raspberry
+# Pi camera; pass --asi for a unit using a ZWO ASI camera instead (requires
+# asi_camera2/install.sh to have been run first).
+release_flag=""
+camera_feature="rpi-camera"
+for arg in "$@"; do
+    case "$arg" in
+        --release)
+            release_flag="--release"
+            ;;
+        --asi)
+            camera_feature="asi-camera"
+            ;;
+        *)
+            echo "Unknown argument: $arg"
+            exit 1
+            ;;
+    esac
+done
 
 # Build with Cargo
 # Statically link libjpeg-turbo for SIMD-accelerated JPEG encoding.
-TURBOJPEG_STATIC=1 cargo build $release_flag
+TURBOJPEG_STATIC=1 cargo build $release_flag --features "$camera_feature"
 
 # Determine the path to the built program (assumes standard Cargo structure)
 if [[ -z "$release_flag" ]]; then
