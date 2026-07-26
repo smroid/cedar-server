@@ -25,3 +25,5 @@ Cargo.lock
 **/cedar_ui_prefs.binpb
 
 cedar/bin/cedar-box-server
+
+.DS_Store
