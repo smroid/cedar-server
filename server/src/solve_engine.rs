@@ -573,6 +573,17 @@ impl SolveEngine {
         // Do we have enough stars to attempt a plate solution?
         let have_stars = star_centroids.len() >= MINIMUM_STARS;
 
+        // image_time is when readout completed (end of exposure), but the
+        // gyro/plate-solve pairing and IMU pointing estimate should be
+        // anchored to when the sky was actually being observed: the
+        // exposure midpoint. The two diverge more as auto-exposure
+        // lengthens the exposure duration.
+        let exposure_duration =
+            detect_result.captured_image.capture_params.exposure_duration;
+        let mid_exposure_time = image_time
+            .checked_sub(exposure_duration / 2)
+            .unwrap_or(*image_time);
+
         // Is IMU tracker available and usable?
         let imu_tracker;
         let lat_rad;
@@ -602,13 +613,13 @@ impl SolveEngine {
             match tracker
                 .lock()
                 .await
-                .get_estimated_camera_pointing(image_time)
+                .get_estimated_camera_pointing(&mid_exposure_time)
                 .await
             {
                 Ok(hc) => {
                     // Convert horizon coordinates to equatorial.
                     Some(equatorial_from_horizon_camera(
-                        &hc, lat_rad, long_rad, image_time,
+                        &hc, lat_rad, long_rad, &mid_exposure_time,
                     ))
                 }
                 Err(e) => {
@@ -702,7 +713,9 @@ impl SolveEngine {
                             tracker
                                 .lock()
                                 .await
-                                .report_true_camera_pointing(&hc, image_time)
+                                .report_true_camera_pointing(
+                                    &hc, &mid_exposure_time,
+                                )
                                 .await;
                         }
                         // Re-enable logging of the next non-trivial solve
