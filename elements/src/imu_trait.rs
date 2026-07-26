@@ -109,21 +109,18 @@ pub trait ImuTrait {
     // context, after new().
     fn start(&self);
 
-    // For all report_xxx() functions, the timestamp must be strictly non
-    // decreasing for successive calls.
-
     // Conveys information obtained from plate solving to the IMU fusion
-    // algorithms.
+    // algorithms. The timestamp must be strictly non decreasig for successive
+    // calls.
     async fn report_true_camera_pointing(
         &self,
         camera_pointing: &HorizonCoordinates,
         timestamp: &SystemTime,
     );
 
-    // No plate solution is available at the given timestamp. This is either due
-    // to visual obstruction (clouds, etc) or platform motion preventing star
-    // detection.
-    async fn report_camera_pointing_lost(&self, timestamp: &SystemTime);
+    // No plate solution is available. This is either due to visual obstruction
+    // (clouds, etc) or platform motion preventing star detection.
+    async fn report_camera_pointing_lost(&self);
 
     // Force get_estimated_camera_pointing() to return an error until
     // report_true_camera_pointing() is called again.
