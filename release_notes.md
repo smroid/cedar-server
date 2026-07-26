@@ -400,10 +400,16 @@ Cedar-server version: 1.0.3
 
 Cedar-server version: 1.1.6
 
-* Improve WiFi access point stability for Hopper.
+* Slightly improve bright sky (twilight) performance.
+
+* Fix bug in "don't show again" logic.
+
+* Add menu item to view Cedar Aim app log.
+
+* Fix bug that could freeze live view.
 
 * Fix WiFi access point compatibility problems that could prevent some
-  devices from connecting to a Hopper's WiFi network.
+  devices from connecting to Cedar's WiFi network.
 
 * Add control to enable/disable the WiFi access point; when turning WiFi off,
   Bluetooth pairing mode is started automatically so a client can still connect.
@@ -413,11 +419,5 @@ Cedar-server version: 1.1.6
 * Reduce image data size over WiFi for smoother, less laggy live view on
   slower connections.
 
-* Add altitude/azimuth to sky objects shown in the live field-of-view
-  overlay, not just catalog lookups.
-
 * Fix LX200 (SkySafari/Stellarium) position reporting so objects near 0
   hours right ascension are no longer rejected as invalid.
-
-* Software updates are now verified for completeness (size and checksum)
-  before being applied, guarding against a corrupted or interrupted download.
