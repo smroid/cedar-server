@@ -671,27 +671,23 @@ impl SolveEngine {
             )
             .await;
             solver_duration = t_before_solve.elapsed();
+            // Let's not spam the log with solver non-solutions (whether an
+            // outright Err, or an Ok() that had to fall back to the IMU
+            // estimate). If the number of detected stars is low, don't
+            // bother to log, as this is a trivial source of non-solutions
+            // (e.g. due to telescope motion). Empirically, solutions are
+            // possible at 12 centroids, and are ~reliable at 20 or more
+            // centroids. For logging, we split the difference.
+            let loggable_non_solution = !skip_stars && star_centroids.len() >= 16;
+            let mut non_solution_msg: Option<String> = None;
             match solve_result {
                 Err(e) => {
-                    // Let's not spam the log with solver failures. If the
-                    // number of detected stars is low, don't bother to log,
-                    // as this is a trivial source of solve failures (e.g.
-                    // due to telescope motion).
-                    // Empirically, solutions are possible at 12 centroids,
-                    // and are ~reliable at 20 or more centroids. For logging,
-                    // we split the difference.
-                    if !skip_stars && star_centroids.len() >= 16 {
-                        let mut locked_state = state.lock().await;
-                        // Secondly, don't log the error if we've just logged
-                        // one.
-                        if !locked_state.logged_error {
-                            warn!(
-                                "Solver error {:?} with {} centroids",
-                                e,
-                                star_centroids.len()
-                            );
-                            locked_state.logged_error = true;
-                        }
+                    if loggable_non_solution {
+                        non_solution_msg = Some(format!(
+                            "Solver error {:?} with {} centroids",
+                            e,
+                            star_centroids.len()
+                        ));
                     }
                 }
                 Ok(solution) => {
@@ -721,9 +717,34 @@ impl SolveEngine {
                         // Re-enable logging of the next non-trivial solve
                         // failure.
                         state.lock().await.logged_error = false;
+                    } else if loggable_non_solution {
+                        // The solver returns Ok() even when it had to fall
+                        // back to the IMU estimate, so this case would
+                        // otherwise go completely unlogged.
+                        non_solution_msg = Some(format!(
+                            "Solver fell back to IMU estimate with {} \
+                             centroids",
+                            star_centroids.len()
+                        ));
                     }
                     plate_solution_proto = Some(solution);
                 }
+            }
+            if let Some(msg) = non_solution_msg {
+                let mut locked_state = state.lock().await;
+                // Don't log if we've just logged a non-solution.
+                if !locked_state.logged_error {
+                    warn!("{}", msg);
+                    locked_state.logged_error = true;
+                }
+            }
+            // Record failure (0.0) for real attempts that didn't yield a
+            // star-based solution - covers both the Err arm above and the
+            // Ok(imu fallback) arm. Success (1.0) is recorded separately in
+            // process_and_post, keyed off the posted solution rather than
+            // this intermediate result.
+            if !skip_stars && !got_plate_solution_from_stars {
+                state.lock().await.solve_success_stats.add_value(0.0);
             }
             solve_finish_time = Some(SystemTime::now());
         } else if !have_stars && !skip_stars {
@@ -734,13 +755,13 @@ impl SolveEngine {
             locked_state.solve_attempt_stats.add_value(0.0);
         }
 
+        // Unlike the solve_success_stats check above, this intentionally
+        // also covers the "too few stars to attempt a solve" branch, so the
+        // tracker is told pointing is lost whenever we lack a fresh
+        // star-based fix - not just when an attempt was made and failed.
         if !got_plate_solution_from_stars && !skip_stars {
             if let Some(ref tracker) = imu_tracker {
-                tracker
-                    .lock()
-                    .await
-                    .report_camera_pointing_lost(image_time)
-                    .await;
+                tracker.lock().await.report_camera_pointing_lost().await;
             }
         }
 
