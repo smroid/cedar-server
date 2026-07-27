@@ -959,8 +959,7 @@ message ActionRequest {
   // Save the current image for debugging. The image is saved in the run
   // directory on the server with the current date/time incorporated into the
   // filename.
-  // TODO: return filename? Provide rename action? Return image to be saved
-  // on client device?
+  // Deprecated. Use GetImage RPC instead.
   optional bool save_image = 5;
 
   // Update ssid, psk, and/or channel setting for Cedar server's
@@ -1032,6 +1031,60 @@ message SetPairingModeRequest {
   bool forever = 2;
 }
 
+enum ImageFormat {
+  // Server defaults to JPEG.
+  IMAGE_FORMAT_UNSPECIFIED = 0;
+  JPEG = 1;
+  BMP = 2;
+}
+
+message ImageRequest {
+  ImageFormat format = 1;
+
+  // For image formats with lossy compression, this is the quality level on a
+  // scale of [1..100]. If omitted, defaults to 90.
+  optional int32 quality = 2;
+
+  // This is the frame_id of the previous ImageResult obtained by the requesting
+  // client. If provided, GetImage() will block until a new image (with a
+  // different frame_id) is available, so successive calls with each response's
+  // frame_id return fresh images rather than possibly repeating the same one.
+  // If omitted, GetImage() returns the server's current image without waiting
+  // for a new one.
+  optional int32 prev_frame_id = 3;
+}
+
+message ImageResult {
+  // Identifies this image. A client can pass this in the next
+  // ImageRequest.prev_frame_id to be given a fresh image on the subsequent
+  // call.
+  optional int32 frame_id = 1;
+
+  // The resolution of the image. This is the full camera resolution, i.e. no
+  // binning is applied.
+  optional int32 width = 2;
+  optional int32 height = 3;
+
+  // Time at which image was read out from camera.
+  optional google.protobuf.Timestamp acquire_time = 4;
+
+  // Exposure duration.
+  optional google.protobuf.Duration exposure_time = 5;
+
+  // Camera gain setting [0..100], if relevant.
+  optional int32 camera_gain = 6;
+
+  // Camera model, if known.
+  optional CameraModel camera = 7;
+
+  // The image, in the requested format (e.g. BMP or JPEG grayscale 8 bits per
+  // pixel), split into one or more chunks. The client should concatenate
+  // `image_chunk` across all streamed ImageResult messages, in order, to
+  // reconstruct the full image; only the first ImageResult has the other
+  // fields populated.
+  bytes image_chunk = 8;
+}
+
 service Cedar {
   rpc GetServerLog(ServerLogRequest) returns (ServerLogResult);
 
@@ -1073,6 +1126,15 @@ service Cedar {
   // before sending. The `prev_frame_id` / `prev_solution_id` fields apply only
   // to the first frame; subsequent frames advance automatically.
   rpc GetFrames(FrameRequest) returns (stream FrameResult);
+
+  // Returns the most recently acquired camera image. This is always an 8 bit
+  // monochrome image; if the camera is color the raw bayer array is returned.
+  // The image is split across multiple streamed ImageResult messages (see
+  // ImageResult.image_chunk). See ImageRequest.prev_frame_id for how to
+  // obtain successive fresh images.
+  // Returns an error if images are not currently being acquired, or if a
+  // calibration is in progress.
+  rpc GetImage(ImageRequest) returns (stream ImageResult);
 
   // Performs the requested action(s).
   rpc InitiateAction(ActionRequest) returns (EmptyMessage);

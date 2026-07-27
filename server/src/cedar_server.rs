@@ -38,8 +38,9 @@ use cedar_elements::{
         CameraModel, CelestialCoordFormat, ConnectionStatus,
         DisplayOrientation, EmptyMessage, FeatureLevel, FixedSettings,
         FrameRequest, FrameResult, GetBluetoothNameResponse,
-        GetBondedDevicesResponse, Image, ImageCoord, ImuState, ImuTrackerState,
-        LatLong, MountType, OperatingMode, OperationSettings,
+        GetBondedDevicesResponse, Image, ImageCoord,
+        ImageFormat as ProtoImageFormat, ImageRequest, ImageResult, ImuState,
+        ImuTrackerState, LatLong, MountType, OperatingMode, OperationSettings,
         PlateSolution as PlateSolutionProto, Preferences, Rectangle,
         RemoveBondRequest, ServerInformation, ServerLogRequest,
         ServerLogResult, SetPairingModeRequest, WiFiAccessPoint,
@@ -1399,6 +1400,117 @@ impl Cedar for MyCedar {
                     // Client disconnected; stop the producer too.
                     producer.abort();
                     break;
+                }
+            }
+        });
+
+        Ok(tonic::Response::new(ReceiverStream::new(rx)))
+    }
+
+    type GetImageStream = ReceiverStream<Result<ImageResult, tonic::Status>>;
+
+    async fn get_image(
+        &self,
+        request: tonic::Request<ImageRequest>,
+    ) -> Result<tonic::Response<Self::GetImageStream>, tonic::Status> {
+        // No GrpcTimer here: get_image() is expected to block for up to the
+        // current exposure duration.
+        let req: ImageRequest = request.into_inner();
+        let format = ProtoImageFormat::try_from(req.format)
+            .unwrap_or(ProtoImageFormat::Unspecified);
+
+        let (detect_engine, camera_arc, calibrating) = {
+            let locked_state = self.state.lock().await;
+            (
+                locked_state.detect_engine.clone(),
+                locked_state.camera.clone(),
+                locked_state.calibrating,
+            )
+        };
+        if calibrating {
+            return Err(logged_status!(
+                failed_precondition,
+                "Cannot get image while a calibration is in progress."
+            ));
+        }
+        let detect_result = detect_engine
+            .lock()
+            .await
+            .get_next_result(req.prev_frame_id, /*non_blocking=*/ false)
+            .await
+            .ok_or_else(|| {
+                logged_status!(failed_precondition,
+                               "Images are not currently being acquired.")
+            })?;
+        let frame_id = detect_result.frame_id;
+        let captured_image = detect_result.captured_image;
+        let camera_model = Self::camera_model_from_arc(
+            &camera_arc, /*model_override=*/ None, /*include_detail=*/ true,
+        )
+        .await;
+
+        let quality = req.quality.unwrap_or(90).clamp(1, 100) as u8;
+        let image = captured_image.image.clone();
+        // Encode on Tokio's blocking thread pool so this CPU-bound work doesn't
+        // stall the async runtime.
+        let encoded = tokio::task::spawn_blocking(
+            move || -> Result<Vec<u8>, String> {
+                match format {
+                    ProtoImageFormat::Bmp => {
+                        let mut buf = io::Cursor::new(Vec::<u8>::new());
+                        image
+                            .write_to(&mut buf, image::ImageFormat::Bmp)
+                            .map_err(|e| format!("Failed to encode BMP: {:?}", e))?;
+                        Ok(buf.into_inner())
+                    }
+                    ProtoImageFormat::Jpeg | ProtoImageFormat::Unspecified => {
+                        Ok(Self::jpeg_encode(&image, quality))
+                    }
+                }
+            },
+        )
+        .await
+        .map_err(|e| {
+            tonic::Status::internal(format!("Encoding task failed: {:?}", e))
+        })?
+        .map_err(tonic::Status::internal)?;
+
+        let (width, height) = captured_image.image.dimensions();
+        let first_result = ImageResult {
+            frame_id: Some(frame_id),
+            width: Some(width as i32),
+            height: Some(height as i32),
+            acquire_time: Some(prost_types::Timestamp::from(
+                captured_image.readout_time,
+            )),
+            exposure_time: Some(
+                prost_types::Duration::try_from(
+                    captured_image.capture_params.exposure_duration,
+                )
+                .unwrap(),
+            ),
+            camera_gain: Some(captured_image.capture_params.gain.value()),
+            camera: Some(camera_model),
+            ..Default::default()
+        };
+
+        // Chunk the encoded image to stay under gRPC's default per-message
+        // size limit.
+        const CHUNK_SIZE: usize = 1 << 20; // 1 MiB.
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            let mut first = Some(first_result);
+            if encoded.is_empty() {
+                let mut result = first.take().unwrap();
+                result.image_chunk = Vec::new();
+                let _ = tx.send(Ok(result)).await;
+                return;
+            }
+            for chunk in encoded.chunks(CHUNK_SIZE) {
+                let mut result = first.take().unwrap_or_default();
+                result.image_chunk = chunk.to_vec();
+                if tx.send(Ok(result)).await.is_err() {
+                    return;
                 }
             }
         });
