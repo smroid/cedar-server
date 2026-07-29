@@ -844,8 +844,10 @@ message LocationBasedInfo {
 
 // Describes a telescope motion request from SkySafari or Cedar Sky.
 message SlewRequest {
-  // Identifies the target coordinate of the telescope motion request.
-  cedar_common.CelestialCoord target = 1;
+  // Identifies the target coordinate of the telescope motion request. One but
+  // not both of these fields will be populated.
+  optional cedar_common.CelestialCoord target = 1;
+  optional cedar_common.HorizonCoord target_alt_az = 10;
 
   // The Cedar Sky catalog entry, if any, for `target`.
   optional cedar_sky.CatalogEntry target_catalog_entry = 8;
@@ -952,6 +954,11 @@ message ActionRequest {
   // Cedar-aim is initiating a goto operation. This might be from a Cedar Sky
   // catalog selection, or it might be a user-entered RA/Dec value.
   optional cedar_common.CelestialCoord initiate_slew = 6;
+
+  // Cedar-aim is initiating a goto operation. This is from a user-entered
+  // altitude/azimuth value. Error if the observer location or time is not
+  // known.
+  optional cedar_common.HorizonCoord initiate_slew_alt_az = 16;
 
   // Tells SkySafari that the slew is finished (or discontinued).
   optional bool stop_slew = 4;

@@ -31,7 +31,10 @@ use cedar_camera::{
     select_camera::{select_camera, CameraInterface},
 };
 use cedar_elements::{
-    astro_util::{alt_az_from_equatorial, celestial_coord_to_j2000},
+    astro_util::{
+        alt_az_from_equatorial, celestial_coord_from_horizon,
+        celestial_coord_to_j2000,
+    },
     cedar::{
         cedar_server::{Cedar, CedarServer},
         ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
@@ -45,7 +48,7 @@ use cedar_elements::{
         RemoveBondRequest, ServerInformation, ServerLogRequest,
         ServerLogResult, SetPairingModeRequest, WiFiAccessPoint,
     },
-    cedar_common::CelestialCoord,
+    cedar_common::{CelestialCoord, HorizonCoord},
     cedar_sky::{
         CatalogDescriptionResponse, CatalogEntry, CatalogEntryKey,
         CatalogEntryMatch, ConstellationResponse, ObjectTypeResponse, Ordering,
@@ -94,7 +97,7 @@ use crate::{
     polar_analyzer::PolarAnalyzer,
     position_reporter::{create_alpaca_server, TelescopePosition},
     serve_engine::{ServeContext, ServeEngine},
-    solve_engine::SolveEngine,
+    solve_engine::{SlewTargetInfo, SolveEngine},
 };
 
 // gRPC performance monitoring threshold - log warning if methods take longer
@@ -273,6 +276,13 @@ struct CedarState {
     calibrator: Arc<tokio::sync::Mutex<Calibrator>>,
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
     activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
+
+    // Target of an alt/az goto, if one is active. Unlike an RA/Dec goto, this
+    // is a Cedar-only concept: it is not conveyed to SkySafari/Stellarium,
+    // which have no way to express a target fixed in the horizon frame. Kept
+    // out of TelescopePosition for that reason. `None` means no alt/az goto is
+    // active.
+    alt_az_slew_target: Arc<tokio::sync::Mutex<Option<HorizonCoord>>>,
 
     // Not all builds of Cedar-server support Cedar-sky.
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
@@ -527,6 +537,7 @@ impl Cedar for MyCedar {
                 solve_engine_arc,
                 detect_engine_arc,
                 telescope_position_arc,
+                alt_az_slew_target_arc,
             ) = {
                 let locked_state = self.state.lock().await;
                 (
@@ -537,6 +548,7 @@ impl Cedar for MyCedar {
                     locked_state.solve_engine.clone(),
                     locked_state.detect_engine.clone(),
                     locked_state.telescope_position.clone(),
+                    locked_state.alt_az_slew_target.clone(),
                 )
             }; // State lock released here!
 
@@ -616,6 +628,7 @@ impl Cedar for MyCedar {
                         }
                     }
                     telescope_position_arc.lock().await.slew_active = false;
+                    *alt_az_slew_target_arc.lock().await = None;
                 } else if new_operating_mode == OperatingMode::Operate as i32 {
                     // Transition: SETUP -> OPERATE mode.
                     if focus_mode || daylight_mode {
@@ -1695,12 +1708,18 @@ impl Cedar for MyCedar {
             }
         }
         if let Some(slew_coord) = req.initiate_slew {
-            let (preferences_arc, fixed_settings_arc, telescope_pos_arc) = {
+            let (
+                preferences_arc,
+                fixed_settings_arc,
+                telescope_pos_arc,
+                alt_az_slew_target_arc,
+            ) = {
                 let locked_state = self.state.lock().await;
                 (
                     locked_state.preferences.clone(),
                     locked_state.fixed_settings.clone(),
                     locked_state.telescope_position.clone(),
+                    locked_state.alt_az_slew_target.clone(),
                 )
             }; // State lock released here!
 
@@ -1713,16 +1732,47 @@ impl Cedar for MyCedar {
                     "Need observer location for goto with alt-az mount"
                 ));
             }
+            // Only one goto at a time; this supersedes any alt/az goto.
+            *alt_az_slew_target_arc.lock().await = None;
             let slew_coord = celestial_coord_to_j2000(&slew_coord);
             let mut telescope = telescope_pos_arc.lock().await;
             telescope.slew_target_ra = slew_coord.ra;
             telescope.slew_target_dec = slew_coord.dec;
             telescope.slew_active = true;
         }
+        if let Some(slew_alt_az) = req.initiate_slew_alt_az {
+            let (fixed_settings_arc, telescope_pos_arc, alt_az_slew_target_arc) = {
+                let locked_state = self.state.lock().await;
+                (
+                    locked_state.fixed_settings.clone(),
+                    locked_state.telescope_position.clone(),
+                    locked_state.alt_az_slew_target.clone(),
+                )
+            }; // State lock released here!
+
+            // Unlike an RA/Dec goto, the observer location is needed regardless
+            // of mount type, since it is what ties an alt/az target to a
+            // position on the celestial sphere.
+            if fixed_settings_arc.lock().await.observer_location.is_none() {
+                return Err(logged_status!(
+                    failed_precondition,
+                    "Need observer location for alt/az goto"
+                ));
+            }
+            // Only one goto at a time; this supersedes any RA/Dec goto.
+            telescope_pos_arc.lock().await.slew_active = false;
+            *alt_az_slew_target_arc.lock().await = Some(slew_alt_az);
+        }
         if req.stop_slew.unwrap_or(false) {
-            let telescope_position_arc =
-                self.state.lock().await.telescope_position.clone();
+            let (telescope_position_arc, alt_az_slew_target_arc) = {
+                let locked_state = self.state.lock().await;
+                (
+                    locked_state.telescope_position.clone(),
+                    locked_state.alt_az_slew_target.clone(),
+                )
+            };
             telescope_position_arc.lock().await.slew_active = false;
+            *alt_az_slew_target_arc.lock().await = None;
         }
         if req.save_image.unwrap_or(false) {
             let solve_engine = self.state.lock().await.solve_engine.clone();
@@ -3805,6 +3855,9 @@ impl MyCedar {
 
         let time_set_by_client = Arc::new(AtomicBool::new(false));
 
+        let alt_az_slew_target: Arc<tokio::sync::Mutex<Option<HorizonCoord>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+
         // Define callback invoked from SolveEngine().
         let closure_fixed_settings = fixed_settings.clone();
         let closure_preferences = shared_preferences.clone();
@@ -3822,29 +3875,36 @@ impl MyCedar {
         // Pre-solve callback: gets the current slew target and sync coordinates
         // before the plate solve runs.
         let pre_solve_telescope_position = closure_telescope_position.clone();
+        let pre_solve_alt_az_slew_target = alt_az_slew_target.clone();
+        let pre_solve_fixed_settings = closure_fixed_settings.clone();
         let pre_solve_callback = Arc::new(
-            move || -> std::pin::Pin<
+            move |frame_time: SystemTime| -> std::pin::Pin<
                 Box<
                     dyn std::future::Future<
-                        Output = (
-                            Option<CelestialCoord>,
-                            Option<CelestialCoord>,
-                    ),
-                    > + Send,
+                            Output = (
+                                Option<SlewTargetInfo>,
+                                Option<CelestialCoord>,
+                            ),
+                        > + Send,
                 >,
             > {
                 let telescope_pos = pre_solve_telescope_position.clone();
+                let alt_az_slew_target = pre_solve_alt_az_slew_target.clone();
+                let fixed_settings = pre_solve_fixed_settings.clone();
                 Box::pin(async move {
                     let mut locked_telescope_pos = telescope_pos.lock().await;
-                    let slew_target = if locked_telescope_pos.slew_active {
-                        Some(CelestialCoord {
-                            ra: locked_telescope_pos.slew_target_ra,
-                            dec: locked_telescope_pos.slew_target_dec,
-                            epoch: None,
-                        })
-                    } else {
-                        None
-                    };
+                    let mut locked_alt_az = alt_az_slew_target.lock().await;
+                    let observer_location =
+                        fixed_settings.lock().await.observer_location.clone();
+
+                    let slew_target = Self::select_slew_target(
+                        locked_telescope_pos.slew_active,
+                        locked_telescope_pos.slew_target_ra,
+                        locked_telescope_pos.slew_target_dec,
+                        &mut locked_alt_az,
+                        observer_location.as_ref(),
+                        &frame_time,
+                    );
                     let sync_coord = if locked_telescope_pos.sync_ra.is_some()
                         && locked_telescope_pos.sync_dec.is_some()
                     {
@@ -3971,6 +4031,7 @@ impl MyCedar {
                 ))),
                 telescope_position,
                 activity_led,
+                alt_az_slew_target,
                 cedar_sky,
                 wifi,
                 imu_tracker,
@@ -4205,6 +4266,57 @@ impl MyCedar {
         // oldest-to-newest.
         chunks.reverse();
         Ok(chunks.concat())
+    }
+
+    // Chooses the goto target for a frame, given the RA/Dec goto state (shared
+    // with SkySafari/Stellarium via TelescopePosition) and any alt/az goto
+    // target.
+    //
+    // Only one goto is active at a time. A goto initiated from
+    // SkySafari/Stellarium supersedes an alt/az goto: those clients bypass
+    // initiate_action() and set `slew_active` directly, so because
+    // initiate_slew_alt_az() clears that flag, seeing it set again means a new
+    // RA/Dec goto has arrived. `alt_az_slew_target` is cleared in that case.
+    //
+    // Returns None if no goto is active, or if an alt/az goto is active but the
+    // observer location is unknown, which is what ties an alt/az target to a
+    // position on the celestial sphere.
+    fn select_slew_target(
+        slew_active: bool,
+        slew_target_ra: f64,
+        slew_target_dec: f64,
+        alt_az_slew_target: &mut Option<HorizonCoord>,
+        observer_location: Option<&LatLong>,
+        frame_time: &SystemTime,
+    ) -> Option<SlewTargetInfo> {
+        if alt_az_slew_target.is_some() && slew_active {
+            info!("Telescope goto supersedes alt/az goto");
+            *alt_az_slew_target = None;
+        }
+        if let Some(alt_az) = alt_az_slew_target.clone() {
+            // A fixed alt/az target's equatorial position changes as the earth
+            // turns, so convert afresh for this frame.
+            observer_location.map(|loc| SlewTargetInfo {
+                coord: celestial_coord_from_horizon(
+                    &alt_az,
+                    loc.latitude.to_radians(),
+                    loc.longitude.to_radians(),
+                    frame_time,
+                ),
+                alt_az: Some(alt_az),
+            })
+        } else if slew_active {
+            Some(SlewTargetInfo {
+                coord: CelestialCoord {
+                    ra: slew_target_ra,
+                    dec: slew_target_dec,
+                    epoch: None,
+                },
+                alt_az: None,
+            })
+        } else {
+            None
+        }
     }
 
     async fn post_solve_callback(
@@ -5621,6 +5733,152 @@ mod multiplex_service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_location() -> LatLong {
+        LatLong {
+            latitude: 37.0,
+            longitude: -122.0,
+        }
+    }
+
+    #[test]
+    fn test_select_slew_target_none_active() {
+        let mut alt_az = None;
+        assert!(MyCedar::select_slew_target(
+            /*slew_active=*/ false,
+            0.0,
+            0.0,
+            &mut alt_az,
+            Some(&test_location()),
+            &SystemTime::now(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_select_slew_target_ra_dec() {
+        let mut alt_az = None;
+        let target = MyCedar::select_slew_target(
+            /*slew_active=*/ true,
+            123.0,
+            45.0,
+            &mut alt_az,
+            Some(&test_location()),
+            &SystemTime::now(),
+        )
+        .unwrap();
+        assert_eq!(target.coord.ra, 123.0);
+        assert_eq!(target.coord.dec, 45.0);
+        assert!(target.alt_az.is_none());
+    }
+
+    #[test]
+    fn test_select_slew_target_alt_az() {
+        let mut alt_az = Some(HorizonCoord {
+            altitude: 45.0,
+            azimuth: 90.0,
+        });
+        let target = MyCedar::select_slew_target(
+            /*slew_active=*/ false,
+            0.0,
+            0.0,
+            &mut alt_az,
+            Some(&test_location()),
+            &SystemTime::now(),
+        )
+        .unwrap();
+        // The alt/az target is reported as-is, along with the equatorial
+        // position it currently corresponds to.
+        assert_eq!(target.alt_az.as_ref().unwrap().altitude, 45.0);
+        assert_eq!(target.alt_az.as_ref().unwrap().azimuth, 90.0);
+        assert!(target.coord.ra >= 0.0 && target.coord.ra < 360.0);
+        // Still active for subsequent frames.
+        assert!(alt_az.is_some());
+    }
+
+    #[test]
+    fn test_select_slew_target_alt_az_needs_observer_location() {
+        let mut alt_az = Some(HorizonCoord {
+            altitude: 45.0,
+            azimuth: 90.0,
+        });
+        assert!(MyCedar::select_slew_target(
+            /*slew_active=*/ false,
+            0.0,
+            0.0,
+            &mut alt_az,
+            // An alt/az target can't be placed on the celestial sphere without
+            // knowing where the observer is.
+            None,
+            &SystemTime::now(),
+        )
+        .is_none());
+        // The goto is not cancelled; the location may yet become known.
+        assert!(alt_az.is_some());
+    }
+
+    #[test]
+    fn test_select_slew_target_telescope_goto_supersedes_alt_az() {
+        let mut alt_az = Some(HorizonCoord {
+            altitude: 45.0,
+            azimuth: 90.0,
+        });
+        // SkySafari/Stellarium set slew_active directly; initiate_slew_alt_az()
+        // had cleared it, so this means a new RA/Dec goto arrived.
+        let target = MyCedar::select_slew_target(
+            /*slew_active=*/ true,
+            200.0,
+            -10.0,
+            &mut alt_az,
+            Some(&test_location()),
+            &SystemTime::now(),
+        )
+        .unwrap();
+        assert_eq!(target.coord.ra, 200.0);
+        assert_eq!(target.coord.dec, -10.0);
+        assert!(target.alt_az.is_none());
+        // The alt/az goto is cancelled, not merely ignored for this frame.
+        assert!(alt_az.is_none());
+    }
+
+    #[test]
+    fn test_select_slew_target_alt_az_tracks_earth_rotation() {
+        let alt_az_coord = HorizonCoord {
+            altitude: 45.0,
+            azimuth: 90.0,
+        };
+        let now = SystemTime::now();
+        let later = now + Duration::from_secs(3600);
+
+        let mut alt_az = Some(alt_az_coord.clone());
+        let first = MyCedar::select_slew_target(
+            false,
+            0.0,
+            0.0,
+            &mut alt_az,
+            Some(&test_location()),
+            &now,
+        )
+        .unwrap();
+        let mut alt_az = Some(alt_az_coord);
+        let second = MyCedar::select_slew_target(
+            false,
+            0.0,
+            0.0,
+            &mut alt_az,
+            Some(&test_location()),
+            &later,
+        )
+        .unwrap();
+
+        // A fixed alt/az point's right ascension advances ~15 degrees/hour,
+        // which is why the conversion is redone every frame.
+        let ra_advance = (second.coord.ra - first.coord.ra).rem_euclid(360.0);
+        assert!(
+            (14.0..16.0).contains(&ra_advance),
+            "right ascension advanced {ra_advance} degrees in an hour"
+        );
+    }
 
     #[test]
     fn test_proto_merge() {

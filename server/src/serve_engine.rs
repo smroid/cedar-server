@@ -10,8 +10,9 @@ use std::{
 use cedar_detect::image_funcs::bin_2x2;
 use cedar_elements::{
     astro_util::{
-        alt_az_from_equatorial, equatorial_from_alt_az, fill_in_detections,
-        magnitude_intensity_ratio, position_angle,
+        alt_az_from_equatorial, celestial_coord_from_horizon,
+        equatorial_from_alt_az, fill_in_detections, magnitude_intensity_ratio,
+        position_angle,
     },
     cedar::{
         CalibrationData, FixedSettings, FovCatalogEntry, FrameResult, Image,
@@ -855,53 +856,80 @@ impl ServeEngine {
                     };
                     let bs_ra = celestial_coords.ra.to_radians();
                     let bs_dec = celestial_coords.dec.to_radians();
-                    let target_ra = slew_request.target.as_ref().unwrap().ra;
-                    let target_dec = slew_request.target.as_ref().unwrap().dec;
-                    let mount_type = ctx_preferences.mount_type;
-                    if mount_type == Some(MountType::Equatorial.into()) {
-                        let mut rel_ra = target_ra - bs_ra.to_degrees();
-                        if rel_ra < -180.0 {
-                            rel_ra += 360.0;
+                    // Exactly one of `target` and `target_alt_az` is populated.
+                    // Convert the alt/az case to J2000 equatorial so the offset
+                    // math below is common to both kinds of goto; the
+                    // conversion is what keeps an alt/az goto converging on the
+                    // requested altitude/azimuth.
+                    let target_coord =
+                        if let Some(target) = &slew_request.target {
+                            Some(target.clone())
+                        } else if let Some(target_alt_az) =
+                            &slew_request.target_alt_az
+                        {
+                            ctx_fixed_settings.observer_location.as_ref().map(
+                                |loc| {
+                                    celestial_coord_from_horizon(
+                                        target_alt_az,
+                                        loc.latitude.to_radians(),
+                                        loc.longitude.to_radians(),
+                                        &captured_image.readout_time,
+                                    )
+                                },
+                            )
+                        } else {
+                            None
+                        };
+                    if let Some(target_coord) = target_coord {
+                        let target_ra = target_coord.ra;
+                        let target_dec = target_coord.dec;
+                        let mount_type = ctx_preferences.mount_type;
+                        if mount_type == Some(MountType::Equatorial.into()) {
+                            let mut rel_ra = target_ra - bs_ra.to_degrees();
+                            if rel_ra < -180.0 {
+                                rel_ra += 360.0;
+                            }
+                            if rel_ra > 180.0 {
+                                rel_ra -= 360.0;
+                            }
+                            slew_request.offset_rotation_axis = Some(rel_ra);
+                            let rel_dec = target_dec - bs_dec.to_degrees();
+                            slew_request.offset_tilt_axis = Some(rel_dec);
                         }
-                        if rel_ra > 180.0 {
-                            rel_ra -= 360.0;
+                        if ctx_fixed_settings.observer_location.is_some()
+                            && mount_type == Some(MountType::AltAz.into())
+                        {
+                            let geo_location = ctx_fixed_settings
+                                .observer_location
+                                .clone()
+                                .unwrap();
+                            let lat = geo_location.latitude.to_radians();
+                            let long = geo_location.longitude.to_radians();
+                            let time = &captured_image.readout_time;
+                            let (bs_alt, bs_az, _) = alt_az_from_equatorial(
+                                bs_ra, bs_dec, lat, long, time,
+                            );
+                            let (target_alt, target_az, _) =
+                                alt_az_from_equatorial(
+                                    target_ra.to_radians(),
+                                    target_dec.to_radians(),
+                                    lat,
+                                    long,
+                                    time,
+                                );
+                            let mut rel_az =
+                                target_az.to_degrees() - bs_az.to_degrees();
+                            if rel_az < -180.0 {
+                                rel_az += 360.0;
+                            }
+                            if rel_az > 180.0 {
+                                rel_az -= 360.0;
+                            }
+                            slew_request.offset_rotation_axis = Some(rel_az);
+                            let rel_alt =
+                                target_alt.to_degrees() - bs_alt.to_degrees();
+                            slew_request.offset_tilt_axis = Some(rel_alt);
                         }
-                        slew_request.offset_rotation_axis = Some(rel_ra);
-                        let rel_dec = target_dec - bs_dec.to_degrees();
-                        slew_request.offset_tilt_axis = Some(rel_dec);
-                    }
-                    if ctx_fixed_settings.observer_location.is_some()
-                        && mount_type == Some(MountType::AltAz.into())
-                    {
-                        let geo_location = ctx_fixed_settings
-                            .observer_location
-                            .clone()
-                            .unwrap();
-                        let lat = geo_location.latitude.to_radians();
-                        let long = geo_location.longitude.to_radians();
-                        let time = &captured_image.readout_time;
-                        let (bs_alt, bs_az, _) = alt_az_from_equatorial(
-                            bs_ra, bs_dec, lat, long, time,
-                        );
-                        let (target_alt, target_az, _) = alt_az_from_equatorial(
-                            target_ra.to_radians(),
-                            target_dec.to_radians(),
-                            lat,
-                            long,
-                            time,
-                        );
-                        let mut rel_az =
-                            target_az.to_degrees() - bs_az.to_degrees();
-                        if rel_az < -180.0 {
-                            rel_az += 360.0;
-                        }
-                        if rel_az > 180.0 {
-                            rel_az -= 360.0;
-                        }
-                        slew_request.offset_rotation_axis = Some(rel_az);
-                        let rel_alt =
-                            target_alt.to_degrees() - bs_alt.to_degrees();
-                        slew_request.offset_tilt_axis = Some(rel_alt);
                     }
                 }
             }

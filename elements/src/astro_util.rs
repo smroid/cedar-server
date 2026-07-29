@@ -92,6 +92,12 @@ pub fn position_angle(p0_ra: f64, p0_dec: f64, p1_ra: f64, p1_dec: f64) -> f64 {
 
 /// Returns (alt, az, ha) in radians. Returned azimuth is clockwise from north.
 /// Returned hour angle is -PI..PI.
+///
+/// Note: no precession is applied; ra/dec are assumed to be in the same
+/// equatorial frame as `time`'s GMST (mean equinox of date), not J2000. See
+/// celestial_coord_from_horizon()/horizon_coord_from_celestial() where J2000
+/// correctness matters.
+///
 /// ra: right ascension in radians.
 /// dec: declination in radians.
 /// lat: observer latitude in radians.
@@ -119,7 +125,9 @@ pub fn alt_az_from_equatorial(
     (alt_frm_eq(hour_angle, dec, lat), az, ha)
 }
 
-/// Returns (ra, dec) in radians.
+/// Returns (ra, dec) in radians, in the same (of-date) frame as
+/// alt_az_from_equatorial() — see its epoch note.
+///
 /// alt: elevation in radians
 /// az: radians, clockwise from north
 /// lat: observer latitude in radians.
@@ -141,6 +149,65 @@ pub fn equatorial_from_alt_az(
     let ra = limit_to_two_PI(gmst + long - hour_angle);
 
     (ra, dec)
+}
+
+/// Converts a horizon coordinate to the J2000 equatorial coordinate that is at
+/// that altitude/azimuth at the given time.
+///
+/// horizon: Altitude/azimuth in degrees.
+/// lat: Observer latitude in radians.
+/// long: Observer longitude in radians.
+/// time: Time at which `horizon` is evaluated.
+pub fn celestial_coord_from_horizon(
+    horizon: &crate::cedar_common::HorizonCoord,
+    lat: f64,
+    long: f64,
+    time: &SystemTime,
+) -> crate::cedar_common::CelestialCoord {
+    let (ra_now, dec_now) = equatorial_from_alt_az(
+        horizon.altitude.to_radians(),
+        horizon.azimuth.to_radians(),
+        lat,
+        long,
+        time,
+    );
+    let (ra, dec) =
+        precess(ra_now, dec_now, decimal_year_from_system_time(time), 2000.0);
+    crate::cedar_common::CelestialCoord {
+        // Normalize to [0, 360) so precession near 0h doesn't yield a negative
+        // right ascension.
+        ra: ra.to_degrees().rem_euclid(360.0),
+        dec: dec.to_degrees(),
+        epoch: None, // J2000.
+    }
+}
+
+/// Converts an equatorial coordinate to the altitude/azimuth at which it
+/// appears at the given time. Inverse of celestial_coord_from_horizon(); see
+/// that function for why precession is applied.
+///
+/// coord: Equatorial coordinate; its `epoch` field is honored.
+/// lat: Observer latitude in radians.
+/// long: Observer longitude in radians.
+pub fn horizon_coord_from_celestial(
+    coord: &crate::cedar_common::CelestialCoord,
+    lat: f64,
+    long: f64,
+    time: &SystemTime,
+) -> crate::cedar_common::HorizonCoord {
+    let j2000 = celestial_coord_to_j2000(coord);
+    let (ra_now, dec_now) = precess(
+        j2000.ra.to_radians(),
+        j2000.dec.to_radians(),
+        2000.0,
+        decimal_year_from_system_time(time),
+    );
+    let (alt, az, _ha) =
+        alt_az_from_equatorial(ra_now, dec_now, lat, long, time);
+    crate::cedar_common::HorizonCoord {
+        altitude: alt.to_degrees(),
+        azimuth: az.to_degrees(),
+    }
 }
 
 /// Converts from equatorial camera coordinates to horizon coordinates.
@@ -232,6 +299,13 @@ fn greenwich_mean_sidereal_time_from_system_time(time: &SystemTime) -> f64 {
         mn_sidr(jd).to_degrees() / 15.0 + utc_hours * 1.00273790935;
 
     limit_to_two_PI((gmst_hours * 15.0).to_radians())
+}
+
+/// Returns `time` as a decimal year (e.g. 2026.57), the epoch representation
+/// used by precess().
+pub fn decimal_year_from_system_time(time: &SystemTime) -> f64 {
+    let dt_utc = DateTime::<Utc>::from(*time);
+    dt_utc.year() as f64 + dt_utc.ordinal0() as f64 / 365.0
 }
 
 /// Port of Tetra3's _distort_centroids() function. Note that argument is
@@ -623,7 +697,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        cedar_common::CelestialCoord,
+        cedar_common::{CelestialCoord, HorizonCoord},
         cedar_sky::{CatalogEntry, ObjectType},
     };
 
@@ -890,6 +964,126 @@ mod tests {
             precess(sirius_ra_j2000, sirius_dec_j2000, 2000.0, 2000.0);
         assert_eq!(ra_same, sirius_ra_j2000);
         assert_eq!(dec_same, sirius_dec_j2000);
+    }
+
+    // Mid-2026 observing time used by the horizon/celestial tests below.
+    fn test_time_2026() -> SystemTime {
+        let dt = FixedOffset::west_opt(8 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 7, 27, 22, 30, 0)
+            .unwrap();
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs_f64(
+                dt.timestamp_millis() as f64 / 1000.0,
+            ))
+            .unwrap()
+    }
+
+    #[test]
+    fn test_horizon_celestial_round_trip() {
+        let time = test_time_2026();
+        let lat = 37_f64.to_radians();
+        let long = -122_f64.to_radians();
+
+        for horizon in [
+            HorizonCoord {
+                altitude: 45.0,
+                azimuth: 90.0,
+            },
+            HorizonCoord {
+                altitude: 10.0,
+                azimuth: 350.0,
+            },
+            HorizonCoord {
+                altitude: 72.5,
+                azimuth: 183.25,
+            },
+        ] {
+            let celestial =
+                celestial_coord_from_horizon(&horizon, lat, long, &time);
+            // Right ascension must be normalized, not negative.
+            assert!(celestial.ra >= 0.0 && celestial.ra < 360.0);
+
+            let back =
+                horizon_coord_from_celestial(&celestial, lat, long, &time);
+            assert_abs_diff_eq!(
+                back.altitude,
+                horizon.altitude,
+                epsilon = 0.001
+            );
+            assert_abs_diff_eq!(back.azimuth, horizon.azimuth, epsilon = 0.001);
+        }
+    }
+
+    #[test]
+    fn test_celestial_from_horizon_zenith() {
+        let time = test_time_2026();
+        let lat_deg: f64 = 37.0;
+        let lat = lat_deg.to_radians();
+        let long = -122_f64.to_radians();
+
+        // The zenith is at the observer's latitude in declination. Azimuth is
+        // irrelevant when altitude is 90 degrees.
+        let zenith = HorizonCoord {
+            altitude: 90.0,
+            azimuth: 0.0,
+        };
+        let celestial = celestial_coord_from_horizon(&zenith, lat, long, &time);
+
+        // Precessing now -> J2000 moves the declination slightly, so allow
+        // more than the precession magnitude.
+        assert_abs_diff_eq!(celestial.dec, lat_deg, epsilon = 0.5);
+    }
+
+    #[test]
+    fn test_celestial_from_horizon_applies_precession() {
+        let time = test_time_2026();
+        let lat = 37_f64.to_radians();
+        let long = -122_f64.to_radians();
+        let horizon = HorizonCoord {
+            altitude: 45.0,
+            azimuth: 90.0,
+        };
+
+        let precessed =
+            celestial_coord_from_horizon(&horizon, lat, long, &time);
+
+        // The naive conversion leaves the result on the mean equinox of date.
+        let (naive_ra, naive_dec) = equatorial_from_alt_az(
+            horizon.altitude.to_radians(),
+            horizon.azimuth.to_radians(),
+            lat,
+            long,
+            &time,
+        );
+
+        // The two must differ by the precession accumulated since J2000. The
+        // exact displacement depends on where the target sits relative to the
+        // ecliptic (general precession is 50.3 arcsec/yr along the ecliptic, so
+        // ~0.37 degrees over ~26.6 yr is the upper bound); what this guards is
+        // that the conversion doesn't silently return coordinates for the
+        // current epoch instead of J2000.
+        let separation = angular_separation(
+            precessed.ra.to_radians(),
+            precessed.dec.to_radians(),
+            naive_ra,
+            naive_dec,
+        )
+        .to_degrees();
+        assert!(
+            (0.15..0.40).contains(&separation),
+            "precession displacement {separation} degrees is outside the \
+             plausible range for 2026"
+        );
+    }
+
+    #[test]
+    fn test_decimal_year_from_system_time() {
+        assert_abs_diff_eq!(
+            decimal_year_from_system_time(&test_time_2026()),
+            2026.57,
+            epsilon = 0.01
+        );
     }
 
     #[test]

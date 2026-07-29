@@ -20,8 +20,8 @@ use bluer::{
     rfcomm::{Profile, Role},
     Session, Uuid,
 };
-use cedar_elements::astro_util::precess;
-use chrono::{DateTime, Datelike, FixedOffset, Local};
+use cedar_elements::astro_util::{decimal_year_from_system_time, precess};
+use chrono::{DateTime, FixedOffset, Local};
 use futures::StreamExt;
 use log::{debug, info, warn};
 use memchr::memchr;
@@ -227,7 +227,7 @@ struct Lx200Controller {
     //                   Prime Meridian, from 0-359
     longitude: String,
 
-    // Current epoch to the closest tenth of a year
+    // Current epoch as a decimal year.
     jnow_epoch: f64,
 
     // Stellarium seems to use J2000 epoch. If Stellarium is connected do not
@@ -241,9 +241,7 @@ impl Lx200Controller {
         cb: Box<dyn Fn() + Send + Sync>,
     ) -> Self {
         let dt = Local::now();
-        let jnow = ((dt.year() as f64 + dt.ordinal0() as f64 / 365.0) * 10.0)
-            .round()
-            / 10.0;
+        let jnow = decimal_year_from_system_time(&SystemTime::from(dt));
         debug!("Using now epoch: {}", jnow);
         Lx200Controller {
             telescope_position,
@@ -530,11 +528,8 @@ impl Lx200Controller {
                 Ok(dt) => {
                     info!("Set date/time to {}", dt);
                     self.datetime = dt;
-                    self.jnow_epoch = ((dt.year() as f64
-                        + dt.ordinal0() as f64 / 365.0)
-                        * 10.0)
-                        .round()
-                        / 10.0;
+                    self.jnow_epoch =
+                        decimal_year_from_system_time(&SystemTime::from(dt));
                     let mut locked_position =
                         self.telescope_position.lock().await;
                     locked_position.utc_date = Some(SystemTime::from(dt));

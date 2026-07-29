@@ -24,7 +24,7 @@ use cedar_elements::{
         FovCatalogEntry, ImageCoord, LatLong,
         PlateSolution as PlateSolutionProto, SlewRequest, ValueStats,
     },
-    cedar_common::CelestialCoord,
+    cedar_common::{CelestialCoord, HorizonCoord},
     cedar_sky::{CatalogEntry, CatalogEntryMatch, Constellation, Ordering},
     cedar_sky_trait::{CedarSkyTrait, LocationInfo},
     hot_pixel_trait::HotPixelTrait,
@@ -46,14 +46,30 @@ const MINIMUM_STARS: usize = 4;
 // interpolation when the scope is at rest.
 const IMU_MOTION_THRESHOLD_DEG_PER_SEC: f64 = 0.5;
 
+// An active goto target. `coord` is always the J2000 equatorial position that
+// drives the plate solve hint and all of the slew geometry; for an alt/az goto
+// it is recomputed every frame, since a fixed alt/az point's right ascension
+// advances ~15 degrees/hour.
+#[derive(Clone, Debug)]
+pub struct SlewTargetInfo {
+    pub coord: CelestialCoord,
+
+    // Present iff the goto was initiated as a fixed alt/az target.
+    pub alt_az: Option<HorizonCoord>,
+}
+
 // Pre-solve callback: called before the plate solve to get any active slew
-// target and/or sync coordinates. Returns (slew_target, sync_coord).
+// target and/or sync coordinates. Takes the frame's readout time, which is used
+// to convert an alt/az goto target to equatorial coordinates.
+// Returns (slew_target, sync_coord).
 type PreSolveCallback = Arc<
-    dyn Fn() -> std::pin::Pin<
+    dyn Fn(
+            SystemTime,
+        ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<
                         Output = (
-                            Option<CelestialCoord>,
+                            Option<SlewTargetInfo>,
                             Option<CelestialCoord>,
                         ),
                     > + Send,
@@ -776,7 +792,7 @@ impl SolveEngine {
         hot_pixel_map: &Option<
             Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
         >,
-        slew_target: Option<CelestialCoord>,
+        slew_target: Option<SlewTargetInfo>,
         sync_coord: Option<CelestialCoord>,
         solve_finish_time: Option<SystemTime>,
     ) {
@@ -827,7 +843,7 @@ impl SolveEngine {
         hot_pixel_map: &Option<
             Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
         >,
-        slew_target: Option<CelestialCoord>,
+        slew_target: Option<SlewTargetInfo>,
         sync_coord: Option<CelestialCoord>,
         width: u32,
         height: u32,
@@ -920,13 +936,14 @@ impl SolveEngine {
                 // If we're slewing, see if the boresight is close enough to
                 // the slew target that Cedar Aim should display an inset image
                 // of the region around the boresight.
-                if let Some(target_coords) = &slew_target {
+                if let Some(slew_target) = &slew_target {
                     let target_coords_j2000 =
-                        celestial_coord_to_j2000(target_coords);
+                        celestial_coord_to_j2000(&slew_target.coord);
                     (slew_request, boresight_image_region, boresight_image) =
                         Self::handle_slew(
                             &cedar_sky,
                             &target_coords_j2000,
+                            &slew_target.alt_az,
                             image,
                             &boresight_coords,
                             &boresight_pixel,
@@ -1156,7 +1173,7 @@ impl SolveEngine {
         debug!("Starting solve engine");
         let mut last_detect_result: Option<DetectResult> = None;
 
-        let mut slew_target: Option<CelestialCoord> = None;
+        let mut slew_target: Option<SlewTargetInfo> = None;
         let mut sync_coord: Option<CelestialCoord> = None;
         let mut solve_extension = SolveExtension::default();
         let mut solve_params = SolveParams::default();
@@ -1177,12 +1194,16 @@ impl SolveEngine {
 
                 // Call pre-solve callback to get current slew target and sync
                 // coords.
-                (slew_target, sync_coord) = pre_solve_callback().await;
+                (slew_target, sync_coord) = pre_solve_callback(
+                    detect_result.captured_image.readout_time,
+                )
+                .await;
 
                 {
                     let mut locked_state = state.lock().await;
                     locked_state.eta = None;
-                    locked_state.slew_target = slew_target.clone();
+                    locked_state.slew_target =
+                        slew_target.as_ref().map(|st| st.coord.clone());
 
                     // Set up solve arguments.
                     solve_extension = SolveExtension::default();
@@ -1202,7 +1223,7 @@ impl SolveEngine {
                     }
                     if let Some(st) = &slew_target {
                         solve_extension.target_sky_coord =
-                            Some(vec![st.clone()]);
+                            Some(vec![st.coord.clone()]);
                     }
                     solve_params.distortion = Some(locked_state.distortion);
                     solve_params.match_max_error =
@@ -1372,9 +1393,13 @@ impl SolveEngine {
             .map(|sce| sce.entry.unwrap())
     }
 
+    // `target_coords` is the J2000 position of the goto target. `target_alt_az`
+    // is present iff the goto was initiated as a fixed alt/az target, in which
+    // case it is reported in place of the equatorial target.
     async fn handle_slew(
         cedar_sky: &Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
         target_coords: &CelestialCoord,
+        target_alt_az: &Option<HorizonCoord>,
         image: &GrayImage,
         boresight_coords: &CelestialCoord,
         boresight_pixel: &Option<ImageCoord>,
@@ -1383,8 +1408,13 @@ impl SolveEngine {
         height: u32,
         eyepiece_fov: f64,
     ) -> (Option<SlewRequest>, Option<Rect>, Option<GrayImage>) {
+        // Exactly one of `target` and `target_alt_az` is populated.
         let mut slew_request = SlewRequest {
-            target: Some(target_coords.clone()),
+            target: match target_alt_az {
+                Some(_) => None,
+                None => Some(target_coords.clone()),
+            },
+            target_alt_az: target_alt_az.clone(),
             ..Default::default()
         };
         let bs_ra = boresight_coords.ra.to_radians();
@@ -1404,12 +1434,19 @@ impl SolveEngine {
         }
         slew_request.target_angle = Some(angle);
 
-        if let Some(cedar_sky) = cedar_sky {
-            // See if Cedar-sky has a catalog object corresponding to the slew
-            // target's RA/Dec.
-            slew_request.target_catalog_entry =
-                Self::get_catalog_entry_for_target(cedar_sky, target_coords)
+        // An alt/az goto has no catalog identity: the target is a direction in
+        // the sky, not an object.
+        if target_alt_az.is_none() {
+            if let Some(cedar_sky) = cedar_sky {
+                // See if Cedar-sky has a catalog object corresponding to the
+                // slew target's RA/Dec.
+                slew_request.target_catalog_entry =
+                    Self::get_catalog_entry_for_target(
+                        cedar_sky,
+                        target_coords,
+                    )
                     .await;
+            }
         }
 
         if plate_solution.target_pixel.is_empty() {
@@ -1716,4 +1753,94 @@ pub struct PlateSolution {
 
     // Time interval between successive plate solve attempts.
     pub solve_interval_stats: ValueStats,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_plate_solution() -> PlateSolutionProto {
+        PlateSolutionProto {
+            roll: 0.0,
+            fov: 10.0,
+            // Leaving `target_pixel` empty means the target is not in the
+            // image, so handle_slew() returns before doing image geometry.
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_slew_ra_dec_target() {
+        let (slew_request, _, _) = SolveEngine::handle_slew(
+            /*cedar_sky=*/ &None,
+            &CelestialCoord {
+                ra: 10.0,
+                dec: 20.0,
+                epoch: None,
+            },
+            /*target_alt_az=*/ &None,
+            &GrayImage::new(100, 100),
+            /*boresight_coords=*/
+            &CelestialCoord {
+                ra: 11.0,
+                dec: 21.0,
+                epoch: None,
+            },
+            /*boresight_pixel=*/ &None,
+            &test_plate_solution(),
+            /*width=*/ 100,
+            /*height=*/ 100,
+            /*eyepiece_fov=*/ 1.0,
+        )
+        .await;
+
+        let slew_request = slew_request.unwrap();
+        assert_eq!(slew_request.target.as_ref().unwrap().ra, 10.0);
+        assert!(slew_request.target_alt_az.is_none());
+        assert!(slew_request.target_distance.is_some());
+        assert!(slew_request.target_angle.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_handle_slew_alt_az_target() {
+        let target_alt_az = Some(HorizonCoord {
+            altitude: 45.0,
+            azimuth: 90.0,
+        });
+        let (slew_request, _, _) = SolveEngine::handle_slew(
+            /*cedar_sky=*/ &None,
+            // The equatorial position the alt/az target currently corresponds
+            // to; it still drives the distance/angle geometry.
+            &CelestialCoord {
+                ra: 10.0,
+                dec: 20.0,
+                epoch: None,
+            },
+            &target_alt_az,
+            &GrayImage::new(100, 100),
+            /*boresight_coords=*/
+            &CelestialCoord {
+                ra: 11.0,
+                dec: 21.0,
+                epoch: None,
+            },
+            /*boresight_pixel=*/ &None,
+            &test_plate_solution(),
+            /*width=*/ 100,
+            /*height=*/ 100,
+            /*eyepiece_fov=*/ 1.0,
+        )
+        .await;
+
+        let slew_request = slew_request.unwrap();
+        // Exactly one of the two target fields is populated.
+        assert!(slew_request.target.is_none());
+        assert_eq!(slew_request.target_alt_az.as_ref().unwrap().altitude, 45.0);
+        assert_eq!(slew_request.target_alt_az.as_ref().unwrap().azimuth, 90.0);
+        // An alt/az goto names a direction, not an object.
+        assert!(slew_request.target_catalog_entry.is_none());
+        // Geometry is still reported.
+        assert!(slew_request.target_distance.is_some());
+        assert!(slew_request.target_angle.is_some());
+    }
 }

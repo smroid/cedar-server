@@ -5,7 +5,9 @@
 // Bluetooth, no Operate-mode state machine. What it does exercise is the same
 // camera -> detect -> solve path the box runs in flight.
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future, pin::Pin, sync::Arc, time::Duration, time::SystemTime,
+};
 
 use cedar_camera::{
     abstract_camera::AbstractCamera, image_camera::ImageCamera,
@@ -18,7 +20,7 @@ use cedar_elements::{
 };
 use cedar_server::{
     detect_engine::{DetectEngine, DetectResult},
-    solve_engine::{PlateSolution, SolveEngine},
+    solve_engine::{PlateSolution, SlewTargetInfo, SolveEngine},
 };
 use image::GrayImage;
 use tokio::sync::Mutex;
@@ -96,18 +98,20 @@ impl Stack {
         // used when DetectEngine's `detect_binning` differs from 1.
 
         let pre_solve: Arc<
-            dyn Fn() -> Pin<
+            dyn Fn(
+                    SystemTime,
+                ) -> Pin<
                     Box<
                         dyn Future<
                                 Output = (
-                                    Option<CelestialCoord>,
+                                    Option<SlewTargetInfo>,
                                     Option<CelestialCoord>,
                                 ),
                             > + Send,
                     >,
                 > + Send
                 + Sync,
-        > = Arc::new(|| Box::pin(async { (None, None) }));
+        > = Arc::new(|_| Box::pin(async { (None, None) }));
 
         let post_solve: Arc<
             dyn Fn(
