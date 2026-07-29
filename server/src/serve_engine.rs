@@ -424,7 +424,7 @@ impl ServeEngine {
     async fn produce_serve_result(
         state: &Arc<tokio::sync::Mutex<ServeState>>,
         detect_result: DetectResult,
-        plate_solution: Option<PlateSolution>,
+        mut plate_solution: Option<PlateSolution>,
         solve_engine: &Arc<tokio::sync::Mutex<SolveEngine>>,
         detect_engine: &Arc<tokio::sync::Mutex<DetectEngine>>,
         compressor: &mut turbojpeg::Compressor,
@@ -596,12 +596,12 @@ impl ServeEngine {
                     90.0 - zenith_roll_angle
                 };
                 lbi.zenith_roll_angle += image_rotate_angle;
-                if let Some(ref mut psp) =
-                    plate_solution_proto.as_ref().map(|p| p.clone())
-                {
-                    psp.roll = (psp.roll + image_rotate_angle) % 360.0;
-                    if psp.roll < 0.0 {
-                        psp.roll += 360.0;
+                if let Some(ref mut ps) = plate_solution {
+                    if let Some(ref mut psp) = ps.plate_solution {
+                        psp.roll = (psp.roll + image_rotate_angle) % 360.0;
+                        if psp.roll < 0.0 {
+                            psp.roll += 360.0;
+                        }
                     }
                 }
                 ImageRotator::new(image_rotate_angle)
