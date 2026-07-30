@@ -1806,6 +1806,7 @@ mod tests {
         let target_alt_az = Some(HorizonCoord {
             altitude: 45.0,
             azimuth: 90.0,
+            epoch: None,
         });
         let (slew_request, _, _) = SolveEngine::handle_slew(
             /*cedar_sky=*/ &None,

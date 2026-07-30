@@ -33,7 +33,7 @@ use cedar_camera::{
 use cedar_elements::{
     astro_util::{
         alt_az_from_equatorial, celestial_coord_from_horizon,
-        celestial_coord_to_j2000,
+        celestial_coord_to_j2000, horizon_coord_from_celestial,
     },
     cedar::{
         cedar_server::{Cedar, CedarServer},
@@ -2261,7 +2261,7 @@ impl Cedar for MyCedar {
                         address: device.address,
                     });
                 }
-                GetBondedDevicesResponse { devices: devices }
+                GetBondedDevicesResponse { devices }
             }
             Err(_) => {
                 warn!("Error retrieving bonded devices");
@@ -2284,6 +2284,66 @@ impl Cedar for MyCedar {
             }
         };
         Ok(tonic::Response::new(EmptyMessage::default()))
+    }
+
+    async fn convert_to_horizon(
+        &self,
+        request: tonic::Request<CelestialCoord>,
+    ) -> Result<tonic::Response<HorizonCoord>, tonic::Status> {
+        let coord = request.into_inner();
+        let observer_location = self
+            .state
+            .lock()
+            .await
+            .fixed_settings
+            .clone()
+            .lock()
+            .await
+            .observer_location
+            .clone()
+            .ok_or_else(|| {
+                logged_status!(
+                    failed_precondition,
+                    "Observer location is not known"
+                )
+            })?;
+        let horizon = horizon_coord_from_celestial(
+            &coord,
+            observer_location.latitude.to_radians(),
+            observer_location.longitude.to_radians(),
+            &SystemTime::now(),
+        );
+        Ok(tonic::Response::new(horizon))
+    }
+
+    async fn convert_to_celestial(
+        &self,
+        request: tonic::Request<HorizonCoord>,
+    ) -> Result<tonic::Response<CelestialCoord>, tonic::Status> {
+        let horizon = request.into_inner();
+        let observer_location = self
+            .state
+            .lock()
+            .await
+            .fixed_settings
+            .clone()
+            .lock()
+            .await
+            .observer_location
+            .clone()
+            .ok_or_else(|| {
+                logged_status!(
+                    failed_precondition,
+                    "Observer location is not known"
+                )
+            })?;
+        let coord = celestial_coord_from_horizon(
+            &horizon,
+            observer_location.latitude.to_radians(),
+            observer_location.longitude.to_radians(),
+            &SystemTime::now(),
+        );
+        Ok(tonic::Response::new(coord))
     }
 
     async fn set_pairing_mode(
@@ -5777,6 +5837,7 @@ mod tests {
         let mut alt_az = Some(HorizonCoord {
             altitude: 45.0,
             azimuth: 90.0,
+            epoch: None,
         });
         let target = MyCedar::select_slew_target(
             /*slew_active=*/ false,
@@ -5801,6 +5862,7 @@ mod tests {
         let mut alt_az = Some(HorizonCoord {
             altitude: 45.0,
             azimuth: 90.0,
+            epoch: None,
         });
         assert!(MyCedar::select_slew_target(
             /*slew_active=*/ false,
@@ -5822,6 +5884,7 @@ mod tests {
         let mut alt_az = Some(HorizonCoord {
             altitude: 45.0,
             azimuth: 90.0,
+            epoch: None,
         });
         // SkySafari/Stellarium set slew_active directly; initiate_slew_alt_az()
         // had cleared it, so this means a new RA/Dec goto arrived.
@@ -5846,6 +5909,7 @@ mod tests {
         let alt_az_coord = HorizonCoord {
             altitude: 45.0,
             azimuth: 90.0,
+            epoch: None,
         };
         let now = SystemTime::now();
         let later = now + Duration::from_secs(3600);

@@ -151,8 +151,9 @@ pub fn equatorial_from_alt_az(
     (ra, dec)
 }
 
-/// Converts a horizon coordinate to the J2000 equatorial coordinate that is at
-/// that altitude/azimuth at the given time.
+/// Converts a horizon coordinate to the equatorial coordinate that is at that
+/// altitude/azimuth at the given time. The result is expressed at
+/// `horizon.epoch` if present, else J2000.
 ///
 /// horizon: Altitude/azimuth in degrees.
 /// lat: Observer latitude in radians.
@@ -171,14 +172,19 @@ pub fn celestial_coord_from_horizon(
         long,
         time,
     );
-    let (ra, dec) =
-        precess(ra_now, dec_now, decimal_year_from_system_time(time), 2000.0);
+    let to_epoch = horizon.epoch.unwrap_or(2000.0);
+    let (ra, dec) = precess(
+        ra_now,
+        dec_now,
+        decimal_year_from_system_time(time),
+        to_epoch,
+    );
     crate::cedar_common::CelestialCoord {
         // Normalize to [0, 360) so precession near 0h doesn't yield a negative
         // right ascension.
         ra: ra.to_degrees().rem_euclid(360.0),
         dec: dec.to_degrees(),
-        epoch: None, // J2000.
+        epoch: horizon.epoch.map(|_| to_epoch),
     }
 }
 
@@ -195,11 +201,10 @@ pub fn horizon_coord_from_celestial(
     long: f64,
     time: &SystemTime,
 ) -> crate::cedar_common::HorizonCoord {
-    let j2000 = celestial_coord_to_j2000(coord);
     let (ra_now, dec_now) = precess(
-        j2000.ra.to_radians(),
-        j2000.dec.to_radians(),
-        2000.0,
+        coord.ra.to_radians(),
+        coord.dec.to_radians(),
+        coord.epoch.unwrap_or(2000.0),
         decimal_year_from_system_time(time),
     );
     let (alt, az, _ha) =
@@ -207,6 +212,10 @@ pub fn horizon_coord_from_celestial(
     crate::cedar_common::HorizonCoord {
         altitude: alt.to_degrees(),
         azimuth: az.to_degrees(),
+        // `epoch` is only meaningful as an input to celestial_coord_from_horizon()
+        // (via the ConvertToCelestial RPC); it has no meaning on a HorizonCoord
+        // that resulted from a conversion.
+        epoch: None,
     }
 }
 
@@ -989,14 +998,17 @@ mod tests {
             HorizonCoord {
                 altitude: 45.0,
                 azimuth: 90.0,
+                epoch: None,
             },
             HorizonCoord {
                 altitude: 10.0,
                 azimuth: 350.0,
+                epoch: None,
             },
             HorizonCoord {
                 altitude: 72.5,
                 azimuth: 183.25,
+                epoch: None,
             },
         ] {
             let celestial =
@@ -1027,6 +1039,7 @@ mod tests {
         let zenith = HorizonCoord {
             altitude: 90.0,
             azimuth: 0.0,
+            epoch: None,
         };
         let celestial = celestial_coord_from_horizon(&zenith, lat, long, &time);
 
@@ -1043,6 +1056,7 @@ mod tests {
         let horizon = HorizonCoord {
             altitude: 45.0,
             azimuth: 90.0,
+            epoch: None,
         };
 
         let precessed =
@@ -1074,6 +1088,47 @@ mod tests {
             (0.15..0.40).contains(&separation),
             "precession displacement {separation} degrees is outside the \
              plausible range for 2026"
+        );
+    }
+
+    #[test]
+    fn test_celestial_from_horizon_honors_requested_epoch() {
+        let time = test_time_2026();
+        let lat = 37_f64.to_radians();
+        let long = -122_f64.to_radians();
+        let horizon_j2000 = HorizonCoord {
+            altitude: 45.0,
+            azimuth: 90.0,
+            epoch: None,
+        };
+        let horizon_jnow = HorizonCoord {
+            epoch: Some(decimal_year_from_system_time(&time)),
+            ..horizon_j2000.clone()
+        };
+
+        let j2000 =
+            celestial_coord_from_horizon(&horizon_j2000, lat, long, &time);
+        assert!(j2000.epoch.is_none());
+
+        let jnow =
+            celestial_coord_from_horizon(&horizon_jnow, lat, long, &time);
+        assert_eq!(jnow.epoch, horizon_jnow.epoch);
+
+        // Requesting the of-date epoch should recover the un-precessed
+        // conversion (up to the tiny numerical error of a precess() round
+        // trip), since the horizon coordinate was evaluated at `time`.
+        let (naive_ra, naive_dec) = equatorial_from_alt_az(
+            horizon_j2000.altitude.to_radians(),
+            horizon_j2000.azimuth.to_radians(),
+            lat,
+            long,
+            &time,
+        );
+        assert_abs_diff_eq!(jnow.ra, naive_ra.to_degrees(), epsilon = 0.0001);
+        assert_abs_diff_eq!(
+            jnow.dec,
+            naive_dec.to_degrees(),
+            epsilon = 0.0001
         );
     }
 

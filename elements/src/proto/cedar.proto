@@ -1158,4 +1158,8 @@ service Cedar {
   rpc SetPairingMode(SetPairingModeRequest) returns (EmptyMessage);
   rpc GetBondedDevices(EmptyMessage) returns (GetBondedDevicesResponse);
   rpc RemoveBond(RemoveBondRequest) returns (EmptyMessage);
+
+  // Conversion utility. Error if the observer location or time is not known.
+  rpc ConvertToHorizon(cedar_common.CelestialCoord) returns (cedar_common.HorizonCoord);
+  rpc ConvertToCelestial(cedar_common.HorizonCoord) returns (cedar_common.CelestialCoord);
 }

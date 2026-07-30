@@ -20,4 +20,8 @@ message CelestialCoord {
 message HorizonCoord {
   double altitude = 1;  // Degrees, 0..90.
   double azimuth = 2;  // Degrees, 0..360. Clockwise from north.
+
+  // Meaningful only when calling the ConvertToCelestial() RPC. Determines what
+  // the epoch will be in the returned CelestialCoord.
+  optional double epoch = 3;
 }
