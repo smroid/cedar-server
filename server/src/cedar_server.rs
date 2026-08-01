@@ -383,6 +383,15 @@ impl Cedar for MyCedar {
 
         let req: FixedSettings = request.into_inner();
         if let Some(observer_location) = req.observer_location {
+            if !(-90.0..=90.0).contains(&observer_location.latitude) {
+                return Err(logged_status!(
+                    invalid_argument,
+                    format!(
+                        "observer_location.latitude must be in -90..90; got {}",
+                        observer_location.latitude
+                    )
+                ));
+            }
             let locked_state = self.state.lock().await;
             let fixed_settings_arc = locked_state.fixed_settings.clone();
             let solve_engine_arc = locked_state.solve_engine.clone();
@@ -1116,6 +1125,17 @@ impl Cedar for MyCedar {
         let _timer = GrpcTimer::new("update_preferences");
 
         let req: Preferences = request.into_inner();
+        if let Some(eyepiece_fov) = req.eyepiece_fov {
+            if eyepiece_fov <= 0.0 {
+                return Err(logged_status!(
+                    invalid_argument,
+                    format!(
+                        "eyepiece_fov must be positive; got {}",
+                        eyepiece_fov
+                    )
+                ));
+            }
+        }
         // Hold our lock across this entire operation to ensure that the file
         // update is done one at a time.
         let mut locked_state = self.state.lock().await;
@@ -1708,6 +1728,15 @@ impl Cedar for MyCedar {
             }
         }
         if let Some(slew_coord) = req.initiate_slew {
+            if !(-90.0..=90.0).contains(&slew_coord.dec) {
+                return Err(logged_status!(
+                    invalid_argument,
+                    format!(
+                        "initiate_slew.dec must be in -90..90; got {}",
+                        slew_coord.dec
+                    )
+                ));
+            }
             let (
                 preferences_arc,
                 fixed_settings_arc,
@@ -1741,6 +1770,16 @@ impl Cedar for MyCedar {
             telescope.slew_active = true;
         }
         if let Some(slew_alt_az) = req.initiate_slew_alt_az {
+            if !(-90.0..=90.0).contains(&slew_alt_az.altitude) {
+                return Err(logged_status!(
+                    invalid_argument,
+                    format!(
+                        "initiate_slew_alt_az.altitude must be in -90..90; \
+                         got {}",
+                        slew_alt_az.altitude
+                    )
+                ));
+            }
             let (fixed_settings_arc, telescope_pos_arc, alt_az_slew_target_arc) = {
                 let locked_state = self.state.lock().await;
                 (
@@ -2291,6 +2330,12 @@ impl Cedar for MyCedar {
         request: tonic::Request<CelestialCoord>,
     ) -> Result<tonic::Response<HorizonCoord>, tonic::Status> {
         let coord = request.into_inner();
+        if !(-90.0..=90.0).contains(&coord.dec) {
+            return Err(logged_status!(
+                invalid_argument,
+                format!("dec must be in -90..90; got {}", coord.dec)
+            ));
+        }
         let observer_location = self
             .state
             .lock()
@@ -2321,6 +2366,15 @@ impl Cedar for MyCedar {
         request: tonic::Request<HorizonCoord>,
     ) -> Result<tonic::Response<CelestialCoord>, tonic::Status> {
         let horizon = request.into_inner();
+        if !(-90.0..=90.0).contains(&horizon.altitude) {
+            return Err(logged_status!(
+                invalid_argument,
+                format!(
+                    "altitude must be in -90..90; got {}",
+                    horizon.altitude
+                )
+            ));
+        }
         let observer_location = self
             .state
             .lock()
