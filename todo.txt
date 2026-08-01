@@ -15,11 +15,6 @@ Multiple scopes
 * FOV
 * saved alignment
 
-Ability to access (and download) saved images in Cedar Aim.
-Maybe save them to web side in the first place?
-High-quality jpg with exif info.
-Pacifier/busy indicator for capturing/downloading image
-
 Tetra3
 * use brightness ratio (broadly quantized) of most separated stars in
   pattern as additional discriminant (post hash lookup? or incorporate
@@ -65,8 +60,6 @@ Remaining work:
 * identify constellation of planet
 * constellation lines
 
-Push-to ra/dec button: pops up text entry field
-
 bug report
 
 vignetting calibration
@@ -74,15 +67,9 @@ vignetting calibration
 Wifi management
 * switching wifi mode-- setting in web UI?
 
-FITS support for saved images? Other formats?
-
 logging
 * observer log is separate
 * move cedar_log.txt to sane directory (cmd line arg?)
 
 motion classification
 * adjust update interval
-
-UI:
-* operation controls
-  - save image: add confirmation+rename
