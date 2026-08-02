@@ -38,6 +38,12 @@ use log::{debug, error};
 // see its use in worker().
 const STAR_COUNT_EMA_ALPHA: f64 = 0.5;
 
+/// When we are short of stars, auto-exposure lengthens the exposure to detect
+/// more. This bounds how bright the image may get in doing so, as a mean pixel
+/// value. Shared with Calibrator::calibrate_exposure_duration(), which applies
+/// the same limit while searching for an exposure duration.
+pub const BRIGHTNESS_LIMIT: f64 = 240.0;
+
 pub struct DetectEngine {
     // Initial exposure duration, prior to doing any calibrations. Setup mode
     // auto-exposure uses this as its baseline.
@@ -899,17 +905,14 @@ impl DetectEngine {
                         new_exposure_duration_secs =
                             fallback_exposure_duration_secs;
                     } else {
-                        // When increasing exposure to increase star count,
-                        // don't exceed a brightness limit. Note: this should be
-                        // the same value as in
-                        // Calibrator::calibrate_exposure_duration().
-                        const BRIGHTNESS_LIMIT: u8 = 240;
                         // >1 if we have more stars than goal; <1 if fewer stars
                         // than goal.
                         let star_goal_fraction =
                             moving_average / star_count_goal as f64;
+                        // When increasing exposure to increase star count,
+                        // don't exceed a brightness limit.
                         if star_goal_fraction < 1.0
-                            && stats.mean as u8 > BRIGHTNESS_LIMIT
+                            && stats.mean > BRIGHTNESS_LIMIT
                         {
                             new_exposure_duration_secs =
                                 fallback_exposure_duration_secs;
