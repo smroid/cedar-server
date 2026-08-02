@@ -38,11 +38,52 @@ use log::{debug, error};
 // see its use in worker().
 const STAR_COUNT_EMA_ALPHA: f64 = 0.5;
 
-/// When we are short of stars, auto-exposure lengthens the exposure to detect
-/// more. This bounds how bright the image may get in doing so, as a mean pixel
-/// value. Shared with Calibrator::calibrate_exposure_duration(), which applies
-/// the same limit while searching for an exposure duration.
-pub const BRIGHTNESS_LIMIT: f64 = 240.0;
+/// Ratio between a compact star's excess over background as it appears in the
+/// `binning`-binned image, where detection runs, and its peak excess in the
+/// full resolution image, where it saturates.
+///
+/// A star with peak excess A carries a total flux of roughly
+/// A * 2*pi*sigma_psf^2. Binning averages B*B pixels, so whichever part of that
+/// flux the block covers ends up spread across B*B pixels.
+fn binned_star_fraction(binning: u32) -> f64 {
+    // 2*pi*sigma_psf^2, for the roughly 0.7 pixel point spread this system is
+    // focused for.
+    const STAR_FLUX_OVER_PEAK: f64 = 3.08;
+    match binning {
+        // Unbinned: detection sees the star's peak pixel itself.
+        1 => 1.0,
+        // A 2x2 block holds the peak pixel and about 70% of the star's flux.
+        2 => STAR_FLUX_OVER_PEAK * 0.70 / 4.0,
+        // 4x4 and larger cover essentially all of the star.
+        b => STAR_FLUX_OVER_PEAK / (b * b) as f64,
+    }
+}
+
+/// Returns the greatest background level, as a mean pixel value, at which
+/// lengthening the exposure can still yield a detectable star.
+///
+/// Auto-exposure lengthens the exposure when it is short of stars. Past this
+/// background level that stops helping: a star must exceed the background by
+/// `sigma` times the noise of the binned image where detection runs, yet it
+/// saturates in the full resolution image, where its peak is larger by
+/// 1 / binned_star_fraction(). Beyond this limit, any star bright enough to be
+/// detected is already clipped.
+///
+/// `noise_estimate` describes the full resolution image; binning reduces the
+/// noise by the binning factor.
+///
+/// Shared with Calibrator::calibrate_exposure_duration(), which applies the
+/// same limit while searching for an exposure duration.
+pub fn brightness_limit(
+    sigma: f64,
+    noise_estimate: f64,
+    binning: u32,
+) -> f64 {
+    let noise_detect = noise_estimate / binning as f64;
+    let peak_excess_needed =
+        sigma * noise_detect / binned_star_fraction(binning);
+    255.0 - peak_excess_needed
+}
 
 pub struct DetectEngine {
     // Initial exposure duration, prior to doing any calibrations. Setup mode
@@ -910,9 +951,15 @@ impl DetectEngine {
                         let star_goal_fraction =
                             moving_average / star_count_goal as f64;
                         // When increasing exposure to increase star count,
-                        // don't exceed a brightness limit.
+                        // don't exceed the brightness beyond which no star we
+                        // could newly detect would fit below saturation.
+                        let max_background = brightness_limit(
+                            detection_sigma,
+                            noise_estimate,
+                            detect_binning,
+                        );
                         if star_goal_fraction < 1.0
-                            && stats.mean > BRIGHTNESS_LIMIT
+                            && stats.mean > max_background
                         {
                             new_exposure_duration_secs =
                                 fallback_exposure_duration_secs;
@@ -1173,4 +1220,102 @@ pub struct FocusAid {
     // The location of `daylight_focus_zoom_image` in image coordinates.
     // Only present in daylight mode.
     pub daylight_focus_zoom_region: Option<Rect>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_abs_diff_eq;
+
+    // Noise of the full resolution twilight test image, in ADU. Detection runs
+    // on the 2x binned image, where this measures around 4.25.
+    const TWILIGHT_NOISE: f64 = 8.5;
+    // Noise of a dark sky image, for contrast.
+    const DARK_SKY_NOISE: f64 = 1.0;
+
+    #[test]
+    fn test_brightness_limit_twilight_sensitivity_settings() {
+        // Detection at 2x binning. A star must clear sigma * 4.25 ADU in the
+        // binned image; its full resolution peak is about 1/0.54 of that
+        // higher, and the peak is what saturates.
+        //
+        // Lowering sigma raises the limit: a dimmer detection threshold needs
+        // less room below saturation, so we can tolerate a brighter sky.
+        assert_abs_diff_eq!(
+            brightness_limit(8.0, TWILIGHT_NOISE, 2),
+            191.9,
+            epsilon = 0.1
+        );
+        assert_abs_diff_eq!(
+            // sigma scaled by 0.9.
+            brightness_limit(7.2, TWILIGHT_NOISE, 2),
+            198.2,
+            epsilon = 0.1
+        );
+        assert_abs_diff_eq!(
+            // sigma scaled by 0.8.
+            brightness_limit(6.4, TWILIGHT_NOISE, 2),
+            204.5,
+            epsilon = 0.1
+        );
+    }
+
+    #[test]
+    fn test_brightness_limit_dark_sky() {
+        // With little noise the detection threshold is only a few ADU, so
+        // nearly the whole range is usable and the limit sits close to
+        // saturation.
+        assert_abs_diff_eq!(
+            brightness_limit(8.0, DARK_SKY_NOISE, 2),
+            247.6,
+            epsilon = 0.1
+        );
+    }
+
+    #[test]
+    fn test_brightness_limit_binning() {
+        // Unbinned, detection sees the star's peak pixel directly, so the
+        // headroom needed is just sigma * noise.
+        assert_abs_diff_eq!(
+            brightness_limit(8.0, TWILIGHT_NOISE, 1),
+            255.0 - 8.0 * TWILIGHT_NOISE,
+            epsilon = 0.1
+        );
+
+        // Binning reduces noise by the binning factor, but dilutes a compact
+        // star by the factor squared, so a star must be brighter to be
+        // detected and the tolerable background falls. Binning is a throughput
+        // and extended-star measure, not a sensitivity one, for a point spread
+        // this tight.
+        let unbinned = brightness_limit(8.0, TWILIGHT_NOISE, 1);
+        let binned_2x = brightness_limit(8.0, TWILIGHT_NOISE, 2);
+        let binned_4x = brightness_limit(8.0, TWILIGHT_NOISE, 4);
+        assert!(
+            binned_2x > unbinned,
+            "2x binning should tolerate more sky than unbinned: {} vs {}",
+            binned_2x,
+            unbinned
+        );
+        assert!(
+            binned_4x < binned_2x,
+            "4x binning dilutes a compact star faster than it cuts noise: \
+             {} vs {}",
+            binned_4x,
+            binned_2x
+        );
+    }
+
+    #[test]
+    fn test_brightness_limit_is_monotonic_in_sigma_and_noise() {
+        // Both a higher threshold multiple and a noisier image demand more
+        // room below saturation.
+        assert!(
+            brightness_limit(6.0, TWILIGHT_NOISE, 2)
+                > brightness_limit(10.0, TWILIGHT_NOISE, 2)
+        );
+        assert!(
+            brightness_limit(8.0, DARK_SKY_NOISE, 2)
+                > brightness_limit(8.0, TWILIGHT_NOISE, 2)
+        );
+    }
 }

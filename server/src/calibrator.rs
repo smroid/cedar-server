@@ -21,7 +21,7 @@ use cedar_elements::{
 };
 use image::GrayImage;
 
-use crate::detect_engine::BRIGHTNESS_LIMIT;
+use crate::detect_engine::brightness_limit;
 use imageproc::rect::Rect;
 use log::{debug, warn};
 pub struct Calibrator {
@@ -200,7 +200,13 @@ impl Calibrator {
             .set_exposure_duration(initial_exposure_duration)
             .await
             .unwrap();
-        let (mut image, mut exp_duration, mut stars, mut frame_id) = self
+        let (
+            mut image,
+            mut exp_duration,
+            mut stars,
+            mut frame_id,
+            mut noise_estimate,
+        ) = self
             .acquire_image_get_stars(
                 // frame_id=
                 None,
@@ -242,7 +248,12 @@ impl Calibrator {
             return Ok(scaled_exp_duration);
         }
 
-        if star_goal_fraction < 1.0 && stats.mean > BRIGHTNESS_LIMIT {
+        let max_background = brightness_limit(
+            detection_sigma,
+            noise_estimate,
+            detection_binning,
+        );
+        if star_goal_fraction < 1.0 && stats.mean > max_background {
             // We are increasing exposure if necessary to increase star count.
             // Don't exceed a brightness limit.
             restore_exposure.restore().await;
@@ -260,7 +271,7 @@ impl Calibrator {
             .set_exposure_duration(scaled_exp_duration)
             .await
             .unwrap();
-        (image, exp_duration, stars, frame_id) = self
+        (image, exp_duration, stars, frame_id, noise_estimate) = self
             .acquire_image_get_stars(
                 Some(frame_id),
                 detection_binning,
@@ -299,7 +310,12 @@ impl Calibrator {
         if star_goal_fraction < 1.0 {
             // We are increasing exposure as necessary to increase star count.
             // Don't exceed a brightness limit or maximum exposure time.
-            if stats.mean > BRIGHTNESS_LIMIT {
+            let max_background = brightness_limit(
+                detection_sigma,
+                noise_estimate,
+                detection_binning,
+            );
+            if stats.mean > max_background {
                 restore_exposure.restore().await;
                 return Err(ExposureCalibrationError::BrightSky);
             }
@@ -320,7 +336,7 @@ impl Calibrator {
             .set_exposure_duration(scaled_exp_duration)
             .await
             .unwrap();
-        (image, exp_duration, stars, _) = self
+        (image, exp_duration, stars, _, noise_estimate) = self
             .acquire_image_get_stars(
                 Some(frame_id),
                 detection_binning,
@@ -360,7 +376,12 @@ impl Calibrator {
             // Increased exposure was insufficent to increase star count, we'd
             // need to go even longer. Don't exceed a brightness limit or
             // maximum exposure time.
-            if stats.mean > BRIGHTNESS_LIMIT {
+            let max_background = brightness_limit(
+                detection_sigma,
+                noise_estimate,
+                detection_binning,
+            );
+            if stats.mean > max_background {
                 restore_exposure.restore().await;
                 return Err(ExposureCalibrationError::BrightSky);
             }
@@ -411,7 +432,7 @@ impl Calibrator {
             .await
             .set_exposure_duration(max_exposure_duration)
             .await?;
-        let (_, _, candidates, _) = self
+        let (_, _, candidates, _, _) = self
             .acquire_image_get_stars(
                 // frame_id=
                 None,
@@ -464,7 +485,7 @@ impl Calibrator {
         // * Do another plate solution with the known FOV, lens distortion, and
         //   match_max_error to obtain a representative solution time.
 
-        let (image, _, stars, _) = self
+        let (image, _, stars, _, _) = self
             .acquire_image_get_stars(
                 // frame_id=
                 None,
@@ -568,7 +589,9 @@ impl Calibrator {
         detection_sigma: f64,
         use_hot_pixel_map: bool,
     ) -> Result<
-        (Arc<GrayImage>, Duration, Vec<StarDescription>, i32),
+        // Image, exposure duration, stars, frame id, and the noise estimate
+        // used for detection.
+        (Arc<GrayImage>, Duration, Vec<StarDescription>, i32, f64),
         CanonicalError,
     > {
         let (captured_image, frame_id) =
@@ -582,15 +605,16 @@ impl Calibrator {
         } else {
             None
         };
-        let (stars, _, _) = tokio::task::spawn_blocking(move || {
+        let (stars, noise_estimate) = tokio::task::spawn_blocking(move || {
             let noise_estimate = estimate_noise_from_image(&image);
-            get_stars_from_image(
+            let (stars, _, _) = get_stars_from_image(
                 &image,
                 precomputed_binned,
                 noise_estimate,
                 detection_sigma,
                 detection_binning,
-            )
+            );
+            (stars, noise_estimate)
         })
         .await
         .unwrap();
@@ -611,6 +635,7 @@ impl Calibrator {
             captured_image.capture_params.exposure_duration,
             stars,
             frame_id,
+            noise_estimate,
         ))
     }
 }
