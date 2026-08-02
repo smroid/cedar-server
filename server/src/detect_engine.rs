@@ -32,6 +32,12 @@ use image::{GenericImageView, GrayImage};
 use imageproc::rect::Rect;
 use log::{debug, error};
 
+// Weighting of the newest star count in the moving average that drives
+// auto-exposure. Near 1.0: current value dominates. Near 0.0: long term
+// average dominates. The auto-exposure correction gain is derived from this;
+// see its use in worker().
+const STAR_COUNT_EMA_ALPHA: f64 = 0.5;
+
 pub struct DetectEngine {
     // Initial exposure duration, prior to doing any calibrations. Setup mode
     // auto-exposure uses this as its baseline.
@@ -105,8 +111,9 @@ struct DetectState {
     auto_exposure_duration: Option<Duration>,
 
     // We update the exposure time based on the number of detected stars.
-    // Because of noise, twinking, etc., use a moving average.
-    star_count_moving_average: f64,
+    // Because of noise, twinking, etc., use a moving average. None until the
+    // first frame with enough stars to seed it.
+    star_count_moving_average: Option<f64>,
 
     acquire_latency_stats: ValueStatsAccumulator,
     detect_duration_stats: ValueStatsAccumulator,
@@ -148,7 +155,7 @@ impl DetectEngine {
                 display_sampling: false,
                 calibrated_exposure_duration: None,
                 auto_exposure_duration: None,
-                star_count_moving_average: 0.0,
+                star_count_moving_average: None,
                 acquire_latency_stats: ValueStatsAccumulator::new(
                     stats_capacity,
                 ),
@@ -175,7 +182,7 @@ impl DetectEngine {
         let mut locked_state = self.state.lock().await;
         locked_state.camera = camera.clone();
         locked_state.auto_exposure_duration = None;
-        locked_state.star_count_moving_average = 0.0;
+        locked_state.star_count_moving_average = None;
         locked_state.detect_result = None;
     }
 
@@ -206,7 +213,7 @@ impl DetectEngine {
         let mut locked_state = self.state.lock().await;
         locked_state.focus_mode = enabled;
         if !enabled {
-            locked_state.star_count_moving_average = 0.0;
+            locked_state.star_count_moving_average = None;
         }
         // Don't need to do anything, worker thread will pick up the change when
         // it finishes the current interval.
@@ -216,7 +223,7 @@ impl DetectEngine {
         let mut locked_state = self.state.lock().await;
         locked_state.daylight_mode = enabled;
         if !enabled {
-            locked_state.star_count_moving_average = 0.0;
+            locked_state.star_count_moving_average = None;
         }
         locked_state.auto_exposure_duration = None;
         // Don't need to do anything, worker thread will pick up the change when
@@ -253,17 +260,16 @@ impl DetectEngine {
         state: &mut DetectState,
         num_stars_detected: usize,
     ) -> f64 {
-        // First time?
-        if state.star_count_moving_average == 0.0 {
-            state.star_count_moving_average = num_stars_detected as f64;
-        } else {
-            // Alpha near 1.0: current value dominates. Alpha near 0.0: long
-            // term average dominates.
-            let alpha = 0.5;
-            state.star_count_moving_average = alpha * num_stars_detected as f64
-                + (1.0 - alpha) * state.star_count_moving_average;
-        }
-        state.star_count_moving_average
+        let updated = match state.star_count_moving_average {
+            // First time: seed with the current count.
+            None => num_stars_detected as f64,
+            Some(average) => {
+                STAR_COUNT_EMA_ALPHA * num_stars_detected as f64
+                    + (1.0 - STAR_COUNT_EMA_ALPHA) * average
+            }
+        };
+        state.star_count_moving_average = Some(updated);
+        updated
     }
 
     /// Obtains a result bundle, as configured above. The returned result is
@@ -929,9 +935,38 @@ impl DetectEngine {
                                 // This is OK because we'll only be varying the
                                 // exposure time a modest amount relative to the
                                 // baseline_exposure_duration.
+                                //
+                                // Correct only part of the way to the goal.
+                                // `star_goal_fraction` comes from a moving
+                                // average, which lags the exposure changes we
+                                // make, so a full correction would be computed
+                                // against a measurement that has not caught up
+                                // yet, and would overshoot. Damping in the
+                                // ratio domain treats lengthening and
+                                // shortening the exposure symmetrically.
+                                //
+                                // The moving average's effective delay is
+                                // (1 - alpha) / alpha cycles, so discounting
+                                // the gain by that delay gives
+                                // 1 / (1 + (1 - alpha) / alpha), which reduces
+                                // to alpha itself. Note the endpoint: at
+                                // alpha = 1.0 the star count is not averaged at
+                                // all, there is nothing to lag, and this is a
+                                // full correction.
+                                //
+                                // This stays above the gain that would just
+                                // avoid overshoot, (2 - 2*sqrt(1 - alpha)) /
+                                // alpha - 1, which is deliberate. The deadband
+                                // below stops correcting as soon as the
+                                // measurement lands inside it, so a response
+                                // that never overshoots parks against the low
+                                // edge, leaving us short of stars -- the error
+                                // we least want.
+                                let correction_damping = STAR_COUNT_EMA_ALPHA;
                                 new_exposure_duration_secs =
                                     prev_exposure_duration_secs
-                                        / star_goal_fraction;
+                                        / star_goal_fraction
+                                            .powf(correction_damping);
                                 if calibrated_exposure_duration.is_some() {
                                     // Bound exposure duration to be within
                                     // three
@@ -1016,8 +1051,10 @@ impl DetectEngine {
                 frame_id: locked_state.frame_id.unwrap(),
                 captured_image,
                 star_candidates,
+                // 0.0 reports "no average established yet" over the wire.
                 star_count_moving_average: locked_state
-                    .star_count_moving_average,
+                    .star_count_moving_average
+                    .unwrap_or(0.0),
                 display_black_level: black_level,
                 noise_estimate,
                 detected_hot_pixels,
