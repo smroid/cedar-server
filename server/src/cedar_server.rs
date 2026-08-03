@@ -39,8 +39,8 @@ use cedar_elements::{
         cedar_server::{Cedar, CedarServer},
         ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
         CameraModel, CelestialCoordFormat, ConnectionStatus,
-        DisplayOrientation, EmptyMessage, FeatureLevel, FixedSettings,
-        FrameRequest, FrameResult, GetBluetoothNameResponse,
+        DetectSensitivity, DisplayOrientation, EmptyMessage, FeatureLevel,
+        FixedSettings, FrameRequest, FrameResult, GetBluetoothNameResponse,
         GetBondedDevicesResponse, Image, ImageCoord,
         ImageFormat as ProtoImageFormat, ImageRequest, ImageResult, ImuState,
         ImuTrackerState, LatLong, MountType, OperatingMode, OperationSettings,
@@ -165,6 +165,19 @@ impl Drop for GrpcTimer {
         } else {
             debug!("gRPC {}: {:?}", self.method_name, duration);
         }
+    }
+}
+
+// Maps a user-facing DetectSensitivity setting to the multiplier DetectEngine
+// applies to its configured (nominal) detection sigma. Lower sigma detects
+// dimmer stars at the cost of admitting more spurious detections.
+fn sigma_scale_for_sensitivity(sensitivity: DetectSensitivity) -> f64 {
+    match sensitivity {
+        DetectSensitivity::SensitivityUnspecified | DetectSensitivity::Normal => {
+            1.0
+        }
+        DetectSensitivity::High => 0.9,
+        DetectSensitivity::Highest => 0.8,
     }
 }
 
@@ -1102,6 +1115,24 @@ impl Cedar for MyCedar {
                 .lock()
                 .await
                 .set_use_imu_tracker(use_imu)
+                .await;
+        }
+        if let Some(detect_sensitivity) = req.detect_sensitivity {
+            let sensitivity = DetectSensitivity::try_from(detect_sensitivity)
+                .unwrap_or(DetectSensitivity::Normal);
+            let detect_engine_arc = {
+                let mut locked_state = self.state.lock().await;
+                locked_state.operation_settings.detect_sensitivity =
+                    Some(sensitivity as i32);
+                locked_state.detect_engine.clone()
+            }; // State lock released here!
+
+            detect_engine_arc
+                .lock()
+                .await
+                .set_detect_sigma_scale(sigma_scale_for_sensitivity(
+                    sensitivity,
+                ))
                 .await;
         }
 
@@ -3399,7 +3430,9 @@ impl MyCedar {
                     Self::compute_binning(&*state.lock().await, width, height);
             }
 
-            // For calibrations, use statically configured sigma value.
+            // Use the sigma currently in effect, so a calibrated exposure
+            // duration matches the sensitivity setting operation will run
+            // under.
             let locked_detect_engine = detect_engine.lock().await;
             detection_sigma = locked_detect_engine.get_detection_sigma();
             star_count_goal = locked_detect_engine.get_star_count_goal();
@@ -4134,6 +4167,9 @@ impl MyCedar {
                         .clone(),
                     demo_image_filename: None,
                     use_imu: Some(imu_tracker.is_some()),
+                    // Deliberately not taken from preferences; sensitivity
+                    // tracks current sky conditions, not user preference.
+                    detect_sensitivity: Some(DetectSensitivity::Normal as i32),
                 },
                 calibration_data: shared_calibration_data,
                 detect_engine: detect_engine.clone(),

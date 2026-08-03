@@ -94,8 +94,17 @@ pub struct DetectEngine {
     min_exposure_duration: Duration,
     max_exposure_duration: Duration,
 
-    // Parameters for star detection algorithm.
-    detection_sigma: f64,
+    // Nominal parameter for star detection algorithm. The sigma actually used
+    // is this scaled by `detect_sigma_scale`.
+    base_detection_sigma: f64,
+
+    // Multiplies base_detection_sigma to get the sigma value actually used for
+    // star detection. 1.0 is the configured (nominal) sensitivity; callers
+    // translate a user-facing sensitivity setting into this scale via
+    // set_detect_sigma_scale(). Also cached in DetectState for the worker
+    // thread to see live; kept in sync with that copy by the same setter, so
+    // get_detection_sigma() can read it here without locking `state`.
+    detect_sigma_scale: f64,
 
     // In align mode and operate mode (`focus_mode` is false), the
     // auto-exposure algorithm uses this as the desired number of detected
@@ -162,6 +171,11 @@ struct DetectState {
     // first frame with enough stars to seed it.
     star_count_moving_average: Option<f64>,
 
+    // Live copy of DetectEngine.detect_sigma_scale, for the worker thread to
+    // read each iteration; see there for what this does. Kept in sync by
+    // set_detect_sigma_scale().
+    detect_sigma_scale: f64,
+
     acquire_latency_stats: ValueStatsAccumulator,
     detect_duration_stats: ValueStatsAccumulator,
     other_duration_stats: ValueStatsAccumulator,
@@ -177,7 +191,7 @@ impl DetectEngine {
         initial_exposure_duration: Duration,
         min_exposure_duration: Duration,
         max_exposure_duration: Duration,
-        detection_sigma: f64,
+        base_detection_sigma: f64,
         star_count_goal: i32,
         camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
         stats_capacity: usize,
@@ -189,7 +203,8 @@ impl DetectEngine {
             initial_exposure_duration,
             min_exposure_duration,
             max_exposure_duration,
-            detection_sigma,
+            base_detection_sigma,
+            detect_sigma_scale: 1.0,
             star_count_goal,
             state: Arc::new(tokio::sync::Mutex::new(DetectState {
                 camera: camera.clone(),
@@ -203,6 +218,7 @@ impl DetectEngine {
                 calibrated_exposure_duration: None,
                 auto_exposure_duration: None,
                 star_count_moving_average: None,
+                detect_sigma_scale: 1.0,
                 acquire_latency_stats: ValueStatsAccumulator::new(
                     stats_capacity,
                 ),
@@ -284,8 +300,27 @@ impl DetectEngine {
         locked_state.daylight_focus_point = Some(point);
     }
 
+    // Sets the live multiplier on base_detection_sigma. Callers translate a
+    // user-facing sensitivity setting into this scale; DetectEngine itself has
+    // no notion of what the scale means, only that a lower value detects more,
+    // dimmer stars at the cost of more spurious detections.
+    pub async fn set_detect_sigma_scale(&mut self, scale: f64) {
+        self.detect_sigma_scale = scale;
+        let mut locked_state = self.state.lock().await;
+        locked_state.detect_sigma_scale = scale;
+        // The star-count-to-exposure relationship shifted at the new sigma;
+        // the moving average and any exposure duration derived from it are
+        // stale.
+        locked_state.star_count_moving_average = None;
+        locked_state.auto_exposure_duration = None;
+        // Don't need to do anything, worker thread will pick up the change when
+        // it finishes the current interval.
+    }
+
+    // Returns the sigma value currently in effect: base_detection_sigma scaled
+    // by the live value set via set_detect_sigma_scale().
     pub fn get_detection_sigma(&self) -> f64 {
-        self.detection_sigma
+        self.base_detection_sigma * self.detect_sigma_scale
     }
 
     pub fn get_star_count_goal(&self) -> i32 {
@@ -344,7 +379,7 @@ impl DetectEngine {
             let initial_exposure_duration = self.initial_exposure_duration;
             let min_exposure_duration = self.min_exposure_duration;
             let max_exposure_duration = self.max_exposure_duration;
-            let detection_sigma = self.detection_sigma;
+            let base_detection_sigma = self.base_detection_sigma;
             let star_count_goal = self.star_count_goal;
             let cloned_state = self.state.clone();
             let cloned_done = self.worker_done.clone();
@@ -375,7 +410,7 @@ impl DetectEngine {
                         initial_exposure_duration,
                         min_exposure_duration,
                         max_exposure_duration,
-                        detection_sigma,
+                        base_detection_sigma,
                         star_count_goal,
                         hot_pixel_map,
                         cloned_state,
@@ -455,7 +490,7 @@ impl DetectEngine {
         initial_exposure_duration: Duration,
         min_exposure_duration: Duration,
         max_exposure_duration: Duration,
-        detection_sigma: f64,
+        base_detection_sigma: f64,
         star_count_goal: i32,
         hot_pixel_map: Option<
             Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
@@ -472,6 +507,7 @@ impl DetectEngine {
             let display_sampling: bool;
             let calibrated_exposure_duration: Option<Duration>;
             let auto_exposure_duration: Option<Duration>;
+            let detection_sigma: f64;
             {
                 let mut locked_state = state.lock().await;
                 focus_mode = locked_state.focus_mode;
@@ -483,6 +519,11 @@ impl DetectEngine {
                 calibrated_exposure_duration =
                     locked_state.calibrated_exposure_duration;
                 auto_exposure_duration = locked_state.auto_exposure_duration;
+                // The sigma actually in effect for this iteration; the scale
+                // is live so a sensitivity change is picked up on the next
+                // frame.
+                detection_sigma =
+                    base_detection_sigma * locked_state.detect_sigma_scale;
                 locked_state.eta = None;
             }
             let captured_image;

@@ -210,6 +210,11 @@ message OperationSettings {
   // when plate solutions are unavailable.
   optional bool use_imu = 15;
 
+  // How aggressively stars are detected. Defaults to NORMAL. Unlike most
+  // settings, this is deliberately not carried in Preferences: it reverts to
+  // NORMAL when Cedar server restarts.
+  optional DetectSensitivity detect_sensitivity = 17;
+
   // TODO: decrowd parameter for returned catalog entries?
 
   reserved 3, 5, 7, 8, 13, 16;
@@ -234,6 +239,24 @@ enum OperatingMode {
   // * Plate solves done using FOV and distortion estimate obtained when
   //   leaving SETUP mode.
   OPERATE = 2;
+}
+
+// How aggressively Cedar detects stars.
+// A star is detected when it rises above the sky background by a multiple of
+// the image noise. Raising the sensitivity lowers that multiple, which recovers
+// more stars, at the cost of admitting more spurious detections.
+enum DetectSensitivity {
+  SENSITIVITY_UNSPECIFIED = 0;
+
+  // Detection threshold as configured.
+  NORMAL = 1;
+
+  // Modestly lowered threshold.
+  HIGH = 2;
+
+  // Recovers the most stars but is prone to reporting noise or hot pixels as
+  // stars.
+  HIGHEST = 3;
 }
 
 // User interface preferences and operation settings that are stored durably on
