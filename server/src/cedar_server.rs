@@ -4741,6 +4741,7 @@ pub fn server_main(
     // Default total binning to use when --binning is not passed on the command
     // line.
     default_total_binning: Option<u32>,
+    product_name_override: Option<&str>,
 ) {
     #[rustfmt::skip]
     const HELP: &str = "\
@@ -4860,12 +4861,14 @@ pub fn server_main(
     .unwrap();
 
     // Derive product name from device verification status (indicated by whether
-    // cedar_sky is Some).
-    let product_name = if cedar_sky.is_some() {
-        "Hopper"
-    } else {
-        "Cedar-Box"
-    };
+    // cedar_sky is Some), unless overridden by caller.
+    let product_name = product_name_override.unwrap_or_else(|| {
+        if cedar_sky.is_some() {
+            "Hopper"
+        } else {
+            "Cedar-Box"
+        }
+    });
 
     async_main(
         args,
