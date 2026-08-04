@@ -15,5 +15,7 @@ fn main() {
         |_pargs: Arguments| (None, None, None, None, None),
         // default_total_binning=
         None,
+        // product_name_override=
+        None,
     );
 }
