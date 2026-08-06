@@ -90,8 +90,15 @@ message QueryCatalogResponse {
 message SelectedCatalogEntry {
   CatalogEntry entry = 1;
 
-  // Other entries, if any, that were suppressed due to `dedup_distance` in the
-  // Cedar sky implementation.
+  // The object's other designations, if any. A single object is often
+  // catalogued more than once -- M31 and NGC0224 name the same galaxy -- and
+  // `entry` above is whichever designation the catalog holds the object's
+  // physical data under. Each entry here names that same object as some other
+  // catalog knows it, and may carry its own common name, notes, object type
+  // and magnitude, as that catalog gave them.
+  //
+  // Deciding which designation to show is up to the client: `entry` is not
+  // necessarily the most recognizable of them.
   repeated CatalogEntry deduped_entries = 2;
 
   // Other entries, if any, that were suppressed due to `decrowd_distance` in
