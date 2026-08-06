@@ -942,6 +942,13 @@ message FovCatalogEntry {
   cedar_sky.CatalogEntry entry = 1;
   ImageCoord image_pos = 2;
 
+  // The object's other designations, if any. See
+  // cedar_sky.SelectedCatalogEntry.deduped_entries, from which these are
+  // carried over unchanged. `entry` above is not necessarily the most
+  // recognizable of them, so a client labelling this object should rank
+  // `entry` together with these rather than rendering `entry` alone.
+  repeated cedar_sky.CatalogEntry deduped_entries = 5;
+
   // Computed information, available if observer location/time is known.
 
   // Altitude (degrees, relative to the local horizon).

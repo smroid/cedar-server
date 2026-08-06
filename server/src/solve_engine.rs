@@ -1559,6 +1559,7 @@ impl SolveEngine {
         Some(FovCatalogEntry {
             entry: Some(entry.clone()),
             image_pos: Some(ImageCoord { x, y }),
+            deduped_entries: Vec::new(), // Filled in by the caller.
             altitude: None,
             azimuth: None,
         })
@@ -1658,6 +1659,10 @@ impl SolveEngine {
             ) {
                 fce.altitude = altitude;
                 fce.azimuth = azimuth;
+                // The object's other designations, so that the client can
+                // pick which to label it with; `entry` is not necessarily
+                // the most recognizable.
+                fce.deduped_entries = sce.deduped_entries;
                 answer.push(fce);
             }
             for decrowded in sce.decrowded_entries {
