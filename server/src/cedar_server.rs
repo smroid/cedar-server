@@ -3839,6 +3839,25 @@ impl MyCedar {
                 hot_pixel_map.clone(),
             )));
 
+        // Everything the sky catalog offers, asked of the catalog rather than
+        // listed here, so that one added later is selected without this
+        // needing to be revisited. Empty if Cedar Sky is not present.
+        let (known_catalog_labels, known_object_type_labels) =
+            match &cedar_sky {
+                Some(cedar_sky) => {
+                    let sky = cedar_sky.lock().await;
+                    (sky.get_catalog_descriptions()
+                         .into_iter()
+                         .map(|d| d.label)
+                         .collect::<Vec<String>>(),
+                     sky.get_object_types()
+                         .into_iter()
+                         .map(|t| t.label)
+                         .collect::<Vec<String>>())
+                }
+                None => (Vec::new(), Vec::new()),
+            };
+
         // Set up initial Preferences to use if preferences file cannot be
         // loaded.
         let mut preferences = Preferences {
@@ -3862,37 +3881,8 @@ impl MyCedar {
                     object_type_label: Vec::<String>::new(), // Filled below.
                 });
                 let cm_ref = cat_match.as_mut().unwrap();
-                // All catalog labels.
-                cm_ref.catalog_label = vec![
-                    "M".to_string(),
-                    "NGC".to_string(),
-                    "IC".to_string(),
-                    "IAU".to_string(),
-                    "PL".to_string(),
-                ];
-                // All object types.
-                cm_ref.object_type_label = vec![
-                    "star".to_string(),
-                    "double star".to_string(),
-                    "star association".to_string(),
-                    "open cluster".to_string(),
-                    "globular cluster".to_string(),
-                    "star cluster + nebula".to_string(),
-                    "galaxy".to_string(),
-                    "galaxy pair".to_string(),
-                    "galaxy triplet".to_string(),
-                    "galaxy group".to_string(),
-                    "planetary nebula".to_string(),
-                    "HII ionized region".to_string(),
-                    "dark nebula".to_string(),
-                    "emission nebula".to_string(),
-                    "nebula".to_string(),
-                    "reflection nebula".to_string(),
-                    "supernova remnant".to_string(),
-                    "nova star".to_string(),
-                    "planet".to_string(),
-                    "dwarf planet".to_string(),
-                ];
+                cm_ref.catalog_label = known_catalog_labels.clone();
+                cm_ref.object_type_label = known_object_type_labels.clone();
                 cat_match
             } else {
                 None // No Cedar sky.
@@ -3912,6 +3902,12 @@ impl MyCedar {
             dont_show_items: Vec::new(),
             skip_focus: None,
             skip_alignment: None,
+            // Left empty here whether or not Cedar Sky is present: a
+            // preferences file supplies these when it has them, and either
+            // way they are stamped from the sky catalog further below, once
+            // the file has been merged.
+            known_catalog_label: Vec::new(),
+            known_object_type_label: Vec::new(),
         };
 
         // If there is a preferences file, read it and merge its contents into
@@ -3943,6 +3939,9 @@ impl MyCedar {
                         // this.
                         preferences.catalog_entry_match = None;
                     }
+                    // Same accumulation problem, for the same reason.
+                    preferences.known_catalog_label.clear();
+                    preferences.known_object_type_label.clear();
                     preferences.merge(&*file_prefs_bytes.unwrap()).unwrap();
                 }
                 Err(e) => {
@@ -3983,6 +3982,69 @@ impl MyCedar {
         }
         if feature_level == FeatureLevel::Basic {
             preferences.mount_type = Some(MountType::AltAz.into());
+        }
+        // Select any catalog or object type the sky catalog has gained since
+        // these preferences were written. A label the user deselected is
+        // recorded in known_*_label and left alone; one appearing in neither
+        // list is new, and is selected so that a catalog added by a server
+        // upgrade does not stay invisible behind an option the user never
+        // saw. See Preferences.known_catalog_label in cedar.proto.
+        if cedar_sky.is_some() {
+            // A preferences file written before these fields existed has
+            // neither list, but we know what the catalog offered at that
+            // time: seed them with it, so that whatever such a user
+            // deselected is still recognized as deselected. Without this,
+            // every label missing from their selection would look new.
+            if preferences.known_catalog_label.is_empty() {
+                preferences.known_catalog_label =
+                    ["M", "NGC", "IC", "IAU", "PL"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
+            }
+            if preferences.known_object_type_label.is_empty() {
+                // Every object type predates these fields; none has been
+                // added since.
+                preferences.known_object_type_label =
+                    known_object_type_labels.clone();
+            }
+            let mut selected_something = false;
+            if let Some(cm) = preferences.catalog_entry_match.as_mut() {
+                for label in &known_catalog_labels {
+                    if !preferences.known_catalog_label.contains(label)
+                        && !cm.catalog_label.contains(label)
+                    {
+                        info!("Selecting newly added catalog {}", label);
+                        cm.catalog_label.push(label.clone());
+                        selected_something = true;
+                    }
+                }
+                for label in &known_object_type_labels {
+                    if !preferences.known_object_type_label.contains(label)
+                        && !cm.object_type_label.contains(label)
+                    {
+                        info!("Selecting newly added object type {}", label);
+                        cm.object_type_label.push(label.clone());
+                        selected_something = true;
+                    }
+                }
+            }
+            // The known lists can change without anything being selected --
+            // a catalog dropped rather than added, or no catalog_entry_match
+            // to select into.
+            let known_changed = preferences.known_catalog_label
+                != known_catalog_labels
+                || preferences.known_object_type_label
+                    != known_object_type_labels;
+            preferences.known_catalog_label = known_catalog_labels;
+            preferences.known_object_type_label = known_object_type_labels;
+            if selected_something || known_changed {
+                // Record what the catalog offers now, so this runs once
+                // rather than on every startup. Without it the file keeps
+                // its old lists until the user happens to change some other
+                // preference.
+                Self::write_preferences_file(&preferences_file, &preferences);
+            }
         }
 
         let shared_preferences = Arc::new(tokio::sync::Mutex::new(preferences));

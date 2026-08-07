@@ -350,6 +350,13 @@ message Preferences {
   // mode.
   optional bool skip_alignment = 36;
 
+  // Every label the sky catalog offered when `catalog_entry_match` was last
+  // written, so that a label the user deselected can be distinguished from one
+  // that did not exist yet. The latter is selected when the catalog gains it.
+  // Maintained by the server; clients neither set nor need these.
+  repeated string known_catalog_label = 37;
+  repeated string known_object_type_label = 38;
+
   reserved 4, 8, 9, 20, 24, 25, 26, 27, 28, 29, 30, 31, 34;
 }
 
