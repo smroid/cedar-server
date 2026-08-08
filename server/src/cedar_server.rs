@@ -3995,6 +3995,11 @@ impl MyCedar {
             // time: seed them with it, so that whatever such a user
             // deselected is still recognized as deselected. Without this,
             // every label missing from their selection would look new.
+            //
+            // These are the labels as they stood then, not as they stand
+            // now: 'double star' has since been renamed 'multiple star', and
+            // seeding the current name would make it look pre-existing and
+            // leave it unselected.
             if preferences.known_catalog_label.is_empty() {
                 preferences.known_catalog_label =
                     ["M", "NGC", "IC", "IAU", "PL"]
@@ -4003,10 +4008,44 @@ impl MyCedar {
                         .collect();
             }
             if preferences.known_object_type_label.is_empty() {
-                // Every object type predates these fields; none has been
-                // added since.
-                preferences.known_object_type_label =
-                    known_object_type_labels.clone();
+                preferences.known_object_type_label = [
+                    "star", "double star", "star association", "open cluster",
+                    "globular cluster", "star cluster + nebula", "galaxy",
+                    "galaxy pair", "galaxy triplet", "galaxy group",
+                    "planetary nebula", "HII ionized region", "dark nebula",
+                    "emission nebula", "nebula", "reflection nebula",
+                    "supernova remnant", "nova star", "planet",
+                    "dwarf planet",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            }
+            // Drop labels the sky catalog no longer offers. A label that has
+            // been renamed or retired would otherwise sit in the file for
+            // ever, and query_catalog_entries rejects an entire query on one
+            // unrecognized label rather than ignoring it -- so leaving
+            // 'double star' behind after it became 'multiple star' empties
+            // the field of view.
+            let mut dropped_something = false;
+            if let Some(cm) = preferences.catalog_entry_match.as_mut() {
+                let before = cm.catalog_label.len() + cm.object_type_label.len();
+                cm.catalog_label.retain(|label| {
+                    let known = known_catalog_labels.contains(label);
+                    if !known {
+                        info!("Dropping retired catalog '{}'", label);
+                    }
+                    known
+                });
+                cm.object_type_label.retain(|label| {
+                    let known = known_object_type_labels.contains(label);
+                    if !known {
+                        info!("Dropping retired object type '{}'", label);
+                    }
+                    known
+                });
+                dropped_something =
+                    cm.catalog_label.len() + cm.object_type_label.len() != before;
             }
             let mut selected_something = false;
             if let Some(cm) = preferences.catalog_entry_match.as_mut() {
@@ -4014,7 +4053,7 @@ impl MyCedar {
                     if !preferences.known_catalog_label.contains(label)
                         && !cm.catalog_label.contains(label)
                     {
-                        info!("Selecting newly added catalog {}", label);
+                        info!("Selecting newly added catalog '{}'", label);
                         cm.catalog_label.push(label.clone());
                         selected_something = true;
                     }
@@ -4023,7 +4062,7 @@ impl MyCedar {
                     if !preferences.known_object_type_label.contains(label)
                         && !cm.object_type_label.contains(label)
                     {
-                        info!("Selecting newly added object type {}", label);
+                        info!("Selecting newly added object type '{}'", label);
                         cm.object_type_label.push(label.clone());
                         selected_something = true;
                     }
@@ -4038,7 +4077,7 @@ impl MyCedar {
                     != known_object_type_labels;
             preferences.known_catalog_label = known_catalog_labels;
             preferences.known_object_type_label = known_object_type_labels;
-            if selected_something || known_changed {
+            if selected_something || dropped_something || known_changed {
                 // Record what the catalog offers now, so this runs once
                 // rather than on every startup. Without it the file keeps
                 // its old lists until the user happens to change some other
