@@ -996,7 +996,7 @@ impl SolveEngine {
                         match_object_type_label: true,
                         object_type_label: vec![
                             "star".to_string(),
-                            "double star".to_string(),
+                            "multiple star".to_string(),
                             "nova star".to_string(),
                             "planet".to_string(),
                         ],
