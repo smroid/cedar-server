@@ -1248,17 +1248,15 @@ impl SolveEngine {
                     )
                     .await;
 
-                let elapsed = frame_start_time.elapsed();
-                if state.lock().await.last_solve_attempt_time.is_some() {
-                    let mut locked_state = state.lock().await;
-                    locked_state
-                        .solve_duration_stats
-                        .add_value(solver_duration.as_secs_f64());
-                    locked_state.solve_other_duration_stats.add_value(
-                        elapsed.saturating_sub(solver_duration).as_secs_f64(),
-                    );
-                }
+                let did_attempt_solve =
+                    state.lock().await.last_solve_attempt_time.is_some();
 
+                // process_and_post() includes the Cedar Sky catalog query
+                // (in process_plate_solution_result()), so its time belongs
+                // in solve_other_duration_stats ("misc" in the UI) alongside
+                // the rest of attempt_plate_solve()'s non-solver work -
+                // otherwise catalog query time has nowhere to be seen and
+                // just shows up as a bigger solve_interval on the next frame.
                 Self::process_and_post(
                     state.clone(),
                     &detect_result,
@@ -1270,6 +1268,17 @@ impl SolveEngine {
                     solve_finish_time,
                 )
                 .await;
+
+                let elapsed = frame_start_time.elapsed();
+                if did_attempt_solve {
+                    let mut locked_state = state.lock().await;
+                    locked_state
+                        .solve_duration_stats
+                        .add_value(solver_duration.as_secs_f64());
+                    locked_state.solve_other_duration_stats.add_value(
+                        elapsed.saturating_sub(solver_duration).as_secs_f64(),
+                    );
+                }
 
                 last_detect_result = Some(detect_result);
             } else if let Some(ref detect_result) = last_detect_result {

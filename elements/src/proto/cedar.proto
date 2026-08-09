@@ -721,8 +721,9 @@ message ProcessingStats {
   // How much time (in seconds) is spent in attempt_plate_solve() (when attempted).
   ValueStats solve_latency = 4;
 
-  // How much time (in seconds) is spent in process_plate_solution_result()
-  // (when a plate solve is attempted).
+  // How much time (in seconds) is spent in attempt_plate_solve()'s
+  // non-solver work plus process_and_post() -- includes the Cedar Sky
+  // catalog query -- when a plate solve is attempted.
   ValueStats solve_other_latency = 11;
 
   // The fraction of images on which a plate solution is attempted. If too few
