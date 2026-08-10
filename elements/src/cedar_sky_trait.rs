@@ -15,6 +15,7 @@ use crate::{
     },
 };
 
+#[derive(Clone)]
 pub struct LocationInfo {
     pub observer_location: LatLong,
     pub observing_time: SystemTime,
@@ -54,10 +55,12 @@ pub trait CedarSkyTrait {
     ) -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError>;
 
     /// Return the selected catalog entry. If it is a solar system object the
-    /// current position is calculated using `timestamp`.
+    /// current position is calculated using `timestamp`. If `location_info`
+    /// is given, the entry's `rise_set_culmination` is populated.
     async fn get_catalog_entry(
         &mut self,
         entry_key: CatalogEntryKey,
         timestamp: SystemTime,
+        location_info: Option<LocationInfo>,
     ) -> Result<CatalogEntry, CanonicalError>;
 }

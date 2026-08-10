@@ -2180,7 +2180,7 @@ impl Cedar for MyCedar {
     ) -> Result<tonic::Response<CatalogEntry>, tonic::Status> {
         let _timer = GrpcTimer::new("get_catalog_entry");
 
-        let cedar_sky_arc = {
+        let (fixed_settings_arc, cedar_sky_arc) = {
             let locked_state = self.state.lock().await;
             if locked_state.cedar_sky.is_none() {
                 return Err(logged_status!(
@@ -2188,8 +2188,21 @@ impl Cedar for MyCedar {
                     "Cedar Sky is not present"
                 ));
             }
-            locked_state.cedar_sky.clone()
+            (
+                locked_state.fixed_settings.clone(),
+                locked_state.cedar_sky.clone(),
+            )
         }; // State lock released here!
+
+        let location_info = {
+            let fixed_settings = fixed_settings_arc.lock().await;
+            fixed_settings.observer_location.as_ref().map(|obs_loc| {
+                LocationInfo {
+                    observer_location: obs_loc.clone(),
+                    observing_time: SystemTime::now(),
+                }
+            })
+        };
 
         let req: CatalogEntryKey = request.into_inner();
         let x = cedar_sky_arc
@@ -2197,7 +2210,7 @@ impl Cedar for MyCedar {
             .unwrap()
             .lock()
             .await
-            .get_catalog_entry(req, SystemTime::now())
+            .get_catalog_entry(req, SystemTime::now(), location_info)
             .await;
         match x {
             Ok(entry) => Ok(tonic::Response::new(entry)),
