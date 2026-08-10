@@ -18,7 +18,8 @@ use cedar_elements::{
     astro_util::{
         alt_az_from_equatorial, angular_separation, celestial_coord_to_j2000,
         equatorial_from_horizon_camera, horizon_from_equatorial_camera,
-        position_angle, transform_to_image_coord,
+        position_angle, transform_to_celestial_coords,
+        transform_to_image_coord,
     },
     cedar::{
         FovCatalogEntry, ImageCoord, LatLong,
@@ -1007,8 +1008,6 @@ impl SolveEngine {
                     observing_time: detect_result.captured_image.readout_time,
                 });
                 let result = Self::query_fov_catalog_entries(
-                    &boresight_coords,
-                    &boresight_pixel,
                     sky,
                     &catalog_entry_match,
                     width,
@@ -1547,7 +1546,7 @@ impl SolveEngine {
         fov: f64,
         distortion: f64,
         rotation_matrix: &[f64; 9],
-    ) -> Option<FovCatalogEntry> {
+    ) -> FovCatalogEntry {
         let coord = entry.coord.clone().unwrap();
         let img_coord = transform_to_image_coord(
             &[coord.ra, coord.dec],
@@ -1557,21 +1556,16 @@ impl SolveEngine {
             rotation_matrix,
             distortion,
         );
-        let x = img_coord[0];
-        if x < 0.0 || x >= width as f64 {
-            return None;
-        }
-        let y = img_coord[1];
-        if y < 0.0 || y >= height as f64 {
-            return None;
-        }
-        Some(FovCatalogEntry {
+        FovCatalogEntry {
             entry: Some(entry.clone()),
-            image_pos: Some(ImageCoord { x, y }),
+            image_pos: Some(ImageCoord {
+                x: img_coord[0],
+                y: img_coord[1],
+            }),
             deduped_entries: Vec::new(), // Filled in by the caller.
             altitude: None,
             azimuth: None,
-        })
+        }
     }
 
     // Returns two lists of FovCatalogEntry. The first one is the entries that
@@ -1579,8 +1573,6 @@ impl SolveEngine {
     // second one is the decrowded entries (close to an entry in the first
     // collection but fainter).
     async fn query_fov_catalog_entries(
-        boresight_coords: &CelestialCoord,
-        boresight_pixel: &Option<ImageCoord>,
         cedar_sky: &Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>,
         catalog_entry_match: &CatalogEntryMatch,
         width: u32,
@@ -1603,20 +1595,30 @@ impl SolveEngine {
             )
         });
 
-        let bp = if let Some(bp) = boresight_pixel {
-            bp.clone()
-        } else {
-            ImageCoord {
-                x: width as f64 / 2.0,
-                y: height as f64 / 2.0,
-            }
+        // What gets displayed is serve_engine's central square crop (side
+        // `height`), rotated by an angle not settled until it runs. Query
+        // the crop's circumscribing circle, which that rotation doesn't
+        // change. Centered on the crop, not the boresight: the crop is
+        // always centered on the sensor, but the boresight can be anywhere,
+        // and that offset would leave the far corners short.
+        // See ImageRotator::get_cropped_region.
+        let center_coords = transform_to_celestial_coords(
+            &[width as f64 / 2.0, height as f64 / 2.0],
+            width as usize,
+            height as usize,
+            fov,
+            rotation_matrix,
+            distortion,
+        );
+        let center_coords = CelestialCoord {
+            ra: center_coords[0],
+            dec: center_coords[1],
+            // J2000, as `rotation_matrix` (from the plate solution) is.
+            epoch: None,
         };
-
-        // Figure out radius from boresight for the catalog entry search.
         let deg_per_pixel = fov / width as f64;
-        let h = f64::max(bp.x, width as f64 - bp.x);
-        let v = f64::max(bp.y, height as f64 - bp.y);
-        let radius_deg = (h * h + v * v).sqrt() * deg_per_pixel;
+        let half_diagonal_px = height as f64 * std::f64::consts::SQRT_2 / 2.0;
+        let radius_deg = half_diagonal_px * deg_per_pixel;
 
         let query_result = cedar_sky
             .lock()
@@ -1641,7 +1643,7 @@ impl SolveEngine {
                 // limit_result
                 None,
                 // sky_location
-                Some(boresight_coords.clone()),
+                Some(center_coords),
                 // location_info=
                 location_info,
             )
@@ -1657,46 +1659,45 @@ impl SolveEngine {
             let altitude = sce.altitude;
             let azimuth = sce.azimuth;
             // Convert each catalog entry's celesital coordinates to image
-            // position, and discard those outside of our FOV.
-            if let Some(mut fce) = Self::make_fov_catalog_entry(
+            // position.
+            let mut fce = Self::make_fov_catalog_entry(
                 &entry,
                 width as usize,
                 height as usize,
                 fov,
                 distortion,
                 rotation_matrix,
-            ) {
-                fce.altitude = altitude;
-                fce.azimuth = azimuth;
-                // The object's other designations, so that the client can
-                // pick which to label it with; `entry` is not necessarily
-                // the most recognizable.
-                fce.deduped_entries = sce.deduped_entries;
-                answer.push(fce);
-            }
+            );
+            fce.altitude = altitude;
+            fce.azimuth = azimuth;
+            // The object's other designations, so that the client can
+            // pick which to label it with; `entry` is not necessarily
+            // the most recognizable.
+            fce.deduped_entries = sce.deduped_entries;
+            answer.push(fce);
+
             for decrowded in sce.decrowded_entries {
-                if let Some(mut fce) = Self::make_fov_catalog_entry(
+                let mut fce = Self::make_fov_catalog_entry(
                     &decrowded,
                     width as usize,
                     height as usize,
                     fov,
                     distortion,
                     rotation_matrix,
-                ) {
-                    if let Some((lat, long, time)) = observer_alt_az_params {
-                        let coord = decrowded.coord.as_ref().unwrap();
-                        let (alt, az, _ha) = alt_az_from_equatorial(
-                            coord.ra.to_radians(),
-                            coord.dec.to_radians(),
-                            lat,
-                            long,
-                            &time,
-                        );
-                        fce.altitude = Some(alt.to_degrees());
-                        fce.azimuth = Some(az.to_degrees());
-                    }
-                    culled.push(fce);
+                );
+                if let Some((lat, long, time)) = observer_alt_az_params {
+                    let coord = decrowded.coord.as_ref().unwrap();
+                    let (alt, az, _ha) = alt_az_from_equatorial(
+                        coord.ra.to_radians(),
+                        coord.dec.to_radians(),
+                        lat,
+                        long,
+                        &time,
+                    );
+                    fce.altitude = Some(alt.to_degrees());
+                    fce.azimuth = Some(az.to_degrees());
                 }
+                culled.push(fce);
             }
         }
         (answer, culled)
