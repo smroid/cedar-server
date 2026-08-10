@@ -3,6 +3,7 @@
 
 syntax = "proto3";
 
+import "google/protobuf/timestamp.proto";
 import "cedar_common.proto";
 
 package cedar_sky;
@@ -112,8 +113,25 @@ message SelectedCatalogEntry {
 
   // Azimuth (degrees, positive clockwise from north).
   optional double azimuth = 5;
+}
 
-  // TODO: if below horizon, rising time; if above horizon, setting time.
+// Rise, set, and culmination times for an object, relative to the time the
+// containing CatalogEntry was computed. prev_*/next_* are the nearest such
+// event strictly before/after that time.
+//
+// prev_rise/next_rise and prev_set/next_set are omitted together: absent iff
+// the object is circumpolar (never sets) or never rises, as determined by
+// the object's declination, the observer's latitude, and the horizon
+// altitude used for the rise/set computation. prev_culmination/
+// next_culmination are always present; upper culmination (meridian
+// crossing) occurs regardless of whether the object rises/sets.
+message RiseSetCulmination {
+  optional google.protobuf.Timestamp prev_rise = 1;
+  optional google.protobuf.Timestamp next_rise = 2;
+  optional google.protobuf.Timestamp prev_set = 3;
+  optional google.protobuf.Timestamp next_set = 4;
+  google.protobuf.Timestamp prev_culmination = 5;
+  google.protobuf.Timestamp next_culmination = 6;
 }
 
 message CatalogEntry {
@@ -131,6 +149,12 @@ message CatalogEntry {
 
   optional string common_name = 8;  // Albireo, Horsehead, Crab Nebula, etc.
   optional string notes = 9;
+
+  // Rise/set/culmination timing, relative to the observer location and time
+  // in effect when this entry was returned. Only populated by the
+  // GetCatalogEntry RPC, which knows the observer location/time; omitted
+  // elsewhere (e.g. entries returned by QueryCatalogEntries).
+  optional RiseSetCulmination rise_set_culmination = 10;
 }
 
 message CatalogDescription {
@@ -166,7 +190,7 @@ message ConstellationResponse {
 }
 
 message CatalogEntryKey {
-  string cat_label = 1;  // Corresponds to catalog_description.label. PL, AST,
-                         // or COM.
+  string cat_label = 1;  // Corresponds to catalog_description.label. M, NGC,
+                         // PL, etc.
   string entry = 2;  // Corresponds to catalog_entry.entry field.
 }
