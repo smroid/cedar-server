@@ -4050,6 +4050,12 @@ impl MyCedar {
             let mut selected_something = false;
             if let Some(cm) = preferences.catalog_entry_match.as_mut() {
                 for label in &known_catalog_labels {
+                    // WDS is large enough (double/multiple stars down to
+                    // faint magnitudes) that auto-selecting it would flood
+                    // the view for existing users; leave it opt-in.
+                    if label == "WDS" {
+                        continue;
+                    }
                     if !preferences.known_catalog_label.contains(label)
                         && !cm.catalog_label.contains(label)
                     {
