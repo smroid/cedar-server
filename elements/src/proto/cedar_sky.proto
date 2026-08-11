@@ -115,6 +115,15 @@ message SelectedCatalogEntry {
   optional double azimuth = 5;
 }
 
+message SkyEvent {
+  google.protobuf.Timestamp time = 1;
+
+  // For a rise/set event, azimuth (degrees, positive clockwise from north)
+  // at that event. For a culmination event, altitude (degrees) at that
+  // event.
+  double value = 2;
+}
+
 // Rise, set, and culmination times for an object, relative to the time the
 // containing CatalogEntry was computed. prev_*/next_* are the nearest such
 // event strictly before/after that time.
@@ -126,12 +135,12 @@ message SelectedCatalogEntry {
 // next_culmination are always present; upper culmination (meridian
 // crossing) occurs regardless of whether the object rises/sets.
 message RiseSetCulmination {
-  optional google.protobuf.Timestamp prev_rise = 1;
-  optional google.protobuf.Timestamp next_rise = 2;
-  optional google.protobuf.Timestamp prev_set = 3;
-  optional google.protobuf.Timestamp next_set = 4;
-  google.protobuf.Timestamp prev_culmination = 5;
-  google.protobuf.Timestamp next_culmination = 6;
+  optional SkyEvent prev_rise = 1;
+  optional SkyEvent next_rise = 2;
+  optional SkyEvent prev_set = 3;
+  optional SkyEvent next_set = 4;
+  SkyEvent prev_culmination = 5;
+  SkyEvent next_culmination = 6;
 }
 
 message CatalogEntry {
