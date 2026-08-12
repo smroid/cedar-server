@@ -3894,7 +3894,14 @@ impl MyCedar {
                     object_type_label: Vec::<String>::new(), // Filled below.
                 });
                 let cm_ref = cat_match.as_mut().unwrap();
-                cm_ref.catalog_label = known_catalog_labels.clone();
+                // WDS is large enough (double/multiple stars down to faint
+                // magnitudes) that including it by default would flood the
+                // view; leave it opt-in. Matches the WDS exclusion below,
+                // in the existing-preferences-file merge path.
+                cm_ref.catalog_label = known_catalog_labels.iter()
+                    .filter(|label| label.as_str() != "WDS")
+                    .cloned()
+                    .collect();
                 cm_ref.object_type_label = known_object_type_labels.clone();
                 cat_match
             } else {
@@ -4065,7 +4072,8 @@ impl MyCedar {
                 for label in &known_catalog_labels {
                     // WDS is large enough (double/multiple stars down to
                     // faint magnitudes) that auto-selecting it would flood
-                    // the view for existing users; leave it opt-in.
+                    // the view for existing users; leave it opt-in. Matches
+                    // the fresh-install default above.
                     if label == "WDS" {
                         continue;
                     }
