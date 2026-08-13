@@ -2111,7 +2111,21 @@ impl Cedar for MyCedar {
             Some(3) => Some(Ordering::Elevation),
             _ => Some(Ordering::Brightness),
         };
-        let catalog_entry_match = req.catalog_entry_match.as_ref().unwrap();
+        // `catalog_entry_match` may legitimately be absent when
+        // `text_search` is given instead (see QueryCatalogRequest in
+        // cedar_sky.proto -- query_catalog_entries() ignores it in that
+        // case). Absent without text_search is a malformed request.
+        let default_catalog_entry_match = CatalogEntryMatch::default();
+        let catalog_entry_match = match req.catalog_entry_match.as_ref() {
+            Some(cm) => cm,
+            None if req.text_search.is_some() => &default_catalog_entry_match,
+            None => {
+                return Err(logged_status!(
+                    invalid_argument,
+                    "catalog_entry_match must be given unless text_search is"
+                ));
+            }
+        };
 
         let plate_solution = solve_engine_arc
             .lock()
