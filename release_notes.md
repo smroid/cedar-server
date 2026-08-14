@@ -421,3 +421,44 @@ Cedar-server version: 1.1.6
 
 * Fix LX200 (SkySafari/Stellarium) position reporting so objects near 0
   hours right ascension are no longer rejected as invalid.
+
+# August 13 2026
+
+Cedar-server version: 1.2.0
+
+New catalogs (Hopper only):
+
+* Add Washington Double Star (WDS) catalog: double and multiple star
+  systems. Off by default (it's large); enable it from catalog selection.
+
+* Add Caldwell catalog.
+
+* Add Bayer designations and HYG-catalog star names.
+
+Rise/set/culmination and alt/az goto:
+
+* Object info now includes rise, set, and culmination (highest point)
+  times for the observer's location, along with the azimuth (rise/set) or
+  altitude (culmination) at that event. Hopper only.
+
+* Add support for goto by altitude/azimuth, not just RA/Dec.
+
+Performance:
+
+* Improved star detection: better noise estimate, revised centroiding
+  algorithm, and better discrimination of hot pixels from real stars.
+
+* Improved gyro (IMU) reliability: detect and recover cleanly from
+  dropped-sample gaps and saturated readings that could otherwise corrupt
+  Cedar's motion tracking; faster gyro sample rate. Hopper only.
+
+Other fixes and improvements:
+
+* Add a "get image" capability for retrieving a full still image.
+
+* Fix WiFi access point compatibility with additional client devices.
+
+* Fix bug where the reported camera roll angle wasn't returned to the
+  client.
+
+* Various logging and reliability improvements.
