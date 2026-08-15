@@ -1053,42 +1053,15 @@ impl SolveEngine {
                     );
                 }
 
-                // Use boresight_catalog_entry's constellation if available;
-                // otherwise query with no filters for a reliable
-                // identification.
-                if let Some(bce) = &boresight_catalog_entry {
-                    boresight_constellation =
-                        bce.entry.as_ref().unwrap().constellation.clone();
-                } else {
-                    let query_result = sky
-                        .lock()
-                        .await
-                        .query_catalog_entries(
-                            Some(psp.fov / 2.0),
-                            // max_distance; guaranteed
-                            // to contain
-                            // an entry.
-                            None,                        // min_elevation
-                            None,  // faintest_magnitude; no filter.
-                            false, // match_catalog_label; no filter.
-                            &[],   // catalog_label
-                            false, // match_object_type_label; no filter.
-                            &[],   // object_type_label
-                            None,  // text_search
-                            Some(Ordering::SkyLocation), // nearest first.
-                            None,  // decrowd_distance
-                            Some(1), // limit_result; only need the nearest.
-                            Some(boresight_coords.clone()),
-                            None, // location_info
-                        )
-                        .await;
-                    if let Ok((entries, _)) = query_result {
-                        if let Some(nearest) = entries.into_iter().next() {
-                            boresight_constellation =
-                                nearest.entry.unwrap().constellation;
-                        }
-                    }
-                }
+                // Use boresight_catalog_entry's constellation if we have such
+                // an entry. We might not: the catalog query that produced the
+                // candidates applies the user's filters, so the boresight can
+                // have no entry near it. In that case we determine the
+                // constellation from the boresight coordinates.
+                boresight_constellation = match &boresight_catalog_entry {
+                    Some(bce) => bce.entry.as_ref().unwrap().constellation.clone(),
+                    None => sky.lock().await.constellation_at(&boresight_coords).await,
+                };
             }
         }
 

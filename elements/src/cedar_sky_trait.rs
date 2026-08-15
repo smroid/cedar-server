@@ -54,6 +54,11 @@ pub trait CedarSkyTrait {
         location_info: Option<LocationInfo>,
     ) -> Result<(Vec<SelectedCatalogEntry>, usize), CanonicalError>;
 
+    /// Returns the constellation containing `coord`, or None if it could not
+    /// be determined.
+    async fn constellation_at(&self, coord: &CelestialCoord)
+                              -> Option<Constellation>;
+
     /// Return the selected catalog entry. If it is a solar system object the
     /// current position is calculated using `timestamp`. If `location_info`
     /// is given, the entry's `rise_set_culmination` is populated.
