@@ -3,10 +3,9 @@ Default pattern database:
 * go down to 5deg? Helps 10deg fields that are partially obstructed. Doc this.
 * tune for Hopper
 * separate (broader) database for DIY version
+* do proper motions near poles
 
 auto-detect alt-az vs equatorial (with manual override)
-
-Base python scripting support for working with Cedar grpc server.
 
 Mic button on keyboard for voice input. Can work offline? Good for
 "en gee cee oh five six" utterances?
@@ -14,11 +13,6 @@ Mic button on keyboard for voice input. Can work offline? Good for
 Multiple scopes
 * FOV
 * saved alignment
-
-Tetra3
-* use brightness ratio (broadly quantized) of most separated stars in
-  pattern as additional discriminant (post hash lookup? or incorporate
-  into hash?)
 
 time display:
 * local time, UTC
@@ -48,17 +42,12 @@ TBD
 Cedar Sky
 Remaining work:
 * add more catalogs
-  - Caldwell (list, not catalog-- affects display logic re naming)
   - Arp, Hickson (lists, not catalogs)
-  - double stars
-  - stars down to some limit
   - what else?
-* find non-python solution for asteroids/comets
+* user-added object lists
 * way to add new solar system object, e.g. comet
   - cloud-based?
-* meridian ordering (advanced)
-* identify constellation of planet
-* constellation lines
+* RA ordering with seam at anti-meridian (advanced)
 
 bug report
 
