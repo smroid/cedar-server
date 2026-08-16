@@ -523,55 +523,12 @@ pub fn precess(
     if (epoch_from - epoch_to).abs() < 1e-10 {
         return (ra, dec); // No precession needed.
     }
-
-    // Time in Julian centuries from J2000.0 for both epochs.
-    let t0 = (epoch_from - 2000.0) / 100.0;
-    let t = (epoch_to - 2000.0) / 100.0;
-    let dt = t - t0;
-
-    // Precession angles (in arcseconds) from Meeus formulae.
-    // These are the IAU 1976 precession constants.
-    let zeta_a =
-        2306.2181 * dt + 1.39656 * dt * t0 - 0.018185 * dt * t0.powi(2);
-    let z_a = 2306.2181 * dt + 1.39656 * dt * t0 + 0.018185 * dt * t0.powi(2);
-    let theta_a =
-        2004.3109 * dt - 0.42665 * dt * t0 - 0.041833 * dt * t0.powi(2);
-
-    let zeta = (zeta_a / 3600.0).to_radians();
-    let z = (z_a / 3600.0).to_radians();
-    let theta = (theta_a / 3600.0).to_radians();
-
-    let [x, y, z_vec] = to_unit_vector(ra, dec);
-
-    // Apply precession matrix P = R₃(-z) × R₂(θ) × R₃(-ζ).
-    // Compute the product of three rotation matrices.
-    let cos_zeta = zeta.cos();
-    let sin_zeta = zeta.sin();
-    let cos_z = z.cos();
-    let sin_z = z.sin();
-    let cos_theta = theta.cos();
-    let sin_theta = theta.sin();
-
-    // The resulting precession matrix elements.
-    let p11 = cos_zeta * cos_z * cos_theta - sin_zeta * sin_z;
-    let p12 = -sin_zeta * cos_z * cos_theta - cos_zeta * sin_z;
-    let p13 = -sin_theta * cos_z;
-
-    let p21 = cos_zeta * sin_z * cos_theta + sin_zeta * cos_z;
-    let p22 = -sin_zeta * sin_z * cos_theta + cos_zeta * cos_z;
-    let p23 = -sin_theta * sin_z;
-
-    let p31 = cos_zeta * sin_theta;
-    let p32 = -sin_zeta * sin_theta;
-    let p33 = cos_theta;
-
-    // Apply the precession matrix.
-    let x_new = p11 * x + p12 * y + p13 * z_vec;
-    let y_new = p21 * x + p22 * y + p23 * z_vec;
-    let z_new = p31 * x + p32 * y + p33 * z_vec;
-
-    // Convert back to ra/dec.
-    from_unit_vector(&[x_new, y_new, z_new])
+    // astro::precess::precess_eq_coords wants Julian day rather than a
+    // decimal-year epoch; this is the standard J2000-based (Julian year,
+    // not Besselian) conversion between the two.
+    let jd_from = 2451545.0 + (epoch_from - 2000.0) * 365.25;
+    let jd_to = 2451545.0 + (epoch_to - 2000.0) * 365.25;
+    astro::precess::precess_eq_coords(ra, dec, jd_from, jd_to)
 }
 
 /// When exposing for plate solving, we increase exposure until a desired
