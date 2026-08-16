@@ -75,6 +75,25 @@ If you redistribute any copies, modifications or derivatives of the Software,
 you must include a copy of or a link to these Terms and Conditions and not
 remove any copyright notices provided in or with the Software.
 
+### Feature-Level Advertisement
+
+The Software defines a `FeatureLevel` value (see `FeatureLevel` in
+`cedar.proto`) that a running server reports to clients, including the
+values `BASIC` and `PLUS`. Those two values identify commercial embodiments
+of the Software licensed by us and may be reported only by servers produced
+under a separate commercial license from us that authorizes their use.
+
+If you use, copy, modify, create derivative works from, or redistribute the
+Software under a Permitted Purpose, any resulting server -- regardless of
+what functionality it implements, resembles, or reimplements -- must report
+`FeatureLevel.DIY` and must not report `BASIC` or `PLUS`. This obligation
+applies even where the software otherwise would be capable of, or configured
+to provide, functionality similar or equivalent to that of a licensed
+commercial embodiment.
+
+This is a condition of the License Grant. Reporting `BASIC` or `PLUS`
+without the required commercial license is not a Permitted Purpose.
+
 ### Disclaimer
 
 THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR

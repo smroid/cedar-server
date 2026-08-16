@@ -36,6 +36,13 @@ package cedar;
 // the gRPC protocol defined in this proto file. Similarly, Cedar's gRPC
 // integration with Tetra3 is described in a separate proto file.
 
+// BASIC and PLUS identify commercial embodiments of cedar-server licensed by
+// the copyright holder and are reserved for servers produced under such a
+// license. A cedar-server instance -- including any modified or
+// derivative build -- that has not been produced under such a license MUST
+// report DIY, regardless of what functionality it implements or resembles.
+// This is a condition of the license under which cedar-server is made
+// available; see the "Feature-Level Advertisement" section of LICENSE.md.
 enum FeatureLevel {
   FEATURE_LEVEL_UNSPECIFIED = 0;
   DIY = 1;
