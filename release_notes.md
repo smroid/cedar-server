@@ -462,3 +462,19 @@ Other fixes and improvements:
   client.
 
 * Various logging and reliability improvements.
+
+# August 18 2026
+
+Cedar-server version: 1.3.0
+
+New catalogs (Hopper only):
+
+* Add asteroids and comets to the sky catalog: searchable by name or
+  designation, with position and brightness computed live for the current
+  time.
+
+Precision improvements:
+
+* Fix planet positions (previously off by up to ~2.6 arcminutes) and Moon
+  position (previously off by up to ~16 arcminutes) by switching to a
+  higher-precision solution.
