@@ -2105,12 +2105,13 @@ impl Cedar for MyCedar {
 
         let req: QueryCatalogRequest = request.into_inner();
         let limit_result = req.limit_result.map(|l| l as usize);
-        let ordering = match req.ordering {
-            Some(1) => Some(Ordering::Brightness),
-            Some(2) => Some(Ordering::SkyLocation),
-            Some(3) => Some(Ordering::Elevation),
-            _ => Some(Ordering::Brightness),
-        };
+        let ordering = Ordering::try_from(req.ordering.unwrap_or(0))
+            .unwrap_or(Ordering::Brightness);
+        let ordering = Some(if ordering == Ordering::Unspecified {
+            Ordering::Brightness
+        } else {
+            ordering
+        });
         // `catalog_entry_match` may legitimately be absent when
         // `text_search` is given instead (see QueryCatalogRequest in
         // cedar_sky.proto -- query_catalog_entries() ignores it in that
