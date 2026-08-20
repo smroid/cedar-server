@@ -47,11 +47,8 @@ Remaining work:
 * user-added object lists
 * way to add new solar system object, e.g. comet
   - cloud-based?
-* RA ordering with seam at anti-meridian (advanced)
 
 bug report
-
-vignetting calibration
 
 Wifi management
 * switching wifi mode-- setting in web UI?
