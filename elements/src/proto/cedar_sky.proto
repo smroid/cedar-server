@@ -75,7 +75,14 @@ enum Ordering {
   // ordering.
   ELEVATION = 3;
 
-  // TODO: MARATHON: time until setting to within min_elevation.
+  // Ordered by hour angle from the observer's local meridian, sweeping
+  // eastward starting at the anti-meridian (hour angle 180 degrees -- the
+  // seam) through the meridian (hour angle 0) and on to just short of the
+  // anti-meridian again (hour angle -180/+180 degrees). Intended for
+  // observing marathons: west-most (setting soonest) objects first, working
+  // eastward toward what has the most time left before setting. If observer
+  // geolocation is unknown, reverts to brightness ordering.
+  HOUR_ANGLE = 4;
 }
 
 message QueryCatalogResponse {
