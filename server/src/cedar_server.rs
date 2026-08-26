@@ -39,8 +39,9 @@ use cedar_elements::{
         cedar_server::{Cedar, CedarServer},
         ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
         CameraModel, CelestialCoordFormat, ConnectionStatus,
-        DetectSensitivity, DisplayOrientation, EmptyMessage, FeatureLevel,
-        FixedSettings, FrameRequest, FrameResult, GetBluetoothNameResponse,
+        CpuUsageReport, DetectSensitivity, DisplayOrientation, EmptyMessage,
+        FeatureLevel, FixedSettings, FrameRequest, FrameResult,
+        GetBluetoothNameResponse,
         GetBondedDevicesResponse, Image, ImageCoord,
         ImageFormat as ProtoImageFormat, ImageRequest, ImageResult, ImuState,
         ImuTrackerState, LatLong, MountType, OperatingMode, OperationSettings,
@@ -91,6 +92,7 @@ use crate::{
         reset_hci_controller, run_pairing_mode, set_adapter_name, ResetOutcome,
     },
     calibrator::{Calibrator, ExposureCalibrationError},
+    cpu_stats::CpuStats,
     detect_engine::{DetectEngine, DetectResult},
     lx200_server::create_lx200_server,
     motion_estimator::MotionEstimator,
@@ -247,17 +249,7 @@ struct MyCedar {
 
     connection_counters: Arc<ConnectionCounters>,
 
-    // Cached CPU temperature, read at most once per minute.
-    cpu_temperature: Arc<tokio::sync::Mutex<(f32, Instant)>>,
-
-    // System-wide CPU usage: cached result (in cores), and previous
-    // (busy ticks, Instant) sample.
-    cpu_load_average: Arc<tokio::sync::Mutex<(f32, u64, Instant)>>,
-
-    cpu_core_count: i32,
-
-    // Process CPU usage: cached result, and previous (ticks, Instant) sample.
-    cedar_process_load: Arc<tokio::sync::Mutex<(f32, u64, Instant)>>,
+    cpu_stats: Arc<CpuStats>,
 }
 
 struct CedarState {
@@ -386,6 +378,14 @@ impl Cedar for MyCedar {
         };
 
         Ok(tonic::Response::new(response))
+    }
+
+    async fn get_cpu_usage_report(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<CpuUsageReport>, tonic::Status> {
+        let report = CpuStats::top_report().await;
+        Ok(tonic::Response::new(CpuUsageReport { report }))
     }
 
     async fn update_fixed_settings(
@@ -2504,10 +2504,7 @@ struct ServerInfoCtx {
     os_version: String,
     serial_number: String,
     connection_counters: Arc<ConnectionCounters>,
-    cpu_temperature: Arc<tokio::sync::Mutex<(f32, Instant)>>,
-    cpu_load_average: Arc<tokio::sync::Mutex<(f32, u64, Instant)>>,
-    cpu_core_count: i32,
-    cedar_process_load: Arc<tokio::sync::Mutex<(f32, u64, Instant)>>,
+    cpu_stats: Arc<CpuStats>,
 }
 
 impl MyCedar {
@@ -3067,10 +3064,7 @@ impl MyCedar {
             os_version: self.os_version.clone(),
             serial_number: self.serial_number.clone(),
             connection_counters: self.connection_counters.clone(),
-            cpu_temperature: self.cpu_temperature.clone(),
-            cpu_load_average: self.cpu_load_average.clone(),
-            cpu_core_count: self.cpu_core_count,
-            cedar_process_load: self.cedar_process_load.clone(),
+            cpu_stats: self.cpu_stats.clone(),
         }
     }
 
@@ -3229,94 +3223,12 @@ impl MyCedar {
             });
         }
 
-        // Get CPU temperature, reading from sysfs at most once per minute.
-        let mut cached = ctx.cpu_temperature.lock().await;
-        if cached.1.elapsed() >= Duration::from_secs(60) {
-            if let Ok(temp_str) = tokio::fs::read_to_string(
-                "/sys/class/thermal/thermal_zone0/temp",
-            )
-            .await
-            {
-                if let Ok(temp_millideg) = temp_str.trim().parse::<f32>() {
-                    cached.0 = temp_millideg / 1000.0;
-                }
-            }
-            cached.1 = Instant::now();
-        }
-        server_info.cpu_temperature = cached.0;
-
-        // Get total system CPU usage (in cores, e.g. 1.0 = one full core), by
-        // sampling /proc/stat's aggregate "cpu" line at most once per minute
-        // and computing delta busy ticks / delta time.
-        let mut cached_load = ctx.cpu_load_average.lock().await;
-        if cached_load.2.elapsed() >= Duration::from_secs(60) {
-            if let Ok(stat_str) = tokio::fs::read_to_string("/proc/stat").await
-            {
-                if let Some(cpu_line) = stat_str.lines().next() {
-                    let fields: Vec<u64> = cpu_line
-                        .split_whitespace()
-                        .skip(1) // Skip "cpu" label.
-                        .filter_map(|f| f.parse::<u64>().ok())
-                        .collect();
-                    // Fields are: user nice system idle iowait irq softirq
-                    // steal [guest guest_nice]. Busy time is everything
-                    // except idle and iowait.
-                    if fields.len() >= 5 {
-                        let idle = fields[3] + fields[4];
-                        let total: u64 = fields.iter().sum();
-                        let busy = total.saturating_sub(idle);
-                        let elapsed = cached_load.2.elapsed().as_secs_f32();
-                        let clk_tck =
-                            unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f32;
-                        if clk_tck > 0.0 && elapsed > 0.0 && cached_load.1 > 0 {
-                            cached_load.0 = (busy.saturating_sub(cached_load.1))
-                                as f32
-                                / clk_tck
-                                / elapsed;
-                        }
-                        cached_load.1 = busy;
-                    }
-                }
-            }
-            cached_load.2 = Instant::now();
-        }
-        server_info.system_load_average = Some(cached_load.0);
-        server_info.cpu_core_count = Some(ctx.cpu_core_count);
-
-        // Get cedar process CPU usage by sampling /proc/self/stat at most once
-        // per minute and computing delta ticks / delta time.
-        let mut cached_proc = ctx.cedar_process_load.lock().await;
-        if cached_proc.2.elapsed() >= Duration::from_secs(60) {
-            if let Ok(stat_str) =
-                tokio::fs::read_to_string("/proc/self/stat").await
-            {
-                // Skip past the process name field "(name)" which may contain
-                // spaces. utime/stime are fields 13/14 (0-indexed) in the full
-                // line, i.e. indices 11/12 after the closing ')'.
-                let after_comm = stat_str.find(')').map(|i| &stat_str[i + 1..]);
-                let fields: Vec<&str> =
-                    after_comm.unwrap_or("").split_whitespace().collect();
-                if fields.len() > 12 {
-                    if let (Ok(utime), Ok(stime)) =
-                        (fields[11].parse::<u64>(), fields[12].parse::<u64>())
-                    {
-                        let ticks = utime + stime;
-                        let elapsed = cached_proc.2.elapsed().as_secs_f32();
-                        let clk_tck =
-                            unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f32;
-                        if clk_tck > 0.0 && elapsed > 0.0 && cached_proc.1 > 0 {
-                            cached_proc.0 =
-                                (ticks.saturating_sub(cached_proc.1)) as f32
-                                    / clk_tck
-                                    / elapsed;
-                        }
-                        cached_proc.1 = ticks;
-                    }
-                }
-            }
-            cached_proc.2 = Instant::now();
-        }
-        server_info.cedar_load_average = Some(cached_proc.0);
+        server_info.cpu_temperature = ctx.cpu_stats.get_temperature().await;
+        server_info.system_load_average =
+            Some(ctx.cpu_stats.get_system_load().await);
+        server_info.cpu_core_count = Some(ctx.cpu_stats.core_count());
+        server_info.cedar_load_average =
+            Some(ctx.cpu_stats.get_cedar_process_load().await);
 
         server_info.server_time =
             Some(prost_types::Timestamp::from(SystemTime::now()));
@@ -4375,24 +4287,7 @@ impl MyCedar {
             os_version,
             serial_number,
             connection_counters: connection_counters.clone(),
-            // Timestamps in the past so the first call triggers a read.
-            cpu_temperature: Arc::new(tokio::sync::Mutex::new((
-                0.0_f32,
-                Instant::now() - Duration::from_secs(120),
-            ))),
-            cpu_load_average: Arc::new(tokio::sync::Mutex::new((
-                0.0_f32,
-                0_u64,
-                Instant::now() - Duration::from_secs(120),
-            ))),
-            cedar_process_load: Arc::new(tokio::sync::Mutex::new((
-                0.0_f32,
-                0_u64,
-                Instant::now() - Duration::from_secs(120),
-            ))),
-            cpu_core_count: std::thread::available_parallelism()
-                .map(|n| n.get() as i32)
-                .unwrap_or(0),
+            cpu_stats: Arc::new(CpuStats::new()),
         };
         // Set pre-calibration defaults on camera.
         let locked_state = state.lock().await;

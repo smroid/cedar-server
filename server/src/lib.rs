@@ -5,6 +5,7 @@ pub mod activity_led;
 pub mod bonding_helper;
 pub mod calibrator;
 pub mod cedar_server;
+pub mod cpu_stats;
 pub mod detect_engine;
 pub mod lx200_server;
 pub mod motion_estimator;

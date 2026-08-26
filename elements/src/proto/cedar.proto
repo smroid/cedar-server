@@ -1054,6 +1054,12 @@ message ServerLogResult {
   string log_content = 1;
 }
 
+message CpuUsageReport {
+  // Human-readable, top-like snapshot of instantaneous CPU usage. Not
+  // machine-parsed; format is not guaranteed stable.
+  string report = 1;
+}
+
 message EmptyMessage {}
 
 message GetBluetoothNameResponse {
@@ -1138,7 +1144,14 @@ message ImageResult {
 }
 
 service Cedar {
+  // Returns the tail of Cedar's server log file.
   rpc GetServerLog(ServerLogRequest) returns (ServerLogResult);
+
+  // Returns a human-readable, top-like snapshot of instantaneous CPU usage:
+  // the busiest processes system-wide, and a per-thread breakdown of
+  // Cedar's own threads. Takes about a second to complete, since it samples
+  // /proc twice to compute instantaneous (not lifetime-average) CPU%.
+  rpc GetCpuUsageReport(EmptyMessage) returns (CpuUsageReport);
 
   // Changes zero or more of Cedar's "fixed" settings. If a field is omitted
   // from the supplied FixedSettings, that setting is not updated. Returns the
