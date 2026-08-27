@@ -311,6 +311,11 @@ struct CedarState {
     scaled_image: Option<Arc<GrayImage>>,
     scaled_image_binning_factor: u32,
     scaled_image_frame_id: i32,
+    // The rectangle ServeEngine paired with `scaled_image` (a centered square
+    // crop of the sensor, in full resolution coordinates). Snapshotted so the
+    // frozen calibration image is described to clients with the same geometry
+    // the live view used, rather than a fabricated full-sensor rectangle.
+    scaled_image_rectangle: Option<Rectangle>,
 
     calibrating: bool,
     cancel_calibration: Arc<tokio::sync::Mutex<bool>>,
@@ -2650,6 +2655,13 @@ impl MyCedar {
             locked_state.scaled_image_binning_factor =
                 sr.scaled_image_binning_factor;
             locked_state.scaled_image_frame_id = sr.scaled_image_frame_id;
+            // Keep the rectangle that describes these pixels, so we don't have
+            // to fabricate one when serving the frozen image.
+            locked_state.scaled_image_rectangle = sr
+                .frame_result
+                .image
+                .as_ref()
+                .and_then(|i| i.rectangle.clone());
         }
         locked_state.calibrating = true;
         locked_state.calibration_start = Instant::now();
@@ -3588,6 +3600,7 @@ impl MyCedar {
                         locked_state.scaled_image.clone(),
                         locked_state.scaled_image_binning_factor,
                         locked_state.scaled_image_frame_id,
+                        locked_state.scaled_image_rectangle.clone(),
                     ))
                 } else {
                     None
@@ -3630,24 +3643,26 @@ impl MyCedar {
             frame_result.calibration_data =
                 Some(calibration_data_arc.lock().await.clone());
 
-            if let Some((scaled_image_opt, binning_factor, frame_id)) =
-                scaled_image_data
+            if let Some((
+                scaled_image_opt,
+                binning_factor,
+                frame_id,
+                snapshot_rectangle,
+            )) = scaled_image_data
             {
                 if let Some(img) = scaled_image_opt {
-                    let (scaled_width, scaled_height) = img.dimensions();
-                    // JPEG encoding now happens outside the state lock!
-                    let jpg_buf = Self::jpeg_encode(&img, jpeg_quality);
-                    let image_rectangle = Rectangle {
-                        origin_x: 0,
-                        origin_y: 0,
-                        width: scaled_width as i32 * binning_factor as i32,
-                        height: scaled_height as i32 * binning_factor as i32,
-                    };
+                    let jpg_buf = tokio::task::spawn_blocking(move || {
+                        Self::jpeg_encode(&img, jpeg_quality)
+                    })
+                    .await
+                    .unwrap_or_default();
                     frame_result.image = Some(Image {
                         binning_factor: binning_factor as i32,
                         rotation_size_ratio: 1.0,
-                        // Rectangle is always in full resolution coordinates.
-                        rectangle: Some(image_rectangle),
+                        // The rectangle ServeEngine paired with these pixels:
+                        // the centered square crop the live view was showing,
+                        // in full resolution coordinates.
+                        rectangle: snapshot_rectangle,
                         image_data: jpg_buf,
                     });
                     frame_result.frame_id = frame_id;
@@ -4245,6 +4260,7 @@ impl MyCedar {
                 scaled_image: None,
                 scaled_image_binning_factor: 1,
                 scaled_image_frame_id: 0,
+                scaled_image_rectangle: None,
                 calibrating: false,
                 cancel_calibration: Arc::new(tokio::sync::Mutex::new(false)),
                 calibration_start: Instant::now(),
