@@ -396,10 +396,15 @@ impl DetectEngine {
             // See thenewstack.io/
             // using-rustlangs-async-tokio-runtime-for-cpu-bound-tasks/
 
-            self.worker_thread = Some(std::thread::spawn(move || {
+            // Name the thread we spawn here, not just the runtime's worker
+            // pool: block_on() drives the worker future on this thread, so
+            // this is where the detect work actually runs.
+            self.worker_thread = Some(std::thread::Builder::new()
+                .name("detect_engine".to_string())
+                .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
-                    .thread_name("detect_engine")
+                    .thread_name("detect_engine_rt")
                     // Single worker suffices: this runtime runs only the
                     // sequential detect worker loop with no concurrent tasks.
                     .worker_threads(1)
@@ -418,7 +423,8 @@ impl DetectEngine {
                     )
                     .await;
                 });
-            }));
+            })
+            .unwrap());
         }
         // Get the most recently posted result; wait if there is none yet or the
         // currently posted result is the same as the one the caller has already
@@ -863,7 +869,7 @@ impl DetectEngine {
                         &locked_state.detect_duration_stats.value_stats.recent
                     {
                         let detect_duration =
-                            Duration::from_secs_f64(recent_stats.min);
+                            Duration::from_secs_f64(recent_stats.mean);
                         locked_state.eta =
                             Some(Instant::now() + detect_duration);
                     }

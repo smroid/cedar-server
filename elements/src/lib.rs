@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
 pub mod astro_util;
@@ -8,6 +8,7 @@ pub mod image_utils;
 pub mod imu_trait;
 pub mod reservoir_sampler;
 pub mod solver_trait;
+pub mod thread_name;
 pub mod value_stats;
 pub mod wifi_trait;
 

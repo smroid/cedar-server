@@ -59,6 +59,7 @@ use cedar_elements::{
     hot_pixel_trait::HotPixelTrait,
     imu_trait::ImuTrait,
     solver_trait::SolverTrait,
+    thread_name::ThreadName,
     wifi_trait::WifiTrait,
 };
 use chrono::offset::Local;
@@ -1524,6 +1525,7 @@ impl Cedar for MyCedar {
         // stall the async runtime.
         let encoded = tokio::task::spawn_blocking(
             move || -> Result<Vec<u8>, String> {
+                let _name = ThreadName::new("jpeg-getimage");
                 match format {
                     ProtoImageFormat::Bmp => {
                         let mut buf = io::Cursor::new(Vec::<u8>::new());
@@ -1900,6 +1902,7 @@ impl Cedar for MyCedar {
             }
             let wifi_arc = wifi.as_ref().unwrap().clone();
             let result = tokio::task::spawn_blocking(move || {
+                let _name = ThreadName::new("wifi-enable");
                 wifi_arc.blocking_lock().set_enabled(wifi_enabled)
             })
             .await
@@ -3652,6 +3655,7 @@ impl MyCedar {
             {
                 if let Some(img) = scaled_image_opt {
                     let jpg_buf = tokio::task::spawn_blocking(move || {
+                        let _name = ThreadName::new("jpeg-calib");
                         Self::jpeg_encode(&img, jpeg_quality)
                     })
                     .await
@@ -5397,7 +5401,10 @@ async fn serve_over_bt(
                     // up to a couple seconds — enough to starve the runtime
                     // when several BT connections close near simultaneously.
                     let outcome =
-                        tokio::task::spawn_blocking(reset_hci_controller)
+                        tokio::task::spawn_blocking(|| {
+                            let _name = ThreadName::new("bt-hci-reset");
+                            reset_hci_controller()
+                        })
                             .await
                             .unwrap_or(ResetOutcome::HardReset);
                     match outcome {
@@ -5442,6 +5449,9 @@ async fn serve_over_bt(
     exit
 }
 
+// Tokio names its async workers and its spawn_blocking pool alike
+// ("tokio-rt-worker"), so blocking threads rename themselves via
+// a ThreadName guard inside the closure; see the spawn_blocking call sites.
 #[tokio::main]
 async fn async_main(
     args: AppArgs,

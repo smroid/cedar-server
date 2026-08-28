@@ -246,10 +246,15 @@ impl ServeEngine {
             let cloned_state = self.state.clone();
             let cloned_solve_engine = self.solve_engine.clone();
             let cloned_detect_engine = self.detect_engine.clone();
-            self.worker_thread = Some(std::thread::spawn(move || {
+            // Name the thread we spawn here, not just the runtime's worker
+            // pool: block_on() drives the worker future on this thread, so
+            // this is where the serve work actually runs.
+            self.worker_thread = Some(std::thread::Builder::new()
+                .name("serve_engine".to_string())
+                .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
-                    .thread_name("serve_engine")
+                    .thread_name("serve_engine_rt")
                     // Single worker suffices: this runtime runs only the
                     // sequential serve worker loop with no concurrent tasks.
                     .worker_threads(1)
@@ -263,7 +268,8 @@ impl ServeEngine {
                     )
                     .await;
                 });
-            }));
+            })
+            .unwrap());
         }
     }
 
@@ -386,6 +392,19 @@ impl ServeEngine {
             };
 
             let serve_start = Instant::now();
+
+            // Predict when serve_result will next be posted, so waiting
+            // clients sleep through the serve work instead of polling at the
+            // 1ms floor.
+            {
+                let mut locked_state = state.lock().await;
+                if let Some(recent) =
+                    &locked_state.serve_latency_stats.value_stats.recent
+                {
+                    locked_state.eta =
+                        Some(serve_start + Duration::from_secs_f64(recent.mean));
+                }
+            }
 
             // Do the serve work outside the state lock.
             let mut serve_result = Self::produce_serve_result(

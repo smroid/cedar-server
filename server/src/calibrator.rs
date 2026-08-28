@@ -18,6 +18,7 @@ use cedar_elements::{
     cedar::ImageCoord,
     hot_pixel_trait::HotPixelTrait,
     solver_trait::{SolveExtension, SolveParams, SolverTrait},
+    thread_name::ThreadName,
 };
 use image::GrayImage;
 
@@ -606,6 +607,7 @@ impl Calibrator {
             None
         };
         let (stars, noise_estimate) = tokio::task::spawn_blocking(move || {
+            let _name = ThreadName::new("calib-detect");
             let noise_estimate = estimate_noise_from_image(&image);
             let (stars, _, _) = get_stars_from_image(
                 &image,

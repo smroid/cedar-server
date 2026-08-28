@@ -12,6 +12,7 @@ cedar_detect = { version = "0.8.0", path = "../../cedar-detect" }
 chrono = "0.4.31"
 image = "0.25.2"
 imageproc = "0.27.0"
+libc = "0.2"
 medians = "3.0.5"
 nalgebra = "0.35.0"
 prost = "0.12.3"

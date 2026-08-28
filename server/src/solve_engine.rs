@@ -542,10 +542,15 @@ impl SolveEngine {
             let cloned_post_solve_callback = self.post_solve_callback.clone();
             // Allocate a thread for concurrent execution of solver with
             // other activities.
-            self.worker_thread = Some(std::thread::spawn(move || {
+            // Name the thread we spawn here, not just the runtime's worker
+            // pool: block_on() drives the worker future on this thread, so
+            // this is where the solve work actually runs.
+            self.worker_thread = Some(std::thread::Builder::new()
+                .name("solve_engine".to_string())
+                .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
-                    .thread_name("solve_engine")
+                    .thread_name("solve_engine_rt")
                     // Single worker suffices: this runtime runs only the
                     // sequential solve worker loop with no concurrent tasks.
                     .worker_threads(1)
@@ -562,7 +567,8 @@ impl SolveEngine {
                     )
                     .await;
                 });
-            }));
+            })
+            .unwrap());
         }
     }
 
@@ -672,7 +678,7 @@ impl SolveEngine {
                     &locked_state.solve_duration_stats.value_stats.recent
                 {
                     let solve_duration =
-                        Duration::from_secs_f64(recent_stats.min);
+                        Duration::from_secs_f64(recent_stats.mean);
                     locked_state.eta = Some(Instant::now() + solve_duration);
                 }
             }

@@ -12,7 +12,7 @@ use log::info;
 // Applies to temperature, system_load, cedar_process_load, which are polled
 // implicitly on every GetFrame/ServerInformation call and need throttling. The
 // on-demand top_report() below is a separate, always-fresh path.
-const CACHE_INTERVAL: Duration = Duration::from_secs(60);
+const CACHE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Owns the cached CPU metrics that feed into ServerInformation, plus the
 /// logic for an on-demand instantaneous "top"-like report.
@@ -144,9 +144,10 @@ impl CpuStats {
 
     /// Produces a human-readable, top-like snapshot of instantaneous CPU
     /// usage: the busiest processes system-wide, and a per-thread breakdown
-    /// of this Cedar process's own threads (so named engine threads like
-    /// serve_engine/detect_engine/solve_engine are identifiable). Takes
-    /// about 1 second to run, since it samples /proc twice with a delay to
+    /// of this Cedar process's own threads (so named threads like
+    /// detect_engine/solve_engine/serve_engine, and the blocking-pool
+    /// threads labelled by their current job, are identifiable). Takes about
+    /// 2 seconds to run, since it samples /proc twice with a delay to
     /// compute instantaneous (not lifetime-average) CPU%.
     pub async fn top_report() -> String {
         let mut out = String::new();
@@ -164,12 +165,6 @@ impl CpuStats {
         }
 
         out
-    }
-}
-
-impl Default for CpuStats {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
