@@ -635,6 +635,12 @@ impl DetectEngine {
                 // image; binning would dilute hot pixels and break the
                 // single-pixel-spike detection that classify_pixel relies on to
                 // exclude them from the peak.
+                //
+                // Its histogram is over raw pixel values, so hot pixels appear
+                // at their own values rather than being replaced. Everything
+                // below reads the histogram only through percentiles and
+                // aggregate stats over the whole ROI, where the handful of hot
+                // pixels cannot move the result.
                 let roi_summary = summarize_region_of_interest(
                     image,
                     &roi_region,
