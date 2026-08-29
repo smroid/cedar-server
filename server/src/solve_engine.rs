@@ -45,7 +45,7 @@ const IMU_INTERPOLATION_INTERVAL: Duration = Duration::from_millis(100);
 const MINIMUM_STARS: usize = 4;
 // Minimum angular velocity (degrees/sec) below which we suppress IMU
 // interpolation when the scope is at rest.
-const IMU_MOTION_THRESHOLD_DEG_PER_SEC: f64 = 0.5;
+const IMU_MOTION_THRESHOLD_DEG_PER_SEC: f64 = 1.0;
 
 // An active goto target. `coord` is always the J2000 equatorial position that
 // drives the plate solve hint and all of the slew geometry; for an alt/az goto
