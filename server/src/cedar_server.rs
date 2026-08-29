@@ -107,6 +107,13 @@ use crate::{
 // than this.
 const GRPC_SLOW_THRESHOLD_MS: u64 = 100;
 
+// Minimum interval between frames delivered to the pipeline in focus assist
+// mode. Focus assist can have short exposure (bright sky) that deliver frames
+// far faster than the focus display is useful at, and causes the processing
+// pipeline to do work at a high rate. The camera keeps running at its natural
+// rate and discards the frames in between.
+const FOCUS_ASSIST_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
+
 // RFCOMM UUID for gRPC over Bluetooth. The same UUID must be used in Cedar Aim.
 const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
 
@@ -611,11 +618,11 @@ impl Cedar for MyCedar {
                         Self::set_gain(&camera, final_daylight_mode).await;
                         let mut locked_state = self.state.lock().await;
                         if final_focus_mode {
-                            // In SETUP focus assist mode we run at full speed
-                            // with pre-calibrate settings.
+                            // In SETUP focus assist mode we use pre-calibrate
+                            // settings, capped at the focus assist frame rate.
                             if let Err(x) = Self::set_update_interval(
                                 &locked_state,
-                                Duration::ZERO,
+                                FOCUS_ASSIST_UPDATE_INTERVAL,
                             )
                             .await
                             {
@@ -823,11 +830,10 @@ impl Cedar for MyCedar {
                     let daylight_mode =
                         locked_state.operation_settings.daylight_mode.unwrap();
                     if new_focus_assist_mode {
-                        // Entering focus assist mode.
-                        // Run at full speed for focus assist.
+                        // Entering focus assist mode; cap the frame rate.
                         if let Err(x) = Self::set_update_interval(
                             &locked_state,
-                            Duration::ZERO,
+                            FOCUS_ASSIST_UPDATE_INTERVAL,
                         )
                         .await
                         {
@@ -3266,15 +3272,13 @@ impl MyCedar {
     fn get_automatic_update_interval(
         state: &CedarState,
     ) -> std::time::Duration {
-        // Check if we're in SETUP mode with focus assist - go as fast as
-        // possible.
         if state.operation_settings.operating_mode
             == Some(OperatingMode::Setup as i32)
             && state.operation_settings.focus_assist_mode.unwrap_or(false)
         {
-            return Duration::ZERO; // Fast update mode for focusing.
+            return FOCUS_ASSIST_UPDATE_INTERVAL;
         }
-        // For all other cases, go as fast as possible
+        // For all other cases, go as fast as possible.
         // This can be adjusted automatically in the future based on motion
         // detection.
         Duration::ZERO
@@ -4344,6 +4348,17 @@ impl MyCedar {
                     locked_state.operation_settings.daylight_mode.unwrap(),
                 )
                 .await;
+        }
+        // Apply the frame rate cap for the mode we are starting up in. The
+        // update_interval sites elsewhere only fire on mode *transitions*.
+        if let Err(x) =
+            Self::set_update_interval(
+                &locked_state,
+                Self::get_automatic_update_interval(&locked_state),
+            )
+            .await
+        {
+            warn!("Could not set initial update interval {:?}", x);
         }
         {
             let mut solve_engine = locked_state.solve_engine.lock().await;
