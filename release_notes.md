@@ -478,3 +478,29 @@ Precision improvements:
 * Fix planet positions (previously off by up to ~2.6 arcminutes) and Moon
   position (previously off by up to ~16 arcminutes) by switching to a
   higher-precision solution.
+
+# August 30 2026
+
+Cedar-server version: 1.4.0
+
+New catalogs:
+
+* Add the Barnard catalog of dark nebulae (349 objects), including popular
+  names for well-known ones such as the Horsehead and Snake nebulae.
+
+* Add Arp's catalog of peculiar galaxies (338 entries), cross-referenced to
+  existing NGC, IC, and Messier designations where the same object is
+  already in the catalog.
+
+* Fix Caldwell object designations to sort correctly in search results
+  (e.g. C9 before C10) by storing them zero-padded internally, matching
+  Barnard's convention.
+
+Other improvements:
+
+* Add ordering results by hour angle.
+
+* Add a CPU usage report to server diagnostics.
+
+* Cap the frame rate in focus mode, and other minor performance and
+  reliability tweaks.
