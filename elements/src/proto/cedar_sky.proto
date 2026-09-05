@@ -160,7 +160,12 @@ message CatalogEntry {
   optional Constellation constellation = 4;
   ObjectType object_type = 5;
 
-  optional double magnitude = 6;  // Apparent magnitude.
+  optional double magnitude = 6;  // Apparent magnitude. Brightest state,
+                                  // if variable (see dim_mag).
+  // Present together with magnitude only for a variable object: its
+  // faintest documented state.
+  optional double dim_mag = 11;
+
   optional string angular_size = 7;  // Arc minutes. Usually numeric.
 
   optional string common_name = 8;  // Albireo, Horsehead, Crab Nebula, etc.
