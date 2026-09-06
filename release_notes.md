@@ -504,3 +504,38 @@ Other improvements:
 
 * Cap the frame rate in focus mode, and other minor performance and
   reliability tweaks.
+
+# September 5 2026
+
+Cedar-server version: 1.5.0
+
+New catalogs:
+
+* Add the Sharpless catalog of HII regions and emission nebulae (313
+  entries), cross-referenced to NGC, IC, and Messier designations where the
+  same object is already in the catalog.
+
+* Add the Abell catalog of planetary nebulae (73 entries) discovered on the
+  Palomar Observatory Sky Survey plates.
+
+* Add the Collinder catalog of open clusters, asterisms, and stellar
+  groupings (471 entries), cross-referenced to NGC and IC designations
+  where the same object is already in the catalog.
+
+* Add the Herschel 400 observing list (391 entries), the Astronomical
+  League's selection from William Herschel's catalog, cross-referenced to
+  the corresponding NGC and IC objects.
+
+* Add the AAVSO Binocular Program (154 entries), a selection of bright
+  variable stars suited to observing by eye or binoculars, including
+  Betelgeuse, Mira, and Chi Cygni.
+
+Other improvements:
+
+* Variable stars now carry both a bright and a dim magnitude, so search
+  results and object details can show the full range of brightness rather
+  than a single mid-value.
+
+* Fix Messier object designations to sort correctly in search results
+  (e.g. M9 before M10) by storing them zero-padded internally, matching
+  the convention already used for Caldwell and Barnard.
