@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
 use canonical_error::CanonicalError;
@@ -21,4 +21,7 @@ pub trait WifiTrait {
     /// the AP is brought down until explicitly re-enabled or the server
     /// reboots.
     fn set_enabled(&self, enabled: bool) -> Result<(), CanonicalError>;
+
+    /// Returns whether the WiFi access point connection is currently active.
+    fn is_enabled(&self) -> bool;
 }

@@ -134,6 +134,7 @@ message WiFiAccessPoint {
   optional string ssid = 1;
   optional string psk = 2;  // WiFi password.
   optional int32 channel = 3;
+  optional bool enabled = 4;  // Whether the AP is currently active.
 }
 
 // Number of current client connections.

@@ -3241,6 +3241,7 @@ impl MyCedar {
                 ssid: Some(locked_wifi.ssid()),
                 psk: Some(locked_wifi.psk()),
                 channel: Some(locked_wifi.channel()),
+                enabled: Some(locked_wifi.is_enabled()),
             });
         }
 
