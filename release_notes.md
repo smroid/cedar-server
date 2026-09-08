@@ -539,3 +539,18 @@ Other improvements:
 * Fix Messier object designations to sort correctly in search results
   (e.g. M9 before M10) by storing them zero-padded internally, matching
   the convention already used for Caldwell and Barnard.
+
+# September 7 2026
+
+Cedar-server version: 1.5.1
+
+* Search now tolerates a handful of common misspellings, e.g. "cirrus" or
+  "serious" for Sirius, "beetlejuice" for Betelgeuse, "pliades" for the
+  Pleiades, and "xi" for a Bayer star name mistyped as "zi".
+
+* AAVSO Binocular Program star designations with a space (e.g. "RV Cen")
+  are now also searchable as one joined word ("rvcen").
+
+* Fix a bug where an AAVSO variable star's notes (variability type and
+  period) did not always reach the merged object when the star's own
+  designation resolved through another catalog's alias first.
