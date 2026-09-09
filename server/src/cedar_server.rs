@@ -48,6 +48,7 @@ use cedar_elements::{
         PlateSolution as PlateSolutionProto, Preferences, Rectangle,
         RemoveBondRequest, ServerInformation, ServerLogRequest,
         ServerLogResult, SetPairingModeRequest, WiFiAccessPoint,
+        WifiNetwork as WifiNetworkProto, WifiScanResponse,
     },
     cedar_common::{CelestialCoord, HorizonCoord},
     cedar_sky::{
@@ -2396,6 +2397,48 @@ impl Cedar for MyCedar {
             }
         };
         Ok(tonic::Response::new(EmptyMessage::default()))
+    }
+
+    async fn scan_wifi(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<WifiScanResponse>, tonic::Status> {
+        let wifi = self.state.lock().await.wifi.clone();
+        if wifi.is_none() {
+            return Err(logged_status!(
+                unimplemented,
+                format!(
+                    "{} does not include WiFi control.",
+                    self.product_name
+                )
+            ));
+        }
+        // A scan takes seconds: it sweeps the 2.4GHz channels, and if the
+        // radio is rfkill-blocked it must also be unblocked and re-blocked
+        // around the scan. Run it on a blocking thread so we don't park an
+        // async worker for the duration.
+        let wifi_arc = wifi.as_ref().unwrap().clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _name = ThreadName::new("wifi-scan");
+            wifi_arc.blocking_lock().scan_wifi()
+        })
+        .await
+        .map_err(|e| {
+            tonic::Status::internal(format!("scan_wifi task panicked: {:?}", e))
+        })?;
+
+        let networks = match result {
+            Err(x) => return Err(tonic_status(x)),
+            Ok(networks) => networks
+                .into_iter()
+                .map(|n| WifiNetworkProto {
+                    ssid: n.ssid,
+                    signal_strength: n.signal_strength,
+                    secured: n.secured,
+                })
+                .collect(),
+        };
+        Ok(tonic::Response::new(WifiScanResponse { networks }))
     }
 
     async fn convert_to_horizon(

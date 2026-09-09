@@ -85,7 +85,7 @@ message ServerInformation {
   // The current state of the IMU tracking logic. Omitted if no IMU detected.
   optional ImuTrackerState imu_tracker_state = 15;
 
-  // WiFi hotspot info.
+  // Wifi hotspot info.
   optional WiFiAccessPoint wifi_access_point = 10;
 
   // Information about client connections.
@@ -129,10 +129,10 @@ message ImuState {
   double angle_rate_z = 6;
 }
 
-// Information about the WiFi access point that Cedar server puts up.
+// Information about the Wifi access point that Cedar server puts up.
 message WiFiAccessPoint {
   optional string ssid = 1;
-  optional string psk = 2;  // WiFi password.
+  optional string psk = 2;  // Wifi password.
   optional int32 channel = 3;
   optional bool enabled = 4;  // Whether the AP is currently active.
 }
@@ -1016,7 +1016,7 @@ message ActionRequest {
   optional bool save_image = 5;
 
   // Update ssid, psk, and/or channel setting for Cedar server's
-  // WiFi access point.
+  // Wifi access point.
   optional WiFiAccessPoint update_wifi_access_point = 7;
 
   // Clear all items from Preferences.dont_show_items.
@@ -1040,7 +1040,7 @@ message ActionRequest {
   // Causes the Cedar server to panic. For testing.
   optional bool crash_server = 12;
 
-  // Enables or disables the WiFi access point. When disabled, the AP is
+  // Enables or disables the Wifi access point. When disabled, the AP is
   // brought down until explicitly re-enabled or the server reboots. Useful
   // after switching to Bluetooth.
   optional bool wifi_enabled = 15;
@@ -1079,6 +1079,17 @@ message GetBondedDevicesResponse {
 
 message RemoveBondRequest {
   string address = 1;
+}
+
+message WifiNetwork {
+  string ssid = 1;
+  optional int32 signal_strength = 2;  // 0-100.
+  bool secured = 3;
+}
+
+message WifiScanResponse {
+  // Strongest signal first.
+  repeated WifiNetwork networks = 1;
 }
 
 message SetPairingModeRequest {
@@ -1217,6 +1228,8 @@ service Cedar {
   rpc SetPairingMode(SetPairingModeRequest) returns (EmptyMessage);
   rpc GetBondedDevices(EmptyMessage) returns (GetBondedDevicesResponse);
   rpc RemoveBond(RemoveBondRequest) returns (EmptyMessage);
+
+  rpc ScanWifi(EmptyMessage) returns (WifiScanResponse);
 
   // Conversion utility. Error if the observer location or time is not known.
   rpc ConvertToHorizon(cedar_common.CelestialCoord) returns (cedar_common.HorizonCoord);
