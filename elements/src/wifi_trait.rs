@@ -17,12 +17,13 @@ pub struct WifiNetwork {
 pub trait WifiTrait {
     // Access point mode functions.
 
-    fn channel(&self) -> i32;
-    fn ssid(&self) -> String;
-    fn psk(&self) -> String;
+    fn channel(&self) -> Option<i32>;
+    fn ssid(&self) -> Option<String>;
+    fn psk(&self) -> Option<String>;
 
     /// Updates the specified fields of this WiFi access point. Passing
-    /// 'None' leaves the corresponding field unmodified.
+    /// 'None' leaves the corresponding field unmodified. Error if no access
+    /// point is configured.
     fn update_access_point(
         &mut self,
         channel: Option<i32>,
@@ -32,7 +33,7 @@ pub trait WifiTrait {
 
     /// Enables or disables the WiFi access point connection. When disabled,
     /// the AP is brought down until explicitly re-enabled or the server
-    /// reboots.
+    /// reboots. Error if no access point is configured.
     fn set_enabled(&self, enabled: bool) -> Result<(), CanonicalError>;
 
     /// Returns whether the WiFi access point connection is currently active.
