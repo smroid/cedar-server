@@ -302,7 +302,7 @@ struct CedarState {
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
 
     // Not all builds of Cedar-server support Wifi control.
-    wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+    wifi: Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
 
     // Not all builds of Cedar-server support IMU fusion.
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
@@ -1876,7 +1876,7 @@ impl Cedar for MyCedar {
                     )
                 ));
             }
-            let mut locked_wifi = wifi.as_ref().unwrap().lock().await;
+            let mut locked_wifi = wifi.as_ref().unwrap().write().await;
             if let Err(x) = locked_wifi.update_access_point(
                 update_ap.channel,
                 update_ap.ssid.as_deref(),
@@ -1910,7 +1910,7 @@ impl Cedar for MyCedar {
             let wifi_arc = wifi.as_ref().unwrap().clone();
             let result = tokio::task::spawn_blocking(move || {
                 let _name = ThreadName::new("wifi-enable");
-                wifi_arc.blocking_lock().set_enabled(wifi_enabled)
+                wifi_arc.blocking_read().set_enabled(wifi_enabled)
             })
             .await
             .map_err(|e| {
@@ -2420,7 +2420,7 @@ impl Cedar for MyCedar {
         let wifi_arc = wifi.as_ref().unwrap().clone();
         let result = tokio::task::spawn_blocking(move || {
             let _name = ThreadName::new("wifi-scan");
-            wifi_arc.blocking_lock().scan_wifi()
+            wifi_arc.blocking_read().scan_wifi()
         })
         .await
         .map_err(|e| {
@@ -3277,15 +3277,21 @@ impl MyCedar {
             }
         }
 
-        // Process wifi info (outside state lock).
+        // Process wifi info (outside state lock). Omitted entirely if this
+        // server has no WiFi control, or has WiFi but no access point
+        // configured (client mode only).
         if let Some(wifi) = &wifi_arc {
-            let locked_wifi = wifi.lock().await;
-            server_info.wifi_access_point = Some(WiFiAccessPoint {
-                ssid: Some(locked_wifi.ssid()),
-                psk: Some(locked_wifi.psk()),
-                channel: Some(locked_wifi.channel()),
-                enabled: Some(locked_wifi.is_enabled()),
-            });
+            // Read guard: this is on the get_frame hot path, and must not
+            // wait behind a slow WiFi operation such as a ~3 second scan.
+            let locked_wifi = wifi.read().await;
+            if let Some(ssid) = locked_wifi.ssid() {
+                server_info.wifi_access_point = Some(WiFiAccessPoint {
+                    ssid: Some(ssid),
+                    psk: locked_wifi.psk(),
+                    channel: locked_wifi.channel(),
+                    enabled: Some(locked_wifi.is_enabled()),
+                });
+            }
         }
 
         server_info.cpu_temperature = ctx.cpu_stats.get_temperature().await;
@@ -3781,7 +3787,7 @@ impl MyCedar {
         copyright: &str,
         feature_level: FeatureLevel,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-        wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+        wifi: Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
         imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         hot_pixel_map: Option<
             Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
@@ -4850,7 +4856,7 @@ pub fn server_main(
         Arguments,
     ) -> (
         Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-        Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+        Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
         Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>,
@@ -5520,7 +5526,7 @@ async fn async_main(
     got_signal: Arc<AtomicBool>,
     saving_state: Arc<AtomicBool>,
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-    wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+    wifi: Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
     injected_solver: Option<
@@ -5714,8 +5720,11 @@ async fn async_main(
     // Initialize Bluetooth adapter name during startup.
     {
         let state = cedar.state.lock().await;
-        let bt_name = if let Some(wifi) = state.wifi.as_ref() {
-            let wifi_name = wifi.lock().await.ssid();
+        let ap_ssid = match state.wifi.as_ref() {
+            Some(wifi) => wifi.read().await.ssid(),
+            None => None,
+        };
+        let bt_name = if let Some(wifi_name) = ap_ssid {
             wifi_name
         } else if cedar.serial_number.len() >= 3 {
             let serial_name = format!(
