@@ -47,7 +47,9 @@ use cedar_elements::{
         ImuTrackerState, LatLong, MountType, OperatingMode, OperationSettings,
         PlateSolution as PlateSolutionProto, Preferences, Rectangle,
         RemoveBondRequest, ServerInformation, ServerLogRequest,
-        ServerLogResult, SetPairingModeRequest, WiFiAccessPoint,
+        ServerLogResult, SetPairingModeRequest, SetWifiModeRequest,
+        WiFiAccessPoint, WifiClient as WifiClientProto,
+        WifiClientState as WifiClientStateProto, WifiMode as WifiModeProto,
         WifiNetwork as WifiNetworkProto, WifiScanResponse,
     },
     cedar_common::{CelestialCoord, HorizonCoord},
@@ -61,7 +63,10 @@ use cedar_elements::{
     imu_trait::ImuTrait,
     solver_trait::SolverTrait,
     thread_name::ThreadName,
-    wifi_trait::WifiTrait,
+    wifi_trait::{
+        WifiClientState as WifiClientStateDomain, WifiMode as WifiModeDomain,
+        WifiTrait,
+    },
 };
 use chrono::offset::Local;
 use futures::{join, StreamExt};
@@ -218,6 +223,25 @@ fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
     warn!("RPC error: code={:?}, message={}", code, canonical_error.message);
 
     tonic::Status::new(code, canonical_error.message)
+}
+
+fn wifi_mode_to_proto(mode: &WifiModeDomain) -> WifiModeProto {
+    match mode {
+        WifiModeDomain::AccessPoint => WifiModeProto::AccessPoint,
+        WifiModeDomain::Client { .. } => WifiModeProto::Client,
+        WifiModeDomain::Inactive => WifiModeProto::Inactive,
+    }
+}
+
+fn wifi_client_state_to_proto(
+    state: WifiClientStateDomain,
+) -> WifiClientStateProto {
+    match state {
+        WifiClientStateDomain::Connecting => WifiClientStateProto::Connecting,
+        WifiClientStateDomain::Connected => WifiClientStateProto::Connected,
+        WifiClientStateDomain::AuthFailed => WifiClientStateProto::AuthFailed,
+        WifiClientStateDomain::NoIp => WifiClientStateProto::NoIp,
+    }
 }
 
 // Helper macro to create and log tonic::Status errors
@@ -1896,7 +1920,11 @@ impl Cedar for MyCedar {
                 }
             }
         }
+        #[allow(deprecated)] // Still honored for pre-SetWifiMode clients.
         if let Some(wifi_enabled) = req.wifi_enabled {
+            // Deprecated: superseded by the SetWifiMode RPC. Mapped onto it
+            // here for older clients -- true means access point mode, false
+            // means WiFi off.
             let wifi = self.state.lock().await.wifi.clone();
             if wifi.is_none() {
                 return Err(logged_status!(
@@ -1908,14 +1936,19 @@ impl Cedar for MyCedar {
                 ));
             }
             let wifi_arc = wifi.as_ref().unwrap().clone();
+            let target_mode = if wifi_enabled {
+                WifiModeDomain::AccessPoint
+            } else {
+                WifiModeDomain::Inactive
+            };
             let result = tokio::task::spawn_blocking(move || {
                 let _name = ThreadName::new("wifi-enable");
-                wifi_arc.blocking_read().set_enabled(wifi_enabled)
+                wifi_arc.blocking_read().set_mode(target_mode, None)
             })
             .await
             .map_err(|e| {
                 tonic::Status::internal(format!(
-                    "set_enabled task panicked: {:?}",
+                    "set_mode task panicked: {:?}",
                     e
                 ))
             })?;
@@ -2439,6 +2472,79 @@ impl Cedar for MyCedar {
                 .collect(),
         };
         Ok(tonic::Response::new(WifiScanResponse { networks }))
+    }
+
+    async fn set_wifi_mode(
+        &self,
+        request: tonic::Request<SetWifiModeRequest>,
+    ) -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
+        let req = request.into_inner();
+        let wifi = self.state.lock().await.wifi.clone();
+        if wifi.is_none() {
+            return Err(logged_status!(
+                unimplemented,
+                format!(
+                    "{} does not include WiFi control.",
+                    self.product_name
+                )
+            ));
+        }
+
+        // Translate the proto request into a domain WifiMode, validating the
+        // client-mode fields here so an obviously bad request fails fast.
+        let (mode, psk) = match WifiModeProto::try_from(req.mode) {
+            Ok(WifiModeProto::AccessPoint) => {
+                (WifiModeDomain::AccessPoint, None)
+            }
+            Ok(WifiModeProto::Inactive) => (WifiModeDomain::Inactive, None),
+            Ok(WifiModeProto::Client) => {
+                let ssid = req.client_ssid.filter(|s| !s.is_empty()).ok_or_else(
+                    || {
+                        logged_status!(
+                            invalid_argument,
+                            "client mode requires client_ssid".to_string()
+                        )
+                    },
+                )?;
+                let psk =
+                    req.client_psk.filter(|s| !s.is_empty()).ok_or_else(|| {
+                        logged_status!(
+                            invalid_argument,
+                            "client mode requires client_psk".to_string()
+                        )
+                    })?;
+                (WifiModeDomain::Client { ssid }, Some(psk))
+            }
+            _ => {
+                return Err(logged_status!(
+                    invalid_argument,
+                    format!("unrecognized wifi mode {}", req.mode)
+                ));
+            }
+        };
+
+        // set_mode returns once the switch is initiated; for client mode the
+        // join proceeds on its own and the client polls
+        // ServerInformation.wifi_client.state. It still does blocking work
+        // (writing a profile, nmcli calls), so run it off the async workers.
+        let wifi_arc = wifi.as_ref().unwrap().clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _name = ThreadName::new("wifi-set-mode");
+            wifi_arc
+                .blocking_read()
+                .set_mode(mode, psk.as_deref())
+        })
+        .await
+        .map_err(|e| {
+            tonic::Status::internal(format!(
+                "set_mode task panicked: {:?}",
+                e
+            ))
+        })?;
+        if let Err(x) = result {
+            return Err(tonic_status(x));
+        }
+        Ok(tonic::Response::new(EmptyMessage::default()))
     }
 
     async fn convert_to_horizon(
@@ -3207,7 +3313,9 @@ impl MyCedar {
             imu_angular_speed: None,
             imu_model: None,
             imu_tracker_state: None,
+            wifi_mode: None,
             wifi_access_point: None,
+            wifi_client: None,
             connection_status: Some(ConnectionStatus {
                 cedar_wifi: ctx
                     .connection_counters
@@ -3277,19 +3385,35 @@ impl MyCedar {
             }
         }
 
-        // Process wifi info (outside state lock). Omitted entirely if this
-        // server has no WiFi control, or has WiFi but no access point
-        // configured (client mode only).
+        // Process wifi info (outside state lock). Left as None if this server
+        // has no WiFi control at all.
         if let Some(wifi) = &wifi_arc {
             // Read guard: this is on the get_frame hot path, and must not
             // wait behind a slow WiFi operation such as a ~3 second scan.
             let locked_wifi = wifi.read().await;
-            if let Some(ssid) = locked_wifi.ssid() {
+
+            let mode = locked_wifi.mode();
+            server_info.wifi_mode = Some(wifi_mode_to_proto(&mode) as i32);
+
+            // The access point config is reported whenever one is configured,
+            // regardless of the current mode -- `enabled` conveys whether it
+            // is the mode in effect.
+            if let Some(ap) = locked_wifi.access_point() {
                 server_info.wifi_access_point = Some(WiFiAccessPoint {
-                    ssid: Some(ssid),
-                    psk: locked_wifi.psk(),
-                    channel: locked_wifi.channel(),
-                    enabled: Some(locked_wifi.is_enabled()),
+                    ssid: Some(ap.ssid),
+                    psk: Some(ap.psk),
+                    channel: Some(ap.channel),
+                    enabled: Some(mode == WifiModeDomain::AccessPoint),
+                });
+            }
+
+            if let Some(status) = locked_wifi.client_status() {
+                server_info.wifi_client = Some(WifiClientProto {
+                    ssid: Some(status.ssid),
+                    state: Some(
+                        wifi_client_state_to_proto(status.state) as i32,
+                    ),
+                    ip_address: status.ip_address,
                 });
             }
         }
@@ -5721,7 +5845,9 @@ async fn async_main(
     {
         let state = cedar.state.lock().await;
         let ap_ssid = match state.wifi.as_ref() {
-            Some(wifi) => wifi.read().await.ssid(),
+            Some(wifi) => {
+                wifi.read().await.access_point().map(|ap| ap.ssid)
+            }
             None => None,
         };
         let bt_name = if let Some(wifi_name) = ap_ssid {
