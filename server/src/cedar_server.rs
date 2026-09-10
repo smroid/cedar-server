@@ -1350,7 +1350,7 @@ impl Cedar for MyCedar {
             request.extensions().get::<BluetoothRequest>().is_some();
 
         let activity_led = self.state.lock().await.activity_led.clone();
-        activity_led.lock().await.received_rpc().await;
+        activity_led.lock().await.received_rpc();
         let req: FrameRequest = request.into_inner();
         let non_blocking =
             req.non_blocking.is_some() && req.non_blocking.unwrap();
@@ -1393,7 +1393,7 @@ impl Cedar for MyCedar {
             request.extensions().get::<BluetoothRequest>().is_some();
 
         let activity_led = self.state.lock().await.activity_led.clone();
-        activity_led.lock().await.received_rpc().await;
+        activity_led.lock().await.received_rpc();
 
         let req: FrameRequest = request.into_inner();
         let landscape = req.display_orientation.is_none()
@@ -1731,7 +1731,7 @@ impl Cedar for MyCedar {
             };
             saving_state.store(true, AtomicOrdering::Relaxed);
             prepare_for_exit_async(&imu_tracker, &hot_pixel_map).await;
-            activity_led.lock().await.stop().await;
+            activity_led.lock().await.stop();
             let output = Command::new("sudo")
                 .arg("shutdown")
                 .arg("now")
@@ -1758,7 +1758,7 @@ impl Cedar for MyCedar {
             };
             saving_state.store(true, AtomicOrdering::Relaxed);
             prepare_for_exit_async(&imu_tracker, &hot_pixel_map).await;
-            activity_led.lock().await.stop().await;
+            activity_led.lock().await.stop();
             let output = Command::new("sudo")
                 .arg("reboot")
                 .arg("now")
@@ -5837,7 +5837,7 @@ async fn async_main(
     let async_callback = Box::new(move || {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                activity_led.lock().await.received_rpc().await;
+                activity_led.lock().await.received_rpc();
             });
         });
     });
