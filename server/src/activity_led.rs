@@ -72,8 +72,7 @@ impl ActivityLed {
             state: Arc::new(Mutex::new(SharedState {
                 stop_request: false,
                 received_rpc: false,
-                // blink_pattern: BlinkPattern::Regular,
-                blink_pattern: BlinkPattern::Fast,
+                blink_pattern: BlinkPattern::Regular,
             })),
             worker_thread: None,
         };
