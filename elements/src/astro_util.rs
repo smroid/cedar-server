@@ -77,6 +77,11 @@ pub fn angular_separation(
 /// increasing counter-clockwise from zero at north.
 /// Args and return value in radians.
 /// Returns 0 if p0 and p1 are degenerate (same).
+///
+/// Also ill defined when p0 is at or near a celestial pole, however distant
+/// p1 is: the angle is measured from north at p0, and at a pole there is no
+/// north. Accuracy degrades as 1/cos(p0_dec). For where p1 appears in the
+/// image, prefer bearing_to_celestial(), which is well conditioned there.
 pub fn position_angle(p0_ra: f64, p0_dec: f64, p1_ra: f64, p1_dec: f64) -> f64 {
     // Adapted from
     // https://astronomy.stackexchange.com/questions/25306
@@ -382,6 +387,46 @@ fn undistort_centroid(
     y *= scale;
     // Decenter.
     [x + width / 2.0, y + height / 2.0]
+}
+
+/// Returns the image-plane bearing, in radians, from the boresight to the
+/// given celestial coordinate: the angle at which the target appears on
+/// screen, measured counter-clockwise from image "up".
+///
+/// This is equivalent to position_angle(boresight, target) + roll, but is
+/// computed directly from the plate solution's rotation matrix rather than
+/// by summing two angles that are each measured from celestial north at the
+/// boresight. North is undefined at a celestial pole, so that sum degrades
+/// as 1/cos(dec) and becomes unusable within ~1 degree of the pole; this
+/// formulation has no declination dependence at all.
+///
+/// The only degeneracy is a target at the boresight itself, where the
+/// bearing is genuinely undefined; 0 is returned there (atan2(0, 0)).
+///
+/// ra, dec: target position in radians.
+/// rotation_matrix: row-major, as supplied by the plate solution. Applying it
+///   to a celestial unit vector yields camera-frame (i, j, k), where i is the
+///   boresight axis and j, k map to image x and y respectively (see
+///   compute_centroid(), which negates both).
+pub fn bearing_to_celestial(
+    ra: f64,
+    dec: f64,
+    rotation_matrix: &[f64; 9],
+) -> f64 {
+    let t = to_unit_vector(ra, dec);
+    // Project the target into the camera frame: j is image x, k is image y.
+    let j = rotation_matrix[3] * t[0]
+        + rotation_matrix[4] * t[1]
+        + rotation_matrix[5] * t[2];
+    let k = rotation_matrix[6] * t[0]
+        + rotation_matrix[7] * t[1]
+        + rotation_matrix[8] * t[2];
+    // compute_centroid() negates both axes, so a target at camera (j, k)
+    // lands at pixel offset (-j, -k) from the boresight. The bearing
+    // convention (see drawSlewTarget(), which uses direction
+    // (-sin(angle), -cos(angle)) with image y growing downward) then gives
+    // atan2(-(-j), -(-k)) = atan2(j, k).
+    j.atan2(k)
 }
 
 /// Port of Tetra3's transform_to_image_coords() function. Note that the
@@ -810,6 +855,133 @@ mod tests {
         assert_abs_diff_eq!(undistorted[1], 100.0, epsilon = 0.001);
     }
 
+    // bearing_to_celestial() must agree with the angle implied by the
+    // target's pixel position, and with position_angle()+roll away from the
+    // pole where that formulation is still valid.
+    #[test]
+    fn test_bearing_to_celestial_matches_image_position() {
+        let rotation_matrix = [
+            0.5143930851217422,
+            0.4705764222800965,
+            0.7169083517249608,
+            0.32501576652434216,
+            0.6666418828994508,
+            -0.670785622591055,
+            -0.7935770318560958,
+            0.5780540033235123,
+            0.18997121822036758,
+        ];
+        // Boresight is row 0 of the rotation matrix.
+        let (bs_ra, bs_dec) = from_unit_vector(&[
+            rotation_matrix[0],
+            rotation_matrix[1],
+            rotation_matrix[2],
+        ]);
+        // Roll, extracted as the solver does: atan2(R[1][2], R[2][2]).
+        let roll = rotation_matrix[5].atan2(rotation_matrix[8]);
+
+        // A target a few degrees away from the boresight.
+        let tgt_ra = 38_f64.to_radians();
+        let tgt_dec = 45_f64.to_radians();
+
+        let bearing = bearing_to_celestial(tgt_ra, tgt_dec, &rotation_matrix);
+
+        // The bearing must point at where the target actually lands in the
+        // image. drawSlewTarget() draws along (-sin(angle), -cos(angle)) in
+        // pixel space (y growing downward), so recover the angle from the
+        // target's pixel offset and require agreement.
+        let px = transform_to_image_coord(
+            &[38.0, 45.0],
+            1024,
+            800,
+            10.0,
+            &rotation_matrix,
+            0.0, // no distortion: bearing is a pinhole quantity
+        );
+        let dx = px[0] - 1024.0 / 2.0;
+        let dy = px[1] - 800.0 / 2.0;
+        let from_pixels = (-dx).atan2(-dy);
+        let mut diff = (bearing - from_pixels).to_degrees() % 360.0;
+        if diff > 180.0 {
+            diff -= 360.0;
+        }
+        if diff < -180.0 {
+            diff += 360.0;
+        }
+        assert_abs_diff_eq!(diff, 0.0, epsilon = 0.001);
+
+        // And it must remain close to the legacy position_angle()+roll
+        // formulation, which is valid at this (mid) declination. They are
+        // not identical: one is a great-circle position angle, the other a
+        // tangent-plane bearing, and they diverge slightly with separation.
+        let legacy = position_angle(bs_ra, bs_dec, tgt_ra, tgt_dec) + roll;
+        let mut legacy_diff = (bearing - legacy).to_degrees() % 360.0;
+        if legacy_diff > 180.0 {
+            legacy_diff -= 360.0;
+        }
+        if legacy_diff < -180.0 {
+            legacy_diff += 360.0;
+        }
+        assert_abs_diff_eq!(legacy_diff, 0.0, epsilon = 0.5);
+    }
+
+    // The bearing must remain accurate with the boresight at the celestial
+    // pole, where position_angle()+roll breaks down.
+    #[test]
+    fn test_bearing_to_celestial_at_pole() {
+        // Boresight essentially at the NCP, camera axes aligned so that
+        // celestial RA=0 lies along the camera's +y ("up") direction.
+        let eps = 0.0001_f64.to_radians();
+        let dec = std::f64::consts::PI / 2.0 - eps;
+        let rotation_matrix = [
+            dec.cos(), 0.0, dec.sin(), // boresight, at RA=0
+            -dec.sin(), 0.0, dec.cos(), // camera y
+            0.0, 1.0, 0.0, // camera x
+        ];
+
+        // Targets 1 degree from the pole, at three different RAs, must come
+        // out 90 degrees apart and stay fixed: with the boresight at the
+        // pole the bearings are still fully determined, even though roll is
+        // not. (For this matrix RA=0 lies along -90; the absolute offset is
+        // set by the camera orientation, the spacing by the geometry.)
+        let one_deg = 89_f64.to_radians();
+        let at = |ra_deg: f64| {
+            bearing_to_celestial(
+                ra_deg.to_radians(),
+                one_deg,
+                &rotation_matrix,
+            )
+            .to_degrees()
+        };
+        assert_abs_diff_eq!(at(0.0), -90.0, epsilon = 0.01);
+        assert_abs_diff_eq!(at(90.0), 0.0, epsilon = 0.01);
+        assert_abs_diff_eq!(at(180.0), 90.0, epsilon = 0.01);
+
+        // Crucially, the bearing must be insensitive to which side of the
+        // pole the boresight sits on. Nudge the boresight across the pole
+        // (RA flips by 180 degrees, roll by ~180) and the bearing to a fixed
+        // target must barely move.
+        let d2 = std::f64::consts::PI / 2.0 + eps;
+        let across = [
+            d2.cos(),
+            0.0,
+            d2.sin(),
+            -d2.sin(),
+            0.0,
+            d2.cos(),
+            0.0,
+            1.0,
+            0.0,
+        ];
+        let before = bearing_to_celestial(0.0, one_deg, &rotation_matrix);
+        let after = bearing_to_celestial(0.0, one_deg, &across);
+        assert_abs_diff_eq!(
+            (after - before).to_degrees(),
+            0.0,
+            epsilon = 0.01
+        );
+    }
+
     #[test]
     fn test_transform_to_image_coord() {
         let rotation_matrix = [
@@ -1140,6 +1312,7 @@ mod tests {
                         broad_category: "yy".to_string(),
                     }),
                     magnitude: Some(-1.5),
+                    dim_mag: None,
                     angular_size: None,
                     common_name: None,
                     notes: None,
@@ -1165,6 +1338,7 @@ mod tests {
                         broad_category: "yy".to_string(),
                     }),
                     magnitude: Some(2.5),
+                    dim_mag: None,
                     angular_size: None,
                     common_name: None,
                     notes: None,

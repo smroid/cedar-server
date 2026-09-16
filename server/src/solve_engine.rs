@@ -16,10 +16,10 @@ use cedar_detect::histogram_funcs::{
 };
 use cedar_elements::{
     astro_util::{
-        alt_az_from_equatorial, angular_separation, celestial_coord_to_j2000,
-        equatorial_from_horizon_camera, horizon_from_equatorial_camera,
-        position_angle, transform_to_celestial_coords,
-        transform_to_image_coord,
+        alt_az_from_equatorial, angular_separation, bearing_to_celestial,
+        celestial_coord_to_j2000, equatorial_from_horizon_camera,
+        horizon_from_equatorial_camera, position_angle,
+        transform_to_celestial_coords, transform_to_image_coord,
     },
     cedar::{
         FovCatalogEntry, ImageCoord, LatLong,
@@ -1411,10 +1411,19 @@ impl SolveEngine {
         slew_request.target_distance =
             Some(angular_separation(bs_ra, bs_dec, st_ra, st_dec).to_degrees());
 
-        let mut angle = (position_angle(bs_ra, bs_dec, st_ra, st_dec)
-            .to_degrees()
-            + plate_solution.roll)
-            % 360.0;
+        // Bearing to the target, taken directly from the rotation matrix.
+        // See bearing_to_celestial(): the equivalent position_angle() + roll
+        // is unstable when the boresight is near a celestial pole, which
+        // would make the slew arrow swing wildly near the NCP.
+        let mut angle = if plate_solution.rotation_matrix.len() == 9 {
+            let mut rot = [0.0_f64; 9];
+            rot.copy_from_slice(&plate_solution.rotation_matrix);
+            bearing_to_celestial(st_ra, st_dec, &rot).to_degrees() % 360.0
+        } else {
+            (position_angle(bs_ra, bs_dec, st_ra, st_dec).to_degrees()
+                + plate_solution.roll)
+                % 360.0
+        };
         // Arrange for angle to be 0..360.
         if angle < 0.0 {
             angle += 360.0;
@@ -1761,6 +1770,92 @@ mod tests {
             // image, so handle_slew() returns before doing image geometry.
             ..Default::default()
         }
+    }
+
+    // With a rotation matrix present, the slew angle comes from
+    // bearing_to_celestial() rather than position_angle()+roll. Away from
+    // the pole the two must agree closely; near the pole only the former
+    // stays stable.
+    #[tokio::test]
+    async fn test_handle_slew_angle_uses_rotation_matrix() {
+        use cedar_elements::astro_util::to_unit_vector;
+
+        // Build a rotation matrix for a boresight at RA=11, Dec=21 with
+        // zero roll, in the solver's convention (row 0 = boresight).
+        let build = |ra: f64, dec: f64| -> Vec<f64> {
+            let (sr, cr) = ra.to_radians().sin_cos();
+            let (sd, cd) = dec.to_radians().sin_cos();
+            vec![
+                cr * cd,
+                sr * cd,
+                sd, // boresight
+                -sd * cr,
+                -sd * sr,
+                cd, // camera y
+                -sr,
+                cr,
+                0.0, // camera x
+            ]
+        };
+
+        let ps = PlateSolutionProto {
+            roll: 0.0,
+            fov: 10.0,
+            rotation_matrix: build(11.0, 21.0),
+            ..Default::default()
+        };
+        let (slew_request, _, _) = SolveEngine::handle_slew(
+            /*cedar_sky=*/ &None,
+            &CelestialCoord { ra: 10.0, dec: 20.0, epoch: None },
+            /*target_alt_az=*/ &None,
+            &GrayImage::new(100, 100),
+            /*boresight_coords=*/
+            &CelestialCoord { ra: 11.0, dec: 21.0, epoch: None },
+            /*boresight_pixel=*/ &None,
+            &ps,
+            /*width=*/ 100,
+            /*height=*/ 100,
+            /*eyepiece_fov=*/ 1.0,
+        )
+        .await;
+        let angle = slew_request.unwrap().target_angle.unwrap();
+
+        // Independently: where does the target sit relative to the camera
+        // axes? Project it and derive the expected bearing.
+        let t = to_unit_vector(10_f64.to_radians(), 20_f64.to_radians());
+        let m = build(11.0, 21.0);
+        let j = m[3] * t[0] + m[4] * t[1] + m[5] * t[2];
+        let k = m[6] * t[0] + m[7] * t[1] + m[8] * t[2];
+        let mut expected = j.atan2(k).to_degrees();
+        if expected < 0.0 {
+            expected += 360.0;
+        }
+        assert!(
+            (angle - expected).abs() < 0.001,
+            "angle {} != expected {}",
+            angle,
+            expected
+        );
+
+        // Without a rotation matrix, the legacy position_angle()+roll path
+        // is used instead, and gives a different (pole-unstable) answer.
+        let mut legacy_ps = ps.clone();
+        legacy_ps.rotation_matrix = vec![];
+        let (legacy_request, _, _) = SolveEngine::handle_slew(
+            /*cedar_sky=*/ &None,
+            &CelestialCoord { ra: 10.0, dec: 20.0, epoch: None },
+            /*target_alt_az=*/ &None,
+            &GrayImage::new(100, 100),
+            /*boresight_coords=*/
+            &CelestialCoord { ra: 11.0, dec: 21.0, epoch: None },
+            /*boresight_pixel=*/ &None,
+            &legacy_ps,
+            /*width=*/ 100,
+            /*height=*/ 100,
+            /*eyepiece_fov=*/ 1.0,
+        )
+        .await;
+        assert!(legacy_request.unwrap().target_angle.is_some());
     }
 
     #[tokio::test]

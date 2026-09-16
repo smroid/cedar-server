@@ -10,9 +10,9 @@ use std::{
 use cedar_detect::image_funcs::bin_2x2;
 use cedar_elements::{
     astro_util::{
-        alt_az_from_equatorial, celestial_coord_from_horizon,
-        equatorial_from_alt_az, fill_in_detections, magnitude_intensity_ratio,
-        position_angle,
+        alt_az_from_equatorial, bearing_to_celestial,
+        celestial_coord_from_horizon, equatorial_from_alt_az,
+        fill_in_detections, magnitude_intensity_ratio, position_angle,
     },
     cedar::{
         CalibrationData, FixedSettings, FovCatalogEntry, FrameResult, Image,
@@ -585,10 +585,24 @@ impl ServeEngine {
                     long,
                     time,
                 );
-                let mut zenith_roll_angle =
+                // Bearing to the zenith, taken directly from the rotation
+                // matrix. The equivalent position_angle(boresight, zenith) +
+                // roll is a sum of two angles measured from celestial north
+                // at the boresight; north is undefined at the pole, so that
+                // form degrades as 1/cos(dec) and makes the displayed image
+                // rotation unstable near the NCP. This form has no
+                // declination dependence.
+                let mut zenith_roll_angle = if psp.rotation_matrix.len() == 9 {
+                    let mut rot = [0.0_f64; 9];
+                    rot.copy_from_slice(&psp.rotation_matrix);
+                    bearing_to_celestial(z_ra, z_dec, &rot).to_degrees() % 360.0
+                } else {
+                    // No rotation matrix (e.g. IMU fallback solution that
+                    // didn't populate it); fall back to the legacy form.
                     (position_angle(bs_ra, bs_dec, z_ra, z_dec).to_degrees()
                         + psp.roll)
-                        % 360.0;
+                        % 360.0
+                };
                 if zenith_roll_angle < 0.0 {
                     zenith_roll_angle += 360.0;
                 }
