@@ -554,3 +554,23 @@ Cedar-server version: 1.5.1
 * Fix a bug where an AAVSO variable star's notes (variability type and
   period) did not always reach the merged object when the star's own
   designation resolved through another catalog's alias first.
+
+# September 16 2026
+
+Cedar-server version: 1.5.2
+
+* Initial implementation of Wifi client mode, allowing Cedar to join an
+  existing Wifi network instead of only acting as its own access point.
+  Untested.
+
+* Add a fast blink option for the activity LED.
+
+* Fix chaotic image rotation near the north celestial pole.
+
+* Reject 0, 0 latitude/longitude from SkySafari, which SkySafari can send
+  as a placeholder rather than a real observer location.
+
+* Fix SETUP alignment mode failing to offer a selection target for a very
+  bright, overexposed object (e.g. Saturn) when no other catalog object in
+  the field of view was available to calibrate against, such as a bright
+  planet in an otherwise faint star field.
