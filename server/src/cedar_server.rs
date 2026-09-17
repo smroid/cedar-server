@@ -4779,24 +4779,46 @@ impl MyCedar {
             if locked_telescope_position.site_latitude.is_some()
                 && locked_telescope_position.site_longitude.is_some()
             {
-                let observer_location = LatLong {
-                    latitude: locked_telescope_position.site_latitude.unwrap(),
-                    longitude: locked_telescope_position
-                        .site_longitude
-                        .unwrap(),
-                };
-                fixed_settings.lock().await.observer_location =
-                    Some(observer_location.clone());
-                updated_observer_location = Some(observer_location.clone());
-                info!("Telescope updated observer location");
+                let latitude = locked_telescope_position.site_latitude.unwrap();
+                let longitude =
+                    locked_telescope_position.site_longitude.unwrap();
                 locked_telescope_position.site_latitude = None;
                 locked_telescope_position.site_longitude = None;
-                // Save in preferences.
-                let mut locked_preferences = preferences.lock().await;
-                locked_preferences.observer_location =
-                    Some(observer_location.clone());
-                // Flag updated preferences to write to file below.
-                prefs_to_save = Some(locked_preferences.clone());
+                // Normalize longitude into -180..180, in case the client
+                // used a 0..360 convention or reported a wrapped value.
+                let longitude = longitude.rem_euclid(360.0);
+                let longitude = if longitude > 180.0 {
+                    longitude - 360.0
+                } else {
+                    longitude
+                };
+                // SkySafari/Stellarium report (0, 0) when they have no real
+                // location (e.g. a mobile device with GPS unavailable and no
+                // location manually set), so reject that as a sentinel rather
+                // than a legitimate position.
+                if latitude == 0.0 && longitude == 0.0 {
+                    warn!(
+                        "Ignoring telescope-reported observer location (0, 0)"
+                    );
+                } else if !(-90.0..=90.0).contains(&latitude) {
+                    warn!(
+                        "Ignoring invalid telescope-reported observer \
+                         location: latitude={}, longitude={}",
+                        latitude, longitude
+                    );
+                } else {
+                    let observer_location = LatLong { latitude, longitude };
+                    fixed_settings.lock().await.observer_location =
+                        Some(observer_location.clone());
+                    updated_observer_location = Some(observer_location.clone());
+                    info!("Telescope updated observer location");
+                    // Save in preferences.
+                    let mut locked_preferences = preferences.lock().await;
+                    locked_preferences.observer_location =
+                        Some(observer_location.clone());
+                    // Flag updated preferences to write to file below.
+                    prefs_to_save = Some(locked_preferences.clone());
+                }
             }
             // Has telescope reported the time?
             if let Some(dt) = locked_telescope_position.utc_date.take() {
