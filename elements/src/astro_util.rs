@@ -594,6 +594,14 @@ pub fn precess(
 /// This function returns the original `detections` list augmented by item(s)
 /// from `catalog_entries`.
 ///
+/// Called only in SETUP alignment mode, where `detections` is not the
+/// detector's own output but the plate solution's catalog stars, each
+/// carrying its catalog magnitude and a brightness derived from it. We rely
+/// on that: a detection's magnitude is what relates catalog magnitudes to
+/// StarCentroid.brightness values, so the caller must supply it. Detections
+/// without a magnitude are ignored, and if none has one there is no scale to
+/// synthesize against and `detections` is returned unchanged.
+///
 /// Args must be in order of descending brightness. Caution: complexity is the
 /// product of the vector sizes.
 pub fn fill_in_detections(
@@ -602,38 +610,18 @@ pub fn fill_in_detections(
 ) -> Vec<StarCentroid> {
     const IMAGE_DISTANCE_THRESHOLD_SQ: f64 = 4.0;
 
-    // Find the brightest `catalog_entries` item that also exists in
-    // `detections`. We do this so we can relate catalog magnitudes to
-    // StarCentroid.brightness values.
-    let mut found_match = false;
-    let mut match_magnitude = 0.0;
-    let mut match_brightness = 0.0;
-    for catalog_entry in catalog_entries {
-        let cat_coord = catalog_entry.image_pos.as_ref().unwrap();
-        for detection in detections {
-            let det_coord = detection.centroid_position.as_ref().unwrap();
-            if image_distance_sq(det_coord, cat_coord)
-                < IMAGE_DISTANCE_THRESHOLD_SQ
-            {
-                // Found a same-location item between catalog_entries and
-                // detections.
-                if let Some(mag) =
-                    catalog_entry.entry.as_ref().unwrap().magnitude
-                {
-                    match_magnitude = mag;
-                    match_brightness = detection.brightness;
-                    found_match = true;
-                    break;
-                }
-            }
-        }
-        if found_match {
-            break;
-        }
-    }
-    if !found_match {
-        return detections.clone(); // Bail out.
-    }
+    // Relate catalog magnitudes to StarCentroid.brightness values, using any
+    // detection that carries both. Note we can't instead look for a catalog
+    // entry coinciding with a detection: the case we're here to fix is a
+    // field whose only catalog entry is the bright object missing from
+    // `detections`, leaving no coincident pair to calibrate from.
+    let (match_magnitude, match_brightness) = match detections
+        .iter()
+        .find_map(|d| d.magnitude.map(|mag| (mag, d.brightness)))
+    {
+        Some(pair) => pair,
+        None => return detections.clone(),  // Bail out.
+    };
 
     // Gather `catalog_entries` that do not have corresponding `detections`
     // entries. We can only synthesize detections for entries that have a
@@ -1273,27 +1261,29 @@ mod tests {
 
     #[test]
     fn test_fill_in_detections() {
+        // Magnitudes and brightnesses lie on a single scale, as align mode's
+        // plate solution catalog stars do.
         let detections = vec![
             // d1.
             StarCentroid {
                 centroid_position: Some(ImageCoord { x: 12.0, y: 15.0 }),
                 brightness: 1200.0,
                 num_saturated: 0,
-                magnitude: None,
+                magnitude: Some(2.187668),
             },
             // d2.
             StarCentroid {
                 centroid_position: Some(ImageCoord { x: 22.0, y: 35.0 }),
                 brightness: 900.0,
                 num_saturated: 0,
-                magnitude: None,
+                magnitude: Some(2.5),
             },
             // d3.
             StarCentroid {
                 centroid_position: Some(ImageCoord { x: 42.0, y: 350.0 }),
                 brightness: 700.0,
                 num_saturated: 0,
-                magnitude: None,
+                magnitude: Some(2.772848),
             },
         ];
         let catalog_entries = vec![
@@ -1370,5 +1360,63 @@ mod tests {
         assert_eq!(d3.centroid_position.as_ref().unwrap().x, 42.0);
         assert_eq!(d3.centroid_position.as_ref().unwrap().y, 350.0);
         assert_eq!(d3.brightness, 700.0);
+    }
+
+    #[test]
+    fn test_fill_in_detections_sole_catalog_entry() {
+        // Sparse field: the only catalog entry is the planet we need to
+        // synthesize, so no catalog entry coincides with a detection.
+        let detections = vec![
+            StarCentroid {
+                centroid_position: Some(ImageCoord { x: 98.9, y: 507.8 }),
+                brightness: magnitude_intensity_ratio(6.0, 4.44),
+                num_saturated: 0,
+                magnitude: Some(4.44),
+            },
+            StarCentroid {
+                centroid_position: Some(ImageCoord { x: 381.4, y: 246.7 }),
+                brightness: magnitude_intensity_ratio(6.0, 5.69),
+                num_saturated: 0,
+                magnitude: Some(5.69),
+            },
+        ];
+        let catalog_entries = vec![FovCatalogEntry {
+            entry: Some(CatalogEntry {
+                catalog_label: "PL".to_string(),
+                catalog_entry: "Saturn".to_string(),
+                coord: Some(CelestialCoord { ra: 0.0, dec: 0.0, epoch: None }),
+                constellation: None,
+                object_type: Some(ObjectType {
+                    label: "planet".to_string(),
+                    broad_category: "solar system".to_string(),
+                }),
+                magnitude: Some(0.36),
+                dim_mag: None,
+                angular_size: None,
+                common_name: None,
+                notes: None,
+                rise_set_culmination: None,
+            }),
+            deduped_entries: Vec::new(),
+            image_pos: Some(ImageCoord { x: 474.7, y: 825.1 }),
+            altitude: None,
+            azimuth: None,
+        }];
+
+        let filled_in = fill_in_detections(&detections, &catalog_entries);
+        assert_eq!(filled_in.len(), 3);
+
+        // Saturn is synthesized, and is brightest so it sorts first.
+        let saturn = &filled_in[0];
+        assert_eq!(saturn.centroid_position.as_ref().unwrap().x, 474.7);
+        assert_eq!(saturn.centroid_position.as_ref().unwrap().y, 825.1);
+        assert_eq!(saturn.magnitude, Some(0.36));
+        // Recovers the caller's own magnitude-to-brightness scale.
+        assert_abs_diff_eq!(
+            saturn.brightness,
+            magnitude_intensity_ratio(6.0, 0.36),
+            epsilon = 0.001
+        );
+        assert!(saturn.brightness > detections[0].brightness);
     }
 } // mod tests.
