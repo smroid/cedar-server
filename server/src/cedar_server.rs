@@ -93,7 +93,7 @@ use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 
 use self::multiplex_service::MultiplexService;
 use crate::{
-    activity_led::ActivityLed,
+    activity_led::{ActivityLed, BlinkPattern},
     bonding_helper::{
         get_adapter_alias, get_bonded_devices, remove_bond,
         reset_hci_controller, run_pairing_mode, set_adapter_name, ResetOutcome,
@@ -2528,6 +2528,8 @@ impl Cedar for MyCedar {
         // ServerInformation.wifi_client.state. It still does blocking work
         // (writing a profile, nmcli calls), so run it off the async workers.
         let wifi_arc = wifi.as_ref().unwrap().clone();
+        let prev_mode = wifi_arc.read().await.mode();
+        let new_mode = mode.clone();
         let result = tokio::task::spawn_blocking(move || {
             let _name = ThreadName::new("wifi-set-mode");
             wifi_arc
@@ -2543,6 +2545,24 @@ impl Cedar for MyCedar {
         })?;
         if let Err(x) = result {
             return Err(tonic_status(x));
+        }
+
+        // Treat any WiFi mode change (including staying in Client mode but
+        // joining a different SSID) like a fresh boot: resume blinking the
+        // activity LED until a new RPC comes in. Client mode blinks fast, to
+        // signal that Cedar is off our own access point and may be harder to
+        // reach; other modes use the regular cadence.
+        if prev_mode != new_mode {
+            let activity_led = self.state.lock().await.activity_led.clone();
+            let locked_activity_led = activity_led.lock().await;
+            locked_activity_led.set_blink_pattern(
+                if matches!(new_mode, WifiModeDomain::Client { .. }) {
+                    BlinkPattern::Fast
+                } else {
+                    BlinkPattern::Regular
+                },
+            );
+            locked_activity_led.resume_blinking();
         }
         Ok(tonic::Response::new(EmptyMessage::default()))
     }
