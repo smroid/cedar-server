@@ -95,6 +95,13 @@ impl ActivityLed {
         self.state.lock().unwrap().blink_pattern = pattern;
     }
 
+    // Resumes blinking with the most recently set BlinkPattern, undoing the
+    // effect of received_rpc(). Used e.g. when Cedar wants to signal that
+    // connected clients should be considered gone again.
+    pub fn resume_blinking(&self) {
+        self.state.lock().unwrap().received_rpc = false;
+    }
+
     // Releases the activity LED back to its OS-defined "disk" activity
     // indicator. Blocks until the worker thread has reverted the LED; the
     // worker polls stop_request on a short tick, so this returns quickly.
@@ -163,9 +170,16 @@ impl ActivityLed {
             if got_signal.load(Ordering::Relaxed) {
                 break;
             }
-            if led_state == LedState::Ready && received_rpc {
+            let want_connected_off = received_rpc;
+            if led_state != LedState::ConnectedOff && want_connected_off {
                 fs::write(brightness_path, off_value).unwrap_or(());
                 led_state = LedState::ConnectedOff;
+            } else if led_state == LedState::ConnectedOff && !want_connected_off
+            {
+                // resume_blinking() was called: restart the blink phase.
+                led_state = LedState::Ready;
+                phase_ticks = 0;
+                led_on = false;
             }
             if led_state == LedState::ConnectedOff {
                 continue;
