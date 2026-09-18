@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
+use std::sync::Arc;
+
 use canonical_error::CanonicalError;
 
 /// A WiFi network seen by a scan.
@@ -62,6 +64,12 @@ pub struct AccessPointConfig {
     pub channel: i32,
 }
 
+/// Notified by a `WifiTrait` implementation whenever its mode changes. Lets
+/// callers react to WiFi state.
+pub trait WifiModeObserver: Send + Sync {
+    fn on_mode_changed(&self, old_mode: &WifiMode, new_mode: &WifiMode);
+}
+
 pub trait WifiTrait {
     // -- Access point --
 
@@ -101,6 +109,12 @@ pub trait WifiTrait {
         mode: WifiMode,
         client_psk: Option<&str>,
     ) -> Result<(), CanonicalError>;
+
+    /// Registers (or replaces) the observer notified when the mode changes.
+    ///
+    /// Default no-op, since an implementation with nothing to observe (tests,
+    /// a build with no activity indicator) need not override this.
+    fn set_mode_observer(&self, _observer: Arc<dyn WifiModeObserver>) {}
 
     // -- Client mode --
 

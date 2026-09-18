@@ -65,7 +65,7 @@ use cedar_elements::{
     thread_name::ThreadName,
     wifi_trait::{
         WifiClientState as WifiClientStateDomain, WifiMode as WifiModeDomain,
-        WifiTrait,
+        WifiModeObserver, WifiTrait,
     },
 };
 use chrono::offset::Local;
@@ -241,6 +241,34 @@ fn wifi_client_state_to_proto(
         WifiClientStateDomain::Connected => WifiClientStateProto::Connected,
         WifiClientStateDomain::AuthFailed => WifiClientStateProto::AuthFailed,
         WifiClientStateDomain::NoIp => WifiClientStateProto::NoIp,
+    }
+}
+
+/// Drives the activity LED's blink pattern from WiFi mode changes: fast in
+/// Client mode, regular otherwise.
+struct WifiLedObserver {
+    activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
+}
+
+impl WifiModeObserver for WifiLedObserver {
+    fn on_mode_changed(
+        &self,
+        _old_mode: &WifiModeDomain,
+        new_mode: &WifiModeDomain,
+    ) {
+        // blocking_lock(): this is called from Wifi's sync mode-transition
+        // code, which itself only ever runs on a spawn_blocking task or a
+        // detached thread -- never an async worker -- so blocking here is
+        // safe, same as the wifi_arc.blocking_read() calls elsewhere.
+        let locked_activity_led = self.activity_led.blocking_lock();
+        locked_activity_led.set_blink_pattern(
+            if matches!(new_mode, WifiModeDomain::Client { .. }) {
+                BlinkPattern::Fast
+            } else {
+                BlinkPattern::Regular
+            },
+        );
+        locked_activity_led.resume_blinking();
     }
 }
 
@@ -2527,9 +2555,11 @@ impl Cedar for MyCedar {
         // join proceeds on its own and the client polls
         // ServerInformation.wifi_client.state. It still does blocking work
         // (writing a profile, nmcli calls), so run it off the async workers.
+        //
+        // Note: a WifiLedObserver, registered on this trait object in
+        // server_main(), reacts to the resulting mode change (if any) and
+        // drives the activity LED; nothing further is needed here.
         let wifi_arc = wifi.as_ref().unwrap().clone();
-        let prev_mode = wifi_arc.read().await.mode();
-        let new_mode = mode.clone();
         let result = tokio::task::spawn_blocking(move || {
             let _name = ThreadName::new("wifi-set-mode");
             wifi_arc
@@ -2545,24 +2575,6 @@ impl Cedar for MyCedar {
         })?;
         if let Err(x) = result {
             return Err(tonic_status(x));
-        }
-
-        // Treat any WiFi mode change (including staying in Client mode but
-        // joining a different SSID) like a fresh boot: resume blinking the
-        // activity LED until a new RPC comes in. Client mode blinks fast, to
-        // signal that Cedar is off our own access point and may be harder to
-        // reach; other modes use the regular cadence.
-        if prev_mode != new_mode {
-            let activity_led = self.state.lock().await.activity_led.clone();
-            let locked_activity_led = activity_led.lock().await;
-            locked_activity_led.set_blink_pattern(
-                if matches!(new_mode, WifiModeDomain::Client { .. }) {
-                    BlinkPattern::Fast
-                } else {
-                    BlinkPattern::Regular
-                },
-            );
-            locked_activity_led.resume_blinking();
         }
         Ok(tonic::Response::new(EmptyMessage::default()))
     }
@@ -5831,6 +5843,11 @@ async fn async_main(
 
     let activity_led =
         Arc::new(tokio::sync::Mutex::new(ActivityLed::new(got_signal.clone())));
+    if let Some(wifi) = &wifi {
+        wifi.read().await.set_mode_observer(Arc::new(WifiLedObserver {
+            activity_led: activity_led.clone(),
+        }));
+    }
 
     // Use supplied solver, with Tetra3Solver as fallback.
     let solver = match injected_solver {
