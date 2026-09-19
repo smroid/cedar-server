@@ -98,12 +98,11 @@ pub trait WifiTrait {
     /// join then proceeds asynchronously; poll `client_status()` for its
     /// outcome. An error is returned synchronously only when the request
     /// itself cannot be honored:
-    ///   - `Client` mode without a `client_psk`, or with an SSID or
-    ///     passphrase that fails validation;
+    ///   - `Client` mode with an SSID or passphrase that fails validation;
     ///   - `AccessPoint` mode when no access point is configured.
     ///
-    /// `client_psk` is required for `Client` mode and ignored otherwise; it
-    /// is never retained past the call.
+    /// `client_psk` is meaningful only for `Client` mode, where `None` means
+    /// the network is open (unsecured).
     fn set_mode(
         &self,
         mode: WifiMode,

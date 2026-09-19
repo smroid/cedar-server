@@ -1148,6 +1148,9 @@ message SetWifiModeRequest {
   // Required when mode is WIFI_MODE_CLIENT: the network to join. Ignored for
   // other modes.
   optional string client_ssid = 2;
+
+  // Passphrase for client_ssid. Omit (or leave empty) to join an open
+  // network. Ignored for modes other than WIFI_MODE_CLIENT.
   optional string client_psk = 3;
 }
 

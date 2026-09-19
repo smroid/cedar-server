@@ -2578,14 +2578,9 @@ impl Cedar for MyCedar {
                         )
                     },
                 )?;
-                let psk =
-                    req.client_psk.filter(|s| !s.is_empty()).ok_or_else(|| {
-                        logged_status!(
-                            invalid_argument,
-                            "client mode requires client_psk".to_string()
-                        )
-                    })?;
-                (WifiModeDomain::Client { ssid }, Some(psk))
+                // An absent or empty client_psk means the network is open.
+                let psk = req.client_psk.filter(|s| !s.is_empty());
+                (WifiModeDomain::Client { ssid }, psk)
             }
             _ => {
                 return Err(logged_status!(
