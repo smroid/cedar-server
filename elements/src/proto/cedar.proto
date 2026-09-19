@@ -86,7 +86,7 @@ message ServerInformation {
   optional ImuTrackerState imu_tracker_state = 15;
 
   // Cedar's current Wifi mode of operation.
-  optional WifiMode wifi_mode = 21;
+  optional cedar_common.WifiMode wifi_mode = 21;
 
   // Wifi hotspot info, relevant when wifi_mode is WIFI_MODE_ACCESS_POINT.
   optional WiFiAccessPoint wifi_access_point = 10;
@@ -133,13 +133,6 @@ message ImuState {
   double angle_rate_x = 4;
   double angle_rate_y = 5;
   double angle_rate_z = 6;
-}
-
-enum WifiMode {
-  WIFI_MODE_UNKNOWN = 0;
-  WIFI_MODE_ACCESS_POINT = 1;
-  WIFI_MODE_CLIENT = 2;
-  WIFI_MODE_INACTIVE = 3;
 }
 
 // Information about the Wifi access point that Cedar server puts up when
@@ -1150,7 +1143,7 @@ message SetPairingModeRequest {
 }
 
 message SetWifiModeRequest {
-  WifiMode mode = 1;
+  cedar_common.WifiMode mode = 1;
 
   // Required when mode is WIFI_MODE_CLIENT: the network to join. Ignored for
   // other modes.

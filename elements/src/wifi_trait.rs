@@ -128,4 +128,7 @@ pub trait WifiTrait {
 
     /// Scans for visible WiFi networks, strongest signal first.
     fn scan_wifi(&self) -> Result<Vec<WifiNetwork>, CanonicalError>;
+
+    /// Called whenever an RPC is received, regardless of its kind.
+    fn received_rpc(&self) {}
 }

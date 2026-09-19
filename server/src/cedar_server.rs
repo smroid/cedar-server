@@ -49,10 +49,12 @@ use cedar_elements::{
         RemoveBondRequest, ServerInformation, ServerLogRequest,
         ServerLogResult, SetPairingModeRequest, SetWifiModeRequest,
         WiFiAccessPoint, WifiClient as WifiClientProto,
-        WifiClientState as WifiClientStateProto, WifiMode as WifiModeProto,
+        WifiClientState as WifiClientStateProto,
         WifiNetwork as WifiNetworkProto, WifiScanResponse,
     },
-    cedar_common::{CelestialCoord, HorizonCoord},
+    cedar_common::{
+        CelestialCoord, HorizonCoord, WifiMode as WifiModeProto,
+    },
     cedar_sky::{
         CatalogDescriptionResponse, CatalogEntry, CatalogEntryKey,
         CatalogEntryMatch, ConstellationResponse, ObjectTypeResponse, Ordering,
@@ -223,6 +225,18 @@ fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
     warn!("RPC error: code={:?}, message={}", code, canonical_error.message);
 
     tonic::Status::new(code, canonical_error.message)
+}
+
+/// Notifies the activity LED and (if present) the Wifi implementation that an
+/// RPC was received.
+async fn note_rpc_received(
+    activity_led: &Arc<tokio::sync::Mutex<ActivityLed>>,
+    wifi: &Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
+) {
+    activity_led.lock().await.received_rpc();
+    if let Some(wifi) = wifi {
+        wifi.read().await.received_rpc();
+    }
 }
 
 fn wifi_mode_to_proto(mode: &WifiModeDomain) -> WifiModeProto {
@@ -1397,12 +1411,10 @@ impl Cedar for MyCedar {
     ) -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let _timer =
             GrpcTimer::with_threshold("get_frame", Duration::from_millis(200));
-
         let is_bluetooth =
             request.extensions().get::<BluetoothRequest>().is_some();
+        self.note_rpc_received().await;
 
-        let activity_led = self.state.lock().await.activity_led.clone();
-        activity_led.lock().await.received_rpc();
         let req: FrameRequest = request.into_inner();
         let non_blocking =
             req.non_blocking.is_some() && req.non_blocking.unwrap();
@@ -1443,9 +1455,7 @@ impl Cedar for MyCedar {
     ) -> Result<tonic::Response<Self::GetFramesStream>, tonic::Status> {
         let is_bluetooth =
             request.extensions().get::<BluetoothRequest>().is_some();
-
-        let activity_led = self.state.lock().await.activity_led.clone();
-        activity_led.lock().await.received_rpc();
+        self.note_rpc_received().await;
 
         let req: FrameRequest = request.into_inner();
         let landscape = req.display_orientation.is_none()
@@ -3214,6 +3224,16 @@ impl MyCedar {
                 &scratch_path, &prefs_path, e
             );
         }
+    }
+
+    /// Notifies the activity LED and (if present) the Wifi implementation
+    /// that an RPC was received.
+    async fn note_rpc_received(&self) {
+        let (activity_led, wifi) = {
+            let locked_state = self.state.lock().await;
+            (locked_state.activity_led.clone(), locked_state.wifi.clone())
+        };
+        note_rpc_received(&activity_led, &wifi).await;
     }
 
     async fn save_preferences(
@@ -5889,7 +5909,7 @@ async fn async_main(
         copyright,
         feature_level,
         cedar_sky,
-        wifi,
+        wifi.clone(),
         imu_tracker,
         hot_pixel_map,
         saving_state,
@@ -6022,7 +6042,7 @@ async fn async_main(
     let async_callback = Box::new(move || {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                activity_led.lock().await.received_rpc();
+                note_rpc_received(&activity_led, &wifi).await;
             });
         });
     });
