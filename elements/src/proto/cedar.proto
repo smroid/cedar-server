@@ -153,11 +153,14 @@ enum WifiClientState {
   WIFI_CLIENT_STATE_CONNECTING = 1;  // Association/DHCP in progress.
   WIFI_CLIENT_STATE_CONNECTED = 2;  // Joined and has an IP address.
 
+  // The network was not found on the air.
+  WIFI_CLIENT_STATE_NETWORK_NOT_FOUND = 3;
+
   // Association failed; typically a wrong passphrase.
-  WIFI_CLIENT_STATE_AUTH_FAILED = 3;
+  WIFI_CLIENT_STATE_AUTH_FAILED = 4;
 
   // Associated but did not obtain an IP address before timing out.
-  WIFI_CLIENT_STATE_NO_IP = 4;
+  WIFI_CLIENT_STATE_NO_IP = 5;
 }
 
 // Information about the outside Wifi access point that Cedar connects to when
@@ -1152,6 +1155,10 @@ message SetWifiModeRequest {
   // Passphrase for client_ssid. Omit (or leave empty) to join an open
   // network. Ignored for modes other than WIFI_MODE_CLIENT.
   optional string client_psk = 3;
+
+  // How long to keep trying to join client_ssid before giving up. Omit to
+  // make a single attempt. Ignored for modes other than WIFI_MODE_CLIENT.
+  optional google.protobuf.Duration client_join_timeout = 4;
 }
 
 enum ImageFormat {

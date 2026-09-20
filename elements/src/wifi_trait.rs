@@ -40,6 +40,9 @@ pub enum WifiClientState {
     /// Joined and has an IP address.
     Connected,
 
+    /// The network was not found on the air.
+    NetworkNotFound,
+
     /// Association failed; typically a wrong passphrase.
     AuthFailed,
 
@@ -103,10 +106,14 @@ pub trait WifiTrait {
     ///
     /// `client_psk` is meaningful only for `Client` mode, where `None` means
     /// the network is open (unsecured).
+    ///
+    /// `client_join_timeout` is how long to keep retrying a `Client` join
+    /// before giving up; `None` makes a single attempt.
     fn set_mode(
         &self,
         mode: WifiMode,
         client_psk: Option<&str>,
+        client_join_timeout: Option<std::time::Duration>,
     ) -> Result<(), CanonicalError>;
 
     /// Registers (or replaces) the observer notified when the mode changes.

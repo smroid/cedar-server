@@ -285,6 +285,9 @@ fn wifi_client_state_to_proto(
     match state {
         WifiClientStateDomain::Connecting => WifiClientStateProto::Connecting,
         WifiClientStateDomain::Connected => WifiClientStateProto::Connected,
+        WifiClientStateDomain::NetworkNotFound => {
+            WifiClientStateProto::NetworkNotFound
+        }
         WifiClientStateDomain::AuthFailed => WifiClientStateProto::AuthFailed,
         WifiClientStateDomain::NoIp => WifiClientStateProto::NoIp,
     }
@@ -2015,7 +2018,7 @@ impl Cedar for MyCedar {
             };
             let result = tokio::task::spawn_blocking(move || {
                 let _name = ThreadName::new("wifi-enable");
-                wifi_arc.blocking_read().set_mode(target_mode, None)
+                wifi_arc.blocking_read().set_mode(target_mode, None, None)
             })
             .await
             .map_err(|e| {
@@ -2590,6 +2593,16 @@ impl Cedar for MyCedar {
             }
         };
 
+        let join_timeout = match req.client_join_timeout {
+            None => None,
+            Some(d) => Some(Duration::try_from(d).map_err(|e| {
+                logged_status!(
+                    invalid_argument,
+                    format!("invalid client_join_timeout: {:?}", e)
+                )
+            })?),
+        };
+
         // set_mode returns once the switch is initiated; for client mode the
         // join proceeds on its own and the client polls
         // ServerInformation.wifi_client.state. It still does blocking work
@@ -2603,7 +2616,7 @@ impl Cedar for MyCedar {
             let _name = ThreadName::new("wifi-set-mode");
             wifi_arc
                 .blocking_read()
-                .set_mode(mode, psk.as_deref())
+                .set_mode(mode, psk.as_deref(), join_timeout)
         })
         .await
         .map_err(|e| {
