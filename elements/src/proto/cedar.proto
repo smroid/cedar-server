@@ -1152,8 +1152,10 @@ message SetWifiModeRequest {
   // other modes.
   optional string client_ssid = 2;
 
-  // Passphrase for client_ssid. Omit (or leave empty) to join an open
-  // network. Ignored for modes other than WIFI_MODE_CLIENT.
+  // Passphrase for client_ssid. Omit (or leave empty) to reconnect to a
+  // network already set up, or to join an open network. Supply it to set up
+  // a new network, or to update a changed passphrase. Ignored for modes
+  // other than WIFI_MODE_CLIENT.
   optional string client_psk = 3;
 
   // How long to keep trying to join client_ssid before giving up. Omit to

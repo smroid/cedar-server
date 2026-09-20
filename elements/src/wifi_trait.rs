@@ -105,7 +105,7 @@ pub trait WifiTrait {
     ///   - `AccessPoint` mode when no access point is configured.
     ///
     /// `client_psk` is meaningful only for `Client` mode, where `None` means
-    /// the network is open (unsecured).
+    /// reconnect to a network already set up, or join an open one.
     ///
     /// `client_join_timeout` is how long to keep retrying a `Client` join
     /// before giving up; `None` makes a single attempt.
