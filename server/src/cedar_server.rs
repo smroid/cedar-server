@@ -239,6 +239,22 @@ async fn note_rpc_received(
     }
 }
 
+/// The name identifying this device: its access point's SSID, which is what
+/// the user sees when joining our hotspot. Also used as the Bluetooth name
+/// and the mDNS hostname, so the device is known by one name everywhere.
+///
+/// Falls back to the processor serial number when no access point is
+/// configured, since the SSID is where the per-device part comes from.
+fn device_name(ap_ssid: Option<String>, serial_number: &str) -> String {
+    match ap_ssid {
+        Some(ssid) => ssid,
+        None if serial_number.len() >= 3 => {
+            format!("cedar-{}", &serial_number[serial_number.len() - 3..])
+        }
+        None => "cedar".to_string(),
+    }
+}
+
 /// Publishes `name` as our mDNS hostname, so clients can reach us at
 /// "<name>.local" on whatever network we are on. This is how a client finds
 /// us again after we switch to Wifi client mode, where our address is
@@ -3400,6 +3416,8 @@ impl MyCedar {
             processor_model: ctx.processor_model.clone(),
             os_version: ctx.os_version.clone(),
             serial_number: ctx.serial_number.clone(),
+            // Filled in below, once the access point's SSID is known.
+            device_name: None,
             cpu_temperature: 0.0,
             server_time: None,
             camera,
@@ -3481,6 +3499,7 @@ impl MyCedar {
 
         // Process wifi info (outside state lock). Left as None if this server
         // has no WiFi control at all.
+        let mut ap_ssid = None;
         if let Some(wifi) = &wifi_arc {
             // Read guard: this is on the get_frame hot path, and must not
             // wait behind a slow WiFi operation such as a ~3 second scan.
@@ -3493,6 +3512,7 @@ impl MyCedar {
             // regardless of the current mode -- `enabled` conveys whether it
             // is the mode in effect.
             if let Some(ap) = locked_wifi.access_point() {
+                ap_ssid = Some(ap.ssid.clone());
                 server_info.wifi_access_point = Some(WiFiAccessPoint {
                     ssid: Some(ap.ssid),
                     psk: Some(ap.psk),
@@ -3511,6 +3531,8 @@ impl MyCedar {
                 });
             }
         }
+        server_info.device_name =
+            Some(device_name(ap_ssid, &ctx.serial_number));
 
         server_info.cpu_temperature = ctx.cpu_stats.get_temperature().await;
         server_info.system_load_average =
@@ -5973,17 +5995,7 @@ async fn async_main(
             }
             None => None,
         };
-        let device_name = if let Some(wifi_name) = ap_ssid {
-            wifi_name
-        } else if cedar.serial_number.len() >= 3 {
-            let serial_name = format!(
-                "cedar-{}",
-                &cedar.serial_number[cedar.serial_number.len() - 3..]
-            );
-            serial_name
-        } else {
-            "cedar".to_string()
-        };
+        let device_name = device_name(ap_ssid, &cedar.serial_number);
         drop(state);
         set_mdns_host_name(&device_name);
         // Bound this so a host without a Bluetooth adapter / bluetoothd (e.g.

@@ -65,6 +65,11 @@ message ServerInformation {
   string os_version = 6;
   string serial_number = 12;
 
+  // The name this device is known by: its Wifi access point's SSID, its
+  // Bluetooth name, and its mDNS name (to which ".local" is appended to
+  // reach it by name).
+  optional string device_name = 23;
+
   float cpu_temperature = 7;  // Celsius.
 
   google.protobuf.Timestamp server_time = 8;
