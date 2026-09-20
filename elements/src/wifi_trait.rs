@@ -137,4 +137,9 @@ pub trait WifiTrait {
 
     /// Called whenever an RPC is received, regardless of its kind.
     fn received_rpc(&self) {}
+
+    /// Publishes `name` as the name this device answers to on the network,
+    /// so a client can find it without knowing its address. Call again to
+    /// rename.
+    fn set_host_name(&self, _name: &str) {}
 }

@@ -255,38 +255,6 @@ fn device_name(ap_ssid: Option<String>, serial_number: &str) -> String {
     }
 }
 
-/// Publishes `name` as our mDNS hostname, so clients can reach us at
-/// "<name>.local" on whatever network we are on. This is how a client finds
-/// us again after we switch to Wifi client mode, where our address is
-/// DHCP-assigned and not knowable in advance.
-///
-/// Best effort: the image configures avahi-daemon (see
-/// create_hopper_image/set_hostname.py), but a build without it running is
-/// not a reason to fail startup.
-///
-/// No sudo: this is a D-Bus call to avahi-daemon, which its default policy
-/// permits for local users. Note a rename lasts only until avahi-daemon
-/// restarts, when it reverts to the host-name in avahi-daemon.conf -- which
-/// is why we set it here on every startup.
-fn set_mdns_host_name(name: &str) {
-    let output = std::process::Command::new("avahi-set-host-name")
-        .arg(name)
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            info!("Published mDNS host name '{}.local'", name);
-        }
-        Ok(o) => warn!(
-            "Could not set mDNS host name to '{}': {}",
-            name,
-            String::from_utf8_lossy(&o.stderr).trim()
-        ),
-        Err(e) => {
-            warn!("Could not run avahi-set-host-name: {:?}", e);
-        }
-    }
-}
-
 fn wifi_mode_to_proto(mode: &WifiModeDomain) -> WifiModeProto {
     match mode {
         WifiModeDomain::AccessPoint => WifiModeProto::AccessPoint,
@@ -1998,10 +1966,15 @@ impl Cedar for MyCedar {
                 return Err(tonic_status(x));
             }
             drop(locked_wifi);
-            // Update the Bluetooth and mDNS names to match the new SSID, so
-            // all three ways of identifying this device stay in agreement.
+            // Update the Bluetooth and published names to match the new SSID,
+            // so all three ways of identifying this device stay in agreement.
             if let Some(new_ssid) = update_ap.ssid {
-                set_mdns_host_name(&new_ssid);
+                let wifi_arc = wifi.as_ref().unwrap().clone();
+                let name = new_ssid.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    wifi_arc.blocking_read().set_host_name(&name)
+                })
+                .await;
                 if let Err(e) = set_adapter_name(&new_ssid).await {
                     warn!(
                         "Failed to update Bluetooth adapter name \
@@ -5985,8 +5958,8 @@ async fn async_main(
     let pairing_mode_state = cedar.state.lock().await.pairing_mode.clone();
 
     // Initialize our device name during startup. The same name identifies us
-    // over Bluetooth and mDNS; it is the access point's SSID, which is what
-    // the user already sees when joining our hotspot.
+    // over Bluetooth and on the network; it is the access point's SSID, which
+    // is what the user already sees when joining our hotspot.
     {
         let state = cedar.state.lock().await;
         let ap_ssid = match state.wifi.as_ref() {
@@ -5996,8 +5969,10 @@ async fn async_main(
             None => None,
         };
         let device_name = device_name(ap_ssid, &cedar.serial_number);
+        if let Some(wifi) = state.wifi.as_ref() {
+            wifi.read().await.set_host_name(&device_name);
+        }
         drop(state);
-        set_mdns_host_name(&device_name);
         // Bound this so a host without a Bluetooth adapter / bluetoothd (e.g.
         // an x86 dev machine) doesn't hang startup before the server
         // binds its ports. Bluetooth itself remains best-effort via the
