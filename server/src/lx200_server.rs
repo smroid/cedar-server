@@ -288,20 +288,20 @@ impl Lx200Controller {
 
     fn convert_to_j2000(&self, ra: f64, dec: f64) -> (f64, f64) {
         if self.is_stellarium {
-            return (ra, dec);
+            return (ra.rem_euclid(360.0), dec);
         }
         let (ra_rad, dec_rad) =
             precess(ra.to_radians(), dec.to_radians(), self.jnow_epoch, 2000.0);
-        (ra_rad.to_degrees(), dec_rad.to_degrees())
+        (ra_rad.to_degrees().rem_euclid(360.0), dec_rad.to_degrees())
     }
 
     fn convert_to_jnow(&self, ra: f64, dec: f64) -> (f64, f64) {
         if self.is_stellarium {
-            return (ra, dec);
+            return (ra.rem_euclid(360.0), dec);
         }
         let (ra_rad, dec_rad) =
             precess(ra.to_radians(), dec.to_radians(), 2000.0, self.jnow_epoch);
-        (ra_rad.to_degrees(), dec_rad.to_degrees())
+        (ra_rad.to_degrees().rem_euclid(360.0), dec_rad.to_degrees())
     }
 
     async fn get_ra(&self) -> String {
@@ -352,8 +352,8 @@ impl Lx200Controller {
             "+"
         };
 
-        let (h, m, s) = Self::to_hms(dec);
-        format!("{sign}{h:02}*{m:02}'{s:02}#")
+        let (d, m, s) = Self::to_dms(dec);
+        format!("{sign}{d:02}*{m:02}'{s:02}#")
     }
 
     fn set_target_ra(&mut self, cmd: &str) -> String {
@@ -581,25 +581,38 @@ impl Lx200Controller {
         }
     }
 
-    fn to_hms(n: f64) -> (i64, i64, i64) {
-        let n_abs = n.abs();
-        let mut hours = n_abs.trunc() as i64;
-        let h_rem = n_abs.fract() * 60.0;
-        let mut minutes = h_rem.trunc() as i64;
-        let m_rem = h_rem.fract() * 60.0;
-        let mut seconds = m_rem.round() as i64;
-        if seconds == 60 {
-            seconds = 0;
-            minutes += 1;
-            if minutes == 60 {
-                minutes = 0;
-                hours += 1;
+    /// Converts degrees into degrees, minutes, and seconds.
+    ///
+    /// Note: If `deg` is in `(-1.0, 0.0)`, the returned `d` is `0` (since `i64`
+    /// cannot represent `-0`). Callers formatting signed coordinates (like
+    /// `get_dec`) should check `deg < 0.0` directly.
+    fn to_dms(deg: f64) -> (i64, i64, i64) {
+        let n_abs = deg.abs();
+        let mut d = n_abs.trunc() as i64;
+        let d_rem = n_abs.fract() * 60.0;
+        let mut m = d_rem.trunc() as i64;
+        let m_rem = d_rem.fract() * 60.0;
+        let mut s = m_rem.round() as i64;
+        if s == 60 {
+            s = 0;
+            m += 1;
+            if m == 60 {
+                m = 0;
+                d += 1;
             }
         }
-        if n < 0.0 {
-            hours = -hours;
+        if deg < 0.0 {
+            d = -d;
         }
-        (hours, minutes, seconds)
+        (d, m, s)
+    }
+
+    fn to_hms(hours: f64) -> (i64, i64, i64) {
+        let (mut h, m, s) = Self::to_dms(hours.rem_euclid(24.0));
+        if h == 24 {
+            h = 0;
+        }
+        (h, m, s)
     }
 
     fn parse_coordinates(d: &str, m: &str, s: &str) -> Option<f64> {
@@ -609,7 +622,7 @@ impl Lx200Controller {
                 warn!("Error parsing degrees: {:?}", e);
                 return None;
             }
-            Ok(deg) => deg < 0,
+            Ok(deg) => deg < 0 || d.trim_start().starts_with('-'),
         };
         let minutes: Result<i32, _> = m.parse();
         match minutes {
@@ -939,10 +952,22 @@ mod tests {
     }
 
     #[test]
+    fn test_to_dms() {
+        assert_eq!(Lx200Controller::to_dms(0.0), (0, 0, 0));
+        assert_eq!(Lx200Controller::to_dms(1.5), (1, 30, 0));
+        assert_eq!(Lx200Controller::to_dms(-10.5083), (-10, 30, 30));
+        assert_eq!(Lx200Controller::to_dms(23.99972), (23, 59, 59));
+        // Ensure 24 degrees and -24 degrees are preserved and not wrapped to 0
+        assert_eq!(Lx200Controller::to_dms(24.0), (24, 0, 0));
+        assert_eq!(Lx200Controller::to_dms(24.5), (24, 30, 0));
+        assert_eq!(Lx200Controller::to_dms(-24.5), (-24, 30, 0));
+        assert_eq!(Lx200Controller::to_dms(89.99972), (89, 59, 59));
+    }
+
+    #[test]
     fn test_to_hms() {
         assert_eq!(Lx200Controller::to_hms(0.0), (0, 0, 0));
         assert_eq!(Lx200Controller::to_hms(1.5), (1, 30, 0));
-        assert_eq!(Lx200Controller::to_hms(-10.5083), (-10, 30, 30));
         assert_eq!(Lx200Controller::to_hms(23.99972), (23, 59, 59));
         // Floating point math is hard
         assert_eq!(Lx200Controller::to_hms(10.1), (10, 6, 0));
@@ -950,9 +975,10 @@ mod tests {
         assert_eq!(Lx200Controller::to_hms(23.999859), (23, 59, 59));
         // Checking 2 possible values due to floating point imprecision
         let v = Lx200Controller::to_hms(23.999861);
-        assert!(v == (23, 59, 59) || v == (24, 0, 0), "Incorrect: {:?}", v);
-        assert_eq!(Lx200Controller::to_hms(23.999862), (24, 0, 0));
-        assert_eq!(Lx200Controller::to_hms(-23.999999), (-24, 0, 0));
+        assert!(v == (23, 59, 59) || v == (0, 0, 0), "Incorrect: {:?}", v);
+        // Ensure 24 hours wraps to 0 hours
+        assert_eq!(Lx200Controller::to_hms(23.999862), (0, 0, 0));
+        assert_eq!(Lx200Controller::to_hms(24.0), (0, 0, 0));
     }
 
     #[test]
@@ -968,6 +994,14 @@ mod tests {
         assert_approx_eq(
             Lx200Controller::parse_coordinates("-15", "30", "45").unwrap(),
             -15.5125,
+        );
+        assert_approx_eq(
+            Lx200Controller::parse_coordinates("-00", "30", "00").unwrap(),
+            -0.5,
+        );
+        assert_approx_eq(
+            Lx200Controller::parse_coordinates("+00", "30", "00").unwrap(),
+            0.5,
         );
         // Invalid
         assert_eq!(Lx200Controller::parse_coordinates("xx", "30", "00"), None);
@@ -1043,6 +1077,48 @@ mod tests {
         result_dec = controller.process_input(b":GD#").await;
         assert_eq!(result_ra.as_deref(), Some(ra_j2025_9));
         assert_eq!(result_dec.as_deref(), Some(dec_j2025_9));
+    }
+
+    #[tokio::test]
+    async fn test_get_dec_24_degrees() {
+        let (mut controller, position_arc) = setup_controller().await;
+        controller.jnow_epoch = 2000.0;
+
+        // Verify that +24° and -24° declination are not wrapped to 0
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_ra = 0.0;
+            locked_position.boresight_dec = 24.5;
+            locked_position.boresight_valid = true;
+        }
+        // process_input takes RA snapshot first, so run GR# to populate it
+        let _ = controller.process_input(b":GR#").await;
+        assert_eq!(
+            controller.process_input(b":GD#").await.as_deref(),
+            Some("+24*30'00#")
+        );
+
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_dec = -24.25;
+        }
+        let _ = controller.process_input(b":GR#").await;
+        assert_eq!(
+            controller.process_input(b":GD#").await.as_deref(),
+            Some("-24*15'00#")
+        );
+
+        // Verify that negative zero degrees (e.g. -0.5°) is formatted as
+        // -00*30'00#
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_dec = -0.5;
+        }
+        let _ = controller.process_input(b":GR#").await;
+        assert_eq!(
+            controller.process_input(b":GD#").await.as_deref(),
+            Some("-00*30'00#")
+        );
     }
 
     #[tokio::test]
@@ -1146,6 +1222,82 @@ mod tests {
         let locked_position = position_arc.lock().await;
         assert_approx_eq(locked_position.sync_ra.unwrap(), 15.0);
         assert_approx_eq(locked_position.sync_dec.unwrap(), 20.0);
+    }
+
+    #[tokio::test]
+    async fn test_precession_positive_ra() {
+        let (mut controller, position_arc) = setup_controller().await;
+        // Lock epoch to 2026.72 (late September 2026) for deterministic test
+        // results.
+        controller.jnow_epoch = 2026.72;
+
+        // Vega in JNow (2026.72): RA ~18h 37m 37s (~279.404°), Dec +38° 47' 27"
+        // (~38.791°). For objects with RA > 12h (180°..360°), atan2 in
+        // precession returns negative radians in (-pi, 0). Precession
+        // must normalize RA to [0, 360).
+        let (j2000_ra, j2000_dec) =
+            controller.convert_to_j2000(279.404, 38.791);
+        assert!(
+            j2000_ra >= 0.0 && j2000_ra < 360.0,
+            "Expected positive j2000_ra in [0, 360), got {j2000_ra}"
+        );
+        assert!(
+            (j2000_ra - 279.23).abs() < 0.1,
+            "Expected j2000_ra near 279.23°, got {j2000_ra}"
+        );
+
+        let (jnow_ra, _) = controller.convert_to_jnow(j2000_ra, j2000_dec);
+        assert!(
+            jnow_ra >= 0.0 && jnow_ra < 360.0,
+            "Expected positive jnow_ra in [0, 360), got {jnow_ra}"
+        );
+        assert!(
+            (jnow_ra - 279.404).abs() < 0.1,
+            "Expected jnow_ra near 279.404°, got {jnow_ra}"
+        );
+
+        // Verify through the LX200 protocol command interface (:Sr, :Sd, :CM#)
+        let set_ra = controller.process_input(b":Sr18:37:37#").await;
+        assert_eq!(set_ra.as_deref(), Some("1"));
+        let set_dec = controller.process_input(b":Sd+38*47:27#").await;
+        assert_eq!(set_dec.as_deref(), Some("1"));
+
+        let sync = controller.process_input(b":CM#").await;
+        assert_eq!(sync.as_deref(), Some(" M31 EX GAL MAG 3.5 SZ178.0'#"));
+
+        let (sync_ra, sync_dec) = {
+            let locked_position = position_arc.lock().await;
+            (
+                locked_position.sync_ra.expect("sync_ra must be set"),
+                locked_position.sync_dec.expect("sync_dec must be set"),
+            )
+        };
+
+        assert!(
+            sync_ra >= 0.0 && sync_ra < 360.0,
+            "Expected positive sync_ra in [0, 360), got {sync_ra}"
+        );
+        assert!(
+            (sync_ra - 279.23).abs() < 0.1,
+            "Expected sync_ra near 279.23°, got {sync_ra}"
+        );
+        assert!(
+            (sync_dec - 38.78).abs() < 0.1,
+            "Expected sync_dec near 38.78°, got {sync_dec}"
+        );
+
+        // Verify round-trip readback via :GR# and :GD# in JNow
+        {
+            let mut locked_position = position_arc.lock().await;
+            locked_position.boresight_ra = sync_ra;
+            locked_position.boresight_dec = sync_dec;
+            locked_position.boresight_valid = true;
+        }
+
+        let ra_str = controller.process_input(b":GR#").await;
+        let dec_str = controller.process_input(b":GD#").await;
+        assert_eq!(ra_str.as_deref(), Some("18:37:37#"));
+        assert_eq!(dec_str.as_deref(), Some("+38*47'27#"));
     }
 
     // --- Location and Date Tests ---
