@@ -174,8 +174,12 @@ python -m grpc_tools.protoc -I../proto --python_out=. --pyi_out=. --grpc_python_
 ### Enable ASI camera
 
 If you are using an ASI camera, go to the asi_camera2 project directory and run
-the `install.sh` script. You can skip this if you are using a Raspberry Pi
+the `install.sh` script. This installs a udev rule that grants access to the
+ASI camera's USB device. You can skip this if you are using a Raspberry Pi
 camera.
+
+Note: this alone does not enable ASI support in Cedar-server; you must also
+build with the `--asi` flag as described below.
 
 ### Build Cedar-server
 
@@ -183,12 +187,27 @@ You will need to install the Rust toolchain if you don't have it already. Follow
 the instructions at the [Install Rust](https://www.rust-lang.org/tools/install)
 site.
 
-Now build Cedar-server:
+Now build Cedar-server. By default this builds with support for the Raspberry
+Pi camera:
 
 ```
 cd cedar-server
 ./build.sh --release
 ```
+
+If you are using an ASI camera instead (such as the ASI120mm mini), pass the
+`--asi` flag to build ASI camera support in place of the Raspberry Pi camera
+support:
+
+```
+cd cedar-server
+./build.sh --release --asi
+```
+
+IMPORTANT! If you build without `--asi` while using an ASI camera (or vice
+versa), Cedar-server will not find your camera at startup and will silently
+fall back to a fake test-pattern camera, so make sure to pass the flag that
+matches your hardware.
 
 This builds Cedar-server and all of its dependencies. Rust crates are downloaded
 and built as needed. The initial build takes around a half hour on a Rpi 4 and

@@ -160,10 +160,20 @@ message CatalogEntry {
   optional Constellation constellation = 4;
   ObjectType object_type = 5;
 
-  optional double magnitude = 6;  // Apparent magnitude.
+  optional double magnitude = 6;  // Apparent magnitude. Brightest state,
+                                  // if variable (see dim_mag).
+  // Present together with magnitude only for a variable object: its
+  // faintest documented state.
+  optional double dim_mag = 11;
+
   optional string angular_size = 7;  // Arc minutes. Usually numeric.
 
-  optional string common_name = 8;  // Albireo, Horsehead, Crab Nebula, etc.
+  // Albireo, Horsehead, Crab Nebula, etc. May be a comma-separated list of
+  // more than one known name for the object (e.g. "Al Sufi's Cluster,
+  // Brocchi's Cluster, Coathanger"). A display too small to show the whole
+  // string might show only the text before the first comma; full text
+  // search matches on every name in the list regardless.
+  optional string common_name = 8;
   optional string notes = 9;
 
   // Rise/set/culmination timing, relative to the observer location and time

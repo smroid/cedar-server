@@ -504,3 +504,73 @@ Other improvements:
 
 * Cap the frame rate in focus mode, and other minor performance and
   reliability tweaks.
+
+# September 5 2026
+
+Cedar-server version: 1.5.0
+
+New catalogs:
+
+* Add the Sharpless catalog of HII regions and emission nebulae (313
+  entries), cross-referenced to NGC, IC, and Messier designations where the
+  same object is already in the catalog.
+
+* Add the Abell catalog of planetary nebulae (73 entries) discovered on the
+  Palomar Observatory Sky Survey plates.
+
+* Add the Collinder catalog of open clusters, asterisms, and stellar
+  groupings (471 entries), cross-referenced to NGC and IC designations
+  where the same object is already in the catalog.
+
+* Add the Herschel 400 observing list (391 entries), the Astronomical
+  League's selection from William Herschel's catalog, cross-referenced to
+  the corresponding NGC and IC objects.
+
+* Add the AAVSO Binocular Program (154 entries), a selection of bright
+  variable stars suited to observing by eye or binoculars, including
+  Betelgeuse, Mira, and Chi Cygni.
+
+Other improvements:
+
+* Variable stars now carry both a bright and a dim magnitude, so search
+  results and object details can show the full range of brightness rather
+  than a single mid-value.
+
+* Fix Messier object designations to sort correctly in search results
+  (e.g. M9 before M10) by storing them zero-padded internally, matching
+  the convention already used for Caldwell and Barnard.
+
+# September 7 2026
+
+Cedar-server version: 1.5.1
+
+* Search now tolerates a handful of common misspellings, e.g. "cirrus" or
+  "serious" for Sirius, "beetlejuice" for Betelgeuse, "pliades" for the
+  Pleiades, and "xi" for a Bayer star name mistyped as "zi".
+
+* AAVSO Binocular Program star designations with a space (e.g. "RV Cen")
+  are now also searchable as one joined word ("rvcen").
+
+* Fix a bug where an AAVSO variable star's notes (variability type and
+  period) did not always reach the merged object when the star's own
+  designation resolved through another catalog's alias first.
+
+# September 16 2026
+
+Cedar-server version: 1.5.2
+
+* Initial implementation of Wifi client mode, allowing Cedar to join an
+  existing Wifi network instead of only acting as its own access point.
+  Untested.
+
+* Add a fast blink option for the activity LED.
+
+* Fix chaotic image rotation near the north celestial pole.
+
+* Reject 0, 0 latitude/longitude from SkySafari, which SkySafari can send
+  as a placeholder rather than a real observer location.
+
+* Fix SETUP alignment mode failing to offer a selection target for a very
+  bright, overexposed object (e.g. Saturn) when no other catalog object in
+  the field of view was available to calibrate against, such as a bright
+  planet in an otherwise faint star field.

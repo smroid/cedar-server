@@ -47,9 +47,14 @@ use cedar_elements::{
         ImuTrackerState, LatLong, MountType, OperatingMode, OperationSettings,
         PlateSolution as PlateSolutionProto, Preferences, Rectangle,
         RemoveBondRequest, ServerInformation, ServerLogRequest,
-        ServerLogResult, SetPairingModeRequest, WiFiAccessPoint,
+        ServerLogResult, SetPairingModeRequest, SetWifiModeRequest,
+        WiFiAccessPoint, WifiClient as WifiClientProto,
+        WifiClientState as WifiClientStateProto,
+        WifiNetwork as WifiNetworkProto, WifiScanResponse,
     },
-    cedar_common::{CelestialCoord, HorizonCoord},
+    cedar_common::{
+        CelestialCoord, HorizonCoord, WifiMode as WifiModeProto,
+    },
     cedar_sky::{
         CatalogDescriptionResponse, CatalogEntry, CatalogEntryKey,
         CatalogEntryMatch, ConstellationResponse, ObjectTypeResponse, Ordering,
@@ -60,7 +65,10 @@ use cedar_elements::{
     imu_trait::ImuTrait,
     solver_trait::SolverTrait,
     thread_name::ThreadName,
-    wifi_trait::WifiTrait,
+    wifi_trait::{
+        WifiClientState as WifiClientStateDomain, WifiMode as WifiModeDomain,
+        WifiModeObserver, WifiTrait,
+    },
 };
 use chrono::offset::Local;
 use futures::{join, StreamExt};
@@ -87,7 +95,7 @@ use tracing_subscriber::{fmt, prelude::*, registry, EnvFilter};
 
 use self::multiplex_service::MultiplexService;
 use crate::{
-    activity_led::ActivityLed,
+    activity_led::{ActivityLed, BlinkPattern},
     bonding_helper::{
         get_adapter_alias, get_bonded_devices, remove_bond,
         reset_hci_controller, run_pairing_mode, set_adapter_name, ResetOutcome,
@@ -219,6 +227,84 @@ fn tonic_status(canonical_error: CanonicalError) -> tonic::Status {
     tonic::Status::new(code, canonical_error.message)
 }
 
+/// Notifies the activity LED and (if present) the Wifi implementation that an
+/// RPC was received.
+async fn note_rpc_received(
+    activity_led: &Arc<tokio::sync::Mutex<ActivityLed>>,
+    wifi: &Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
+) {
+    activity_led.lock().await.received_rpc();
+    if let Some(wifi) = wifi {
+        wifi.read().await.received_rpc();
+    }
+}
+
+/// The name identifying this device: its access point's SSID, which is what
+/// the user sees when joining our hotspot. Also used as the Bluetooth name
+/// and the mDNS hostname, so the device is known by one name everywhere.
+///
+/// Falls back to the processor serial number when no access point is
+/// configured, since the SSID is where the per-device part comes from.
+fn device_name(ap_ssid: Option<String>, serial_number: &str) -> String {
+    match ap_ssid {
+        Some(ssid) => ssid,
+        None if serial_number.len() >= 3 => {
+            format!("cedar-{}", &serial_number[serial_number.len() - 3..])
+        }
+        None => "cedar".to_string(),
+    }
+}
+
+fn wifi_mode_to_proto(mode: &WifiModeDomain) -> WifiModeProto {
+    match mode {
+        WifiModeDomain::AccessPoint => WifiModeProto::AccessPoint,
+        WifiModeDomain::Client { .. } => WifiModeProto::Client,
+        WifiModeDomain::Inactive => WifiModeProto::Inactive,
+    }
+}
+
+fn wifi_client_state_to_proto(
+    state: WifiClientStateDomain,
+) -> WifiClientStateProto {
+    match state {
+        WifiClientStateDomain::Connecting => WifiClientStateProto::Connecting,
+        WifiClientStateDomain::Connected => WifiClientStateProto::Connected,
+        WifiClientStateDomain::NetworkNotFound => {
+            WifiClientStateProto::NetworkNotFound
+        }
+        WifiClientStateDomain::AuthFailed => WifiClientStateProto::AuthFailed,
+        WifiClientStateDomain::NoIp => WifiClientStateProto::NoIp,
+    }
+}
+
+/// Drives the activity LED's blink pattern from WiFi mode changes: fast in
+/// Client mode, regular otherwise.
+struct WifiLedObserver {
+    activity_led: Arc<tokio::sync::Mutex<ActivityLed>>,
+}
+
+impl WifiModeObserver for WifiLedObserver {
+    fn on_mode_changed(
+        &self,
+        _old_mode: &WifiModeDomain,
+        new_mode: &WifiModeDomain,
+    ) {
+        // blocking_lock(): this is called from Wifi's sync mode-transition
+        // code, which itself only ever runs on a spawn_blocking task or a
+        // detached thread -- never an async worker -- so blocking here is
+        // safe, same as the wifi_arc.blocking_read() calls elsewhere.
+        let locked_activity_led = self.activity_led.blocking_lock();
+        locked_activity_led.set_blink_pattern(
+            if matches!(new_mode, WifiModeDomain::Client { .. }) {
+                BlinkPattern::Fast
+            } else {
+                BlinkPattern::Regular
+            },
+        );
+        locked_activity_led.resume_blinking();
+    }
+}
+
 // Helper macro to create and log tonic::Status errors
 macro_rules! logged_status {
     ($code:ident, $msg:expr) => {{
@@ -301,7 +387,7 @@ struct CedarState {
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
 
     // Not all builds of Cedar-server support Wifi control.
-    wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+    wifi: Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
 
     // Not all builds of Cedar-server support IMU fusion.
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
@@ -1344,12 +1430,10 @@ impl Cedar for MyCedar {
     ) -> Result<tonic::Response<FrameResult>, tonic::Status> {
         let _timer =
             GrpcTimer::with_threshold("get_frame", Duration::from_millis(200));
-
         let is_bluetooth =
             request.extensions().get::<BluetoothRequest>().is_some();
+        self.note_rpc_received().await;
 
-        let activity_led = self.state.lock().await.activity_led.clone();
-        activity_led.lock().await.received_rpc().await;
         let req: FrameRequest = request.into_inner();
         let non_blocking =
             req.non_blocking.is_some() && req.non_blocking.unwrap();
@@ -1390,9 +1474,7 @@ impl Cedar for MyCedar {
     ) -> Result<tonic::Response<Self::GetFramesStream>, tonic::Status> {
         let is_bluetooth =
             request.extensions().get::<BluetoothRequest>().is_some();
-
-        let activity_led = self.state.lock().await.activity_led.clone();
-        activity_led.lock().await.received_rpc().await;
+        self.note_rpc_received().await;
 
         let req: FrameRequest = request.into_inner();
         let landscape = req.display_orientation.is_none()
@@ -1730,7 +1812,7 @@ impl Cedar for MyCedar {
             };
             saving_state.store(true, AtomicOrdering::Relaxed);
             prepare_for_exit_async(&imu_tracker, &hot_pixel_map).await;
-            activity_led.lock().await.stop().await;
+            activity_led.lock().await.stop();
             let output = Command::new("sudo")
                 .arg("shutdown")
                 .arg("now")
@@ -1757,7 +1839,7 @@ impl Cedar for MyCedar {
             };
             saving_state.store(true, AtomicOrdering::Relaxed);
             prepare_for_exit_async(&imu_tracker, &hot_pixel_map).await;
-            activity_led.lock().await.stop().await;
+            activity_led.lock().await.stop();
             let output = Command::new("sudo")
                 .arg("reboot")
                 .arg("now")
@@ -1875,7 +1957,7 @@ impl Cedar for MyCedar {
                     )
                 ));
             }
-            let mut locked_wifi = wifi.as_ref().unwrap().lock().await;
+            let mut locked_wifi = wifi.as_ref().unwrap().write().await;
             if let Err(x) = locked_wifi.update_access_point(
                 update_ap.channel,
                 update_ap.ssid.as_deref(),
@@ -1884,8 +1966,15 @@ impl Cedar for MyCedar {
                 return Err(tonic_status(x));
             }
             drop(locked_wifi);
-            // Update Bluetooth adapter name to match new WiFi SSID.
+            // Update the Bluetooth and published names to match the new SSID,
+            // so all three ways of identifying this device stay in agreement.
             if let Some(new_ssid) = update_ap.ssid {
+                let wifi_arc = wifi.as_ref().unwrap().clone();
+                let name = new_ssid.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    wifi_arc.blocking_read().set_host_name(&name)
+                })
+                .await;
                 if let Err(e) = set_adapter_name(&new_ssid).await {
                     warn!(
                         "Failed to update Bluetooth adapter name \
@@ -1895,7 +1984,11 @@ impl Cedar for MyCedar {
                 }
             }
         }
+        #[allow(deprecated)] // Still honored for pre-SetWifiMode clients.
         if let Some(wifi_enabled) = req.wifi_enabled {
+            // Deprecated: superseded by the SetWifiMode RPC. Mapped onto it
+            // here for older clients -- true means access point mode, false
+            // means WiFi off.
             let wifi = self.state.lock().await.wifi.clone();
             if wifi.is_none() {
                 return Err(logged_status!(
@@ -1907,14 +2000,19 @@ impl Cedar for MyCedar {
                 ));
             }
             let wifi_arc = wifi.as_ref().unwrap().clone();
+            let target_mode = if wifi_enabled {
+                WifiModeDomain::AccessPoint
+            } else {
+                WifiModeDomain::Inactive
+            };
             let result = tokio::task::spawn_blocking(move || {
                 let _name = ThreadName::new("wifi-enable");
-                wifi_arc.blocking_lock().set_enabled(wifi_enabled)
+                wifi_arc.blocking_read().set_mode(target_mode, None, None)
             })
             .await
             .map_err(|e| {
                 tonic::Status::internal(format!(
-                    "set_enabled task panicked: {:?}",
+                    "set_mode task panicked: {:?}",
                     e
                 ))
             })?;
@@ -2395,6 +2493,130 @@ impl Cedar for MyCedar {
                 warn!("Error removing bond");
             }
         };
+        Ok(tonic::Response::new(EmptyMessage::default()))
+    }
+
+    async fn scan_wifi(
+        &self,
+        _request: tonic::Request<EmptyMessage>,
+    ) -> Result<tonic::Response<WifiScanResponse>, tonic::Status> {
+        let wifi = self.state.lock().await.wifi.clone();
+        if wifi.is_none() {
+            return Err(logged_status!(
+                unimplemented,
+                format!(
+                    "{} does not include WiFi control.",
+                    self.product_name
+                )
+            ));
+        }
+        // A scan takes seconds: it sweeps the 2.4GHz channels, and if the
+        // radio is rfkill-blocked it must also be unblocked and re-blocked
+        // around the scan. Run it on a blocking thread so we don't park an
+        // async worker for the duration.
+        let wifi_arc = wifi.as_ref().unwrap().clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _name = ThreadName::new("wifi-scan");
+            wifi_arc.blocking_read().scan_wifi()
+        })
+        .await
+        .map_err(|e| {
+            tonic::Status::internal(format!("scan_wifi task panicked: {:?}", e))
+        })?;
+
+        let networks = match result {
+            Err(x) => return Err(tonic_status(x)),
+            Ok(networks) => networks
+                .into_iter()
+                .map(|n| WifiNetworkProto {
+                    ssid: n.ssid,
+                    signal_strength: n.signal_strength,
+                    secured: n.secured,
+                })
+                .collect(),
+        };
+        Ok(tonic::Response::new(WifiScanResponse { networks }))
+    }
+
+    async fn set_wifi_mode(
+        &self,
+        request: tonic::Request<SetWifiModeRequest>,
+    ) -> Result<tonic::Response<EmptyMessage>, tonic::Status> {
+        let req = request.into_inner();
+        let wifi = self.state.lock().await.wifi.clone();
+        if wifi.is_none() {
+            return Err(logged_status!(
+                unimplemented,
+                format!(
+                    "{} does not include WiFi control.",
+                    self.product_name
+                )
+            ));
+        }
+
+        // Translate the proto request into a domain WifiMode, validating the
+        // client-mode fields here so an obviously bad request fails fast.
+        let (mode, psk) = match WifiModeProto::try_from(req.mode) {
+            Ok(WifiModeProto::AccessPoint) => {
+                (WifiModeDomain::AccessPoint, None)
+            }
+            Ok(WifiModeProto::Inactive) => (WifiModeDomain::Inactive, None),
+            Ok(WifiModeProto::Client) => {
+                let ssid = req.client_ssid.filter(|s| !s.is_empty()).ok_or_else(
+                    || {
+                        logged_status!(
+                            invalid_argument,
+                            "client mode requires client_ssid".to_string()
+                        )
+                    },
+                )?;
+                // An absent or empty client_psk means the network is open.
+                let psk = req.client_psk.filter(|s| !s.is_empty());
+                (WifiModeDomain::Client { ssid }, psk)
+            }
+            _ => {
+                return Err(logged_status!(
+                    invalid_argument,
+                    format!("unrecognized wifi mode {}", req.mode)
+                ));
+            }
+        };
+
+        let join_timeout = match req.client_join_timeout {
+            None => None,
+            Some(d) => Some(Duration::try_from(d).map_err(|e| {
+                logged_status!(
+                    invalid_argument,
+                    format!("invalid client_join_timeout: {:?}", e)
+                )
+            })?),
+        };
+
+        // set_mode returns once the switch is initiated; for client mode the
+        // join proceeds on its own and the client polls
+        // ServerInformation.wifi_client.state. It still does blocking work
+        // (writing a profile, nmcli calls), so run it off the async workers.
+        //
+        // Note: a WifiLedObserver, registered on this trait object in
+        // server_main(), reacts to the resulting mode change (if any) and
+        // drives the activity LED; nothing further is needed here.
+        let wifi_arc = wifi.as_ref().unwrap().clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _name = ThreadName::new("wifi-set-mode");
+            wifi_arc
+                .blocking_read()
+                .set_mode(mode, psk.as_deref(), join_timeout)
+        })
+        .await
+        .map_err(|e| {
+            tonic::Status::internal(format!(
+                "set_mode task panicked: {:?}",
+                e
+            ))
+        })?;
+        if let Err(x) = result {
+            return Err(tonic_status(x));
+        }
         Ok(tonic::Response::new(EmptyMessage::default()))
     }
 
@@ -3035,6 +3257,16 @@ impl MyCedar {
         }
     }
 
+    /// Notifies the activity LED and (if present) the Wifi implementation
+    /// that an RPC was received.
+    async fn note_rpc_received(&self) {
+        let (activity_led, wifi) = {
+            let locked_state = self.state.lock().await;
+            (locked_state.activity_led.clone(), locked_state.wifi.clone())
+        };
+        note_rpc_received(&activity_led, &wifi).await;
+    }
+
     async fn save_preferences(
         &self,
         serve_engine_arc: Arc<tokio::sync::Mutex<ServeEngine>>,
@@ -3157,6 +3389,8 @@ impl MyCedar {
             processor_model: ctx.processor_model.clone(),
             os_version: ctx.os_version.clone(),
             serial_number: ctx.serial_number.clone(),
+            // Filled in below, once the access point's SSID is known.
+            device_name: None,
             cpu_temperature: 0.0,
             server_time: None,
             camera,
@@ -3164,7 +3398,9 @@ impl MyCedar {
             imu_angular_speed: None,
             imu_model: None,
             imu_tracker_state: None,
+            wifi_mode: None,
             wifi_access_point: None,
+            wifi_client: None,
             connection_status: Some(ConnectionStatus {
                 cedar_wifi: ctx
                     .connection_counters
@@ -3234,15 +3470,42 @@ impl MyCedar {
             }
         }
 
-        // Process wifi info (outside state lock).
+        // Process wifi info (outside state lock). Left as None if this server
+        // has no WiFi control at all.
+        let mut ap_ssid = None;
         if let Some(wifi) = &wifi_arc {
-            let locked_wifi = wifi.lock().await;
-            server_info.wifi_access_point = Some(WiFiAccessPoint {
-                ssid: Some(locked_wifi.ssid()),
-                psk: Some(locked_wifi.psk()),
-                channel: Some(locked_wifi.channel()),
-            });
+            // Read guard: this is on the get_frame hot path, and must not
+            // wait behind a slow WiFi operation such as a ~3 second scan.
+            let locked_wifi = wifi.read().await;
+
+            let mode = locked_wifi.mode();
+            server_info.wifi_mode = Some(wifi_mode_to_proto(&mode) as i32);
+
+            // The access point config is reported whenever one is configured,
+            // regardless of the current mode -- `enabled` conveys whether it
+            // is the mode in effect.
+            if let Some(ap) = locked_wifi.access_point() {
+                ap_ssid = Some(ap.ssid.clone());
+                server_info.wifi_access_point = Some(WiFiAccessPoint {
+                    ssid: Some(ap.ssid),
+                    psk: Some(ap.psk),
+                    channel: Some(ap.channel),
+                    enabled: Some(mode == WifiModeDomain::AccessPoint),
+                });
+            }
+
+            if let Some(status) = locked_wifi.client_status() {
+                server_info.wifi_client = Some(WifiClientProto {
+                    ssid: Some(status.ssid),
+                    state: Some(
+                        wifi_client_state_to_proto(status.state) as i32,
+                    ),
+                    ip_address: status.ip_address,
+                });
+            }
         }
+        server_info.device_name =
+            Some(device_name(ap_ssid, &ctx.serial_number));
 
         server_info.cpu_temperature = ctx.cpu_stats.get_temperature().await;
         server_info.system_load_average =
@@ -3737,7 +4000,7 @@ impl MyCedar {
         copyright: &str,
         feature_level: FeatureLevel,
         cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-        wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+        wifi: Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
         imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         hot_pixel_map: Option<
             Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>,
@@ -4605,24 +4868,46 @@ impl MyCedar {
             if locked_telescope_position.site_latitude.is_some()
                 && locked_telescope_position.site_longitude.is_some()
             {
-                let observer_location = LatLong {
-                    latitude: locked_telescope_position.site_latitude.unwrap(),
-                    longitude: locked_telescope_position
-                        .site_longitude
-                        .unwrap(),
-                };
-                fixed_settings.lock().await.observer_location =
-                    Some(observer_location.clone());
-                updated_observer_location = Some(observer_location.clone());
-                info!("Telescope updated observer location");
+                let latitude = locked_telescope_position.site_latitude.unwrap();
+                let longitude =
+                    locked_telescope_position.site_longitude.unwrap();
                 locked_telescope_position.site_latitude = None;
                 locked_telescope_position.site_longitude = None;
-                // Save in preferences.
-                let mut locked_preferences = preferences.lock().await;
-                locked_preferences.observer_location =
-                    Some(observer_location.clone());
-                // Flag updated preferences to write to file below.
-                prefs_to_save = Some(locked_preferences.clone());
+                // Normalize longitude into -180..180, in case the client
+                // used a 0..360 convention or reported a wrapped value.
+                let longitude = longitude.rem_euclid(360.0);
+                let longitude = if longitude > 180.0 {
+                    longitude - 360.0
+                } else {
+                    longitude
+                };
+                // SkySafari/Stellarium report (0, 0) when they have no real
+                // location (e.g. a mobile device with GPS unavailable and no
+                // location manually set), so reject that as a sentinel rather
+                // than a legitimate position.
+                if latitude == 0.0 && longitude == 0.0 {
+                    warn!(
+                        "Ignoring telescope-reported observer location (0, 0)"
+                    );
+                } else if !(-90.0..=90.0).contains(&latitude) {
+                    warn!(
+                        "Ignoring invalid telescope-reported observer \
+                         location: latitude={}, longitude={}",
+                        latitude, longitude
+                    );
+                } else {
+                    let observer_location = LatLong { latitude, longitude };
+                    fixed_settings.lock().await.observer_location =
+                        Some(observer_location.clone());
+                    updated_observer_location = Some(observer_location.clone());
+                    info!("Telescope updated observer location");
+                    // Save in preferences.
+                    let mut locked_preferences = preferences.lock().await;
+                    locked_preferences.observer_location =
+                        Some(observer_location.clone());
+                    // Flag updated preferences to write to file below.
+                    prefs_to_save = Some(locked_preferences.clone());
+                }
             }
             // Has telescope reported the time?
             if let Some(dt) = locked_telescope_position.utc_date.take() {
@@ -4806,7 +5091,7 @@ pub fn server_main(
         Arguments,
     ) -> (
         Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-        Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+        Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
         Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>,
@@ -5476,7 +5761,7 @@ async fn async_main(
     got_signal: Arc<AtomicBool>,
     saving_state: Arc<AtomicBool>,
     cedar_sky: Option<Arc<tokio::sync::Mutex<dyn CedarSkyTrait + Send>>>,
-    wifi: Option<Arc<tokio::sync::Mutex<dyn WifiTrait + Send>>>,
+    wifi: Option<Arc<tokio::sync::RwLock<dyn WifiTrait + Send + Sync>>>,
     imu_tracker: Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
     hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
     injected_solver: Option<
@@ -5615,6 +5900,28 @@ async fn async_main(
 
     let activity_led =
         Arc::new(tokio::sync::Mutex::new(ActivityLed::new(got_signal.clone())));
+    if let Some(wifi) = &wifi {
+        // Take the activity LED's blink pattern from WiFi mode changes: fast
+        // in client mode, regular otherwise.
+        let observer = Arc::new(WifiLedObserver {
+            activity_led: activity_led.clone(),
+        });
+        let locked_wifi = wifi.read().await;
+        locked_wifi.set_mode_observer(observer);
+
+        // Apply the mode we are already in, since observers only hear about
+        // later changes. A startup join may still be in flight, so count that
+        // as client mode too. Not via the observer: it uses blocking_lock(),
+        // which panics on an async worker.
+        let joining = matches!(
+            locked_wifi.client_status().map(|s| s.state),
+            Some(WifiClientStateDomain::Connecting)
+        );
+        if joining || matches!(locked_wifi.mode(), WifiModeDomain::Client { .. })
+        {
+            activity_led.lock().await.set_blink_pattern(BlinkPattern::Fast);
+        }
+    }
 
     // Use supplied solver, with Tetra3Solver as fallback.
     let solver = match injected_solver {
@@ -5656,7 +5963,7 @@ async fn async_main(
         copyright,
         feature_level,
         cedar_sky,
-        wifi,
+        wifi.clone(),
         imu_tracker,
         hot_pixel_map,
         saving_state,
@@ -5667,21 +5974,21 @@ async fn async_main(
     // Clone pairing_mode state before cedar is moved.
     let pairing_mode_state = cedar.state.lock().await.pairing_mode.clone();
 
-    // Initialize Bluetooth adapter name during startup.
+    // Initialize our device name during startup. The same name identifies us
+    // over Bluetooth and on the network; it is the access point's SSID, which
+    // is what the user already sees when joining our hotspot.
     {
         let state = cedar.state.lock().await;
-        let bt_name = if let Some(wifi) = state.wifi.as_ref() {
-            let wifi_name = wifi.lock().await.ssid();
-            wifi_name
-        } else if cedar.serial_number.len() >= 3 {
-            let serial_name = format!(
-                "cedar-{}",
-                &cedar.serial_number[cedar.serial_number.len() - 3..]
-            );
-            serial_name
-        } else {
-            "cedar".to_string()
+        let ap_ssid = match state.wifi.as_ref() {
+            Some(wifi) => {
+                wifi.read().await.access_point().map(|ap| ap.ssid)
+            }
+            None => None,
         };
+        let device_name = device_name(ap_ssid, &cedar.serial_number);
+        if let Some(wifi) = state.wifi.as_ref() {
+            wifi.read().await.set_host_name(&device_name);
+        }
         drop(state);
         // Bound this so a host without a Bluetooth adapter / bluetoothd (e.g.
         // an x86 dev machine) doesn't hang startup before the server
@@ -5689,7 +5996,7 @@ async fn async_main(
         // spawned BT tasks.
         match tokio::time::timeout(
             Duration::from_secs(5),
-            set_adapter_name(&bt_name),
+            set_adapter_name(&device_name),
         )
         .await
         {
@@ -5784,7 +6091,7 @@ async fn async_main(
     let async_callback = Box::new(move || {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                activity_led.lock().await.received_rpc().await;
+                note_rpc_received(&activity_led, &wifi).await;
             });
         });
     });

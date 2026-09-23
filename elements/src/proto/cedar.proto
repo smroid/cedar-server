@@ -65,6 +65,11 @@ message ServerInformation {
   string os_version = 6;
   string serial_number = 12;
 
+  // The name this device is known by: its Wifi access point's SSID, its
+  // Bluetooth name, and its mDNS name (to which ".local" is appended to
+  // reach it by name).
+  optional string device_name = 23;
+
   float cpu_temperature = 7;  // Celsius.
 
   google.protobuf.Timestamp server_time = 8;
@@ -85,8 +90,14 @@ message ServerInformation {
   // The current state of the IMU tracking logic. Omitted if no IMU detected.
   optional ImuTrackerState imu_tracker_state = 15;
 
-  // WiFi hotspot info.
+  // Cedar's current Wifi mode of operation.
+  optional cedar_common.WifiMode wifi_mode = 21;
+
+  // Wifi hotspot info, relevant when wifi_mode is WIFI_MODE_ACCESS_POINT.
   optional WiFiAccessPoint wifi_access_point = 10;
+
+  // Wifi client status, relevant when wifi_mode is WIFI_MODE_CLIENT.
+  optional WifiClient wifi_client = 22;
 
   // Information about client connections.
   optional ConnectionStatus connection_status = 17;
@@ -129,11 +140,46 @@ message ImuState {
   double angle_rate_z = 6;
 }
 
-// Information about the WiFi access point that Cedar server puts up.
+// Information about the Wifi access point that Cedar server puts up when
+// WifiMode is WIFI_MODE_ACCESS_POINT.
 message WiFiAccessPoint {
   optional string ssid = 1;
-  optional string psk = 2;  // WiFi password.
+  optional string psk = 2;  // Wifi password.
   optional int32 channel = 3;
+  optional bool enabled = 4;  // Whether the AP is currently active.
+}
+
+// Progress/outcome of the most recent attempt to join an outside Wifi
+// network (see SetWifiMode). Cedar-aim polls this via ServerInformation to
+// drive its "connecting..." UI, since SetWifiMode returns before the join
+// completes.
+enum WifiClientState {
+  WIFI_CLIENT_STATE_UNKNOWN = 0;
+  WIFI_CLIENT_STATE_CONNECTING = 1;  // Association/DHCP in progress.
+  WIFI_CLIENT_STATE_CONNECTED = 2;  // Joined and has an IP address.
+
+  // The network was not found on the air.
+  WIFI_CLIENT_STATE_NETWORK_NOT_FOUND = 3;
+
+  // Association failed; typically a wrong passphrase.
+  WIFI_CLIENT_STATE_AUTH_FAILED = 4;
+
+  // Associated but did not obtain an IP address before timing out.
+  WIFI_CLIENT_STATE_NO_IP = 5;
+}
+
+// Information about the outside Wifi access point that Cedar connects to when
+// WifiMode is WIFI_MODE_CLIENT.
+message WifiClient {
+  optional string ssid = 1;
+
+  // State of the join to `ssid`. Note the passphrase is never reported back.
+  optional WifiClientState state = 2;
+
+  // IPv4 address assigned on `ssid`, present once state is
+  // WIFI_CLIENT_STATE_CONNECTED. This is how a client reconnects to Cedar
+  // over the joined network.
+  optional string ip_address = 3;
 }
 
 // Number of current client connections.
@@ -1015,7 +1061,7 @@ message ActionRequest {
   optional bool save_image = 5;
 
   // Update ssid, psk, and/or channel setting for Cedar server's
-  // WiFi access point.
+  // Wifi access point.
   optional WiFiAccessPoint update_wifi_access_point = 7;
 
   // Clear all items from Preferences.dont_show_items.
@@ -1039,10 +1085,14 @@ message ActionRequest {
   // Causes the Cedar server to panic. For testing.
   optional bool crash_server = 12;
 
-  // Enables or disables the WiFi access point. When disabled, the AP is
+  // Enables or disables the Wifi access point. When disabled, the AP is
   // brought down until explicitly re-enabled or the server reboots. Useful
   // after switching to Bluetooth.
-  optional bool wifi_enabled = 15;
+  //
+  // Deprecated: cannot express client mode. Use the SetWifiMode RPC instead
+  // (true here is equivalent to WIFI_MODE_ACCESS_POINT, false to
+  // WIFI_MODE_INACTIVE). Still honored for older clients.
+  optional bool wifi_enabled = 15 [deprecated = true];
 }
 
 message ServerLogRequest {
@@ -1080,6 +1130,17 @@ message RemoveBondRequest {
   string address = 1;
 }
 
+message WifiNetwork {
+  string ssid = 1;
+  optional int32 signal_strength = 2;  // 0-100.
+  bool secured = 3;
+}
+
+message WifiScanResponse {
+  // Strongest signal first.
+  repeated WifiNetwork networks = 1;
+}
+
 message SetPairingModeRequest {
   bool enabled = 1;
 
@@ -1087,6 +1148,24 @@ message SetPairingModeRequest {
   // for a finite time duration. Setting forever==true keeps pairing enabled
   // indefinitely.
   bool forever = 2;
+}
+
+message SetWifiModeRequest {
+  cedar_common.WifiMode mode = 1;
+
+  // Required when mode is WIFI_MODE_CLIENT: the network to join. Ignored for
+  // other modes.
+  optional string client_ssid = 2;
+
+  // Passphrase for client_ssid. Omit (or leave empty) to reconnect to a
+  // network already set up, or to join an open network. Supply it to set up
+  // a new network, or to update a changed passphrase. Ignored for modes
+  // other than WIFI_MODE_CLIENT.
+  optional string client_psk = 3;
+
+  // How long to keep trying to join client_ssid before giving up. Omit to
+  // make a single attempt. Ignored for modes other than WIFI_MODE_CLIENT.
+  optional google.protobuf.Duration client_join_timeout = 4;
 }
 
 enum ImageFormat {
@@ -1216,6 +1295,14 @@ service Cedar {
   rpc SetPairingMode(SetPairingModeRequest) returns (EmptyMessage);
   rpc GetBondedDevices(EmptyMessage) returns (GetBondedDevicesResponse);
   rpc RemoveBond(RemoveBondRequest) returns (EmptyMessage);
+
+  // Wifi management.
+  rpc ScanWifi(EmptyMessage) returns (WifiScanResponse);
+  // Switches Cedar's Wifi mode (access point / client / off). Returns as soon
+  // as the switch is initiated; for client mode, poll
+  // ServerInformation.wifi_client.state for the outcome. Error only if the
+  // request itself is invalid (e.g. client mode without an SSID/passphrase).
+  rpc SetWifiMode(SetWifiModeRequest) returns (EmptyMessage);
 
   // Conversion utility. Error if the observer location or time is not known.
   rpc ConvertToHorizon(cedar_common.CelestialCoord) returns (cedar_common.HorizonCoord);

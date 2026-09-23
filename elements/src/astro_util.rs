@@ -77,6 +77,11 @@ pub fn angular_separation(
 /// increasing counter-clockwise from zero at north.
 /// Args and return value in radians.
 /// Returns 0 if p0 and p1 are degenerate (same).
+///
+/// Also ill defined when p0 is at or near a celestial pole, however distant
+/// p1 is: the angle is measured from north at p0, and at a pole there is no
+/// north. Accuracy degrades as 1/cos(p0_dec). For where p1 appears in the
+/// image, prefer bearing_to_celestial(), which is well conditioned there.
 pub fn position_angle(p0_ra: f64, p0_dec: f64, p1_ra: f64, p1_dec: f64) -> f64 {
     // Adapted from
     // https://astronomy.stackexchange.com/questions/25306
@@ -384,6 +389,46 @@ fn undistort_centroid(
     [x + width / 2.0, y + height / 2.0]
 }
 
+/// Returns the image-plane bearing, in radians, from the boresight to the
+/// given celestial coordinate: the angle at which the target appears on
+/// screen, measured counter-clockwise from image "up".
+///
+/// This is equivalent to position_angle(boresight, target) + roll, but is
+/// computed directly from the plate solution's rotation matrix rather than
+/// by summing two angles that are each measured from celestial north at the
+/// boresight. North is undefined at a celestial pole, so that sum degrades
+/// as 1/cos(dec) and becomes unusable within ~1 degree of the pole; this
+/// formulation has no declination dependence at all.
+///
+/// The only degeneracy is a target at the boresight itself, where the
+/// bearing is genuinely undefined; 0 is returned there (atan2(0, 0)).
+///
+/// ra, dec: target position in radians.
+/// rotation_matrix: row-major, as supplied by the plate solution. Applying it
+///   to a celestial unit vector yields camera-frame (i, j, k), where i is the
+///   boresight axis and j, k map to image x and y respectively (see
+///   compute_centroid(), which negates both).
+pub fn bearing_to_celestial(
+    ra: f64,
+    dec: f64,
+    rotation_matrix: &[f64; 9],
+) -> f64 {
+    let t = to_unit_vector(ra, dec);
+    // Project the target into the camera frame: j is image x, k is image y.
+    let j = rotation_matrix[3] * t[0]
+        + rotation_matrix[4] * t[1]
+        + rotation_matrix[5] * t[2];
+    let k = rotation_matrix[6] * t[0]
+        + rotation_matrix[7] * t[1]
+        + rotation_matrix[8] * t[2];
+    // compute_centroid() negates both axes, so a target at camera (j, k)
+    // lands at pixel offset (-j, -k) from the boresight. The bearing
+    // convention (see drawSlewTarget(), which uses direction
+    // (-sin(angle), -cos(angle)) with image y growing downward) then gives
+    // atan2(-(-j), -(-k)) = atan2(j, k).
+    j.atan2(k)
+}
+
 /// Port of Tetra3's transform_to_image_coords() function. Note that the
 /// return is [x, y], in contrast to Tetra3 which reverses it.
 pub fn transform_to_image_coord(
@@ -549,6 +594,14 @@ pub fn precess(
 /// This function returns the original `detections` list augmented by item(s)
 /// from `catalog_entries`.
 ///
+/// Called only in SETUP alignment mode, where `detections` is not the
+/// detector's own output but the plate solution's catalog stars, each
+/// carrying its catalog magnitude and a brightness derived from it. We rely
+/// on that: a detection's magnitude is what relates catalog magnitudes to
+/// StarCentroid.brightness values, so the caller must supply it. Detections
+/// without a magnitude are ignored, and if none has one there is no scale to
+/// synthesize against and `detections` is returned unchanged.
+///
 /// Args must be in order of descending brightness. Caution: complexity is the
 /// product of the vector sizes.
 pub fn fill_in_detections(
@@ -557,38 +610,18 @@ pub fn fill_in_detections(
 ) -> Vec<StarCentroid> {
     const IMAGE_DISTANCE_THRESHOLD_SQ: f64 = 4.0;
 
-    // Find the brightest `catalog_entries` item that also exists in
-    // `detections`. We do this so we can relate catalog magnitudes to
-    // StarCentroid.brightness values.
-    let mut found_match = false;
-    let mut match_magnitude = 0.0;
-    let mut match_brightness = 0.0;
-    for catalog_entry in catalog_entries {
-        let cat_coord = catalog_entry.image_pos.as_ref().unwrap();
-        for detection in detections {
-            let det_coord = detection.centroid_position.as_ref().unwrap();
-            if image_distance_sq(det_coord, cat_coord)
-                < IMAGE_DISTANCE_THRESHOLD_SQ
-            {
-                // Found a same-location item between catalog_entries and
-                // detections.
-                if let Some(mag) =
-                    catalog_entry.entry.as_ref().unwrap().magnitude
-                {
-                    match_magnitude = mag;
-                    match_brightness = detection.brightness;
-                    found_match = true;
-                    break;
-                }
-            }
-        }
-        if found_match {
-            break;
-        }
-    }
-    if !found_match {
-        return detections.clone(); // Bail out.
-    }
+    // Relate catalog magnitudes to StarCentroid.brightness values, using any
+    // detection that carries both. Note we can't instead look for a catalog
+    // entry coinciding with a detection: the case we're here to fix is a
+    // field whose only catalog entry is the bright object missing from
+    // `detections`, leaving no coincident pair to calibrate from.
+    let (match_magnitude, match_brightness) = match detections
+        .iter()
+        .find_map(|d| d.magnitude.map(|mag| (mag, d.brightness)))
+    {
+        Some(pair) => pair,
+        None => return detections.clone(),  // Bail out.
+    };
 
     // Gather `catalog_entries` that do not have corresponding `detections`
     // entries. We can only synthesize detections for entries that have a
@@ -808,6 +841,133 @@ mod tests {
         let undistorted = undistort_centroid(&distorted, 1024, 800, 0.01);
         assert_abs_diff_eq!(undistorted[0], 20.0, epsilon = 0.001);
         assert_abs_diff_eq!(undistorted[1], 100.0, epsilon = 0.001);
+    }
+
+    // bearing_to_celestial() must agree with the angle implied by the
+    // target's pixel position, and with position_angle()+roll away from the
+    // pole where that formulation is still valid.
+    #[test]
+    fn test_bearing_to_celestial_matches_image_position() {
+        let rotation_matrix = [
+            0.5143930851217422,
+            0.4705764222800965,
+            0.7169083517249608,
+            0.32501576652434216,
+            0.6666418828994508,
+            -0.670785622591055,
+            -0.7935770318560958,
+            0.5780540033235123,
+            0.18997121822036758,
+        ];
+        // Boresight is row 0 of the rotation matrix.
+        let (bs_ra, bs_dec) = from_unit_vector(&[
+            rotation_matrix[0],
+            rotation_matrix[1],
+            rotation_matrix[2],
+        ]);
+        // Roll, extracted as the solver does: atan2(R[1][2], R[2][2]).
+        let roll = rotation_matrix[5].atan2(rotation_matrix[8]);
+
+        // A target a few degrees away from the boresight.
+        let tgt_ra = 38_f64.to_radians();
+        let tgt_dec = 45_f64.to_radians();
+
+        let bearing = bearing_to_celestial(tgt_ra, tgt_dec, &rotation_matrix);
+
+        // The bearing must point at where the target actually lands in the
+        // image. drawSlewTarget() draws along (-sin(angle), -cos(angle)) in
+        // pixel space (y growing downward), so recover the angle from the
+        // target's pixel offset and require agreement.
+        let px = transform_to_image_coord(
+            &[38.0, 45.0],
+            1024,
+            800,
+            10.0,
+            &rotation_matrix,
+            0.0, // no distortion: bearing is a pinhole quantity
+        );
+        let dx = px[0] - 1024.0 / 2.0;
+        let dy = px[1] - 800.0 / 2.0;
+        let from_pixels = (-dx).atan2(-dy);
+        let mut diff = (bearing - from_pixels).to_degrees() % 360.0;
+        if diff > 180.0 {
+            diff -= 360.0;
+        }
+        if diff < -180.0 {
+            diff += 360.0;
+        }
+        assert_abs_diff_eq!(diff, 0.0, epsilon = 0.001);
+
+        // And it must remain close to the legacy position_angle()+roll
+        // formulation, which is valid at this (mid) declination. They are
+        // not identical: one is a great-circle position angle, the other a
+        // tangent-plane bearing, and they diverge slightly with separation.
+        let legacy = position_angle(bs_ra, bs_dec, tgt_ra, tgt_dec) + roll;
+        let mut legacy_diff = (bearing - legacy).to_degrees() % 360.0;
+        if legacy_diff > 180.0 {
+            legacy_diff -= 360.0;
+        }
+        if legacy_diff < -180.0 {
+            legacy_diff += 360.0;
+        }
+        assert_abs_diff_eq!(legacy_diff, 0.0, epsilon = 0.5);
+    }
+
+    // The bearing must remain accurate with the boresight at the celestial
+    // pole, where position_angle()+roll breaks down.
+    #[test]
+    fn test_bearing_to_celestial_at_pole() {
+        // Boresight essentially at the NCP, camera axes aligned so that
+        // celestial RA=0 lies along the camera's +y ("up") direction.
+        let eps = 0.0001_f64.to_radians();
+        let dec = std::f64::consts::PI / 2.0 - eps;
+        let rotation_matrix = [
+            dec.cos(), 0.0, dec.sin(), // boresight, at RA=0
+            -dec.sin(), 0.0, dec.cos(), // camera y
+            0.0, 1.0, 0.0, // camera x
+        ];
+
+        // Targets 1 degree from the pole, at three different RAs, must come
+        // out 90 degrees apart and stay fixed: with the boresight at the
+        // pole the bearings are still fully determined, even though roll is
+        // not. (For this matrix RA=0 lies along -90; the absolute offset is
+        // set by the camera orientation, the spacing by the geometry.)
+        let one_deg = 89_f64.to_radians();
+        let at = |ra_deg: f64| {
+            bearing_to_celestial(
+                ra_deg.to_radians(),
+                one_deg,
+                &rotation_matrix,
+            )
+            .to_degrees()
+        };
+        assert_abs_diff_eq!(at(0.0), -90.0, epsilon = 0.01);
+        assert_abs_diff_eq!(at(90.0), 0.0, epsilon = 0.01);
+        assert_abs_diff_eq!(at(180.0), 90.0, epsilon = 0.01);
+
+        // Crucially, the bearing must be insensitive to which side of the
+        // pole the boresight sits on. Nudge the boresight across the pole
+        // (RA flips by 180 degrees, roll by ~180) and the bearing to a fixed
+        // target must barely move.
+        let d2 = std::f64::consts::PI / 2.0 + eps;
+        let across = [
+            d2.cos(),
+            0.0,
+            d2.sin(),
+            -d2.sin(),
+            0.0,
+            d2.cos(),
+            0.0,
+            1.0,
+            0.0,
+        ];
+        let before = bearing_to_celestial(0.0, one_deg, &rotation_matrix);
+        let after = bearing_to_celestial(0.0, one_deg, &across);
+        assert_abs_diff_eq!(
+            (after - before).to_degrees(),
+            0.0,
+            epsilon = 0.01
+        );
     }
 
     #[test]
@@ -1101,27 +1261,29 @@ mod tests {
 
     #[test]
     fn test_fill_in_detections() {
+        // Magnitudes and brightnesses lie on a single scale, as align mode's
+        // plate solution catalog stars do.
         let detections = vec![
             // d1.
             StarCentroid {
                 centroid_position: Some(ImageCoord { x: 12.0, y: 15.0 }),
                 brightness: 1200.0,
                 num_saturated: 0,
-                magnitude: None,
+                magnitude: Some(2.187668),
             },
             // d2.
             StarCentroid {
                 centroid_position: Some(ImageCoord { x: 22.0, y: 35.0 }),
                 brightness: 900.0,
                 num_saturated: 0,
-                magnitude: None,
+                magnitude: Some(2.5),
             },
             // d3.
             StarCentroid {
                 centroid_position: Some(ImageCoord { x: 42.0, y: 350.0 }),
                 brightness: 700.0,
                 num_saturated: 0,
-                magnitude: None,
+                magnitude: Some(2.772848),
             },
         ];
         let catalog_entries = vec![
@@ -1140,6 +1302,7 @@ mod tests {
                         broad_category: "yy".to_string(),
                     }),
                     magnitude: Some(-1.5),
+                    dim_mag: None,
                     angular_size: None,
                     common_name: None,
                     notes: None,
@@ -1165,6 +1328,7 @@ mod tests {
                         broad_category: "yy".to_string(),
                     }),
                     magnitude: Some(2.5),
+                    dim_mag: None,
                     angular_size: None,
                     common_name: None,
                     notes: None,
@@ -1196,5 +1360,63 @@ mod tests {
         assert_eq!(d3.centroid_position.as_ref().unwrap().x, 42.0);
         assert_eq!(d3.centroid_position.as_ref().unwrap().y, 350.0);
         assert_eq!(d3.brightness, 700.0);
+    }
+
+    #[test]
+    fn test_fill_in_detections_sole_catalog_entry() {
+        // Sparse field: the only catalog entry is the planet we need to
+        // synthesize, so no catalog entry coincides with a detection.
+        let detections = vec![
+            StarCentroid {
+                centroid_position: Some(ImageCoord { x: 98.9, y: 507.8 }),
+                brightness: magnitude_intensity_ratio(6.0, 4.44),
+                num_saturated: 0,
+                magnitude: Some(4.44),
+            },
+            StarCentroid {
+                centroid_position: Some(ImageCoord { x: 381.4, y: 246.7 }),
+                brightness: magnitude_intensity_ratio(6.0, 5.69),
+                num_saturated: 0,
+                magnitude: Some(5.69),
+            },
+        ];
+        let catalog_entries = vec![FovCatalogEntry {
+            entry: Some(CatalogEntry {
+                catalog_label: "PL".to_string(),
+                catalog_entry: "Saturn".to_string(),
+                coord: Some(CelestialCoord { ra: 0.0, dec: 0.0, epoch: None }),
+                constellation: None,
+                object_type: Some(ObjectType {
+                    label: "planet".to_string(),
+                    broad_category: "solar system".to_string(),
+                }),
+                magnitude: Some(0.36),
+                dim_mag: None,
+                angular_size: None,
+                common_name: None,
+                notes: None,
+                rise_set_culmination: None,
+            }),
+            deduped_entries: Vec::new(),
+            image_pos: Some(ImageCoord { x: 474.7, y: 825.1 }),
+            altitude: None,
+            azimuth: None,
+        }];
+
+        let filled_in = fill_in_detections(&detections, &catalog_entries);
+        assert_eq!(filled_in.len(), 3);
+
+        // Saturn is synthesized, and is brightest so it sorts first.
+        let saturn = &filled_in[0];
+        assert_eq!(saturn.centroid_position.as_ref().unwrap().x, 474.7);
+        assert_eq!(saturn.centroid_position.as_ref().unwrap().y, 825.1);
+        assert_eq!(saturn.magnitude, Some(0.36));
+        // Recovers the caller's own magnitude-to-brightness scale.
+        assert_abs_diff_eq!(
+            saturn.brightness,
+            magnitude_intensity_ratio(6.0, 0.36),
+            epsilon = 0.001
+        );
+        assert!(saturn.brightness > detections[0].brightness);
     }
 } // mod tests.

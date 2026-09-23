@@ -1,22 +1,41 @@
-// Copyright (c) 2024 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
 use std::{
     fs,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread::{sleep, spawn, JoinHandle},
     time::Duration,
 };
 
+// Our state, shared between ActivityLed methods and the worker thread.
 pub struct ActivityLed {
-    // Our state, shared between ActivityLed methods and the worker thread.
-    state: Arc<tokio::sync::Mutex<SharedState>>,
+    state: Arc<Mutex<SharedState>>,
+    worker_thread: Option<JoinHandle<()>>,  // Executes worker().
+}
 
-    // Executes worker().
-    worker_thread: Option<JoinHandle<()>>,
+// Blink cadence for the Ready state (before the first RPC). Has no effect once
+// received_rpc() has been called, when the LED is held off.
+#[derive(Clone, Copy, PartialEq)]
+pub enum BlinkPattern {
+    // 1hz, 50% duty cycle (500ms on, 500ms off).
+    Regular,
+
+    // 4hz, 20% duty cycle (50ms on, 200ms off).
+    Fast,
+}
+
+impl BlinkPattern {
+    // (on_ticks, period_ticks) at the worker's tick resolution (25ms).
+    fn timing(self) -> (u32, u32) {
+        match self {
+            BlinkPattern::Regular => (20, 40), // 500ms on / 1000ms period
+            BlinkPattern::Fast => (2, 10),     // 50ms on / 250ms period
+        }
+    }
 }
 
 // State shared between worker thread and the ActivityLed methods.
@@ -26,6 +45,9 @@ struct SharedState {
 
     // Set by received_rpc().
     received_rpc: bool,
+
+    // Ready-state blink cadence; changed by set_blink_pattern().
+    blink_pattern: BlinkPattern,
 }
 
 // The ActivityLed controls the state of the Raspberry Pi activity LED. By
@@ -35,20 +57,22 @@ struct SharedState {
 // When ActivityLed is constructed, it takes over the Raspberry Pi activity LED
 // and manages it in three states:
 //
-// * Ready: the LED is blinked on and off at 1hz. This occurs when ActivityLed
-//   has been created but received_rpc() has not not been called yet.
+// * Ready: the LED is blinked on and off. This occurs when ActivityLed has been
+//   created but received_rpc() has not been called yet. The blink cadence is
+//   the current BlinkPattern (Regular by default; see set_blink_pattern()).
 // * Connected: the LED is turned off. This occurs when received_rpc() has been
 //   called at least once.
 // * Released: The LED is re-configured back to the Raspberry Pi default, where
 //   it indicates "disk" activity. This occurs when the stop() method is called.
 
 impl ActivityLed {
-    // Initiates the activity LED to blinking at 1hz.
+    // Takes over the activity LED, blinking it with the Regular pattern.
     pub fn new(got_signal: Arc<AtomicBool>) -> Self {
         let mut activity_led = ActivityLed {
-            state: Arc::new(tokio::sync::Mutex::new(SharedState {
+            state: Arc::new(Mutex::new(SharedState {
                 stop_request: false,
                 received_rpc: false,
+                blink_pattern: BlinkPattern::Regular,
             })),
             worker_thread: None,
         };
@@ -61,19 +85,36 @@ impl ActivityLed {
 
     // Indicates that Cedar has received an RPC from a client. We turn the
     // activity LED off.
-    pub async fn received_rpc(&self) {
-        self.state.lock().await.received_rpc = true;
+    pub fn received_rpc(&self) {
+        self.state.lock().unwrap().received_rpc = true;
+    }
+
+    // Sets the Ready-state blink cadence. Takes effect at the start of the next
+    // blink phase; has no visible effect once received_rpc() has been called.
+    pub fn set_blink_pattern(&self, pattern: BlinkPattern) {
+        self.state.lock().unwrap().blink_pattern = pattern;
+    }
+
+    // Resumes blinking with the most recently set BlinkPattern, undoing the
+    // effect of received_rpc(). Used e.g. when Cedar wants to signal that
+    // connected clients should be considered gone again.
+    pub fn resume_blinking(&self) {
+        self.state.lock().unwrap().received_rpc = false;
     }
 
     // Releases the activity LED back to its OS-defined "disk" activity
-    // indicator.
-    pub async fn stop(&mut self) {
-        self.state.lock().await.stop_request = true;
-        self.worker_thread.take().unwrap().join().unwrap();
+    // indicator. Blocks until the worker thread has reverted the LED; the
+    // worker polls stop_request on a short tick, so this returns quickly.
+    // Idempotent: a second call (or a call after Drop's request) is a no-op.
+    pub fn stop(&mut self) {
+        if let Some(worker_thread) = self.worker_thread.take() {
+            self.state.lock().unwrap().stop_request = true;
+            worker_thread.join().unwrap();
+        }
     }
 
     fn worker(
-        state: Arc<tokio::sync::Mutex<SharedState>>,
+        state: Arc<Mutex<SharedState>>,
         got_signal: Arc<AtomicBool>,
     ) {
         // Raspberry Pi 5 reverses the control signal to the ACT led.
@@ -94,46 +135,74 @@ impl ActivityLed {
         let brightness_path = "/sys/class/leds/ACT/brightness";
         let trigger_path = "/sys/class/leds/ACT/trigger";
 
-        let delay = Duration::from_millis(500);
+        // The worker wakes on a short fixed tick so stop()/got_signal are seen
+        // promptly, and drives the Ready blink by counting ticks: the LED is on
+        // for the pattern's on_ticks, then off for the rest of its period_ticks.
+        // TICK divides every pattern timing evenly (see BlinkPattern::timing).
+        let tick = Duration::from_millis(25);
 
         #[derive(PartialEq)]
         enum LedState {
-            ReadyOff,
-            ReadyOn,
+            Ready,
             ConnectedOff,
         }
-        let mut led_state = LedState::ReadyOff;
+        let mut led_state = LedState::Ready;
+        // Ticks elapsed in the current blink period, and whether the LED is
+        // currently lit, so we only write brightness on a transition.
+        let mut phase_ticks: u32 = 0;
+        let mut led_on = false;
         if let Err(e) = fs::write(brightness_path, off_value) {
             log::warn!("Error writing to LED: {:?}", e);
         }
         loop {
-            sleep(delay);
-            if state.blocking_lock().stop_request {
+            sleep(tick);
+            let (stop_request, received_rpc, blink_pattern) = {
+                let locked_state = state.lock().unwrap();
+                (
+                    locked_state.stop_request,
+                    locked_state.received_rpc,
+                    locked_state.blink_pattern,
+                )
+            };
+            if stop_request {
                 break;
             }
             if got_signal.load(Ordering::Relaxed) {
                 break;
             }
-            if led_state != LedState::ConnectedOff
-                && state.blocking_lock().received_rpc
-            {
+            let want_connected_off = received_rpc;
+            if led_state != LedState::ConnectedOff && want_connected_off {
                 fs::write(brightness_path, off_value).unwrap_or(());
                 led_state = LedState::ConnectedOff;
+            } else if led_state == LedState::ConnectedOff && !want_connected_off
+            {
+                // resume_blinking() was called: restart the blink phase.
+                led_state = LedState::Ready;
+                phase_ticks = 0;
+                led_on = false;
+            }
+            if led_state == LedState::ConnectedOff {
                 continue;
             }
-            match led_state {
-                LedState::ReadyOff => {
-                    fs::write(brightness_path, on_value).unwrap_or(());
-                    led_state = LedState::ReadyOn;
-                }
-                LedState::ReadyOn => {
-                    fs::write(brightness_path, off_value).unwrap_or(());
-                    led_state = LedState::ReadyOff;
-                }
-                LedState::ConnectedOff => {}
-            };
+            // Ready: advance the blink phase and write brightness on a change.
+            let (on_ticks, period_ticks) = blink_pattern.timing();
+            phase_ticks = (phase_ticks + 1) % period_ticks;
+            let want_on = phase_ticks < on_ticks;
+            if want_on != led_on {
+                let value = if want_on { on_value } else { off_value };
+                fs::write(brightness_path, value).unwrap_or(());
+                led_on = want_on;
+            }
         }
         // Revert LED back to system default state (disk activity).
         fs::write(trigger_path, "mmc0").unwrap_or(());
+    }
+}
+
+impl Drop for ActivityLed {
+    // Ensures the worker thread stops and reverts the ACT LED even if stop()
+    // was never called (early return, panic unwind, etc.).
+    fn drop(&mut self) {
+        self.stop();
     }
 }
