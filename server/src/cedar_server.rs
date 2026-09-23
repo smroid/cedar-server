@@ -5901,9 +5901,26 @@ async fn async_main(
     let activity_led =
         Arc::new(tokio::sync::Mutex::new(ActivityLed::new(got_signal.clone())));
     if let Some(wifi) = &wifi {
-        wifi.read().await.set_mode_observer(Arc::new(WifiLedObserver {
+        // Take the activity LED's blink pattern from WiFi mode changes: fast
+        // in client mode, regular otherwise.
+        let observer = Arc::new(WifiLedObserver {
             activity_led: activity_led.clone(),
-        }));
+        });
+        let locked_wifi = wifi.read().await;
+        locked_wifi.set_mode_observer(observer);
+
+        // Apply the mode we are already in, since observers only hear about
+        // later changes. A startup join may still be in flight, so count that
+        // as client mode too. Not via the observer: it uses blocking_lock(),
+        // which panics on an async worker.
+        let joining = matches!(
+            locked_wifi.client_status().map(|s| s.state),
+            Some(WifiClientStateDomain::Connecting)
+        );
+        if joining || matches!(locked_wifi.mode(), WifiModeDomain::Client { .. })
+        {
+            activity_led.lock().await.set_blink_pattern(BlinkPattern::Fast);
+        }
     }
 
     // Use supplied solver, with Tetra3Solver as fallback.
