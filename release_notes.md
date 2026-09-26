@@ -574,3 +574,22 @@ Cedar-server version: 1.5.2
   bright, overexposed object (e.g. Saturn) when no other catalog object in
   the field of view was available to calibrate against, such as a bright
   planet in an otherwise faint star field.
+
+# September 26 2026
+
+Cedar-server version: 1.6.0
+
+* Wifi client mode: Cedar can now join an existing Wifi network instead of
+  only acting as its own access point. Reconnecting to a previously joined
+  network no longer requires re-entering its password, and joining can
+  specify a timeout. Unsecured networks are also supported.
+
+* Publish the unit's device name via mDNS (previously every unit
+  advertised the same hardcoded "cedar.local"), keeping it in sync with
+  the Bluetooth adapter name and the AP's SSID.
+
+* Add a device_name field to ServerInformation.
+
+* The activity LED now reflects Wifi mode: it resumes blinking (rather
+  than going stale) when Wifi mode changes, uses a fast blink pattern in
+  Wifi client mode, and is set correctly at server startup.
