@@ -178,12 +178,8 @@ pub fn celestial_coord_from_horizon(
         time,
     );
     let to_epoch = horizon.epoch.unwrap_or(2000.0);
-    let (ra, dec) = precess(
-        ra_now,
-        dec_now,
-        decimal_year_from_system_time(time),
-        to_epoch,
-    );
+    let (ra, dec) =
+        precess(ra_now, dec_now, decimal_year_from_system_time(time), to_epoch);
     crate::cedar_common::CelestialCoord {
         // Normalize to [0, 360) so precession near 0h doesn't yield a negative
         // right ascension.
@@ -217,9 +213,10 @@ pub fn horizon_coord_from_celestial(
     crate::cedar_common::HorizonCoord {
         altitude: alt.to_degrees(),
         azimuth: az.to_degrees(),
-        // `epoch` is only meaningful as an input to celestial_coord_from_horizon()
-        // (via the ConvertToCelestial RPC); it has no meaning on a HorizonCoord
-        // that resulted from a conversion.
+        // `epoch` is only meaningful as an input to
+        // celestial_coord_from_horizon() (via the ConvertToCelestial
+        // RPC); it has no meaning on a HorizonCoord that resulted from
+        // a conversion.
         epoch: None,
     }
 }
@@ -344,6 +341,9 @@ fn distort_centroid(
     x -= width / 2.0;
     y -= height / 2.0;
     let r_undist = (x * x + y * y).sqrt();
+    if r_undist < 1e-9 {
+        return *centroid;
+    }
 
     // Initial distorted guess, undistorted are the same position.
     let mut r_dist = r_undist;
@@ -381,6 +381,9 @@ fn undistort_centroid(
     x -= width / 2.0;
     y -= height / 2.0;
     let r_dist = (x * x + y * y).sqrt();
+    if r_dist < 1e-9 {
+        return *centroid;
+    }
     // Scale.
     let scale = (1.0 - kp * r_dist * r_dist) / (1.0 - k);
     x *= scale;
@@ -573,7 +576,9 @@ pub fn precess(
     // not Besselian) conversion between the two.
     let jd_from = 2451545.0 + (epoch_from - 2000.0) * 365.25;
     let jd_to = 2451545.0 + (epoch_to - 2000.0) * 365.25;
-    astro::precess::precess_eq_coords(ra, dec, jd_from, jd_to)
+    let (new_ra, new_dec) =
+        astro::precess::precess_eq_coords(ra, dec, jd_from, jd_to);
+    (limit_to_two_PI(new_ra), new_dec)
 }
 
 /// When exposing for plate solving, we increase exposure until a desired
@@ -620,7 +625,7 @@ pub fn fill_in_detections(
         .find_map(|d| d.magnitude.map(|mag| (mag, d.brightness)))
     {
         Some(pair) => pair,
-        None => return detections.clone(),  // Bail out.
+        None => return detections.clone(), // Bail out.
     };
 
     // Gather `catalog_entries` that do not have corresponding `detections`
@@ -843,6 +848,22 @@ mod tests {
         assert_abs_diff_eq!(undistorted[1], 100.0, epsilon = 0.001);
     }
 
+    #[test]
+    fn test_distort_undistort_optical_center() {
+        let width = 1024;
+        let height = 800;
+        let center = [width as f64 / 2.0, height as f64 / 2.0];
+        let distorted = distort_centroid(&center, width, height, 0.01);
+        assert!(!distorted[0].is_nan() && !distorted[1].is_nan());
+        assert_abs_diff_eq!(distorted[0], center[0], epsilon = 1e-6);
+        assert_abs_diff_eq!(distorted[1], center[1], epsilon = 1e-6);
+
+        let undistorted = undistort_centroid(&center, width, height, 0.01);
+        assert!(!undistorted[0].is_nan() && !undistorted[1].is_nan());
+        assert_abs_diff_eq!(undistorted[0], center[0], epsilon = 1e-6);
+        assert_abs_diff_eq!(undistorted[1], center[1], epsilon = 1e-6);
+    }
+
     // bearing_to_celestial() must agree with the angle implied by the
     // target's pixel position, and with position_angle()+roll away from the
     // pole where that formulation is still valid.
@@ -922,9 +943,15 @@ mod tests {
         let eps = 0.0001_f64.to_radians();
         let dec = std::f64::consts::PI / 2.0 - eps;
         let rotation_matrix = [
-            dec.cos(), 0.0, dec.sin(), // boresight, at RA=0
-            -dec.sin(), 0.0, dec.cos(), // camera y
-            0.0, 1.0, 0.0, // camera x
+            dec.cos(),
+            0.0,
+            dec.sin(), // boresight, at RA=0
+            -dec.sin(),
+            0.0,
+            dec.cos(), // camera y
+            0.0,
+            1.0,
+            0.0, // camera x
         ];
 
         // Targets 1 degree from the pole, at three different RAs, must come
@@ -934,12 +961,8 @@ mod tests {
         // set by the camera orientation, the spacing by the geometry.)
         let one_deg = 89_f64.to_radians();
         let at = |ra_deg: f64| {
-            bearing_to_celestial(
-                ra_deg.to_radians(),
-                one_deg,
-                &rotation_matrix,
-            )
-            .to_degrees()
+            bearing_to_celestial(ra_deg.to_radians(), one_deg, &rotation_matrix)
+                .to_degrees()
         };
         assert_abs_diff_eq!(at(0.0), -90.0, epsilon = 0.01);
         assert_abs_diff_eq!(at(90.0), 0.0, epsilon = 0.01);
@@ -963,11 +986,7 @@ mod tests {
         ];
         let before = bearing_to_celestial(0.0, one_deg, &rotation_matrix);
         let after = bearing_to_celestial(0.0, one_deg, &across);
-        assert_abs_diff_eq!(
-            (after - before).to_degrees(),
-            0.0,
-            epsilon = 0.01
-        );
+        assert_abs_diff_eq!((after - before).to_degrees(), 0.0, epsilon = 0.01);
     }
 
     #[test]
@@ -1091,6 +1110,32 @@ mod tests {
             precess(sirius_ra_j2000, sirius_dec_j2000, 2000.0, 2000.0);
         assert_eq!(ra_same, sirius_ra_j2000);
         assert_eq!(dec_same, sirius_dec_j2000);
+    }
+
+    #[test]
+    fn test_precess_ra_greater_than_12h() {
+        // Vega: RA 18h36m56.34s (~279.23° / 4.8735 rad), Dec +38°47'01.3"
+        // (~38.78° / 0.6769 rad). Objects with RA > 12h cause
+        // un-normalized atan2 to return negative radians in (-pi, 0).
+        // Precession must normalize RA to [0, 2*PI).
+        let vega_ra = deg_frm_hms(18, 36, 56.34).to_radians();
+        let vega_dec = deg_frm_dms(38, 47, 1.3).to_radians();
+        let (new_ra, new_dec) = precess(vega_ra, vega_dec, 2000.0, 2026.72);
+        assert!(
+            new_ra >= 0.0 && new_ra < 2.0 * std::f64::consts::PI,
+            "Expected positive RA in [0, 2*PI), got {new_ra}"
+        );
+        assert_abs_diff_eq!(new_ra.to_degrees(), 279.40, epsilon = 0.1);
+        assert_abs_diff_eq!(new_dec.to_degrees(), 38.79, epsilon = 0.1);
+
+        // Precess back from J2026.72 to J2000.0
+        let (back_ra, back_dec) = precess(new_ra, new_dec, 2026.72, 2000.0);
+        assert!(
+            back_ra >= 0.0 && back_ra < 2.0 * std::f64::consts::PI,
+            "Expected positive back_ra in [0, 2*PI), got {back_ra}"
+        );
+        assert_abs_diff_eq!(back_ra, vega_ra, epsilon = 1e-5);
+        assert_abs_diff_eq!(back_dec, vega_dec, epsilon = 1e-5);
     }
 
     // Mid-2026 observing time used by the horizon/celestial tests below.
@@ -1243,11 +1288,7 @@ mod tests {
             &time,
         );
         assert_abs_diff_eq!(jnow.ra, naive_ra.to_degrees(), epsilon = 0.0001);
-        assert_abs_diff_eq!(
-            jnow.dec,
-            naive_dec.to_degrees(),
-            epsilon = 0.0001
-        );
+        assert_abs_diff_eq!(jnow.dec, naive_dec.to_degrees(), epsilon = 0.0001);
     }
 
     #[test]
@@ -1384,7 +1425,11 @@ mod tests {
             entry: Some(CatalogEntry {
                 catalog_label: "PL".to_string(),
                 catalog_entry: "Saturn".to_string(),
-                coord: Some(CelestialCoord { ra: 0.0, dec: 0.0, epoch: None }),
+                coord: Some(CelestialCoord {
+                    ra: 0.0,
+                    dec: 0.0,
+                    epoch: None,
+                }),
                 constellation: None,
                 object_type: Some(ObjectType {
                     label: "planet".to_string(),
