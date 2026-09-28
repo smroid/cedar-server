@@ -5080,9 +5080,11 @@ fn parse_duration(
 }
 
 // `get_dependencies` Is called to obtain the CedarSkyTrait, WifiTrait,
-//     ImuTrait, HotPixelTrait, and SolverTrait implementations, if any. This
-//     function is called after logging has been set up and `server_main()`s
-//     command line arguments have been consumed.
+//     ImuTrait, HotPixelTrait, and SolverTrait implementations, and the
+//     camera, if any. A camera returned here is used instead of the one
+//     select_camera() would find. This function is called after logging has
+//     been set up and `server_main()`s command line arguments have been
+//     consumed, and before the tokio runtime is started.
 //     The AtomicBool is set to true if control-c occurs.
 pub fn server_main(
     copyright: &str,
@@ -5095,6 +5097,7 @@ pub fn server_main(
         Option<Arc<tokio::sync::Mutex<dyn ImuTrait + Send>>>,
         Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
         Option<Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>>,
+        Option<Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>>,
     ),
     // Default total binning to use when --binning is not passed on the command
     // line.
@@ -5188,7 +5191,7 @@ pub fn server_main(
     let got_signal = Arc::new(AtomicBool::new(false));
     let saving_state = Arc::new(AtomicBool::new(false));
 
-    let (cedar_sky, wifi, imu_tracker, hot_pixel_map, solver) =
+    let (cedar_sky, wifi, imu_tracker, hot_pixel_map, solver, injected_camera) =
         get_dependencies(Arguments::from_vec(remaining));
 
     // Handle both SIGINT and SIGTERM (the latter is sent by systemd on
@@ -5240,6 +5243,7 @@ pub fn server_main(
         imu_tracker,
         hot_pixel_map,
         solver,
+        injected_camera,
         default_total_binning,
     );
 }
@@ -5767,6 +5771,9 @@ async fn async_main(
     injected_solver: Option<
         Arc<tokio::sync::Mutex<dyn SolverTrait + Send + Sync>>,
     >,
+    injected_camera: Option<
+        Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+    >,
     default_total_binning: Option<u32>,
 ) {
     // If any thread panics, bail out.
@@ -5792,7 +5799,13 @@ async fn async_main(
         }
     };
 
-    let attached_camera =
+    let attached_camera = if let Some(camera) = injected_camera {
+        if camera_interface.is_some() {
+            warn!("Ignoring 'camera_interface'; a camera was supplied by \
+                   get_dependencies");
+        }
+        Some(camera)
+    } else {
         match get_attached_camera(camera_interface.as_ref(), args.camera_index)
             .await
         {
@@ -5801,7 +5814,8 @@ async fn async_main(
                 error!("Could not select camera: {:?}", e);
                 None
             }
-        };
+        }
+    };
 
     let test_image_camera: Option<
         Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
