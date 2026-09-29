@@ -2,6 +2,7 @@
 // See LICENSE file in root directory for license terms.
 
 use std::{
+    collections::HashMap,
     fs,
     fs::metadata,
     io,
@@ -14,7 +15,7 @@ use std::{
         atomic::{
             AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering,
         },
-        Arc,
+        Arc, Mutex as StdMutex,
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -38,7 +39,7 @@ use cedar_elements::{
     cedar::{
         cedar_server::{Cedar, CedarServer},
         ActionRequest, BondedDevice, CalibrationData, CalibrationFailureReason,
-        CameraModel, CelestialCoordFormat, ConnectionStatus,
+        CameraModel, CelestialCoordFormat, ClientConnection, ConnectionStatus,
         CpuUsageReport, DetectSensitivity, DisplayOrientation, EmptyMessage,
         FeatureLevel, FixedSettings, FrameRequest, FrameResult,
         GetBluetoothNameResponse,
@@ -139,11 +140,40 @@ const SKIP_FOCUS_RETRY_INTERVAL_SECS: u64 = 15;
 // Duration before auto-exiting pairing mode when forever==false.
 const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 300; // 5 minutes.
 
-/// Shared counters for tracking active client connections across all servers.
+// gRPC metadata header a client sends to report its device model, e.g.
+// "Pixel 7" or "iPhone". Recorded per-connection for diagnostics; see
+// ConnectionStatus.cedar_wifi_clients/cedar_bluetooth_clients.
+const CLIENT_DEVICE_MODEL_HEADER: &str = "x-cedar-client-device-model";
+
+/// Per-connection info tracked for cedar_server clients. Keyed by peer
+/// address in `ConnectionCounters::cedar_wifi_clients`/
+/// `cedar_bluetooth_clients`; the client address is the map key, not
+/// duplicated here.
+#[derive(Default, Clone)]
+pub(crate) struct ClientEntry {
+    /// Device model reported by the client via the
+    /// `x-cedar-client-device-model` gRPC metadata header, if any.
+    pub(crate) device_model: Option<String>,
+}
+
+/// Identifies a specific cedar_server client connection, so request
+/// handlers can look up (and update) that connection's entry in
+/// `ConnectionCounters::cedar_wifi_clients`/`cedar_bluetooth_clients`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ConnectionKey {
+    Wifi(SocketAddr),
+    Bluetooth(bluer::rfcomm::SocketAddr),
+}
+
+/// Shared state for tracking active client connections across all servers:
+/// per-client maps for cedar_server clients, plain counts for LX200.
 #[derive(Default)]
 pub(crate) struct ConnectionCounters {
-    pub(crate) cedar_wifi: AtomicU32,
-    pub(crate) cedar_bluetooth: AtomicU32,
+    /// Live cedar_server WiFi connections, keyed by peer address.
+    pub(crate) cedar_wifi_clients: StdMutex<HashMap<SocketAddr, ClientEntry>>,
+    /// Live cedar_server Bluetooth connections, keyed by peer address.
+    pub(crate) cedar_bluetooth_clients:
+        StdMutex<HashMap<bluer::rfcomm::SocketAddr, ClientEntry>>,
     pub(crate) lx200_wifi: AtomicU32,
     pub(crate) lx200_bluetooth: AtomicU32,
 }
@@ -1432,6 +1462,7 @@ impl Cedar for MyCedar {
             GrpcTimer::with_threshold("get_frame", Duration::from_millis(200));
         let is_bluetooth =
             request.extensions().get::<BluetoothRequest>().is_some();
+        self.note_client_device_model(&request);
         self.note_rpc_received().await;
 
         let req: FrameRequest = request.into_inner();
@@ -1474,6 +1505,7 @@ impl Cedar for MyCedar {
     ) -> Result<tonic::Response<Self::GetFramesStream>, tonic::Status> {
         let is_bluetooth =
             request.extensions().get::<BluetoothRequest>().is_some();
+        self.note_client_device_model(&request);
         self.note_rpc_received().await;
 
         let req: FrameRequest = request.into_inner();
@@ -3267,6 +3299,52 @@ impl MyCedar {
         note_rpc_received(&activity_led, &wifi).await;
     }
 
+    /// If `request` carries a `ConnectionKeyExtension` and a non-empty
+    /// `CLIENT_DEVICE_MODEL_HEADER` metadata value, records that device
+    /// model on the connection's entry in `connection_counters`. Silently
+    /// does nothing if either is absent, or if the connection's entry is
+    /// no longer present (should not normally happen).
+    fn note_client_device_model<T>(&self, request: &tonic::Request<T>) {
+        let Some(ConnectionKeyExtension(key)) =
+            request.extensions().get::<ConnectionKeyExtension>().copied()
+        else {
+            return;
+        };
+        let Some(device_model) = request
+            .metadata()
+            .get(CLIENT_DEVICE_MODEL_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+        else {
+            return;
+        };
+        match key {
+            ConnectionKey::Wifi(addr) => {
+                if let Some(entry) = self
+                    .connection_counters
+                    .cedar_wifi_clients
+                    .lock()
+                    .unwrap()
+                    .get_mut(&addr)
+                {
+                    entry.device_model = Some(device_model);
+                }
+            }
+            ConnectionKey::Bluetooth(addr) => {
+                if let Some(entry) = self
+                    .connection_counters
+                    .cedar_bluetooth_clients
+                    .lock()
+                    .unwrap()
+                    .get_mut(&addr)
+                {
+                    entry.device_model = Some(device_model);
+                }
+            }
+        }
+    }
+
     async fn save_preferences(
         &self,
         serve_engine_arc: Arc<tokio::sync::Mutex<ServeEngine>>,
@@ -3401,27 +3479,48 @@ impl MyCedar {
             wifi_mode: None,
             wifi_access_point: None,
             wifi_client: None,
-            connection_status: Some(ConnectionStatus {
-                cedar_wifi: ctx
+            connection_status: Some({
+                let cedar_wifi_clients: Vec<ClientConnection> = ctx
                     .connection_counters
-                    .cedar_wifi
-                    .load(AtomicOrdering::Relaxed)
-                    as i32,
-                cedar_bluetooth: ctx
+                    .cedar_wifi_clients
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(addr, entry)| ClientConnection {
+                        device_model: entry.device_model.clone(),
+                        address: Some(addr.to_string()),
+                    })
+                    .collect();
+                let cedar_bluetooth_clients: Vec<ClientConnection> = ctx
                     .connection_counters
-                    .cedar_bluetooth
-                    .load(AtomicOrdering::Relaxed)
-                    as i32,
-                lx200_wifi: ctx
-                    .connection_counters
-                    .lx200_wifi
-                    .load(AtomicOrdering::Relaxed)
-                    as i32,
-                lx200_bluetooth: ctx
-                    .connection_counters
-                    .lx200_bluetooth
-                    .load(AtomicOrdering::Relaxed)
-                    as i32,
+                    .cedar_bluetooth_clients
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(addr, entry)| ClientConnection {
+                        device_model: entry.device_model.clone(),
+                        address: Some(addr.to_string()),
+                    })
+                    .collect();
+                #[allow(deprecated)]
+                ConnectionStatus {
+                    // Deprecated legacy counts, kept for old clients;
+                    // superseded by the length of the *_clients lists.
+                    cedar_wifi: cedar_wifi_clients.len() as i32,
+                    cedar_bluetooth: cedar_bluetooth_clients.len() as i32,
+                    lx200_wifi: ctx
+                        .connection_counters
+                        .lx200_wifi
+                        .load(AtomicOrdering::Relaxed)
+                        as i32,
+                    lx200_bluetooth: ctx
+                        .connection_counters
+                        .lx200_bluetooth
+                        .load(AtomicOrdering::Relaxed)
+                        as i32,
+                    cedar_wifi_clients,
+                    cedar_bluetooth_clients,
+                }
             }),
             demo_image_names: ctx.demo_images.clone(),
             system_load_average: None,
@@ -5321,10 +5420,13 @@ async fn get_camera(
 #[derive(Clone, Copy, Debug)]
 struct BluetoothRequest;
 
-/// Middleware that marks requests as coming from Bluetooth.
+/// Middleware that marks requests as coming from Bluetooth, and attaches
+/// the connection's key so `get_frame`/`get_frames` can look up (and
+/// update) its map entry.
 #[derive(Clone)]
 struct BluetoothMarkingMiddleware<S> {
     inner: S,
+    key: bluer::rfcomm::SocketAddr,
 }
 
 impl<S> tower::Service<hyper::Request<hyper::Body>>
@@ -5346,6 +5448,9 @@ where
 
     fn call(&mut self, mut req: hyper::Request<hyper::Body>) -> Self::Future {
         req.extensions_mut().insert(BluetoothRequest);
+        req.extensions_mut().insert(ConnectionKeyExtension(
+            ConnectionKey::Bluetooth(self.key),
+        ));
         self.inner.call(req)
     }
 }
@@ -5446,6 +5551,13 @@ fn accept_with_sndbuf(
     })
 }
 
+/// Extension carrying the `ConnectionKey` for a request, so `get_frame`/
+/// `get_frames` can look up (and update) the connection's entry in
+/// `ConnectionCounters`. Inserted by `ConnectionTrackingService` for WiFi
+/// requests and by `BluetoothMarkingMiddleware` for Bluetooth requests.
+#[derive(Clone, Copy, Debug)]
+struct ConnectionKeyExtension(ConnectionKey);
+
 /// MakeService that logs WiFi connection open/close and tracks active count.
 struct ConnectionTrackingMakeService<S> {
     inner: S,
@@ -5463,7 +5575,8 @@ impl<S: Clone> ConnectionTrackingMakeService<S> {
     }
 }
 
-impl<S, T> tower::Service<T> for ConnectionTrackingMakeService<S>
+impl<'a, S> tower::Service<&'a tokio::net::TcpStream>
+    for ConnectionTrackingMakeService<S>
 where
     S: Clone,
 {
@@ -5478,12 +5591,19 @@ where
         std::task::Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, _target: T) -> Self::Future {
-        let count = self
-            .counters
-            .cedar_wifi
-            .fetch_add(1, AtomicOrdering::Relaxed)
-            + 1;
+    fn call(&mut self, target: &'a tokio::net::TcpStream) -> Self::Future {
+        // The peer address is always known at accept time for a TCP
+        // connection; fall back to a dummy address in the (essentially
+        // impossible) case the socket was already gone.
+        let addr = target
+            .peer_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+        self.counters
+            .cedar_wifi_clients
+            .lock()
+            .unwrap()
+            .insert(addr, ClientEntry::default());
+        let count = self.counters.cedar_wifi_clients.lock().unwrap().len();
         info!(
             "WiFi connection opened on port {} ({} active)",
             self.port, count
@@ -5492,24 +5612,27 @@ where
             inner: self.inner.clone(),
             counters: self.counters.clone(),
             port: self.port,
+            addr,
         }))
     }
 }
 
-/// Wrapper service that decrements active connection count on drop.
+/// Wrapper service that removes the connection's map entry on drop.
 struct ConnectionTrackingService<S> {
     inner: S,
     counters: Arc<ConnectionCounters>,
     port: u16,
+    addr: SocketAddr,
 }
 
 impl<S> Drop for ConnectionTrackingService<S> {
     fn drop(&mut self) {
-        let count = self
-            .counters
-            .cedar_wifi
-            .fetch_sub(1, AtomicOrdering::Relaxed)
-            - 1;
+        self.counters
+            .cedar_wifi_clients
+            .lock()
+            .unwrap()
+            .remove(&self.addr);
+        let count = self.counters.cedar_wifi_clients.lock().unwrap().len();
         info!(
             "WiFi connection closed on port {} ({} active)",
             self.port, count
@@ -5533,7 +5656,9 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: hyper::Request<hyper::Body>) -> Self::Future {
+    fn call(&mut self, mut req: hyper::Request<hyper::Body>) -> Self::Future {
+        req.extensions_mut()
+            .insert(ConnectionKeyExtension(ConnectionKey::Wifi(self.addr)));
         self.inner.call(req)
     }
 }
@@ -5609,10 +5734,19 @@ async fn serve_over_bt(
                     );
                     first_accept_since_ready = false;
                 }
-                let open_count = counters
-                    .cedar_bluetooth
-                    .fetch_add(1, AtomicOrdering::Relaxed)
-                    + 1;
+                // The RFCOMM peer address is always available right after
+                // accept(); fall back to a dummy address in the (should be
+                // impossible) case the socket was already gone.
+                let bt_addr = stream.peer_addr().unwrap_or_else(|_| {
+                    bluer::rfcomm::SocketAddr::any()
+                });
+                counters
+                    .cedar_bluetooth_clients
+                    .lock()
+                    .unwrap()
+                    .insert(bt_addr, ClientEntry::default());
+                let open_count =
+                    counters.cedar_bluetooth_clients.lock().unwrap().len();
                 info!("BT connection opened ({} active)", open_count);
                 // Byte-write inactivity watchdog. The BCM43430A1 can wedge
                 // in a way that hyper's poll_write on the RFCOMM stream
@@ -5629,6 +5763,7 @@ async fn serve_over_bt(
                 };
                 let bt_service = BluetoothMarkingMiddleware {
                     inner: service.clone(),
+                    key: bt_addr,
                 };
                 let counters = counters.clone();
                 let hard_reset_notify = hard_reset_notify.clone();
@@ -5666,10 +5801,13 @@ async fn serve_over_bt(
                 let handle = tokio::task::spawn(async move {
                     let result = serve_handle.await;
                     watchdog_handle.abort();
-                    let close_count = counters
-                        .cedar_bluetooth
-                        .fetch_sub(1, AtomicOrdering::Relaxed)
-                        - 1;
+                    counters
+                        .cedar_bluetooth_clients
+                        .lock()
+                        .unwrap()
+                        .remove(&bt_addr);
+                    let close_count =
+                        counters.cedar_bluetooth_clients.lock().unwrap().len();
                     match result {
                         Ok(Ok(())) => info!(
                             "BT connection closed ({} active)",

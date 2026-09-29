@@ -182,17 +182,34 @@ message WifiClient {
   optional string ip_address = 3;
 }
 
-// Number of current client connections.
+// Information about client connections.
 message ConnectionStatus {
   // Number of cedar_server clients.
-  int32 cedar_wifi = 1;
-  int32 cedar_bluetooth = 2;
+  // Deprecated: use cedar_wifi_clients/cedar_bluetooth_clients instead.
+  int32 cedar_wifi = 1 [deprecated = true];
+  int32 cedar_bluetooth = 2 [deprecated = true];
 
   // Number of LX200 telescope clients.
   int32 lx200_wifi = 3;
   int32 lx200_bluetooth = 4;
 
   // We don't track Alpaca telescope clients.
+
+  // Per-client detail for cedar_server clients; length equals the
+  // corresponding count above.
+  repeated ClientConnection cedar_wifi_clients = 5;
+  repeated ClientConnection cedar_bluetooth_clients = 6;
+}
+
+message ClientConnection {
+  // Device model reported by the client via gRPC metadata. Omitted if the
+  // client didn't send it (e.g. web client, or an app build that predates
+  // this feature).
+  optional string device_model = 1;
+
+  // The client's network address: IP:port for a Wifi connection, Bluetooth
+  // address:channel for a Bluetooth connection.
+  optional string address = 2;
 }
 
 message FixedSettings {
