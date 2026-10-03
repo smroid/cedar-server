@@ -3,6 +3,7 @@
 
 use std::{
     error::Error,
+    path::Path,
     str::FromStr,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
@@ -101,9 +102,8 @@ pub enum ResetOutcome {
     /// existing `bluer::Session` and profile registration remain valid.
     LightResetOk,
     /// Tier-1 failed, so tier-2 was invoked - either running the hard reset
-    /// (bluetoothd stop + hci_uart unbind + GPIO 42 toggle + rebind +
-    /// bluetoothd start) or skipping it because a concurrent caller ran one
-    /// within `HARD_RESET_COOLDOWN`. Either way the `bluer::Session` and
+    /// (see `hard_reset_bt_stack`) or skipping it because a concurrent
+    /// caller ran one within `HARD_RESET_COOLDOWN`. Either way the `bluer::Session` and
     /// profile registration are invalidated and callers must exit and
     /// rebuild them.
     HardReset,
@@ -147,10 +147,20 @@ pub fn reset_hci_controller() -> ResetOutcome {
     ResetOutcome::HardReset
 }
 
-/// Heavy-hammer recovery for a wedged BT stack. Fully tears down and
-/// rebuilds the kernel side: unbinds hci_uart_bcm, hardware-resets the
-/// BCM43430A1 via its shutdown GPIO (GPIO 42 on Pi Zero 2 W), rebinds
-/// the driver, and restarts bluetoothd.
+/// Whether the Bluetooth controller is the Broadcom chip on the serial0
+/// UART, which `hard_reset_bt_stack` knows how to power-cycle. Checks that
+/// the driver and device exist rather than that they are bound, so a reset
+/// that left the device unbound does not disable the next one.
+fn has_broadcom_uart_bt() -> bool {
+    Path::new("/sys/bus/serial/drivers/hci_uart_bcm").exists()
+        && Path::new("/sys/bus/serial/devices/serial0-0").exists()
+}
+
+/// Heavy-hammer recovery for a wedged BT stack. Stops bluetoothd and, for
+/// the Broadcom UART controller, fully tears down and rebuilds the kernel
+/// side: unbinds hci_uart_bcm, hardware-resets the BCM43430A1 via its
+/// shutdown GPIO (GPIO 42 on Pi Zero 2 W), and rebinds the driver. Other
+/// controllers get only the bluetoothd restart.
 ///
 /// Skipped (no-op) if another caller ran a hard reset within
 /// `HARD_RESET_COOLDOWN`. Only callable via `reset_hci_controller`,
@@ -171,46 +181,56 @@ fn hard_reset_bt_stack() {
         }
     }
 
-    warn!(
-        "Escalating to hard BT stack reset (bluetoothd stop + \
-            hci_uart unbind + GPIO 42 toggle + rebind + bluetoothd start)"
-    );
+    let broadcom_uart = has_broadcom_uart_bt();
+    if broadcom_uart {
+        warn!(
+            "Escalating to hard BT stack reset (bluetoothd stop + \
+                hci_uart unbind + GPIO 42 toggle + rebind + bluetoothd start)"
+        );
+    } else {
+        warn!(
+            "Escalating to hard BT stack reset (bluetoothd stop + start; \
+                no hardware reset available for this Bluetooth controller)"
+        );
+    }
 
     // Stop bluetoothd so it releases the HCI socket cleanly and doesn't
     // race with the unbind/rebind cycle.
     run_step(&["sudo", "systemctl", "stop", "bluetooth"], "stop bluetooth");
 
-    // Unbind the serdev driver. This releases the UART and lets the
-    // kernel forget any state associated with hci0.
-    run_step(
-        &[
-            "sudo",
-            "sh",
-            "-c",
-            "echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/unbind",
-        ],
-        "unbind hci_uart_bcm",
-    );
+    if broadcom_uart {
+        // Unbind the serdev driver. This releases the UART and lets the
+        // kernel forget any state associated with hci0.
+        run_step(
+            &[
+                "sudo",
+                "sh",
+                "-c",
+                "echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/unbind",
+            ],
+            "unbind hci_uart_bcm",
+        );
 
-    // Hardware-reset the BCM43430A1 chip via its shutdown GPIO (BT_ON,
-    // GPIO 42). Drive high to shut down, then low to power back on. Sleeps
-    // between are for the chip's power-up settling.
-    run_step(&["sudo", "raspi-gpio", "set", "42", "op", "dh"], "BT_ON high");
-    std::thread::sleep(Duration::from_millis(200));
-    run_step(&["sudo", "raspi-gpio", "set", "42", "op", "dl"], "BT_ON low");
-    std::thread::sleep(Duration::from_millis(200));
+        // Hardware-reset the BCM43430A1 chip via its shutdown GPIO (BT_ON,
+        // GPIO 42). Drive high to shut down, then low to power back on.
+        // Sleeps between are for the chip's power-up settling.
+        run_step(&["sudo", "raspi-gpio", "set", "42", "op", "dh"], "BT_ON high");
+        std::thread::sleep(Duration::from_millis(200));
+        run_step(&["sudo", "raspi-gpio", "set", "42", "op", "dl"], "BT_ON low");
+        std::thread::sleep(Duration::from_millis(200));
 
-    // Rebind the serdev driver so the kernel re-runs the BCM firmware
-    // load and re-attaches hci0.
-    run_step(
-        &[
-            "sudo",
-            "sh",
-            "-c",
-            "echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/bind",
-        ],
-        "rebind hci_uart_bcm",
-    );
+        // Rebind the serdev driver so the kernel re-runs the BCM firmware
+        // load and re-attaches hci0.
+        run_step(
+            &[
+                "sudo",
+                "sh",
+                "-c",
+                "echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/bind",
+            ],
+            "rebind hci_uart_bcm",
+        );
+    }
 
     // Restart bluetoothd so it re-registers on the new hci0.
     run_step(&["sudo", "systemctl", "start", "bluetooth"], "start bluetooth");
