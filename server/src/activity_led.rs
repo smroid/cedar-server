@@ -3,6 +3,7 @@
 
 use std::{
     fs,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -50,20 +51,20 @@ struct SharedState {
     blink_pattern: BlinkPattern,
 }
 
-// The ActivityLed controls the state of the Raspberry Pi activity LED. By
-// default, this LED is configured by the Rpi to indicated system "disk"
-// activity.
+// The ActivityLed controls the state of the board's activity LED (see
+// LED_NAMES). By default the OS drives this LED from a trigger, e.g. "disk"
+// activity on the Raspberry Pi.
 //
-// When ActivityLed is constructed, it takes over the Raspberry Pi activity LED
-// and manages it in three states:
+// When ActivityLed is constructed, it takes over the activity LED and manages
+// it in three states:
 //
 // * Ready: the LED is blinked on and off. This occurs when ActivityLed has been
 //   created but received_rpc() has not been called yet. The blink cadence is
 //   the current BlinkPattern (Regular by default; see set_blink_pattern()).
 // * Connected: the LED is turned off. This occurs when received_rpc() has been
 //   called at least once.
-// * Released: The LED is re-configured back to the Raspberry Pi default, where
-//   it indicates "disk" activity. This occurs when the stop() method is called.
+// * Released: The LED is handed back to the trigger it had when ActivityLed
+//   took it over. This occurs when the stop() method is called.
 
 impl ActivityLed {
     // Takes over the activity LED, blinking it with the Regular pattern.
@@ -102,8 +103,8 @@ impl ActivityLed {
         self.state.lock().unwrap().received_rpc = false;
     }
 
-    // Releases the activity LED back to its OS-defined "disk" activity
-    // indicator. Blocks until the worker thread has reverted the LED; the
+    // Releases the activity LED back to the trigger it had when we took it
+    // over. Blocks until the worker thread has reverted the LED; the
     // worker polls stop_request on a short tick, so this returns quickly.
     // Idempotent: a second call (or a call after Drop's request) is a no-op.
     pub fn stop(&mut self) {
@@ -118,9 +119,8 @@ impl ActivityLed {
         got_signal: Arc<AtomicBool>,
     ) {
         // Raspberry Pi 5 reverses the control signal to the ACT led.
-        // On non-Raspberry-Pi hosts (e.g. x86 dev machines) this device-tree
-        // file is absent; default to empty (non-Pi5) and let the LED writes
-        // below no-op via unwrap_or(()).
+        // On hosts without a device tree (e.g. x86 dev machines) this file is
+        // absent; default to empty (non-Pi5).
         let processor_model =
             fs::read_to_string("/sys/firmware/devicetree/base/model")
                 .unwrap_or_default()
@@ -132,8 +132,23 @@ impl ActivityLed {
 
         // See jeffgeerling.com/blogs/jeff-geerling/
         // controlling-pwr-act-leds-raspberry-pi
-        let brightness_path = "/sys/class/leds/ACT/brightness";
-        let trigger_path = "/sys/class/leds/ACT/trigger";
+        let led_dir = match find_led_dir() {
+            Some(dir) => dir,
+            None => {
+                log::info!("No activity LED found (looked for {:?})", LED_NAMES);
+                return;
+            }
+        };
+        let brightness_path = led_dir.join("brightness");
+        let trigger_path = led_dir.join("trigger");
+
+        // Remember the LED's trigger so stop() can hand the LED back to it.
+        // This must be read before the brightness write below, which clears
+        // the trigger.
+        let original_trigger = match current_trigger(&trigger_path) {
+            Some(trigger) => trigger,
+            None => "none".to_string(),
+        };
 
         // The worker wakes on a short fixed tick so stop()/got_signal are seen
         // promptly, and drives the Ready blink by counting ticks: the LED is on
@@ -151,7 +166,7 @@ impl ActivityLed {
         // currently lit, so we only write brightness on a transition.
         let mut phase_ticks: u32 = 0;
         let mut led_on = false;
-        if let Err(e) = fs::write(brightness_path, off_value) {
+        if let Err(e) = fs::write(&brightness_path, off_value) {
             log::warn!("Error writing to LED: {:?}", e);
         }
         loop {
@@ -172,7 +187,7 @@ impl ActivityLed {
             }
             let want_connected_off = received_rpc;
             if led_state != LedState::ConnectedOff && want_connected_off {
-                fs::write(brightness_path, off_value).unwrap_or(());
+                fs::write(&brightness_path, off_value).unwrap_or(());
                 led_state = LedState::ConnectedOff;
             } else if led_state == LedState::ConnectedOff && !want_connected_off
             {
@@ -190,19 +205,70 @@ impl ActivityLed {
             let want_on = phase_ticks < on_ticks;
             if want_on != led_on {
                 let value = if want_on { on_value } else { off_value };
-                fs::write(brightness_path, value).unwrap_or(());
+                fs::write(&brightness_path, value).unwrap_or(());
                 led_on = want_on;
             }
         }
-        // Revert LED back to system default state (disk activity).
-        fs::write(trigger_path, "mmc0").unwrap_or(());
+        // Hand the LED back to the trigger it had before we took it over.
+        fs::write(&trigger_path, &original_trigger).unwrap_or(());
     }
 }
 
+// Names of the activity LED under /sys/class/leds on the boards we run on.
+const LED_NAMES: [&str; 2] = ["ACT", "board-led"];
+
+// The /sys/class/leds directory of the first of LED_NAMES that exists.
+fn find_led_dir() -> Option<PathBuf> {
+    for name in LED_NAMES {
+        let dir = Path::new("/sys/class/leds").join(name);
+        if dir.exists() {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+// The LED's active trigger, read from its trigger file.
+fn current_trigger(trigger_path: &Path) -> Option<String> {
+    let contents = fs::read_to_string(trigger_path).ok()?;
+    active_trigger(&contents)
+}
+
+// The active trigger in a trigger file's contents: the entry in brackets,
+// e.g. "mmc0" in "none default-on [mmc0] mmc1".
+fn active_trigger(contents: &str) -> Option<String> {
+    for entry in contents.split_whitespace() {
+        if entry.starts_with('[') && entry.ends_with(']') {
+            return Some(entry.trim_start_matches('[').trim_end_matches(']').to_string());
+        }
+    }
+    None
+}
+
 impl Drop for ActivityLed {
-    // Ensures the worker thread stops and reverts the ACT LED even if stop()
+    // Ensures the worker thread stops and reverts the LED even if stop()
     // was never called (early return, panic unwind, etc.).
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_trigger_is_the_bracketed_entry() {
+        assert_eq!(active_trigger("none default-on [mmc0] mmc1::\n"),
+                   Some("mmc0".to_string()));
+        assert_eq!(active_trigger("[none] timer heartbeat"), Some("none".to_string()));
+        assert_eq!(active_trigger("none timer [heartbeat]"),
+                   Some("heartbeat".to_string()));
+    }
+
+    #[test]
+    fn no_active_trigger() {
+        assert_eq!(active_trigger(""), None);
+        assert_eq!(active_trigger("none timer heartbeat"), None);
     }
 }
