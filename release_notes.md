@@ -318,11 +318,11 @@ Cedar-server version: 0.16.0
 
 * Popup feedback when user taps on align target.
 
-Plus contributions from a member of the Cedar user community:
+* Support LX200 protocol for SkySafari 6 and 7 and Stellarium. Credit to
+  https://github.com/oakamil.
 
-* Support LX200 protocol for SkySafari 6 and 7 and Stellarium.
-
-* Support Bluetooth for SkySafari to connect to Cedar server.
+* Support Bluetooth for SkySafari to connect to Cedar server. Credit to
+  https://github.com/oakamil.
 
 # December 22 2025
 
@@ -350,7 +350,8 @@ Cedar-server version: 0.18.0
 
 * Fix WiFi access point security configuration; fixes problems with Samsung devices not connecting and iOS warning about insecure connection.
 
-* Picture-in-picture mode for Cedar Aim app (not Web app version).
+* Picture-in-picture mode for Cedar Aim app (not Web app version). Credit to
+  https://github.com/oakamil.
 
 * Reorganized connection loss/recovery dialog.
 
@@ -593,3 +594,31 @@ Cedar-server version: 1.6.0
 * The activity LED now reflects Wifi mode: it resumes blinking (rather
   than going stale) when Wifi mode changes, uses a fast blink pattern in
   Wifi client mode, and is set correctly at server startup.
+
+# October 4 2026
+
+Cedar-server version: 1.7.0
+
+* Much more reliable IMU calibration. Hopper only.
+
+* Add plumbing so the Connections dialog can show the device model of each
+  connected client.
+
+* Cedar Sky search finds more objects. Hopper only.
+  * NED notes are searchable, e.g. "Stephan's Quintet" for NGC 7318.
+  * Duplicate OpenNGC designations such as IC 11 and NGC 651 are now found
+    as aliases of the object they duplicate.
+
+* Fix a SkySafari (LX200) crash when syncing near the zenith, and fix
+  coordinate formatting and normalization of precessed coordinates. Credit to
+  https://github.com/oakamil.
+
+* Fix a divide-by-zero hazard in plate solving.
+
+* Correct the minimum gain setting for the IMX290 camera family.
+
+* Bluetooth recovery is more robust: the controller hard reset now runs only
+  where it applies.
+
+* The get_dependencies function passed to server_main() can now supply the
+  camera, which is used instead of the one Cedar would otherwise select.
