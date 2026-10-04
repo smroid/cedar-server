@@ -1110,6 +1110,10 @@ message ActionRequest {
   // (true here is equivalent to WIFI_MODE_ACCESS_POINT, false to
   // WIFI_MODE_INACTIVE). Still honored for older clients.
   optional bool wifi_enabled = 15 [deprecated = true];
+
+  // Discards all IMU calibration state (gyro zero bias, gyro-to-camera
+  // transform, and all accumulated tracking data).
+  optional bool reset_imu_calibration = 17;
 }
 
 message ServerLogRequest {
