@@ -122,9 +122,7 @@ pub trait ImuTrait {
     // (clouds, etc) or platform motion preventing star detection.
     async fn report_camera_pointing_lost(&self);
 
-    // Force get_estimated_camera_pointing() to return an error until
-    // report_true_camera_pointing() is called again.
-    // TODO: also discard calibration state?
+    // Discards all calibration state.
     async fn reset(&self);
 
     // IMU-derived estimate of camera pointing as of the given time. The

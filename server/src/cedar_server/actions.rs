@@ -540,6 +540,20 @@ impl MyCedar {
                 }
             }
         }
+        if req.reset_imu_calibration.unwrap_or(false) {
+            let imu_tracker = self.state.lock().await.imu_tracker.clone();
+            match imu_tracker {
+                None => {
+                    return Err(logged_status!(
+                        failed_precondition,
+                        "No IMU tracker is configured."
+                    ));
+                }
+                Some(imu_tracker) => {
+                    imu_tracker.lock().await.reset().await;
+                }
+            }
+        }
         if req.crash_server.unwrap_or(false) {
             log::info!("Received crash_server action request.");
             std::process::exit(1);
