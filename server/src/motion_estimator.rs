@@ -228,6 +228,22 @@ impl MotionEstimator {
         }
     }
 
+    // TODO: is_stopped() misbehaves at high plate solve rates (~20Hz):
+    // - It compares only consecutive positions, so `elapsed_secs` is ~50ms.
+    //   The `pos_rmse * 8.0` term converts a position error into a rate as if
+    //   it were per second, so the displacement allowed per step scales with
+    //   the solve interval: 8 x rmse at 1Hz, but only 0.4 x rmse at 20Hz, which
+    //   is below the plate solution jitter itself. Moving->Stopped and
+    //   Stopped->SteadyRate then often fail, or Stopped falls back to Moving.
+    //   Fix: compare against a position at least ~0.5s back (keep a short
+    //   time-ordered history) so jitter is small relative to the baseline.
+    // - RA differences are not scaled by cos(dec), so near the pole a small
+    //   sky movement (and RA jitter) appears as a large RA change, e.g. ~6x at
+    //   dec 80°. Fix: use angular distance, or scale the RA rate by cos(dec).
+    // - Unverified: process_and_post() calls add() with plate_solution even
+    //   when it is an IMU fallback (solution_from_imu). Check whether
+    //   IMU-derived positions should be excluded from rate estimation.
+    //
     // pos_rmse: position error estimate in degrees.
     fn is_stopped(
         time: &Instant,
