@@ -708,6 +708,12 @@ impl Lx200Controller {
                     debug!("Received ack command");
                     buffer.clear();
                     // Only Stellarium uses this command.
+                    if !self.is_stellarium {
+                        info!(
+                            "LX200 client sent ACK; assuming Stellarium, \
+                             treating coordinates as J2000"
+                        );
+                    }
                     self.is_stellarium = true;
 
                     if let Err(e) =
