@@ -39,7 +39,7 @@ use cedar_elements::{
         WifiModeObserver, WifiTrait,
     },
 };
-use chrono::offset::Local;
+use chrono::{offset::Local, DateTime};
 use futures::join;
 use image::{GrayImage, ImageReader};
 use log::{error, info, warn};
@@ -1327,23 +1327,18 @@ impl MyCedar {
                 if let Ok(duration) = dt.duration_since(std::time::UNIX_EPOCH) {
                     if time_set_by_client.load(AtomicOrdering::Relaxed) {
                         let telescope_secs = duration.as_secs() as i64;
-                        if let Ok(cur_time) =
-                            clock_gettime(ClockId::CLOCK_REALTIME)
-                        {
-                            if (cur_time.tv_sec() - telescope_secs).abs() > 60 {
-                                warn!(
-                                    "Ignoring telescope time update; \
-                                    times differ by more than a minute. \
-                                    Current time: {:?}, telescope time: {:?}",
-                                    Local::now(),
-                                    dt
-                                );
-                            } else {
-                                info!(
-                                    "Ignoring telescope time update; \
-                                         client has already set the time"
-                                );
-                            }
+                        let now = Local::now();
+                        let diff_secs = telescope_secs - now.timestamp();
+                        if diff_secs.abs() > 60 {
+                            const TIME_FMT: &str = "%Y-%m-%d %H:%M:%S";
+                            warn!(
+                                "Ignoring telescope time update; \
+                                telescope time differs by {:+} seconds. \
+                                Current time: {}, telescope time: {}",
+                                diff_secs,
+                                now.format(TIME_FMT),
+                                DateTime::<Local>::from(dt).format(TIME_FMT)
+                            );
                         } else {
                             info!(
                                 "Ignoring telescope time update; \
