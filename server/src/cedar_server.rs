@@ -1809,10 +1809,11 @@ async fn async_main(
     let feature_level = if product_name.eq_ignore_ascii_case("Hopper") {
         if let Some(attached_camera) = &attached_camera {
             let camera_model = attached_camera.lock().await.model().await;
-            if camera_model == "imx296" || camera_model == "imx290" {
-                FeatureLevel::Plus // Hopper.
-            } else {
-                FeatureLevel::Basic // Hopper LE.
+            match camera_model.as_str() {
+                "imx296" | "imx290" | "imx327" | "imx462" => {
+                    FeatureLevel::Plus // Hopper.
+                }
+                _ => FeatureLevel::Basic, // Hopper LE.
             }
         } else {
             FeatureLevel::Diy
