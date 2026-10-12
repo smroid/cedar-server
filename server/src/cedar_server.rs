@@ -95,6 +95,17 @@ const FOCUS_ASSIST_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
 // Duration before auto-exiting pairing mode when forever==false.
 const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 300; // 5 minutes.
 
+// HTTP/2 PING interval/timeout for WiFi gRPC connections. A user that swipe-
+// closes the client app can leave a dead TCP connection on the server with no
+// FIN/RST ever arriving; without the connection closure,
+// ConnectionTrackingService never sees its stream end, so the dead connection's
+// entry lingers forever in cedar_wifi_clients and duplicates the entry from a
+// later reconnect.
+// These pings ride alongside any real traffic and only matter when the peer
+// stops responding at all, so they do not affect genuinely active connections.
+const WIFI_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const WIFI_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Per-connection info tracked for cedar_server clients. Keyed by peer
 /// address in `ConnectionCounters::cedar_wifi_clients`/
 /// `cedar_bluetooth_clients`; the client address is the map key, not
@@ -2024,6 +2035,8 @@ async fn async_main(
     let service_future = hyper::Server::builder(accept_with_sndbuf(
         listener_80,
     ))
+    .http2_keep_alive_interval(Some(WIFI_KEEP_ALIVE_INTERVAL))
+    .http2_keep_alive_timeout(WIFI_KEEP_ALIVE_TIMEOUT)
     .serve(ConnectionTrackingMakeService::new(
         service.clone(),
         connection_counters.clone(),
@@ -2035,6 +2048,8 @@ async fn async_main(
     let service_future8080 = hyper::Server::builder(accept_with_sndbuf(
         listener_8080,
     ))
+    .http2_keep_alive_interval(Some(WIFI_KEEP_ALIVE_INTERVAL))
+    .http2_keep_alive_timeout(WIFI_KEEP_ALIVE_TIMEOUT)
     .serve(ConnectionTrackingMakeService::new(
         service.clone(),
         connection_counters.clone(),
