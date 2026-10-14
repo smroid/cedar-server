@@ -1,12 +1,14 @@
-// Copyright (c) 2025 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use std::{sync::Arc, time::SystemTime};
+use std::{ops::RangeInclusive, sync::Arc, time::SystemTime};
 
 use ascom_alpaca::{
     api::{
-        AlignmentMode, Axis, CargoServerInfo, Device, EquatorialSystem,
-        Telescope,
+        telescope::{
+            AlignmentMode, DriveRate, EquatorialCoordinateType, TelescopeAxis,
+        },
+        CargoServerInfo, Device, Telescope,
     },
     ASCOMError, ASCOMErrorCode, ASCOMResult, Server,
 };
@@ -120,6 +122,20 @@ impl Device for MyTelescope {
     async fn set_connected(&self, _connected: bool) -> ASCOMResult {
         Ok(())
     }
+
+    async fn description(&self) -> ASCOMResult<String> {
+        Ok("Cedar telescope emulator".to_string())
+    }
+    async fn driver_info(&self) -> ASCOMResult<String> {
+        Ok("Cedar server".to_string())
+    }
+    async fn driver_version(&self) -> ASCOMResult<String> {
+        Ok(format!(
+            "{}.{}",
+            env!("CARGO_PKG_VERSION_MAJOR"),
+            env!("CARGO_PKG_VERSION_MINOR")
+        ))
+    }
 }
 
 #[async_trait]
@@ -130,9 +146,18 @@ impl Telescope for MyTelescope {
         Ok(AlignmentMode::Polar)
     }
 
-    async fn equatorial_system(&self) -> ASCOMResult<EquatorialSystem> {
+    async fn equatorial_system(
+        &self,
+    ) -> ASCOMResult<EquatorialCoordinateType> {
         debug!("equatorial_system");
-        Ok(EquatorialSystem::J2000)
+        Ok(EquatorialCoordinateType::J2000)
+    }
+
+    async fn at_home(&self) -> ASCOMResult<bool> {
+        Ok(false)
+    }
+    async fn at_park(&self) -> ASCOMResult<bool> {
+        Ok(false)
     }
 
     // Hours.
@@ -172,13 +197,19 @@ impl Telescope for MyTelescope {
         }
     }
 
-    async fn can_move_axis(&self, _axis: Axis) -> ASCOMResult<bool> {
+    async fn can_move_axis(&self, _axis: TelescopeAxis) -> ASCOMResult<bool> {
         debug!("can_move_axis");
         Ok(false)
     }
+    async fn axis_rates(
+        &self,
+        _axis: TelescopeAxis,
+    ) -> ASCOMResult<Vec<RangeInclusive<f64>>> {
+        Ok(Vec::new())
+    }
     // Even though we define 'can_move_axis()' as false, SkySafari still
     // offers axis movement UI that calls move_axis().
-    async fn move_axis(&self, _axis: Axis, _rate: f64) -> ASCOMResult {
+    async fn move_axis(&self, _axis: TelescopeAxis, _rate: f64) -> ASCOMResult {
         debug!("move_axis");
         Ok(()) // Silently ignore.
     }
@@ -311,6 +342,18 @@ impl Telescope for MyTelescope {
         debug!("can_set_tracking");
         Ok(false)
     }
+    async fn tracking_rate(&self) -> ASCOMResult<DriveRate> {
+        Ok(DriveRate::Sidereal)
+    }
+    async fn right_ascension_rate(&self) -> ASCOMResult<f64> {
+        Ok(0.0)
+    }
+    async fn declination_rate(&self) -> ASCOMResult<f64> {
+        Ok(0.0)
+    }
+    async fn sidereal_time(&self) -> ASCOMResult<f64> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
 }
 
 // cb: function to be called whenever SkySafari interrogates our position.
@@ -318,10 +361,7 @@ pub fn create_alpaca_server(
     telescope_position: Arc<tokio::sync::Mutex<TelescopePosition>>,
     cb: Box<dyn Fn() + Send + Sync>,
 ) -> Server {
-    let mut server = Server {
-        info: CargoServerInfo!(),
-        ..Default::default()
-    };
+    let mut server = Server::new(CargoServerInfo!());
     server.listen_addr.set_port(11111);
     server
         .devices
