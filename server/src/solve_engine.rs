@@ -47,6 +47,12 @@ const MINIMUM_STARS: usize = 4;
 // interpolation when the scope is at rest.
 const IMU_MOTION_THRESHOLD_DEG_PER_SEC: f64 = 1.0;
 
+// Width (degrees) of the boresight inset image sent while slewing.
+const BORESIGHT_IMAGE_FOV: f64 = 2.0;
+// Diameter (degrees) of the circle around the boresight within which the slew
+// target is close enough to send the boresight inset image.
+const SLEW_TARGET_CLOSE_FOV: f64 = 1.5;
+
 // An active goto target. `coord` is always the J2000 equatorial position that
 // drives the plate solve hint and all of the slew geometry; for an alt/az goto
 // it is recomputed every frame, since a fixed alt/az point's right ascension
@@ -957,7 +963,6 @@ impl SolveEngine {
                             psp,
                             width,
                             height,
-                            eyepiece_fov,
                         )
                         .await;
                 }
@@ -1393,7 +1398,6 @@ impl SolveEngine {
         plate_solution: &PlateSolutionProto,
         width: u32,
         height: u32,
-        eyepiece_fov: f64,
     ) -> (Option<SlewRequest>, Option<Rect>, Option<GrayImage>) {
         // Exactly one of `target` and `target_alt_az` is populated.
         let mut slew_request = SlewRequest {
@@ -1468,8 +1472,8 @@ impl SolveEngine {
                 y: height as f64 / 2.0,
             };
         }
-        let target_close_threshold =
-            (eyepiece_fov / 2.0) / (plate_solution.fov / width as f64);
+        let deg_per_px = plate_solution.fov / width as f64;
+        let target_close_threshold = (SLEW_TARGET_CLOSE_FOV / 2.0) / deg_per_px;
         let target_boresight_distance = ((target_image_coord.x
             - boresight_pos.x)
             * (target_image_coord.x - boresight_pos.x)
@@ -1482,7 +1486,8 @@ impl SolveEngine {
 
         let image_rect = Rect::at(0, 0).of_size(width, height);
         // Get a sub-image centered on the boresight.
-        let bs_image_size = min(width, height) / 6;
+        let bs_image_size = ((BORESIGHT_IMAGE_FOV / deg_per_px).round() as u32)
+            .clamp(1, min(width, height));
         let mut boresight_image_region = Some(
             Rect::at(
                 boresight_pos.x as i32 - bs_image_size as i32 / 2,
@@ -1815,7 +1820,6 @@ mod tests {
             &ps,
             /*width=*/ 100,
             /*height=*/ 100,
-            /*eyepiece_fov=*/ 1.0,
         )
         .await;
         let angle = slew_request.unwrap().target_angle.unwrap();
@@ -1852,7 +1856,6 @@ mod tests {
             &legacy_ps,
             /*width=*/ 100,
             /*height=*/ 100,
-            /*eyepiece_fov=*/ 1.0,
         )
         .await;
         assert!(legacy_request.unwrap().target_angle.is_some());
@@ -1879,7 +1882,6 @@ mod tests {
             &test_plate_solution(),
             /*width=*/ 100,
             /*height=*/ 100,
-            /*eyepiece_fov=*/ 1.0,
         )
         .await;
 
@@ -1918,7 +1920,6 @@ mod tests {
             &test_plate_solution(),
             /*width=*/ 100,
             /*height=*/ 100,
-            /*eyepiece_fov=*/ 1.0,
         )
         .await;
 
