@@ -622,3 +622,21 @@ Cedar-server version: 1.7.0
 
 * The get_dependencies function passed to server_main() can now supply the
   camera, which is used instead of the one Cedar would otherwise select.
+
+# October 16 2026
+
+Cedar-server version: 1.7.1
+
+* ASCOM Alpaca: the discovery port is now shared, so other Alpaca servers
+  running on the same device can also answer discovery requests. Credit to
+  https://github.com/bcolyn.
+
+* The boresight inset shown when nearing a slew target is now a fixed 2
+  degrees across, and appears once the target is within 0.75 degrees of the
+  boresight. Previously both depended on the eyepiece field of view setting.
+
+* The Connections dialog drops clients that disconnect without closing their
+  connection (e.g. an app that was swiped away) within about 40 seconds.
+
+* Displayed images have a slightly darker background, showing less of the
+  noise floor.
