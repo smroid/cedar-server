@@ -153,6 +153,10 @@ struct SolveState {
     // Set if currently slewing to a target.
     slew_target: Option<CelestialCoord>,
 
+    // Whether the most recent plate solution while slewing produced a
+    // boresight inset image. Used for hysteresis on SLEW_TARGET_CLOSE_FOV.
+    boresight_image_shown: bool,
+
     solve_duration_stats: ValueStatsAccumulator,
     solve_other_duration_stats: ValueStatsAccumulator,
     solve_attempt_stats: ValueStatsAccumulator,
@@ -208,6 +212,7 @@ impl SolveEngine {
                 match_max_error: 0.005,
                 return_matches: true,
                 slew_target: None,
+                boresight_image_shown: false,
                 solve_duration_stats: ValueStatsAccumulator::new(
                     stats_capacity,
                 ),
@@ -952,6 +957,8 @@ impl SolveEngine {
                 if let Some(slew_target) = &slew_target {
                     let target_coords_j2000 =
                         celestial_coord_to_j2000(&slew_target.coord);
+                    let boresight_image_shown =
+                        state.lock().await.boresight_image_shown;
                     (slew_request, boresight_image_region, boresight_image) =
                         Self::handle_slew(
                             &cedar_sky,
@@ -961,10 +968,15 @@ impl SolveEngine {
                             &boresight_coords,
                             &boresight_pixel,
                             psp,
+                            boresight_image_shown,
                             width,
                             height,
                         )
                         .await;
+                    state.lock().await.boresight_image_shown =
+                        boresight_image.is_some();
+                } else {
+                    state.lock().await.boresight_image_shown = false;
                 }
                 if let Some(sync_coord) = sync_coord {
                     // SkySafari user has invoked "Sync" operation on some
@@ -1396,6 +1408,7 @@ impl SolveEngine {
         boresight_coords: &CelestialCoord,
         boresight_pixel: &Option<ImageCoord>,
         plate_solution: &PlateSolutionProto,
+        boresight_image_shown: bool,
         width: u32,
         height: u32,
     ) -> (Option<SlewRequest>, Option<Rect>, Option<GrayImage>) {
@@ -1473,7 +1486,15 @@ impl SolveEngine {
             };
         }
         let deg_per_px = plate_solution.fov / width as f64;
-        let target_close_threshold = (SLEW_TARGET_CLOSE_FOV / 2.0) / deg_per_px;
+        // Hysteresis: once the inset image is being sent, keep sending it until
+        // the target moves a bit further out, so the inset doesn't flicker
+        // when the target hovers near the threshold.
+        let close_fov = if boresight_image_shown {
+            SLEW_TARGET_CLOSE_FOV + 0.1
+        } else {
+            SLEW_TARGET_CLOSE_FOV
+        };
+        let target_close_threshold = (close_fov / 2.0) / deg_per_px;
         let target_boresight_distance = ((target_image_coord.x
             - boresight_pos.x)
             * (target_image_coord.x - boresight_pos.x)
