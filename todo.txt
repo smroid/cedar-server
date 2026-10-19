@@ -7,9 +7,6 @@ Default pattern database:
 
 auto-detect alt-az vs equatorial (with manual override)
 
-Mic button on keyboard for voice input. Can work offline? Good for
-"en gee cee oh five six" utterances?
-
 Multiple scopes
 * FOV
 * saved alignment
@@ -19,6 +16,10 @@ time display:
 * time to sunset/sunrise, astro twilight
 * moonrise/set
 * display all? selectable?
+
+status icons:
+* camera (plate solving or not)
+* gyro (calibrated or not)
 
 eq vs alt/az setting
 * convey to SkySafari
@@ -36,22 +37,21 @@ https://www.considine.net/aplanatic/align.htm
 
 Cedar Journal
 * capture Cedar Sky goto requests (and whether target was reached)
-* capture RA/DEC when long-enough dwell detected
+* capture RA/DEC when long-enough dwell/follow detected
 TBD
 
 Cedar Sky
 Remaining work:
 * add more catalogs
-  - Arp, Hickson (lists, not catalogs)
+  - carbon stars
+  - Lynds' Catalogue of Bright Nebulae
+  - Minkowski (planetary nebulae)
+  - Perek-Kohoutek (planetary nebulae)
+  - RASC Finest NGC List
   - what else?
 * user-added object lists
-* way to add new solar system object, e.g. comet
-  - cloud-based?
 
 bug report
-
-Wifi management
-* switching wifi mode-- setting in web UI?
 
 logging
 * observer log is separate
