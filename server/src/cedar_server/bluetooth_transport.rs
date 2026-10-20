@@ -23,9 +23,11 @@ use tonic::transport::server::Routes;
 use tonic_web::GrpcWebService;
 use tower_http::cors::Cors;
 
-use super::multiplex_service::MultiplexService;
+use super::{
+    multiplex_service::MultiplexService, ClientEntry, ConnectionCounters,
+    ConnectionKey,
+};
 use crate::bonding_helper::{reset_hci_controller, ResetOutcome};
-use super::{ClientEntry, ConnectionCounters, ConnectionKey};
 
 // RFCOMM UUID for gRPC over Bluetooth. The same UUID must be used in Cedar Aim.
 const BT_CONTROL_UUID: &str = "4e5d4c88-2965-423f-9111-28a506720760";
