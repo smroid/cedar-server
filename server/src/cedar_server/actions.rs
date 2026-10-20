@@ -1,10 +1,7 @@
 // Copyright (c) 2026 Steven Rosenthal smr@dt3.org
 // See LICENSE file in root directory for license terms.
 
-use std::{
-    process::Command,
-    sync::atomic::Ordering as AtomicOrdering,
-};
+use std::{process::Command, sync::atomic::Ordering as AtomicOrdering};
 
 use cedar_elements::{
     astro_util::celestial_coord_to_j2000,
@@ -253,7 +250,7 @@ impl MyCedar {
                     )
                 ));
             }
-            let (fixed_settings_arc, telescope_pos_arc, alt_az_slew_target_arc) = {
+            let (fixed_settings_arc, telescope_pos_arc, alt_az_target_arc) = {
                 let locked_state = self.state.lock().await;
                 (
                     locked_state.fixed_settings.clone(),
@@ -273,7 +270,7 @@ impl MyCedar {
             }
             // Only one goto at a time; this supersedes any RA/Dec goto.
             telescope_pos_arc.lock().await.slew_active = false;
-            *alt_az_slew_target_arc.lock().await = Some(slew_alt_az);
+            *alt_az_target_arc.lock().await = Some(slew_alt_az);
         }
         if req.stop_slew.unwrap_or(false) {
             let (telescope_position_arc, alt_az_slew_target_arc) = {

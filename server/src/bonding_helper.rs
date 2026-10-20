@@ -103,9 +103,9 @@ pub enum ResetOutcome {
     LightResetOk,
     /// Tier-1 failed, so tier-2 was invoked - either running the hard reset
     /// (see `hard_reset_bt_stack`) or skipping it because a concurrent
-    /// caller ran one within `HARD_RESET_COOLDOWN`. Either way the `bluer::Session` and
-    /// profile registration are invalidated and callers must exit and
-    /// rebuild them.
+    /// caller ran one within `HARD_RESET_COOLDOWN`. Either way the
+    /// `bluer::Session` and profile registration are invalidated and
+    /// callers must exit and rebuild them.
     HardReset,
 }
 
@@ -214,7 +214,10 @@ fn hard_reset_bt_stack() {
         // Hardware-reset the BCM43430A1 chip via its shutdown GPIO (BT_ON,
         // GPIO 42). Drive high to shut down, then low to power back on.
         // Sleeps between are for the chip's power-up settling.
-        run_step(&["sudo", "raspi-gpio", "set", "42", "op", "dh"], "BT_ON high");
+        run_step(
+            &["sudo", "raspi-gpio", "set", "42", "op", "dh"],
+            "BT_ON high",
+        );
         std::thread::sleep(Duration::from_millis(200));
         run_step(&["sudo", "raspi-gpio", "set", "42", "op", "dl"], "BT_ON low");
         std::thread::sleep(Duration::from_millis(200));
