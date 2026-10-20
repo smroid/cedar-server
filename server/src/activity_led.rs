@@ -15,7 +15,7 @@ use std::{
 // Our state, shared between ActivityLed methods and the worker thread.
 pub struct ActivityLed {
     state: Arc<Mutex<SharedState>>,
-    worker_thread: Option<JoinHandle<()>>,  // Executes worker().
+    worker_thread: Option<JoinHandle<()>>, // Executes worker().
 }
 
 // Blink cadence for the Ready state (before the first RPC). Has no effect once
@@ -114,10 +114,7 @@ impl ActivityLed {
         }
     }
 
-    fn worker(
-        state: Arc<Mutex<SharedState>>,
-        got_signal: Arc<AtomicBool>,
-    ) {
+    fn worker(state: Arc<Mutex<SharedState>>, got_signal: Arc<AtomicBool>) {
         // Raspberry Pi 5 reverses the control signal to the ACT led.
         // On hosts without a device tree (e.g. x86 dev machines) this file is
         // absent; default to empty (non-Pi5).
@@ -135,7 +132,10 @@ impl ActivityLed {
         let led_dir = match find_led_dir() {
             Some(dir) => dir,
             None => {
-                log::info!("No activity LED found (looked for {:?})", LED_NAMES);
+                log::info!(
+                    "No activity LED found (looked for {:?})",
+                    LED_NAMES
+                );
                 return;
             }
         };
@@ -152,8 +152,9 @@ impl ActivityLed {
 
         // The worker wakes on a short fixed tick so stop()/got_signal are seen
         // promptly, and drives the Ready blink by counting ticks: the LED is on
-        // for the pattern's on_ticks, then off for the rest of its period_ticks.
-        // TICK divides every pattern timing evenly (see BlinkPattern::timing).
+        // for the pattern's on_ticks, then off for the rest of its
+        // period_ticks. TICK divides every pattern timing evenly (see
+        // BlinkPattern::timing).
         let tick = Duration::from_millis(25);
 
         #[derive(PartialEq)]
@@ -239,7 +240,12 @@ fn current_trigger(trigger_path: &Path) -> Option<String> {
 fn active_trigger(contents: &str) -> Option<String> {
     for entry in contents.split_whitespace() {
         if entry.starts_with('[') && entry.ends_with(']') {
-            return Some(entry.trim_start_matches('[').trim_end_matches(']').to_string());
+            return Some(
+                entry
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_string(),
+            );
         }
     }
     None
@@ -259,11 +265,18 @@ mod tests {
 
     #[test]
     fn active_trigger_is_the_bracketed_entry() {
-        assert_eq!(active_trigger("none default-on [mmc0] mmc1::\n"),
-                   Some("mmc0".to_string()));
-        assert_eq!(active_trigger("[none] timer heartbeat"), Some("none".to_string()));
-        assert_eq!(active_trigger("none timer [heartbeat]"),
-                   Some("heartbeat".to_string()));
+        assert_eq!(
+            active_trigger("none default-on [mmc0] mmc1::\n"),
+            Some("mmc0".to_string())
+        );
+        assert_eq!(
+            active_trigger("[none] timer heartbeat"),
+            Some("none".to_string())
+        );
+        assert_eq!(
+            active_trigger("none timer [heartbeat]"),
+            Some("heartbeat".to_string())
+        );
     }
 
     #[test]

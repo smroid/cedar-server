@@ -17,7 +17,8 @@ use std::{
 use axum::Router;
 use canonical_error::CanonicalError;
 use cedar_camera::{
-    abstract_camera::AbstractCamera, image_camera::ImageCamera,
+    abstract_camera::AbstractCamera,
+    image_camera::ImageCamera,
     select_camera::{select_camera, CameraInterface},
 };
 use cedar_elements::{
@@ -66,8 +67,9 @@ mod frame_capture;
 mod operation_settings;
 mod server_info;
 
-use bluetooth_transport::{accept_with_sndbuf, serve_over_bt, ConnectionTrackingMakeService};
-
+use bluetooth_transport::{
+    accept_with_sndbuf, serve_over_bt, ConnectionTrackingMakeService,
+};
 use cedar_rpcs::logged_status;
 
 use self::multiplex_service::MultiplexService;
@@ -2032,29 +2034,27 @@ async fn async_main(
     let addr = SocketAddr::from(([0, 0, 0, 0], 80));
     info!("Listening at {:?}", addr);
     let listener_80 = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    let service_future = hyper::Server::builder(accept_with_sndbuf(
-        listener_80,
-    ))
-    .http2_keep_alive_interval(Some(WIFI_KEEP_ALIVE_INTERVAL))
-    .http2_keep_alive_timeout(WIFI_KEEP_ALIVE_TIMEOUT)
-    .serve(ConnectionTrackingMakeService::new(
-        service.clone(),
-        connection_counters.clone(),
-        80,
-    ));
+    let service_future =
+        hyper::Server::builder(accept_with_sndbuf(listener_80))
+            .http2_keep_alive_interval(Some(WIFI_KEEP_ALIVE_INTERVAL))
+            .http2_keep_alive_timeout(WIFI_KEEP_ALIVE_TIMEOUT)
+            .serve(ConnectionTrackingMakeService::new(
+                service.clone(),
+                connection_counters.clone(),
+                80,
+            ));
 
     let addr8080 = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener_8080 = tokio::net::TcpListener::bind(&addr8080).await.unwrap();
-    let service_future8080 = hyper::Server::builder(accept_with_sndbuf(
-        listener_8080,
-    ))
-    .http2_keep_alive_interval(Some(WIFI_KEEP_ALIVE_INTERVAL))
-    .http2_keep_alive_timeout(WIFI_KEEP_ALIVE_TIMEOUT)
-    .serve(ConnectionTrackingMakeService::new(
-        service.clone(),
-        connection_counters.clone(),
-        8080,
-    ));
+    let service_future8080 =
+        hyper::Server::builder(accept_with_sndbuf(listener_8080))
+            .http2_keep_alive_interval(Some(WIFI_KEEP_ALIVE_INTERVAL))
+            .http2_keep_alive_timeout(WIFI_KEEP_ALIVE_TIMEOUT)
+            .serve(ConnectionTrackingMakeService::new(
+                service.clone(),
+                connection_counters.clone(),
+                8080,
+            ));
 
     // Also listen on Bluetooth. serve_over_bt returns whenever the BT stack
     // was hard-reset (bluer session invalidated) or bluetoothd went away;
@@ -2290,7 +2290,8 @@ mod tests {
     fn test_select_slew_target_none_active() {
         let mut alt_az = None;
         assert!(MyCedar::select_slew_target(
-            /*slew_active=*/ false,
+            // slew_active=
+            false,
             0.0,
             0.0,
             &mut alt_az,
@@ -2304,7 +2305,8 @@ mod tests {
     fn test_select_slew_target_ra_dec() {
         let mut alt_az = None;
         let target = MyCedar::select_slew_target(
-            /*slew_active=*/ true,
+            // slew_active=
+            true,
             123.0,
             45.0,
             &mut alt_az,
@@ -2325,7 +2327,8 @@ mod tests {
             epoch: None,
         });
         let target = MyCedar::select_slew_target(
-            /*slew_active=*/ false,
+            // slew_active=
+            false,
             0.0,
             0.0,
             &mut alt_az,
@@ -2350,7 +2353,8 @@ mod tests {
             epoch: None,
         });
         assert!(MyCedar::select_slew_target(
-            /*slew_active=*/ false,
+            // slew_active=
+            false,
             0.0,
             0.0,
             &mut alt_az,
@@ -2374,7 +2378,8 @@ mod tests {
         // SkySafari/Stellarium set slew_active directly; initiate_slew_alt_az()
         // had cleared it, so this means a new RA/Dec goto arrived.
         let target = MyCedar::select_slew_target(
-            /*slew_active=*/ true,
+            // slew_active=
+            true,
             200.0,
             -10.0,
             &mut alt_az,

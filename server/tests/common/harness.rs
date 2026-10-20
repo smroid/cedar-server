@@ -6,7 +6,10 @@
 // camera -> detect -> solve path the box runs in flight.
 
 use std::{
-    future::Future, pin::Pin, sync::Arc, time::Duration, time::SystemTime,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 use cedar_camera::{

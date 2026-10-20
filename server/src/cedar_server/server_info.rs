@@ -11,8 +11,7 @@ use cedar_elements::{
     cedar::{
         CameraModel, ClientConnection, ConnectionStatus, FeatureLevel,
         ImuState, ImuTrackerState, ServerInformation, WiFiAccessPoint,
-        WifiClient as WifiClientProto,
-        WifiClientState as WifiClientStateProto,
+        WifiClient as WifiClientProto, WifiClientState as WifiClientStateProto,
     },
     cedar_common::WifiMode as WifiModeProto,
     wifi_trait::{
@@ -302,9 +301,10 @@ impl MyCedar {
             }
 
             if let Some(status) = locked_wifi.client_status() {
+                let state = wifi_client_state_to_proto(status.state) as i32;
                 server_info.wifi_client = Some(WifiClientProto {
                     ssid: Some(status.ssid),
-                    state: Some(wifi_client_state_to_proto(status.state) as i32),
+                    state: Some(state),
                     ip_address: status.ip_address,
                 });
             }
