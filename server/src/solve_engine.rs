@@ -1839,6 +1839,7 @@ mod tests {
             &CelestialCoord { ra: 11.0, dec: 21.0, epoch: None },
             /*boresight_pixel=*/ &None,
             &ps,
+            /*boresight_image_shown=*/ false,
             /*width=*/ 100,
             /*height=*/ 100,
         )
@@ -1875,6 +1876,7 @@ mod tests {
             &CelestialCoord { ra: 11.0, dec: 21.0, epoch: None },
             /*boresight_pixel=*/ &None,
             &legacy_ps,
+            /*boresight_image_shown=*/ false,
             /*width=*/ 100,
             /*height=*/ 100,
         )
@@ -1901,6 +1903,7 @@ mod tests {
             },
             /*boresight_pixel=*/ &None,
             &test_plate_solution(),
+            /*boresight_image_shown=*/ false,
             /*width=*/ 100,
             /*height=*/ 100,
         )
@@ -1939,6 +1942,7 @@ mod tests {
             },
             /*boresight_pixel=*/ &None,
             &test_plate_solution(),
+            /*boresight_image_shown=*/ false,
             /*width=*/ 100,
             /*height=*/ 100,
         )
