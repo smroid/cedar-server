@@ -640,3 +640,18 @@ Cedar-server version: 1.7.1
 
 * Displayed images have a slightly darker background, showing less of the
   noise floor.
+
+# October 24 2026
+
+Cedar-server version: 1.7.3
+
+* The boresight inset shown when nearing a slew target no longer flickers on
+  and off when the target sits near the 0.75 degree threshold.
+
+* Cedar Sky catalog and search improvements. Hopper only.
+  * New VAR catalog of variable star designations (e.g. WZ Cas, R Leo),
+    drawn from HYG and AAVSO.
+  * Bayer designations now include Latin-letter names (e.g. P Cyg, u Her).
+  * Add the Astronomical League carbon star list.
+  * Text search ranks exact name matches first, then prefix matches.
+  * V-number searches such as "V460 Cyg" now find their objects.
