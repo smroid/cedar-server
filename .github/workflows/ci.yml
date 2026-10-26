@@ -53,7 +53,8 @@ env:
   # touched. To format locally with the same rustfmt:
   #   rustup toolchain install nightly-2026-10-20 --profile minimal -c rustfmt
   #   cargo +nightly-2026-10-20 fmt
-  # Bump the date deliberately, in a commit that also reformats the tree.
+  # Bump the date deliberately, in a commit that also reformats the tree, and
+  # change format-rust.sh (used by VSCode) to the same date.
   RUSTFMT_TOOLCHAIN: nightly-2026-10-20
 
 jobs:
