@@ -19,6 +19,7 @@ use canonical_error::CanonicalError;
 use cedar_camera::{
     abstract_camera::AbstractCamera, image_camera::ImageCamera,
     select_camera::{select_camera, CameraInterface},
+    sim_camera::{SimCamera, SimController},
 };
 use cedar_elements::{
     astro_util::{alt_az_from_equatorial, celestial_coord_from_horizon},
@@ -82,6 +83,7 @@ use crate::{
     polar_analyzer::PolarAnalyzer,
     position_reporter::{create_alpaca_server, TelescopePosition},
     serve_engine::{ServeContext, ServeEngine},
+    sim_http,
     solve_engine::{SlewTargetInfo, SolveEngine},
 };
 
@@ -1481,6 +1483,10 @@ struct AppArgs {
     binning: Option<u32>,
     display_sampling: Option<bool>,
     test_image: Option<String>,
+    sim_source: Option<String>,
+    sim_root: Option<String>,
+    sim_port: u16,
+    sim_bind: String,
     min_exposure: Duration,
     max_exposure: Duration,
     star_count_goal: i32,
@@ -1536,6 +1542,12 @@ pub fn server_main(
       --binning 1|2|4|8
       --display_sampling true|false
       --test_image <path>
+      --sim_source <path>            Image file or directory to play back
+                                     instead of the camera
+      --sim_root <path>              Paths the simulator may open; default:
+                                     --sim_source's directory (or itself)
+      --sim_port NUMBER              8090; simulator HTTP control port
+      --sim_bind <addr>              127.0.0.1; 0.0.0.0 for remote control
       --min_exposure NUMBER          0.00001
       --max_exposure NUMBER          1.0
       --star_count_goal NUMBER       20
@@ -1566,6 +1578,12 @@ pub fn server_main(
             .opt_value_from_str("--display_sampling")
             .unwrap(),
         test_image: pargs.opt_value_from_str("--test_image").unwrap(),
+        sim_source: pargs.opt_value_from_str("--sim_source").unwrap(),
+        sim_root: pargs.opt_value_from_str("--sim_root").unwrap(),
+        sim_port: pargs.value_from_str("--sim_port").unwrap_or(8090),
+        sim_bind: pargs
+            .value_from_str("--sim_bind")
+            .unwrap_or("127.0.0.1".to_string()),
         min_exposure: pargs
             .value_from_fn("--min_exposure", parse_duration)
             .unwrap_or(parse_duration("0.00001").unwrap()),
@@ -1703,6 +1721,42 @@ async fn prepare_for_exit_async(
     }
 }
 
+// Builds the simulated camera for --sim_source; exits on a bad source.
+async fn make_sim_camera(
+    sim_source: &str,
+    sim_root: Option<&str>,
+) -> (Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>, SimController) {
+    let source = PathBuf::from(sim_source);
+    let root = match sim_root {
+        Some(root) => PathBuf::from(root),
+        None if source.is_dir() => source.clone(),
+        None => source
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+            .to_path_buf(),
+    };
+    // SimController resolves a relative source against the root, so pass an
+    // absolute one; --sim_source is relative to the working directory.
+    let source = std::path::absolute(&source).unwrap_or(source);
+    let controller = match SimController::new(&root, &source) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Bad --sim_source {:?}: {}", sim_source, e);
+            std::process::exit(1);
+        }
+    };
+    let camera = match SimCamera::new(controller.clone()).await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Cannot start simulated camera: {}", e);
+            std::process::exit(1);
+        }
+    };
+    info!("Using simulated camera on {} instead of camera.", sim_source);
+    (Arc::new(tokio::sync::Mutex::new(Box::new(camera))), controller)
+}
+
 async fn get_attached_camera(
     camera_interface: Option<&CameraInterface>,
     camera_index: usize,
@@ -1816,6 +1870,18 @@ async fn async_main(
         }
         None => None,
     };
+    let (test_image_camera, sim_controller) = match &args.sim_source {
+        Some(sim_source) => {
+            if test_image_camera.is_some() {
+                error!("Use only one of --test_image and --sim_source");
+                std::process::exit(1);
+            }
+            let (camera, controller) =
+                make_sim_camera(sim_source, args.sim_root.as_deref()).await;
+            (Some(camera), Some(controller))
+        }
+        None => (test_image_camera, None),
+    };
 
     let feature_level = if product_name.eq_ignore_ascii_case("Hopper") {
         if let Some(attached_camera) = &attached_camera {
@@ -1851,6 +1917,22 @@ async fn async_main(
     if let Err(e) = camera.lock().await.start().await {
         error!("Failed to start initial camera: {:?}", e);
         std::process::exit(1);
+    }
+    if let Some(sim_controller) = sim_controller {
+        let addr: SocketAddr =
+            match format!("{}:{}", args.sim_bind, args.sim_port).parse() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    error!("Bad --sim_bind/--sim_port: {:?}", e);
+                    std::process::exit(1);
+                }
+            };
+        tokio::task::spawn(async move {
+            if let Err(e) = sim_http::serve(sim_controller, addr).await {
+                error!("Simulator control server failed: {:?}", e);
+                std::process::exit(1);
+            }
+        });
     }
     {
         let locked_camera = camera.lock().await;
