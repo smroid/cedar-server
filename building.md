@@ -260,6 +260,41 @@ Here's what's happening:
 * Cedar-server is serving the Ascom Alpaca protocol, allowing SkySafari to connect
   to the "telescope" emulated by Cedar-server.
 
+### Run Cedar-server without a camera
+
+To try Cedar without a camera or a night sky, play back recorded images with
+`--sim_source`, giving an image file or a directory of frames:
+
+```
+../cedar/bin/cedar-box-server --sim_source ~/sky/session1 --sim_root ~/sky
+```
+
+A directory's frames play in filename order, or in the order of its
+`manifest.csv` (`filename` column) if present. Each frame is shown for its
+recorded exposure, taken from a `exposure_ms` manifest column or a `_<N>ms_`
+filename component (e.g. `img_000003_70ms.png`). All frames must have the same
+dimensions. Frames advance only while the server is capturing, i.e. while
+Cedar-aim (or another client) is connected.
+
+Playback starts paused and is controlled over HTTP on `--sim_port` (default
+8090), listening on `--sim_bind` (default 127.0.0.1; use 0.0.0.0 to control a
+Raspberry Pi from another machine). Paths are relative to `--sim_root` (default:
+the directory of `--sim_source`), and may not lie outside it.
+
+```
+curl localhost:8090/sim/status
+curl -X POST localhost:8090/sim/play
+curl -X POST localhost:8090/sim/pause
+curl -X POST -H 'Content-Type: application/json' -d '{"n": -1}' localhost:8090/sim/step
+curl -X POST -H 'Content-Type: application/json' -d '{"index": 40}' localhost:8090/sim/seek
+curl -X POST -H 'Content-Type: application/json' -d '{"speed": 4}' localhost:8090/sim/speed
+curl -X POST -H 'Content-Type: application/json' -d '{"loop": false}' localhost:8090/sim/loop
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"path": "session2", "index": 0, "play": true}' localhost:8090/sim/source
+```
+
+Each call returns the playback status as JSON.
+
 ### Run Cedar-aim
 
 On a phone, tablet, or computer that is on the same network as the Raspberry Pi
