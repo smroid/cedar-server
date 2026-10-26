@@ -21,10 +21,10 @@ use cedar_elements::{
     thread_name::ThreadName,
 };
 use image::GrayImage;
-
-use crate::detect_engine::brightness_limit;
 use imageproc::rect::Rect;
 use log::{debug, warn};
+
+use crate::detect_engine::brightness_limit;
 pub struct Calibrator {
     camera: Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
     hot_pixel_map: Option<Arc<tokio::sync::Mutex<dyn HotPixelTrait + Send>>>,
