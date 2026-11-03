@@ -277,9 +277,19 @@ dimensions. Frames advance only while the server is capturing, i.e. while
 Cedar-aim (or another client) is connected.
 
 Playback starts paused and is controlled over HTTP on `--sim_port` (default
-8090), listening on `--sim_bind` (default 127.0.0.1; use 0.0.0.0 to control a
-Raspberry Pi from another machine). Paths are relative to `--sim_root` (default:
-the directory of `--sim_source`), and may not lie outside it.
+8090), listening on `--sim_bind` (default 0.0.0.0, i.e. reachable from the
+network; use 127.0.0.1 to allow only local control). Paths are relative to
+`--sim_root` (default: the directory of `--sim_source`), and may not lie outside
+it.
+
+The easiest way to control it is the simulator page: browse to port 8090 of the
+machine running Cedar-server (e.g. `http://192.168.4.1:8090/`). It has play/pause,
+step, seek, speed, loop and source controls, shows the current input frame, and
+embeds Cedar-aim (from port 8080 of the same host; override with
+`?aim=<url>`). The embedded Cedar-aim also counts as the connected client that
+keeps frames advancing.
+
+The same controls are available as a JSON API, for scripting:
 
 ```
 curl localhost:8090/sim/status
@@ -293,7 +303,9 @@ curl -X POST -H 'Content-Type: application/json' \
      -d '{"path": "session2", "index": 0, "play": true}' localhost:8090/sim/source
 ```
 
-Each call returns the playback status as JSON.
+Each call returns the playback status as JSON. `GET /sim/frame` returns the
+image file at the current `index` as is (while playing, `index` has usually
+already moved on to the next frame to show).
 
 ### Run Cedar-aim
 
