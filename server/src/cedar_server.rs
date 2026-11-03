@@ -1547,7 +1547,7 @@ pub fn server_main(
       --sim_root <path>              Paths the simulator may open; default:
                                      --sim_source's directory (or itself)
       --sim_port NUMBER              8090; simulator HTTP control port
-      --sim_bind <addr>              127.0.0.1; 0.0.0.0 for remote control
+      --sim_bind <addr>              0.0.0.0; 127.0.0.1 for local only
       --min_exposure NUMBER          0.00001
       --max_exposure NUMBER          1.0
       --star_count_goal NUMBER       20
@@ -1583,7 +1583,7 @@ pub fn server_main(
         sim_port: pargs.value_from_str("--sim_port").unwrap_or(8090),
         sim_bind: pargs
             .value_from_str("--sim_bind")
-            .unwrap_or("127.0.0.1".to_string()),
+            .unwrap_or("0.0.0.0".to_string()),
         min_exposure: pargs
             .value_from_fn("--min_exposure", parse_duration)
             .unwrap_or(parse_duration("0.00001").unwrap()),
@@ -1725,7 +1725,11 @@ async fn prepare_for_exit_async(
 async fn make_sim_camera(
     sim_source: &str,
     sim_root: Option<&str>,
-) -> (Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>, SimController) {
+) -> (
+    Arc<tokio::sync::Mutex<Box<dyn AbstractCamera + Send>>>,
+    SimController,
+    PathBuf,
+) {
     let source = PathBuf::from(sim_source);
     let root = match sim_root {
         Some(root) => PathBuf::from(root),
@@ -1754,7 +1758,10 @@ async fn make_sim_camera(
         }
     };
     info!("Using simulated camera on {} instead of camera.", sim_source);
-    (Arc::new(tokio::sync::Mutex::new(Box::new(camera))), controller)
+    // SimController::new succeeded, so the root exists. Absolute, so that the
+    // sim HTTP server does not depend on the working directory.
+    let root = root.canonicalize().unwrap_or(root);
+    (Arc::new(tokio::sync::Mutex::new(Box::new(camera))), controller, root)
 }
 
 async fn get_attached_camera(
@@ -1876,9 +1883,9 @@ async fn async_main(
                 error!("Use only one of --test_image and --sim_source");
                 std::process::exit(1);
             }
-            let (camera, controller) =
+            let (camera, controller, root) =
                 make_sim_camera(sim_source, args.sim_root.as_deref()).await;
-            (Some(camera), Some(controller))
+            (Some(camera), Some((controller, root)))
         }
         None => (test_image_camera, None),
     };
@@ -1918,7 +1925,7 @@ async fn async_main(
         error!("Failed to start initial camera: {:?}", e);
         std::process::exit(1);
     }
-    if let Some(sim_controller) = sim_controller {
+    if let Some((sim_controller, sim_root)) = sim_controller {
         let addr: SocketAddr =
             match format!("{}:{}", args.sim_bind, args.sim_port).parse() {
                 Ok(addr) => addr,
@@ -1928,7 +1935,9 @@ async fn async_main(
                 }
             };
         tokio::task::spawn(async move {
-            if let Err(e) = sim_http::serve(sim_controller, addr).await {
+            if let Err(e) =
+                sim_http::serve(sim_controller, sim_root, addr).await
+            {
                 error!("Simulator control server failed: {:?}", e);
                 std::process::exit(1);
             }
