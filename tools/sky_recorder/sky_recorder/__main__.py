@@ -41,6 +41,8 @@ def parse_args(argv=None) -> Options:
                    help="With --save-format jpg; server default 90")
     g.add_argument("--solution-timeout", type=float, default=5.0,
                    help="Seconds to wait for a frame's plate solution")
+    g.add_argument("--fetch-timeout", type=float, default=60.0,
+                   help="Seconds to wait for one image. Default 60")
     p.add_argument("-q", "--quiet", action="store_true")
     a = p.parse_args(argv)
     if a.every < 0:
@@ -53,6 +55,7 @@ def parse_args(argv=None) -> Options:
         max_megabytes=a.max_megabytes, max_unsolved=a.max_unsolved,
         only_solved=a.only_solved, save_format=a.save_format,
         jpeg_quality=a.jpeg_quality, solution_timeout=a.solution_timeout,
+        fetch_timeout=a.fetch_timeout,
     ), a.quiet
 
 

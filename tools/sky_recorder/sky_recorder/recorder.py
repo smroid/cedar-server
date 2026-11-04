@@ -32,6 +32,7 @@ class Options:
     save_format: str = "png"           # png | bmp | jpg
     jpeg_quality: Optional[int] = None  # Only with save_format=jpg.
     solution_timeout: float = 5.0
+    fetch_timeout: float = 60.0  # A 2 MB frame over weak WiFi can take 20 s.
 
 
 def make_session_dir(out: str) -> str:
@@ -117,10 +118,14 @@ class Recorder:
                 if isinstance(action, schedule.WaitUntil):
                     self.stop_event.wait(max(0.0, action.t - now))
                     continue
+                timeout = o.fetch_timeout
+                if o.duration is not None:
+                    timeout = min(timeout,
+                                  max(1.0, o.duration - (now - start)))
                 try:
                     img = client.fetch_image(
                         self.stub, prev_frame_id, fmt=fmt,
-                        quality=o.jpeg_quality)
+                        quality=o.jpeg_quality, timeout=timeout)
                 except grpc.RpcError as e:
                     if e.code() not in client.RETRYABLE:
                         raise

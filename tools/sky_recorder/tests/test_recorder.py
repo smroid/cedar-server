@@ -114,3 +114,14 @@ def test_setup_mode_frames_are_unknown(server, tmp_path):
     _, _, rows = record(server, tmp_path, every=0, max_frames=3,
                         solution_timeout=1.0)
     assert rows and all(r["solve_status"] == "unknown" for r in rows)
+
+
+@pytest.mark.parametrize("server", [{"frame_interval": 5.0}], indirect=True)
+def test_duration_bounds_a_blocked_fetch(server, tmp_path):
+    # Frames arrive every 5 s; the second fetch blocks, but the run must still
+    # end close to --duration, not after --fetch-timeout.
+    import time
+    t = time.monotonic()
+    _, session, _ = record(server, tmp_path, every=0, duration=1.5)
+    assert time.monotonic() - t < 4
+    assert session["stop_reason"] == "duration reached"

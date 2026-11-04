@@ -22,10 +22,11 @@ Each run writes a new `<out>/<YYYYmmdd_HHMMSS>/` containing PNG frames,
 solve that frame). The server must be in Operate mode for frames to get
 solutions.
 
-A full-resolution frame is about 2 MB. Over WiFi, bursts therefore skip
-frames; `frame_gap` shows how many. For consecutive frames, run the recorder
-on the Cedar box itself (`--server localhost:80`), adding `--save-format bmp`
-there to skip PNG encoding.
+A full-resolution frame is about 2 MB, so over WiFi bursts skip frames
+(`frame_gap` shows how many) and on a weak link one frame can take tens of
+seconds (raise `--fetch-timeout` if needed; `--save-format jpg` trades fidelity
+for size). For consecutive frames, run the recorder on the Cedar box itself:
+`--server localhost:80 --save-format bmp`.
 
 Tests: `pytest` (uses an in-process fake server). After changing the protos,
 run `./gen_protos.sh`.
