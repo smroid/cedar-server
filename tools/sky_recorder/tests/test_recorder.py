@@ -125,3 +125,13 @@ def test_duration_bounds_a_blocked_fetch(server, tmp_path):
     _, session, _ = record(server, tmp_path, every=0, duration=1.5)
     assert time.monotonic() - t < 4
     assert session["stop_reason"] == "duration reached"
+
+
+def test_duration_bounds_the_wait_between_captures(server, tmp_path):
+    # --every far exceeds --duration: the run must not sleep out the period.
+    import time
+    t = time.monotonic()
+    _, session, rows = record(server, tmp_path, every=60, duration=1.0)
+    assert time.monotonic() - t < 4
+    assert session["stop_reason"] == "duration reached"
+    assert len(rows) == 1

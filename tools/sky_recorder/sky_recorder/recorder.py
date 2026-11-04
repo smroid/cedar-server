@@ -77,6 +77,13 @@ class Recorder:
             json.dump(info, f, indent=2)
             f.write("\n")
 
+    def _sleep(self, seconds, start):
+        """Waits, waking early on stop or when --duration runs out."""
+        if self.opts.duration is not None:
+            seconds = min(seconds,
+                          self.opts.duration - (self.clock() - start))
+        self.stop_event.wait(max(0.0, seconds))
+
     def run(self):
         o = self.opts
         frame_result = client.get_frame(self.stub)
@@ -116,7 +123,7 @@ class Recorder:
                     break
                 action = sched.decide(now)
                 if isinstance(action, schedule.WaitUntil):
-                    self.stop_event.wait(max(0.0, action.t - now))
+                    self._sleep(action.t - now, start)
                     continue
                 timeout = o.fetch_timeout
                 if o.duration is not None:
@@ -131,7 +138,7 @@ class Recorder:
                         raise
                     log.warning("GetImage: %s (%s); retrying in %.0fs",
                                 e.code().name, e.details(), backoff)
-                    self.stop_event.wait(backoff)
+                    self._sleep(backoff, start)
                     backoff = min(backoff * 2, 10.0)
                     continue
                 backoff = 1.0
