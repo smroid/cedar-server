@@ -556,30 +556,35 @@ impl SolveEngine {
             // Name the thread we spawn here, not just the runtime's worker
             // pool: block_on() drives the worker future on this thread, so
             // this is where the solve work actually runs.
-            self.worker_thread = Some(std::thread::Builder::new()
-                .name("solve_engine".to_string())
-                .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name("solve_engine_rt")
-                    // Single worker suffices: this runtime runs only the
-                    // sequential solve worker loop with no concurrent tasks.
-                    .worker_threads(1)
-                    .build()
-                    .unwrap();
-                runtime.block_on(async move {
-                    SolveEngine::worker(
-                        cloned_solver,
-                        cloned_state,
-                        cloned_detect_engine,
-                        hot_pixel_map,
-                        cloned_pre_solve_callback,
-                        cloned_post_solve_callback,
-                    )
-                    .await;
-                });
-            })
-            .unwrap());
+            self.worker_thread = Some(
+                std::thread::Builder::new()
+                    .name("solve_engine".to_string())
+                    .spawn(move || {
+                        let runtime =
+                            tokio::runtime::Builder::new_multi_thread()
+                                .enable_all()
+                                .thread_name("solve_engine_rt")
+                                // Single worker suffices: this runtime runs
+                                // only the
+                                // sequential solve worker loop with no
+                                // concurrent tasks.
+                                .worker_threads(1)
+                                .build()
+                                .unwrap();
+                        runtime.block_on(async move {
+                            SolveEngine::worker(
+                                cloned_solver,
+                                cloned_state,
+                                cloned_detect_engine,
+                                hot_pixel_map,
+                                cloned_pre_solve_callback,
+                                cloned_post_solve_callback,
+                            )
+                            .await;
+                        });
+                    })
+                    .unwrap(),
+            );
         }
     }
 
@@ -612,8 +617,10 @@ impl SolveEngine {
         // anchored to when the sky was actually being observed: the
         // exposure midpoint. The two diverge more as auto-exposure
         // lengthens the exposure duration.
-        let exposure_duration =
-            detect_result.captured_image.capture_params.exposure_duration;
+        let exposure_duration = detect_result
+            .captured_image
+            .capture_params
+            .exposure_duration;
         let mid_exposure_time = image_time
             .checked_sub(exposure_duration / 2)
             .unwrap_or(*image_time);
@@ -653,7 +660,10 @@ impl SolveEngine {
                 Ok(hc) => {
                     // Convert horizon coordinates to equatorial.
                     Some(equatorial_from_horizon_camera(
-                        &hc, lat_rad, long_rad, &mid_exposure_time,
+                        &hc,
+                        lat_rad,
+                        long_rad,
+                        &mid_exposure_time,
                     ))
                 }
                 Err(e) => {
@@ -712,7 +722,8 @@ impl SolveEngine {
             // (e.g. due to telescope motion). Empirically, solutions are
             // possible at 12 centroids, and are ~reliable at 20 or more
             // centroids. For logging, we split the difference.
-            let loggable_non_solution = !skip_stars && star_centroids.len() >= 16;
+            let loggable_non_solution =
+                !skip_stars && star_centroids.len() >= 16;
             let mut non_solution_msg: Option<String> = None;
             match solve_result {
                 Err(e) => {
@@ -744,7 +755,8 @@ impl SolveEngine {
                                 .lock()
                                 .await
                                 .report_true_camera_pointing(
-                                    &hc, &mid_exposure_time,
+                                    &hc,
+                                    &mid_exposure_time,
                                 )
                                 .await;
                         }
@@ -1082,8 +1094,15 @@ impl SolveEngine {
                 // have no entry near it. In that case we determine the
                 // constellation from the boresight coordinates.
                 boresight_constellation = match &boresight_catalog_entry {
-                    Some(bce) => bce.entry.as_ref().unwrap().constellation.clone(),
-                    None => sky.lock().await.constellation_at(&boresight_coords).await,
+                    Some(bce) => {
+                        bce.entry.as_ref().unwrap().constellation.clone()
+                    }
+                    None => {
+                        sky.lock()
+                            .await
+                            .constellation_at(&boresight_coords)
+                            .await
+                    }
                 };
             }
         }
@@ -1831,17 +1850,31 @@ mod tests {
             ..Default::default()
         };
         let (slew_request, _, _) = SolveEngine::handle_slew(
-            /*cedar_sky=*/ &None,
-            &CelestialCoord { ra: 10.0, dec: 20.0, epoch: None },
-            /*target_alt_az=*/ &None,
+            // cedar_sky=
+            &None,
+            &CelestialCoord {
+                ra: 10.0,
+                dec: 20.0,
+                epoch: None,
+            },
+            // target_alt_az=
+            &None,
             &GrayImage::new(100, 100),
-            /*boresight_coords=*/
-            &CelestialCoord { ra: 11.0, dec: 21.0, epoch: None },
-            /*boresight_pixel=*/ &None,
+            // boresight_coords=
+            &CelestialCoord {
+                ra: 11.0,
+                dec: 21.0,
+                epoch: None,
+            },
+            // boresight_pixel=
+            &None,
             &ps,
-            /*boresight_image_shown=*/ false,
-            /*width=*/ 100,
-            /*height=*/ 100,
+            // boresight_image_shown=
+            false,
+            // width=
+            100,
+            // height=
+            100,
         )
         .await;
         let angle = slew_request.unwrap().target_angle.unwrap();
@@ -1868,17 +1901,31 @@ mod tests {
         let mut legacy_ps = ps.clone();
         legacy_ps.rotation_matrix = vec![];
         let (legacy_request, _, _) = SolveEngine::handle_slew(
-            /*cedar_sky=*/ &None,
-            &CelestialCoord { ra: 10.0, dec: 20.0, epoch: None },
-            /*target_alt_az=*/ &None,
+            // cedar_sky=
+            &None,
+            &CelestialCoord {
+                ra: 10.0,
+                dec: 20.0,
+                epoch: None,
+            },
+            // target_alt_az=
+            &None,
             &GrayImage::new(100, 100),
-            /*boresight_coords=*/
-            &CelestialCoord { ra: 11.0, dec: 21.0, epoch: None },
-            /*boresight_pixel=*/ &None,
+            // boresight_coords=
+            &CelestialCoord {
+                ra: 11.0,
+                dec: 21.0,
+                epoch: None,
+            },
+            // boresight_pixel=
+            &None,
             &legacy_ps,
-            /*boresight_image_shown=*/ false,
-            /*width=*/ 100,
-            /*height=*/ 100,
+            // boresight_image_shown=
+            false,
+            // width=
+            100,
+            // height=
+            100,
         )
         .await;
         assert!(legacy_request.unwrap().target_angle.is_some());
@@ -1887,25 +1934,31 @@ mod tests {
     #[tokio::test]
     async fn test_handle_slew_ra_dec_target() {
         let (slew_request, _, _) = SolveEngine::handle_slew(
-            /*cedar_sky=*/ &None,
+            // cedar_sky=
+            &None,
             &CelestialCoord {
                 ra: 10.0,
                 dec: 20.0,
                 epoch: None,
             },
-            /*target_alt_az=*/ &None,
+            // target_alt_az=
+            &None,
             &GrayImage::new(100, 100),
-            /*boresight_coords=*/
+            // boresight_coords=
             &CelestialCoord {
                 ra: 11.0,
                 dec: 21.0,
                 epoch: None,
             },
-            /*boresight_pixel=*/ &None,
+            // boresight_pixel=
+            &None,
             &test_plate_solution(),
-            /*boresight_image_shown=*/ false,
-            /*width=*/ 100,
-            /*height=*/ 100,
+            // boresight_image_shown=
+            false,
+            // width=
+            100,
+            // height=
+            100,
         )
         .await;
 
@@ -1924,7 +1977,8 @@ mod tests {
             epoch: None,
         });
         let (slew_request, _, _) = SolveEngine::handle_slew(
-            /*cedar_sky=*/ &None,
+            // cedar_sky=
+            &None,
             // The equatorial position the alt/az target currently corresponds
             // to; it still drives the distance/angle geometry.
             &CelestialCoord {
@@ -1934,17 +1988,21 @@ mod tests {
             },
             &target_alt_az,
             &GrayImage::new(100, 100),
-            /*boresight_coords=*/
+            // boresight_coords=
             &CelestialCoord {
                 ra: 11.0,
                 dec: 21.0,
                 epoch: None,
             },
-            /*boresight_pixel=*/ &None,
+            // boresight_pixel=
+            &None,
             &test_plate_solution(),
-            /*boresight_image_shown=*/ false,
-            /*width=*/ 100,
-            /*height=*/ 100,
+            // boresight_image_shown=
+            false,
+            // width=
+            100,
+            // height=
+            100,
         )
         .await;
 

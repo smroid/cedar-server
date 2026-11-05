@@ -21,9 +21,8 @@ use super::{
 // dimmer stars at the cost of admitting more spurious detections.
 fn sigma_scale_for_sensitivity(sensitivity: DetectSensitivity) -> f64 {
     match sensitivity {
-        DetectSensitivity::SensitivityUnspecified | DetectSensitivity::Normal => {
-            1.0
-        }
+        DetectSensitivity::SensitivityUnspecified
+        | DetectSensitivity::Normal => 1.0,
         DetectSensitivity::High => 0.9,
         DetectSensitivity::Highest => 0.8,
     }
@@ -539,11 +538,9 @@ impl MyCedar {
 
                 let std_duration =
                     MyCedar::get_automatic_update_interval(&locked_state);
-                if let Err(x) = MyCedar::set_update_interval(
-                    &locked_state,
-                    std_duration,
-                )
-                .await
+                if let Err(x) =
+                    MyCedar::set_update_interval(&locked_state, std_duration)
+                        .await
                 {
                     return Err(tonic_status(x));
                 }

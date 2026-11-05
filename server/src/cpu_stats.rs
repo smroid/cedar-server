@@ -158,7 +158,9 @@ impl CpuStats {
             Err(e) => out.push_str(&format!("(error: {:?})\n", e)),
         }
 
-        out.push_str("\n=== This process's threads by CPU (instantaneous) ===\n");
+        out.push_str(
+            "\n=== This process's threads by CPU (instantaneous) ===\n",
+        );
         match sample_cpu_table(ProcGlob::OwnThreads).await {
             Ok(rows) => append_table(&mut out, &rows, usize::MAX),
             Err(e) => out.push_str(&format!("(error: {:?})\n", e)),
@@ -216,9 +218,7 @@ const REPORT_SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// Takes two /proc samples 1 second apart and returns per-id (pid or tid)
 /// instantaneous CPU%, sorted highest first.
-async fn sample_cpu_table(
-    glob: ProcGlob,
-) -> std::io::Result<Vec<CpuRow>> {
+async fn sample_cpu_table(glob: ProcGlob) -> std::io::Result<Vec<CpuRow>> {
     let before = read_all_ticks(&glob).await?;
     tokio::time::sleep(REPORT_SAMPLE_INTERVAL).await;
     let after = read_all_ticks(&glob).await?;
@@ -240,7 +240,9 @@ async fn sample_cpu_table(
         rows.push(CpuRow { id, percent, comm });
     }
     rows.sort_by(|a, b| {
-        b.percent.partial_cmp(&a.percent).unwrap_or(std::cmp::Ordering::Equal)
+        b.percent
+            .partial_cmp(&a.percent)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     Ok(rows)
 }
@@ -252,9 +254,7 @@ async fn read_all_ticks(
     let mut result = std::collections::HashMap::new();
     let mut dir = match glob {
         ProcGlob::AllProcesses => tokio::fs::read_dir("/proc").await?,
-        ProcGlob::OwnThreads => {
-            tokio::fs::read_dir("/proc/self/task").await?
-        }
+        ProcGlob::OwnThreads => tokio::fs::read_dir("/proc/self/task").await?,
     };
     while let Some(entry) = dir.next_entry().await? {
         let name = entry.file_name();

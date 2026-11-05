@@ -249,27 +249,32 @@ impl ServeEngine {
             // Name the thread we spawn here, not just the runtime's worker
             // pool: block_on() drives the worker future on this thread, so
             // this is where the serve work actually runs.
-            self.worker_thread = Some(std::thread::Builder::new()
-                .name("serve_engine".to_string())
-                .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name("serve_engine_rt")
-                    // Single worker suffices: this runtime runs only the
-                    // sequential serve worker loop with no concurrent tasks.
-                    .worker_threads(1)
-                    .build()
-                    .unwrap();
-                runtime.block_on(async move {
-                    ServeEngine::worker(
-                        cloned_state,
-                        cloned_solve_engine,
-                        cloned_detect_engine,
-                    )
-                    .await;
-                });
-            })
-            .unwrap());
+            self.worker_thread = Some(
+                std::thread::Builder::new()
+                    .name("serve_engine".to_string())
+                    .spawn(move || {
+                        let runtime =
+                            tokio::runtime::Builder::new_multi_thread()
+                                .enable_all()
+                                .thread_name("serve_engine_rt")
+                                // Single worker suffices: this runtime runs
+                                // only the
+                                // sequential serve worker loop with no
+                                // concurrent tasks.
+                                .worker_threads(1)
+                                .build()
+                                .unwrap();
+                        runtime.block_on(async move {
+                            ServeEngine::worker(
+                                cloned_state,
+                                cloned_solve_engine,
+                                cloned_detect_engine,
+                            )
+                            .await;
+                        });
+                    })
+                    .unwrap(),
+            );
         }
     }
 
@@ -401,8 +406,9 @@ impl ServeEngine {
                 if let Some(recent) =
                     &locked_state.serve_latency_stats.value_stats.recent
                 {
-                    locked_state.eta =
-                        Some(serve_start + Duration::from_secs_f64(recent.mean));
+                    locked_state.eta = Some(
+                        serve_start + Duration::from_secs_f64(recent.mean),
+                    );
                 }
             }
 

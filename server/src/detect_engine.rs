@@ -74,11 +74,7 @@ fn binned_star_fraction(binning: u32) -> f64 {
 ///
 /// Shared with Calibrator::calibrate_exposure_duration(), which applies the
 /// same limit while searching for an exposure duration.
-pub fn brightness_limit(
-    sigma: f64,
-    noise_estimate: f64,
-    binning: u32,
-) -> f64 {
+pub fn brightness_limit(sigma: f64, noise_estimate: f64, binning: u32) -> f64 {
     let noise_detect = noise_estimate / binning as f64;
     let peak_excess_needed =
         sigma * noise_detect / binned_star_fraction(binning);
@@ -399,32 +395,37 @@ impl DetectEngine {
             // Name the thread we spawn here, not just the runtime's worker
             // pool: block_on() drives the worker future on this thread, so
             // this is where the detect work actually runs.
-            self.worker_thread = Some(std::thread::Builder::new()
-                .name("detect_engine".to_string())
-                .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name("detect_engine_rt")
-                    // Single worker suffices: this runtime runs only the
-                    // sequential detect worker loop with no concurrent tasks.
-                    .worker_threads(1)
-                    .build()
-                    .unwrap();
-                runtime.block_on(async move {
-                    DetectEngine::worker(
-                        initial_exposure_duration,
-                        min_exposure_duration,
-                        max_exposure_duration,
-                        base_detection_sigma,
-                        star_count_goal,
-                        hot_pixel_map,
-                        cloned_state,
-                        cloned_done,
-                    )
-                    .await;
-                });
-            })
-            .unwrap());
+            self.worker_thread = Some(
+                std::thread::Builder::new()
+                    .name("detect_engine".to_string())
+                    .spawn(move || {
+                        let runtime =
+                            tokio::runtime::Builder::new_multi_thread()
+                                .enable_all()
+                                .thread_name("detect_engine_rt")
+                                // Single worker suffices: this runtime runs
+                                // only the
+                                // sequential detect worker loop with no
+                                // concurrent tasks.
+                                .worker_threads(1)
+                                .build()
+                                .unwrap();
+                        runtime.block_on(async move {
+                            DetectEngine::worker(
+                                initial_exposure_duration,
+                                min_exposure_duration,
+                                max_exposure_duration,
+                                base_detection_sigma,
+                                star_count_goal,
+                                hot_pixel_map,
+                                cloned_state,
+                                cloned_done,
+                            )
+                            .await;
+                        });
+                    })
+                    .unwrap(),
+            );
         }
         // Get the most recently posted result; wait if there is none yet or the
         // currently posted result is the same as the one the caller has already
@@ -1277,8 +1278,9 @@ pub struct FocusAid {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use approx::assert_abs_diff_eq;
+
+    use super::*;
 
     // Noise of the full resolution twilight test image, in ADU. Detection runs
     // on the 2x binned image, where this measures around 4.25.

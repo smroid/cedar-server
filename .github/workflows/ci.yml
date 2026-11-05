@@ -46,8 +46,44 @@ env:
   TETRA3_SERVER_REF: main
   ASI_CAMERA2_REPO: smroid/asi_camera2
   ASI_CAMERA2_REF: main
+  # rustfmt.toml uses unstable options (wrap_comments, group_imports,
+  # imports_granularity, error_on_line_overflow, ...), so formatting needs a
+  # nightly rustfmt. It is pinned to a date because nightly's formatting output
+  # changes over time: an unpinned check can start failing on code nobody
+  # touched. To format locally with the same rustfmt:
+  #   rustup toolchain install nightly-2026-10-20 --profile minimal -c rustfmt
+  #   cargo +nightly-2026-10-20 fmt
+  # Bump the date deliberately, in a commit that also reformats the tree, and
+  # change format-rust.sh (used by VSCode) to the same date.
+  RUSTFMT_TOOLCHAIN: nightly-2026-10-20
 
 jobs:
+  # Formatting is its own job so that a formatting failure doesn't hide the
+  # clippy and test results, and the other way round. It needs only this repo
+  # and a rustfmt, not the sibling checkouts or a build, so it finishes in
+  # seconds. rustfmt is invoked directly rather than through `cargo fmt`,
+  # because `cargo fmt` runs `cargo metadata`, which needs the sibling repos'
+  # manifests on disk. skip_children stops a module file from being reported
+  # once for itself and again for every file that declares it.
+  rustfmt:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout cedar-server
+        uses: actions/checkout@v4
+
+      - name: Install pinned nightly rustfmt
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUSTFMT_TOOLCHAIN }}
+          components: rustfmt
+
+      - name: rustfmt (check)
+        run: |
+          git ls-files -z '*.rs' \
+            | xargs -0 rustfmt +"$RUSTFMT_TOOLCHAIN" --edition 2021 --check \
+                --config skip_children=true
+
   build-lint-test:
     # Native ARM64 runner: cedar targets the Raspberry Pi (aarch64), so linting
     # and testing on ARM catches arch-specific issues the product would hit in
@@ -106,31 +142,16 @@ jobs:
             protobuf-compiler libprotobuf-dev libclang-dev
 
       # --- Rust toolchains ------------------------------------------------
-      # Stable for clippy + tests; nightly for rustfmt (rustfmt.toml uses
-      # unstable options: wrap_comments, group_imports, imports_granularity,
-      # error_on_line_overflow, ...). dtolnay/rust-toolchain sets the
-      # LAST-installed toolchain as the rustup default, so nightly (installed
-      # second, for rustfmt) becomes default and lacks clippy. Each cargo step
-      # below therefore pins its toolchain explicitly (`+stable` / `+nightly`)
-      # rather than relying on the default.
+      # Stable for clippy + tests. (rustfmt runs in its own job, above.)
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
-      - name: Install nightly rustfmt
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt
-
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: cedar-server
-
-      - name: rustfmt (check)
-        working-directory: cedar-server
-        run: cargo +nightly fmt --package cedar-server --package cedar-elements --check
 
       # --- clippy (advisory) ----------------------------------------------
       # Runs clippy over the whole workspace and all targets and surfaces the

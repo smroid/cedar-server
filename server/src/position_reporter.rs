@@ -146,9 +146,7 @@ impl Telescope for MyTelescope {
         Ok(AlignmentMode::Polar)
     }
 
-    async fn equatorial_system(
-        &self,
-    ) -> ASCOMResult<EquatorialCoordinateType> {
+    async fn equatorial_system(&self) -> ASCOMResult<EquatorialCoordinateType> {
         debug!("equatorial_system");
         Ok(EquatorialCoordinateType::J2000)
     }

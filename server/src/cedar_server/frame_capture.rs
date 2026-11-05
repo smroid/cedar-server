@@ -365,7 +365,7 @@ impl MyCedar {
         let detect_result = detect_engine
             .lock()
             .await
-            .get_next_result(req.prev_frame_id, /*non_blocking=*/ false)
+            .get_next_result(req.prev_frame_id, /* non_blocking= */ false)
             .await
             .ok_or_else(|| {
                 logged_status!(
@@ -377,8 +377,10 @@ impl MyCedar {
         let captured_image = detect_result.captured_image;
         let camera_model = MyCedar::camera_model_from_arc(
             &camera_arc,
-            /*model_override=*/ None,
-            /*include_detail=*/ true,
+            // model_override=
+            None,
+            // include_detail=
+            true,
         )
         .await;
 

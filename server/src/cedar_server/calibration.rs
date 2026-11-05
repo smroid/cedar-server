@@ -12,8 +12,7 @@ use cedar_elements::cedar::{CalibrationFailureReason, OperatingMode};
 use log::{debug, info, warn};
 
 use super::{
-    cedar_rpcs::tonic_status, CedarState, MyCedar,
-    FOCUS_ASSIST_UPDATE_INTERVAL,
+    cedar_rpcs::tonic_status, CedarState, MyCedar, FOCUS_ASSIST_UPDATE_INTERVAL,
 };
 use crate::calibrator::ExposureCalibrationError;
 
