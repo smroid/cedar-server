@@ -260,6 +260,53 @@ Here's what's happening:
 * Cedar-server is serving the Ascom Alpaca protocol, allowing SkySafari to connect
   to the "telescope" emulated by Cedar-server.
 
+### Run Cedar-server without a camera
+
+To try Cedar without a camera or a night sky, play back recorded images with
+`--sim_source`, giving an image file or a directory of frames:
+
+```
+../cedar/bin/cedar-box-server --sim_source ~/sky/session1 --sim_root ~/sky
+```
+
+A directory's frames play in filename order, or in the order of its
+`manifest.csv` (`filename` column) if present. Each frame is shown for its
+recorded exposure, taken from a `exposure_ms` manifest column or a `_<N>ms_`
+filename component (e.g. `img_000003_70ms.png`). All frames must have the same
+dimensions. Frames advance only while the server is capturing, i.e. while
+Cedar-aim (or another client) is connected.
+
+Playback starts paused and is controlled over HTTP on `--sim_port` (default
+8090), listening on `--sim_bind` (default 0.0.0.0, i.e. reachable from the
+network; use 127.0.0.1 to allow only local control). Paths are relative to
+`--sim_root` (default: the directory of `--sim_source`), and may not lie outside
+it.
+
+The easiest way to control it is the simulator page: browse to port 8090 of the
+machine running Cedar-server (e.g. `http://192.168.4.1:8090/`). It has play/pause,
+step, seek, speed, loop and source controls, shows the current input frame, and
+embeds Cedar-aim (from port 8080 of the same host; override with
+`?aim=<url>`). The embedded Cedar-aim also counts as the connected client that
+keeps frames advancing.
+
+The same controls are available as a JSON API, for scripting:
+
+```
+curl localhost:8090/sim/status
+curl -X POST localhost:8090/sim/play
+curl -X POST localhost:8090/sim/pause
+curl -X POST -H 'Content-Type: application/json' -d '{"n": -1}' localhost:8090/sim/step
+curl -X POST -H 'Content-Type: application/json' -d '{"index": 40}' localhost:8090/sim/seek
+curl -X POST -H 'Content-Type: application/json' -d '{"speed": 4}' localhost:8090/sim/speed
+curl -X POST -H 'Content-Type: application/json' -d '{"loop": false}' localhost:8090/sim/loop
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"path": "session2", "index": 0, "play": true}' localhost:8090/sim/source
+```
+
+Each call returns the playback status as JSON. `GET /sim/frame` returns the
+image file at the current `index` as is (while playing, `index` has usually
+already moved on to the next frame to show).
+
 ### Run Cedar-aim
 
 On a phone, tablet, or computer that is on the same network as the Raspberry Pi

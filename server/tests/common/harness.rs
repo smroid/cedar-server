@@ -51,7 +51,7 @@ pub const ROLL_TOL_DEG: f64 = 1.0;
 pub const FOV_TOL_FRAC: f64 = 0.02;
 
 type SharedSolver = Arc<Mutex<dyn SolverTrait + Send + Sync>>;
-type SharedCamera = Arc<Mutex<Box<dyn AbstractCamera + Send>>>;
+pub type SharedCamera = Arc<Mutex<Box<dyn AbstractCamera + Send>>>;
 
 fn wrap_camera(camera: ImageCamera) -> SharedCamera {
     Arc::new(Mutex::new(Box::new(camera) as Box<dyn AbstractCamera + Send>))
@@ -76,7 +76,14 @@ impl Stack {
                 .await
                 .expect("ImageCamera::new"),
         );
+        Self::with_camera(solver, camera).await
+    }
 
+    /// Like `new`, but over any camera, e.g. a `SimCamera`.
+    pub async fn with_camera(
+        solver: SharedSolver,
+        camera: SharedCamera,
+    ) -> Stack {
         let detect = Arc::new(Mutex::new(DetectEngine::new(
             INITIAL_EXPOSURE,
             MIN_EXPOSURE,
@@ -185,7 +192,21 @@ impl Stack {
         );
     }
 
-    async fn next_result(&mut self) -> PlateSolution {
+    /// Sets CedarDetect's binning, as `cedar_server` does per camera.
+    pub async fn set_detect_binning(&mut self, detect_binning: u32) {
+        self.detect
+            .lock()
+            .await
+            .set_detect_binning(
+                detect_binning,
+                // display_sampling=
+                false,
+            )
+            .await;
+    }
+
+    /// Blocks for the next solution after the last one returned.
+    pub async fn next_result(&mut self) -> PlateSolution {
         let ps = self
             .solve
             .get_next_result(self.last_id, /* non_blocking= */ false)
