@@ -32,6 +32,7 @@ use cedar_elements::{
     cedar_common::{CelestialCoord, HorizonCoord},
     cedar_sky::{CatalogEntryMatch, Ordering},
     cedar_sky_trait::CedarSkyTrait,
+    durable_file::write_file_durably,
     hot_pixel_trait::HotPixelTrait,
     imu_trait::ImuTrait,
     solver_trait::SolverTrait,
@@ -107,6 +108,11 @@ const PAIRING_MODE_EXIT_DELAY_SECS: u64 = 300; // 5 minutes.
 // stops responding at all, so they do not affect genuinely active connections.
 const WIFI_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const WIFI_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+// Held while saving preferences, so saves happen one at a time; see
+// MyCedar::save_preferences().
+static PREFERENCES_SAVE_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
 
 /// Per-connection info tracked for cedar_server clients. Keyed by peer
 /// address in `ConnectionCounters::cedar_wifi_clients`/
@@ -408,37 +414,40 @@ impl MyCedar {
         preferences: &Preferences,
     ) {
         // Write updated preferences to file.
-        let prefs_path = Path::new(preferences_file);
-        let scratch_path = prefs_path.with_extension("tmp");
-
         let mut buf = vec![];
         if let Err(e) = preferences.encode(&mut buf) {
             warn!("Could not encode preferences: {:?}", e);
             return;
         }
-        if let Err(e) = fs::write(&scratch_path, buf) {
-            warn!("Could not write file {:?}: {:?}", &scratch_path, e);
-            return;
-        }
-        if let Err(e) = fs::rename(&scratch_path, prefs_path) {
-            warn!(
-                "Could not rename file {:?} to {:?}: {:?}",
-                &scratch_path, &prefs_path, e
-            );
+        if let Err(e) = write_file_durably(preferences_file, &buf) {
+            warn!("Could not write file {:?}: {:?}", preferences_file, e);
         }
     }
 
+    /// Writes the current `preferences` to `preferences_file`, and passes
+    /// them to `serve_engine`, if given. Must not be called with `preferences`
+    /// or `serve_engine` locked.
     async fn save_preferences(
-        &self,
-        serve_engine_arc: Arc<tokio::sync::Mutex<ServeEngine>>,
-        preferences: Preferences,
+        preferences_file: &Path,
+        preferences: &Arc<tokio::sync::Mutex<Preferences>>,
+        serve_engine: Option<&Arc<tokio::sync::Mutex<ServeEngine>>>,
     ) {
-        Self::write_preferences_file(&self.preferences_file, &preferences);
-        serve_engine_arc
-            .lock()
-            .await
-            .update_preferences(preferences)
-            .await;
+        let _save_guard = PREFERENCES_SAVE_LOCK.lock().await;
+        let current = preferences.lock().await.clone();
+        let path = preferences_file.to_path_buf();
+        let to_write = current.clone();
+        // The durable write is a blocking call, so keep it off the async
+        // worker threads.
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            Self::write_preferences_file(&path, &to_write)
+        })
+        .await
+        {
+            warn!("Preferences write task failed: {:?}", e);
+        }
+        if let Some(serve_engine) = serve_engine {
+            serve_engine.lock().await.update_preferences(current).await;
+        }
     }
 
     fn fill_in_time(fixed_settings: &mut FixedSettings) {
@@ -1242,7 +1251,7 @@ impl MyCedar {
     ) -> Option<LatLong> {
         // Notice when solve engine has recently changed its boresight due
         // to the pre-solve callback function reporting a telescope sync.
-        let mut prefs_to_save: Option<Preferences> = None;
+        let mut save_prefs = false;
         let mut updated_observer_location: Option<LatLong> = None;
         if let Some(bp) = boresight_pixel {
             let cedar_bp = bp.clone();
@@ -1254,7 +1263,7 @@ impl MyCedar {
                 // Save in preferences (full-sensor coords).
                 locked_preferences.boresight_pixel = Some(cedar_bp);
                 // Flag updated preferences to write to file below.
-                prefs_to_save = Some(locked_preferences.clone());
+                save_prefs = true;
             }
         }
         if plate_solution.is_none() {
@@ -1332,7 +1341,7 @@ impl MyCedar {
                     locked_preferences.observer_location =
                         Some(observer_location.clone());
                     // Flag updated preferences to write to file below.
-                    prefs_to_save = Some(locked_preferences.clone());
+                    save_prefs = true;
                 }
             }
             // Has telescope reported the time?
@@ -1397,9 +1406,9 @@ impl MyCedar {
                 );
             }
         }
-        if let Some(prefs) = prefs_to_save {
+        if save_prefs {
             // Write updated preferences to file.
-            Self::write_preferences_file(&preferences_file, &prefs);
+            Self::save_preferences(&preferences_file, &preferences, None).await;
         }
         updated_observer_location
     }

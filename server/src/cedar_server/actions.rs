@@ -382,15 +382,18 @@ impl MyCedar {
             }
         }
         if req.clear_dont_show_items.unwrap_or(false) {
-            let (prefs_to_write, serve_engine_arc) = {
+            let (preferences_arc, serve_engine_arc) = {
                 let locked_state = self.state.lock().await;
                 let preferences_arc = locked_state.preferences.clone();
-                let mut locked_prefs = preferences_arc.lock().await;
-                locked_prefs.dont_show_items.clear();
-                (locked_prefs.clone(), locked_state.serve_engine.clone())
+                preferences_arc.lock().await.dont_show_items.clear();
+                (preferences_arc, locked_state.serve_engine.clone())
             };
-            self.save_preferences(serve_engine_arc, prefs_to_write)
-                .await;
+            MyCedar::save_preferences(
+                &self.preferences_file,
+                &preferences_arc,
+                Some(&serve_engine_arc),
+            )
+            .await;
         }
         if let Some(mut dfr) = req.designate_daylight_focus_region {
             let (image_rotator, camera, detect_engine) = {

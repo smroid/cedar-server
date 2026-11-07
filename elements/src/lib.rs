@@ -3,6 +3,7 @@
 
 pub mod astro_util;
 pub mod cedar_sky_trait;
+pub mod durable_file;
 pub mod hot_pixel_trait;
 pub mod image_utils;
 pub mod imu_trait;

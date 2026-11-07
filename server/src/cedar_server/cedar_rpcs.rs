@@ -352,10 +352,13 @@ impl Cedar for MyCedar {
             .await;
 
         // Also clear from preferences for persistence.
-        let mut our_prefs = preferences_arc.lock().await.clone();
-        our_prefs.observer_location = None;
-        *preferences_arc.lock().await = our_prefs.clone();
-        self.save_preferences(serve_engine_arc, our_prefs).await;
+        preferences_arc.lock().await.observer_location = None;
+        MyCedar::save_preferences(
+            &self.preferences_file,
+            &preferences_arc,
+            Some(&serve_engine_arc),
+        )
+        .await;
 
         info!("Cleared observer location");
         Ok(tonic::Response::new(EmptyMessage {}))
@@ -386,8 +389,9 @@ impl Cedar for MyCedar {
                 ));
             }
         }
-        // Hold our lock across this entire operation to ensure that the file
-        // update is done one at a time.
+        // Hold our lock while updating the preferences, so that concurrent
+        // updates apply one at a time. (MyCedar::save_preferences() serializes
+        // the file writes.)
         let mut locked_state = self.state.lock().await;
 
         let mut our_prefs = locked_state.preferences.lock().await.clone();
@@ -532,6 +536,7 @@ impl Cedar for MyCedar {
         }
 
         let serve_engine_arc = locked_state.serve_engine.clone();
+        let preferences_arc = locked_state.preferences.clone();
         let updated_op_settings = locked_state.operation_settings.clone();
         drop(locked_state);
         serve_engine_arc
@@ -539,8 +544,12 @@ impl Cedar for MyCedar {
             .await
             .update_operation_settings(updated_op_settings)
             .await;
-        self.save_preferences(serve_engine_arc, our_prefs.clone())
-            .await;
+        MyCedar::save_preferences(
+            &self.preferences_file,
+            &preferences_arc,
+            Some(&serve_engine_arc),
+        )
+        .await;
 
         Ok(tonic::Response::new(our_prefs))
     }
