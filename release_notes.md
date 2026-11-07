@@ -655,3 +655,10 @@ Cedar-server version: 1.7.3
   * Add the Astronomical League carbon star list.
   * Text search ranks exact name matches first, then prefix matches.
   * V-number searches such as "V460 Cyg" now find their objects.
+
+# November 7 2026
+
+Cedar-server version: 1.7.4
+
+* Improved filesystem integrity: settings and other saved files survive the
+  power being cut.
