@@ -658,7 +658,7 @@ Cedar-server version: 1.7.3
 
 # November 7 2026
 
-Cedar-server version: 1.7.4
+Cedar-server version: 1.7.5
 
 * Improved filesystem integrity: settings and other saved files survive the
   power being cut.
