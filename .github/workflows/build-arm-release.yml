@@ -183,12 +183,10 @@ jobs:
           (cd dist && sha256sum cedar-box-server > cedar-box-server.sha256)
           ls --format=long --human-readable dist/
           cat dist/cedar-box-server.sha256
-          # Short SHA for the artifact name; on a tag build, use the tag.
+          # Package version: the tag on a tag build, a snapshot otherwise.
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
             echo "version=$(packaging/deb/version.sh "${GITHUB_REF_NAME}")" >> "$GITHUB_OUTPUT"
           else
-            echo "name=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
             echo "version=$(packaging/deb/version.sh)" >> "$GITHUB_OUTPUT"
           fi
 
@@ -222,11 +220,29 @@ jobs:
       - name: Test-install the .deb
         working-directory: cedar-server
         run: packaging/deb/test-install.sh "$DEB_PACKAGE" dist/*.deb
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      # One artifact per file, uploaded unzipped (`archive: false`, v7+), so
+      # each gets its own download link. With archive off, the artifact is
+      # named after the file and `name:` is ignored; `path` must match exactly
+      # one file. The run itself identifies the commit.
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
         with:
-          name: cedar-box-server-aarch64-${{ steps.package.outputs.name }}
-          path: cedar-server/dist/
+          path: cedar-server/dist/cedar-box-server
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload checksum
+        uses: actions/upload-artifact@v7
+        with:
+          path: cedar-server/dist/cedar-box-server.sha256
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v7
+        with:
+          path: cedar-server/dist/${{ env.DEB_PACKAGE }}_*_arm64.deb
+          archive: false
           if-no-files-found: error
 
       # --- Release (tags only) ----------------------------------------------
