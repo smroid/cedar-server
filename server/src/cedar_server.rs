@@ -1712,6 +1712,13 @@ async fn prepare_for_exit_async(
             warn!("Failed to save hot pixel map state: {:?}", e);
         }
     }
+    // Write all pending data to storage now, rather than waiting for the
+    // shutdown's own final sync: users may unplug the device as soon as it
+    // starts shutting down.
+    if let Err(e) = tokio::task::spawn_blocking(|| unsafe { libc::sync() }).await
+    {
+        warn!("Failed to sync storage: {:?}", e);
+    }
 }
 
 async fn get_attached_camera(
