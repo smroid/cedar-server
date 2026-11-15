@@ -63,6 +63,21 @@ pub struct ImuState {
     pub gyro: GyroData,
 }
 
+// A tap detected on whatever the IMU is rigidly mounted to.
+#[derive(Debug, Clone, Copy)]
+pub struct TapEvent {
+    // When the tap occurred: the timestamp of the IMU sample in which it was
+    // detected.
+    pub timestamp: SystemTime,
+
+    // Impulse peak (m/s²): how strong the tap was.
+    pub peak: f64,
+}
+
+// Called for each detected tap. It must return quickly, and must not call
+// into the ImuTrait object (it may be invoked during an ImuTrait call).
+pub type TapCallback = Box<dyn Fn(TapEvent) + Send + Sync>;
+
 // State for IMU tracker logic.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TrackerState {
@@ -156,6 +171,15 @@ pub trait ImuTrait {
     async fn get_angular_velocity_magnitude(
         &self,
     ) -> Result<(f64, SystemTime), CanonicalError>;
+
+    // Registers the callback invoked for each detected tap, replacing any
+    // previous one; None removes it. See TapCallback for its constraints.
+    fn set_tap_callback(&self, callback: Option<TapCallback>);
+
+    // Sets how light a tap is detected, from 0 (least sensitive: firm taps
+    // only) to 1 (most sensitive); values outside are clamped. The initial
+    // sensitivity is 2/3.
+    async fn set_tap_sensitivity(&self, sensitivity: f64);
 
     // Returns the IMU's model.
     fn get_model(&self) -> String;
