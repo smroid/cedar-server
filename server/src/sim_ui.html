@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2026 Steven Rosenthal smr@dt3.org
+     See LICENSE file in root directory for license terms. -->
+<!-- Simulator control page, served by sim_http.rs at "/". Plain HTML/JS on
+     purpose: no build step. Below the controls it embeds the Cedar Aim web
+     app (port 8080 of the same host, or ?aim=<url>), which shows what Cedar
+     makes of the frames. Embedding it also makes this page a Cedar client;
+     without one, Cedar does not capture and playback does not advance. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cedar simulator</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd;
+               font: 14px system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+         padding: 6px 8px; border-bottom: 1px solid #333; }
+  #bar button, #bar select, #bar input { background: #222; color: #ddd;
+         border: 1px solid #444; border-radius: 4px; padding: 3px 8px;
+         font: inherit; }
+  #bar button { min-width: 2.5em; cursor: pointer; }
+  #seek { flex: 1 1 200px; }
+  #source { width: 14em; }
+  #status { font-family: ui-monospace, monospace; white-space: nowrap; }
+  #error { color: #f66; }
+  #main { flex: 1; display: flex; min-height: 0; }
+  #preview { width: 25%; min-width: 160px; display: flex;
+             flex-direction: column; border-right: 1px solid #333; }
+  #preview img { width: 100%; image-rendering: pixelated; }
+  #preview div { padding: 4px 8px; color: #888; font-size: 12px; }
+  #aim { flex: 1; border: 0; background: #000; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="prev" title="Step back (Left)">&#x23EE;</button>
+  <button id="play" title="Play / pause (Space)">&#x25B6;</button>
+  <button id="next" title="Step forward (Right)">&#x23ED;</button>
+  <input id="seek" type="range" min="0" max="0" value="0" title="Seek">
+  <label>Speed <select id="speed">
+    <option>0.25</option><option>0.5</option><option selected>1</option>
+    <option>2</option><option>4</option><option>8</option>
+  </select></label>
+  <label><input id="loop" type="checkbox"> Loop</label>
+  <label><input id="showPreview" type="checkbox" checked> Input frame</label>
+  <input id="source" placeholder="source path (relative to sim root)">
+  <button id="load">Load</button>
+  <span id="status">connecting&hellip;</span>
+  <span id="error"></span>
+</div>
+<div id="main">
+  <div id="preview">
+    <img id="frame" alt="">
+    <div>Simulator input (the raw file). Cedar's view is on the right.</div>
+  </div>
+  <iframe id="aim" title="Cedar Aim"></iframe>
+</div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const aimUrl = new URLSearchParams(location.search).get("aim") ||
+      `${location.protocol}//${location.hostname}:8080/`;
+$("aim").src = aimUrl;
+
+let status = null;
+let seeking = false;      // User is dragging the seek slider.
+let shownFrameId = null;  // frame_id of the preview image.
+let frameLoading = false;
+let lastFrameLoad = 0;
+const FRAME_REFRESH_MS = 1000;  // Frames are ~1 MB; don't flood the link.
+
+async function api(path, body) {
+  try {
+    const resp = await fetch(path, body === undefined ? {} : {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(text || resp.statusText);
+    $("error").textContent = "";
+    render(JSON.parse(text));
+  } catch (e) {
+    $("error").textContent = e.message;
+  }
+}
+
+function render(s) {
+  status = s;
+  $("play").innerHTML = s.playing ? "&#x23F8;" : "&#x25B6;";
+  $("seek").max = s.count - 1;
+  if (!seeking) $("seek").value = s.index;
+  const speed = String(s.speed);
+  if (![...$("speed").options].some((o) => o.value === speed)) {
+    $("speed").add(new Option(speed));
+  }
+  $("speed").value = speed;
+  $("loop").checked = s.looping;
+  if (document.activeElement !== $("source")) $("source").value = s.source;
+  $("status").textContent =
+    `${s.index + 1}/${s.count} ${s.frame_name} #${s.frame_id}`;
+  refreshFrame();
+}
+
+function refreshFrame() {
+  const wanted = $("showPreview").checked;
+  $("preview").classList.toggle("hidden", !wanted);
+  if (!wanted || !status || frameLoading ||
+      status.frame_id === shownFrameId ||
+      Date.now() - lastFrameLoad < FRAME_REFRESH_MS) return;
+  frameLoading = true;
+  lastFrameLoad = Date.now();
+  shownFrameId = status.frame_id;
+  $("frame").src = `/sim/frame?id=${status.frame_id}`;
+}
+$("frame").onload = $("frame").onerror = () => { frameLoading = false; };
+
+const step = (n) => api("/sim/step", {n});
+const togglePlay = () =>
+  api(status && status.playing ? "/sim/pause" : "/sim/play", {});
+$("prev").onclick = () => step(-1);
+$("next").onclick = () => step(1);
+$("play").onclick = togglePlay;
+$("seek").oninput = () => {
+  seeking = true;
+  if (status) $("status").textContent =
+    `${+$("seek").value + 1}/${status.count}`;
+};
+$("seek").onchange = async () => {
+  await api("/sim/seek", {index: +$("seek").value});
+  seeking = false;
+};
+$("speed").onchange = () => api("/sim/speed", {speed: +$("speed").value});
+$("loop").onchange = () => api("/sim/loop", {loop: $("loop").checked});
+$("showPreview").onchange = refreshFrame;
+const load = () => api("/sim/source", {path: $("source").value});
+$("load").onclick = load;
+$("source").onkeydown = (e) => { if (e.key === "Enter") load(); };
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === " ") { e.preventDefault(); togglePlay(); }
+  else if (e.key === "ArrowLeft") step(-1);
+  else if (e.key === "ArrowRight") step(1);
+});
+
+async function poll() {
+  if (!document.hidden) await api("/sim/status");
+  setTimeout(poll, 500);
+}
+poll();
+</script>
+</body>
+</html>
