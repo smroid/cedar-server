@@ -1,0 +1,5 @@
+grpcio>=1.60
+protobuf>=4.25
+Pillow>=9
+# For tests and gen_protos.sh only:
+# pytest grpcio-tools
