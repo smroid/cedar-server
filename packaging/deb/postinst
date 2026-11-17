@@ -1,0 +1,33 @@
+#!/bin/sh
+# postinst for the cedar-box-server package.
+set -e
+
+# The same five capabilities build.sh and install_cedar.sh grant. A .deb cannot
+# carry file capabilities (dpkg does not preserve xattrs), so they are applied
+# here. Without cap_net_bind_service the server silently fails to bind :80.
+CAPS=cap_sys_time,cap_dac_override,cap_chown,cap_fowner,cap_net_bind_service+ep
+BIN=/usr/bin/cedar-box-server
+
+if [ "$1" = "configure" ]; then
+    if ! setcap "$CAPS" "$BIN"; then
+        echo "cedar-server: setcap on $BIN failed; without capabilities the" >&2
+        echo "server cannot bind port 80 or set the system time." >&2
+        exit 1
+    fi
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        # FragmentPath is the main unit file; it is empty when only this
+        # package's drop-in exists.
+        if [ -z "$(systemctl show --property=FragmentPath --value cedar.service 2>/dev/null)" ]; then
+            echo "cedar-server: note: no cedar.service unit found. This package" >&2
+            echo "only points an existing Cedar image's cedar.service at $BIN;" >&2
+            echo "it does not install the unit, web app or Python solver." >&2
+        fi
+        # Pick up the new binary if the server is running; leave it stopped
+        # if it is not.
+        systemctl try-restart cedar.service || true
+    fi
+fi
+
+exit 0
