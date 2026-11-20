@@ -662,3 +662,11 @@ Cedar-server version: 1.7.5
 
 * Improved filesystem integrity: settings and other saved files survive the
   power being cut.
+
+# November 20 2026
+
+Cedar-server version: 1.7.6
+
+* More reliable WiFi on Raspberry Pi based Hoppers.
+
+* More filesystem integrity improvements.
