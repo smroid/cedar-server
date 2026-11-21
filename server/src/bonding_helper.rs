@@ -95,6 +95,84 @@ fn apply_lp_rswitch() {
     }
 }
 
+/// Maximum number of ACL data packets the host keeps outstanding at the
+/// controller.
+const ACL_PACKET_CAP: u32 = 3;
+
+/// Lowers the kernel's ACL packet count for hci0 to `ACL_PACKET_CAP`,
+/// keeping the controller's reported packet size. Never raises the count.
+/// An HCI reset restores the controller's values, so this must be called
+/// on startup and after every reset (see `apply_link_settings`).
+fn apply_acl_cap() {
+    let output = match std::process::Command::new("hciconfig")
+        .arg("hci0")
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            warn!("Failed to read BT ACL settings: {:?}", e);
+            return;
+        }
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    // The line looks like "BD Address: ...  ACL MTU: 1021:7  SCO MTU: 64:1".
+    let (mtu, count) = match parse_acl_mtu(&text) {
+        Some(v) => v,
+        None => {
+            warn!("Could not find ACL MTU in hciconfig output");
+            return;
+        }
+    };
+    if count <= ACL_PACKET_CAP {
+        info!("BT ACL packet count already {} (MTU {})", count, mtu);
+        return;
+    }
+    let setting = format!("{}:{}", mtu, ACL_PACKET_CAP);
+    let result = std::process::Command::new("sudo")
+        .args(["hciconfig", "hci0", "aclmtu", &setting])
+        .output();
+    match result {
+        Ok(o) if o.status.success() => info!(
+            "Capped BT ACL packets at {} (controller reports {}, MTU {})",
+            ACL_PACKET_CAP, count, mtu
+        ),
+        Ok(o) => warn!(
+            "Failed to cap BT ACL packets: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => warn!("Failed to cap BT ACL packets: {:?}", e),
+    }
+}
+
+/// Extracts (packet size, packet count) from the "ACL MTU: size:count" field
+/// of `hciconfig hci0` output.
+fn parse_acl_mtu(text: &str) -> Option<(u32, u32)> {
+    let rest = &text[text.find("ACL MTU:")? + "ACL MTU:".len()..];
+    let field = rest.split_whitespace().next()?;
+    let (mtu, count) = field.split_once(':')?;
+    Some((mtu.parse().ok()?, count.parse().ok()?))
+}
+
+fn is_pi_zero_2w() -> bool {
+    static IS_ZERO_2W: OnceLock<bool> = OnceLock::new();
+    *IS_ZERO_2W.get_or_init(|| {
+        // Absent on hosts without a device tree; treat as not a Zero 2 W.
+        std::fs::read_to_string("/sys/firmware/devicetree/base/model")
+            .unwrap_or_default()
+            .trim_end_matches('\0')
+            .contains("Raspberry Pi Zero 2 W")
+    })
+}
+
+/// Applies the link policy and, on a Pi Zero 2 W, the ACL packet cap. Both
+/// are lost on an HCI reset, so this runs on startup and after every reset.
+fn apply_link_settings() {
+    apply_lp_rswitch();
+    if is_pi_zero_2w() {
+        apply_acl_cap();
+    }
+}
+
 /// Outcome of a call to `reset_hci_controller`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetOutcome {
@@ -140,7 +218,7 @@ pub fn reset_hci_controller() -> ResetOutcome {
         }
     };
     if light_ok {
-        apply_lp_rswitch();
+        apply_link_settings();
         return ResetOutcome::LightResetOk;
     }
     hard_reset_bt_stack();
@@ -239,11 +317,11 @@ fn hard_reset_bt_stack() {
     run_step(&["sudo", "systemctl", "start", "bluetooth"], "start bluetooth");
 
     // Give bluetoothd a moment to attach to hci0 before re-applying link
-    // policy. Without this the lp rswitch call can race against the
+    // settings. Without this the hciconfig calls can race against the
     // adapter coming up.
     std::thread::sleep(Duration::from_millis(500));
 
-    apply_lp_rswitch();
+    apply_link_settings();
     *last = Some(Instant::now());
     warn!("Hard BT stack reset complete");
 }
@@ -288,7 +366,7 @@ pub async fn run_pairing_mode(
         warn!("Failed to power on Bluetooth adapter: {:?}", e);
         Box::new(e) as Box<dyn Error + 'static>
     })?;
-    apply_lp_rswitch();
+    apply_link_settings();
 
     let (tx, mut rx) = mpsc::channel::<Address>(1);
 
@@ -424,4 +502,23 @@ pub async fn get_bonded_devices(
         });
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_acl_mtu;
+
+    #[test]
+    fn parses_hciconfig_acl_mtu() {
+        let text = "hci0:\tType: Primary  Bus: UART\n\
+                    \tBD Address: 88:A2:9E:BE:00:31  ACL MTU: 1021:7  SCO MTU: 64:1\n\
+                    \tUP RUNNING\n";
+        assert_eq!(parse_acl_mtu(text), Some((1021, 7)));
+    }
+
+    #[test]
+    fn missing_or_malformed_acl_mtu() {
+        assert_eq!(parse_acl_mtu("hci0:\tType: Primary  Bus: UART\n"), None);
+        assert_eq!(parse_acl_mtu("ACL MTU: 1021  SCO MTU: 64:1"), None);
+    }
 }
