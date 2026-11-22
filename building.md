@@ -209,6 +209,11 @@ versa), Cedar-server will not find your camera at startup and will silently
 fall back to a fake test-pattern camera, so make sure to pass the flag that
 matches your hardware.
 
+For development builds, set `CEDAR_BUILD_INFO=1` (e.g.
+`CEDAR_BUILD_INFO=1 ./build.sh --release`) to append the git commit and your
+username to the version reported by `cedar-box-server --version` and shown in
+Cedar-aim, e.g. `1.7.5 (77349c2e-dirty alex)`. Release builds omit this.
+
 This builds Cedar-server and all of its dependencies. Rust crates are downloaded
 and built as needed. The initial build takes around a half hour on a Rpi 4 and
 well over an hour on a Rpi 3. The Rpi 5 is much faster for this!

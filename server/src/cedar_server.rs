@@ -493,7 +493,7 @@ impl MyCedar {
         >,
         saving_state: Arc<AtomicBool>,
     ) -> Result<Self, CanonicalError> {
-        let cedar_version = env!("CARGO_PKG_VERSION");
+        let cedar_version = VERSION;
         // These device-tree files exist only on Raspberry Pi; on x86 dev hosts
         // they are absent, so default to empty rather than panicking.
         let processor_model =
@@ -1516,6 +1516,11 @@ fn parse_duration(
 //     been set up and `server_main()`s command line arguments have been
 //     consumed, and before the tokio runtime is started.
 //     The AtomicBool is set to true if control-c occurs.
+/// Cargo.toml version, plus " (<git sha> <user>)" when built with
+/// CEDAR_BUILD_INFO=1 (see build.rs).
+pub const VERSION: &str =
+    concat!(env!("CARGO_PKG_VERSION"), env!("CEDAR_VERSION_SUFFIX"));
+
 pub fn server_main(
     copyright: &str,
     flutter_app_path: &str,
@@ -1538,6 +1543,7 @@ pub fn server_main(
     const HELP: &str = "\
     FLAGS:
       -h, --help                     Prints help information
+      -V, --version                  Prints version
 
     OPTIONS:
       --tetra3_script <path>         ../cedar/tetra3_server/python/tetra3_server.py
@@ -1559,6 +1565,10 @@ pub fn server_main(
     let mut pargs = Arguments::from_env();
     if pargs.contains(["-h", "--help"]) {
         println!("{}", HELP);
+        std::process::exit(0);
+    }
+    if pargs.contains(["-V", "--version"]) {
+        println!("{}", VERSION);
         std::process::exit(0);
     }
     let args = AppArgs {
