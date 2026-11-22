@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Oleksandr Pryimak oleksandr.pryimak@gmail.com
+// See LICENSE file in root directory for license terms.
+
 //! HTTP control API of the simulated camera (`--sim_source`), exercised
 //! through the router without binding a port. An integration test rather than
 //! a unit test so it builds independently of the lib's own `#[cfg(test)]` code.

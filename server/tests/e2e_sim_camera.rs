@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Oleksandr Pryimak oleksandr.pryimak@gmail.com
+// See LICENSE file in root directory for license terms.
+
 //! End-to-end: the simulated camera (`--sim_source`) playing back a recorded
 //! session through cedar-server's own `DetectEngine -> SolveEngine`, graded
 //! against the plate solutions recorded with it (`manifest.csv`, as written by

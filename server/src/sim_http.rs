@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Steven Rosenthal smr@dt3.org
+// Copyright (c) 2026 Oleksandr Pryimak oleksandr.pryimak@gmail.com
 // See LICENSE file in root directory for license terms.
 
 // HTTP/JSON control of the simulated camera (--sim_source). Served on its own
