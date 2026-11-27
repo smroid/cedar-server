@@ -1,0 +1,17 @@
+#!/bin/sh
+# postrm for the cedar-box-server package.
+set -e
+
+# On removal the drop-in is gone, so cedar.service reverts to the image's own
+# binary. Reload and, if the server was running, restart it onto that binary.
+# Upgrades are handled by the new version's postinst instead.
+case "$1" in
+    remove|purge)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+            systemctl try-restart cedar.service || true
+        fi
+        ;;
+esac
+
+exit 0
